@@ -28,6 +28,10 @@ export interface AppConfig {
     composeEngine: string;
     dockerTimeoutMs: number;
     dockerMaxBytes: number;
+    /** Maximum duration of a mutating Compose operation. */
+    operationTimeoutMs: number;
+    /** Bounded drain window for running operations on shutdown. */
+    shutdownGraceMs: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -100,5 +104,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         composeEngine: env.COMPOSE_PANEL_COMPOSE_ENGINE?.trim() || "docker",
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),
         dockerMaxBytes: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_MAX_BYTES", 1024 * 1024),
+        operationTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_OPERATION_TIMEOUT_MS", 5 * 60 * 1000),
+        shutdownGraceMs: parsePositiveInt(env, "COMPOSE_PANEL_SHUTDOWN_GRACE_MS", 30 * 1000),
     };
 }

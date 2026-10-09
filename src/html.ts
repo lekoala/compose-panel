@@ -1,3 +1,5 @@
+import type { OperationView } from "./operations.ts";
+
 export function escapeHtml(value: string): string {
     return value.replace(/[&<>"']/g, char => {
         switch (char) {
@@ -83,6 +85,32 @@ export function editPage(options: EditPageOptions): string {
   </label>
   <button type="submit">Save and validate</button>
 </form>`, { mode: "Editing" });
+}
+
+const OPERATION_BUTTONS: [string, string][] = [
+    ["up", "Up"],
+    ["stop", "Stop"],
+    ["restart", "Restart"],
+    ["down", "Down"],
+    ["pull-up", "Pull + up"],
+];
+
+export function operationControls(name: string, csrf: string): string {
+    const action = `/stacks/${encodeURIComponent(name)}/operations`;
+    const buttons = OPERATION_BUTTONS.map(([value, label]) =>
+        `<form method="post" action="${action}" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="action" value="${value}"><button type="submit">${label}</button></form>`,
+    ).join("");
+    return `<section class="operations"><h2>Operations</h2><p class="note">Actions run in the background and keep going if you close this page. One operation runs per stack at a time.</p><div class="op-buttons">${buttons}</div></section>`;
+}
+
+export function operationPanel(operation: OperationView | null): string {
+    if (!operation) return "";
+    const timing = operation.endedAt ? ` · exit ${operation.exitCode ?? "-"}` : "";
+    const flags = [operation.timedOut ? "timed out (outcome unknown)" : "", operation.truncated ? "output truncated" : ""].filter(Boolean).join(" · ");
+    return `<section class="operation"><h2>Last operation: ${escapeHtml(operation.action)}</h2>`
+        + `<p><span class="state state-${escapeHtml(operation.status)}">${escapeHtml(operation.status)}</span>${timing}${flags ? ` · ${escapeHtml(flags)}` : ""}</p>`
+        + (operation.output ? `<pre class="op-output">${escapeHtml(operation.output)}</pre>` : "")
+        + `</section>`;
 }
 
 export function htmlResponse(body: string, status = 200): Response {

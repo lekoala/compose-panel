@@ -20,6 +20,15 @@ export interface ComposeCapabilities {
     operations: ComposeOperations;
 }
 
+export interface ComposeTarget {
+    /** Known Compose project name; omitted for a stack that is not deployed yet. */
+    project?: string;
+    composeFile: string;
+    cwd: string;
+    timeoutMs?: number;
+    maxBytes?: number;
+}
+
 /**
  * Boundary around the Compose CLI. The rest of the application depends on these
  * business operations, never on the concrete executable or its argument layout,
@@ -35,6 +44,11 @@ export interface ComposeProvider {
     listProjects(): Promise<CommandResult>;
     projectServices(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult>;
     validateConfig(input: { directory: string; composeFile: string; envFile?: string }): Promise<CommandResult>;
+    pull(target: ComposeTarget): Promise<CommandResult>;
+    up(target: ComposeTarget): Promise<CommandResult>;
+    stop(target: ComposeTarget): Promise<CommandResult>;
+    restart(target: ComposeTarget): Promise<CommandResult>;
+    down(target: ComposeTarget): Promise<CommandResult>;
 }
 
 class DockerComposeProvider implements ComposeProvider {
@@ -80,6 +94,33 @@ class DockerComposeProvider implements ComposeProvider {
         if (input.envFile) args.push("--env-file", input.envFile);
         args.push("--project-directory", input.directory, "-f", input.composeFile, "config", "--quiet");
         return this.runner(args, { cwd: input.directory });
+    }
+
+    private mutation(target: ComposeTarget, command: string[]): Promise<CommandResult> {
+        const args = ["compose"];
+        if (target.project) args.push("-p", target.project);
+        args.push("--project-directory", target.cwd, "-f", target.composeFile, ...command);
+        return this.runner(args, { cwd: target.cwd, timeoutMs: target.timeoutMs, maxBytes: target.maxBytes });
+    }
+
+    pull(target: ComposeTarget): Promise<CommandResult> {
+        return this.mutation(target, ["pull"]);
+    }
+
+    up(target: ComposeTarget): Promise<CommandResult> {
+        return this.mutation(target, ["up", "-d"]);
+    }
+
+    stop(target: ComposeTarget): Promise<CommandResult> {
+        return this.mutation(target, ["stop"]);
+    }
+
+    restart(target: ComposeTarget): Promise<CommandResult> {
+        return this.mutation(target, ["restart"]);
+    }
+
+    down(target: ComposeTarget): Promise<CommandResult> {
+        return this.mutation(target, ["down"]);
     }
 }
 

@@ -27,10 +27,10 @@ Each step creates a functional, verifiable slice. Do not carry out mutations in 
 - [x] Size limits, file modes, symlinks, no secret leakage.
 
 ## P4 — Operation management (agent 04)
-- [ ] `up`, `stop`, `restart`, `down`, `pull+up` with immutable/controlled arguments.
-- [ ] In-memory lock per stack, also for saving.
-- [ ] Drain `SIGTERM`, timeout, concurrency rejection, tracking independent of the tab.
-- [ ] After a crash: the UI re-reads Docker and does not announce an unconfirmed success.
+- [x] `up`, `stop`, `restart`, `down`, `pull+up` with immutable/controlled arguments.
+- [x] In-memory lock per stack, also for saving.
+- [x] Drain `SIGTERM`, timeout, concurrency rejection, tracking independent of the tab.
+- [x] After a crash: the UI re-reads Docker and does not announce an unconfirmed success.
 
 ## P5 — Logs and SSE (agent 05)
 - [ ] SSE subscription to existing operation output, disconnect ≠ cancellation.

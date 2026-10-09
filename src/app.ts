@@ -1,8 +1,10 @@
-import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage } from "./html.ts";
-import { readStackCompose, StackError } from "./stacks.ts";
-import { loadStackDetail, loadStackStates, type StackDetailStatus } from "./status.ts";
+import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage, operationControls, operationPanel } from "./html.ts";
+import { dirname } from "node:path";
+import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
+import { loadStackDetail, loadStackStates, resolveProject, type StackDetailStatus } from "./status.ts";
 import { StackConflictError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
+import { OperationManager, OperationsDisabledError, isOperationAction } from "./operations.ts";
 import { createComposeProvider, type ComposeProvider } from "./compose-provider.ts";
 import type { ComposeService } from "./compose-state.ts";
 import type { DockerRunner } from "./docker.ts";
@@ -63,6 +65,8 @@ export interface AppOptions {
 
 export interface App {
     fetch(request: Request): Promise<Response>;
+    operations: OperationManager;
+    beginShutdown(graceMs: number): Promise<void>;
 }
 
 function plain(body: string, status: number): Response {
@@ -139,6 +143,10 @@ export function createApp(options: AppOptions): App {
     const { config, stacksRoot, locks = new StackLocks() } = options;
     const provider = options.provider
         ?? createComposeProvider({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
+    const operations = new OperationManager(locks, provider, {
+        timeoutMs: config.operationTimeoutMs,
+        maxBytes: config.dockerMaxBytes,
+    });
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
     const limiter = new LoginRateLimiter(
         config.loginRateLimit.maxAttempts,
@@ -229,7 +237,7 @@ export function createApp(options: AppOptions): App {
         ));
     }
 
-    async function renderStackDetail(name: string, csrf: string): Promise<Response> {
+    async function renderStackDetail(name: string, csrf: string, notice?: string, statusCode = 200): Promise<Response> {
         const stack = await readStackCompose(stacksRoot, name);
         let status: StackDetailStatus;
         try {
@@ -240,13 +248,15 @@ export function createApp(options: AppOptions): App {
         }
         const project = status.project ? ` · project ${escapeHtml(status.project)}` : "";
         const note = status.note ? `<p class="note">${escapeHtml(status.note)}</p>` : "";
+        const noticeHtml = notice ? `<p class="note">${escapeHtml(notice)}</p>` : "";
         return htmlResponse(documentHtml(
             stack.name,
             `<p><a href="/">← All stacks</a> · <a href="/stacks/${encodeURIComponent(stack.name)}/edit">Edit files</a></p><h1>${escapeHtml(stack.name)}</h1>`
-            + `<p>${escapeHtml(stack.filename)} · read-only · ${stateBadge(status.state)}${project}</p>`
-            + `${note}${servicesTable(status.services)}<pre>${escapeHtml(stack.source)}</pre>`,
+            + `<p>${escapeHtml(stack.filename)} · ${stateBadge(status.state)}${project}</p>`
+            + `${noticeHtml}${note}${operationControls(stack.name, csrf)}${operationPanel(operations.forStack(stack.name))}`
+            + `${servicesTable(status.services)}<pre>${escapeHtml(stack.source)}</pre>`,
             { logoutCsrf: csrf },
-        ));
+        ), statusCode);
     }
 
     function decodeName(raw: string): string {
@@ -305,6 +315,32 @@ export function createApp(options: AppOptions): App {
         }
     }
 
+    async function handleOperation(request: Request, name: string, csrf: string): Promise<Response> {
+        if (!isAllowedOrigin(request, config)) return plain("Forbidden", 403);
+        const form = await readForm(request);
+        if (form === null) return plain("Payload too large", 413);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return plain("Forbidden", 403);
+
+        const action = form.get("action") ?? "";
+        if (!isOperationAction(action)) return renderStackDetail(name, csrf, "Unknown operation.", 400);
+
+        const located = await locateComposeFile(stacksRoot, name);
+        const project = await resolveProject(stacksRoot, name, provider);
+        try {
+            operations.start({
+                stack: name,
+                action,
+                target: { project: project ?? undefined, composeFile: located.path, cwd: dirname(located.path) },
+            });
+            return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
+        } catch (error) {
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                return renderStackDetail(name, csrf, error.message, 409);
+            }
+            throw error;
+        }
+    }
+
     async function fetch(request: Request): Promise<Response> {
         const url = new URL(request.url);
         const method = request.method.toUpperCase();
@@ -352,6 +388,12 @@ export function createApp(options: AppOptions): App {
             try { return await handleSave(request, decodeName(editMatch[1]!), session.csrf); }
             catch (error) { return routeError(error, session.csrf); }
         }
+        const operationsMatch = /^\/stacks\/([^/]+)\/operations$/.exec(url.pathname);
+        if (operationsMatch) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try { return await handleOperation(request, decodeName(operationsMatch[1]!), session.csrf); }
+            catch (error) { return routeError(error, session.csrf); }
+        }
         if (method !== "GET" && method !== "HEAD") return methodNotAllowed("GET");
 
         try {
@@ -365,5 +407,9 @@ export function createApp(options: AppOptions): App {
         }
     }
 
-    return { fetch };
+    return {
+        fetch,
+        operations,
+        beginShutdown: (graceMs: number) => operations.shutdown(graceMs),
+    };
 }

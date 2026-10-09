@@ -34,8 +34,13 @@ if (config.publicOrigin && !config.cookieSecure) {
 }
 console.info(`Compose Panel on http://127.0.0.1:${server.port} (single admin: ${config.adminUser})`);
 
+let shuttingDown = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.on(signal, () => {
+    process.on(signal, async () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        console.info(`${signal} received; refusing new operations and draining up to ${config.shutdownGraceMs} ms.`);
+        await app.beginShutdown(config.shutdownGraceMs);
         server.stop(true);
         process.exit(0);
     });

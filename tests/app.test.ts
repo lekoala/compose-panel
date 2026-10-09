@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp, type App } from "../src/app.ts";
 import type { AppConfig } from "../src/config.ts";
-import type { DockerRunner } from "../src/docker.ts";
+import type { CommandResult, DockerRunner } from "../src/docker.ts";
 import { resolveRoot } from "../src/stacks.ts";
 
 const PASSWORD = "correct horse battery staple";
@@ -41,6 +41,8 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner): App
         composeEngine: "docker",
         dockerTimeoutMs: 5000,
         dockerMaxBytes: 1024 * 1024,
+        operationTimeoutMs: 60_000,
+        shutdownGraceMs: 5_000,
         ...overrides,
     };
     return createApp({ config, stacksRoot: root, runner });
@@ -363,5 +365,81 @@ describe("editor routes", () => {
         const response = await postSave(app, session, { ...form, compose: "services:\n  broken: true\n" });
         expect(response.status).toBe(400);
         expect(await response.text()).toContain("services:");
+    });
+});
+
+describe("operations routes", () => {
+    const okResult: CommandResult = { code: 0, stdout: "upped", stderr: "", timedOut: false, truncated: false };
+
+    beforeEach(async () => {
+        await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+        await rm(join(root, "demo", ".env"), { force: true });
+    });
+
+    function dispatch(onUp: () => Promise<CommandResult>): DockerRunner {
+        return async args => {
+            if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+            if (args.includes("up")) return onUp();
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+    }
+
+    async function csrfOf(app: App, session: string): Promise<string> {
+        const html = await (await authed(app, "/", session)).text();
+        return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+    }
+
+    function postOperation(app: App, session: string, csrf: string, action: string) {
+        return authed(app, "/stacks/demo/operations", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, action }).toString(),
+        });
+    }
+
+    async function waitIdle(app: App): Promise<void> {
+        for (let i = 0; i < 200 && app.operations.activeCount() > 0; i += 1) {
+            await new Promise(resolve => setTimeout(resolve, 1));
+        }
+    }
+
+    test("rejects an operation without a valid CSRF token", async () => {
+        const app = makeApp({}, dispatch(async () => okResult));
+        const session = await login(app);
+        expect((await postOperation(app, session, "wrong", "up")).status).toBe(403);
+    });
+
+    test("rejects an action outside the allow-list", async () => {
+        const app = makeApp({}, dispatch(async () => okResult));
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await postOperation(app, session, csrf, "exec")).status).toBe(400);
+    });
+
+    test("starts an operation and reports success on reload", async () => {
+        const app = makeApp({}, dispatch(async () => okResult));
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const response = await postOperation(app, session, csrf, "up");
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/stacks/demo");
+        await waitIdle(app);
+        const html = await (await authed(app, "/stacks/demo", session)).text();
+        expect(html).toContain("succeeded");
+        expect(html).toContain("upped");
+    });
+
+    test("rejects a concurrent operation on the same stack", async () => {
+        let release!: (result: CommandResult) => void;
+        const gate = new Promise<CommandResult>(resolve => { release = resolve; });
+        const app = makeApp({}, dispatch(() => gate));
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+
+        expect((await postOperation(app, session, csrf, "up")).status).toBe(303);
+        expect((await postOperation(app, session, csrf, "stop")).status).toBe(409);
+
+        release(okResult);
+        await waitIdle(app);
     });
 });

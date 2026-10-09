@@ -17,6 +17,14 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Values from `.env` are redacted from any validation error before it reaches the page. Symlinked files are refused, and a missing `.env` is not created unless it has content.
 - Every save first copies the previous file to `<root>/.compose-panel/backups/<stack>/`; if writing the second file of the pair fails, the first is restored. A save is a modifying operation and holds the per-stack lock.
 
+## Operations (P4)
+- Mutating actions are a fixed allow-list (`up`, `stop`, `restart`, `down`, `pull-up`); there is no generic "run command" endpoint and no user-supplied option.
+- Every operation runs through the provider with an explicit `--project-directory` and `-f`, plus `-p` when the project is known. The folder name is never assumed to be the project name.
+- One operation per stack, enforced by the same per-stack lock as saves; a second request is rejected with `409`. `up` is detached and the panel never attaches a terminal.
+- Success is reported only after exit 0; a timeout is `unknown`; a second file/op state is never invented. Browser disconnect does not cancel an operation.
+- On `SIGTERM`/`SIGINT`, new operations are refused and running ones are drained for a bounded window. There is no persistence and no automatic replay: after a crash the outcome may be unknown and the UI re-reads Docker.
+- Operation output is captured from both streams and bounded; it is HTML-escaped before display and never written to application logs.
+
 ## Proxy and TLS contract
 - Default remains direct loopback HTTP with `COMPOSE_PANEL_COOKIE_SECURE=false`.
 - Behind TLS, set `COMPOSE_PANEL_COOKIE_SECURE=true` and, for a proxy, `COMPOSE_PANEL_PUBLIC_ORIGIN=https://<host>` so Origin checks compare against the public origin. Set `COMPOSE_PANEL_TRUST_PROXY=true` only when the proxy overwrites `X-Forwarded-Proto`/`X-Forwarded-For`.
@@ -30,7 +38,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Escape HTML, restrictive CSP, disable caching of sensitive pages, protect any response containing `.env`.
 - Ensure safe resolution of names and files: name allow-list, reject symlinks, protect the root path, no absolute paths supplied by the user.
 - Subprocesses via argument arrays, no shell. No freely user-supplied options. No generic Docker command. *(read-only `compose ls`/`ps` implemented in P2 with a fixed executable, timeouts and output caps; mutations arrive in P4)*
-- Backups before modifications, controlled concurrency, operation limits and graceful shutdown. *(backup, per-stack lock and optimistic concurrency implemented in P3; graceful shutdown arrives with operations)*
+- Backups before modifications, controlled concurrency, operation limits and graceful shutdown. *(backup, per-stack lock, optimistic concurrency and the operations manager implemented in P3–P4; shutdown drains running operations)*
 - Docker logs may themselves contain secrets. Never include them in unprotected application logs.
 
 ## Mandatory security checks

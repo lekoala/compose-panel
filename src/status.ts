@@ -78,6 +78,13 @@ export async function loadStackStates(root: string, provider: ComposeProvider): 
     return { stacks: result, dockerNote: note };
 }
 
+/** Resolve the Compose project backing a stack, or null when none/ambiguous. */
+export async function resolveProject(root: string, name: string, provider: ComposeProvider): Promise<string | null> {
+    const location = await locateComposeFile(root, name);
+    const { projects } = await loadProjects(provider);
+    return findProjectForStack(projects, location.path).project?.name ?? null;
+}
+
 export async function loadStackDetail(root: string, name: string, provider: ComposeProvider): Promise<StackDetailStatus> {
     const location = await locateComposeFile(root, name);
     const { projects, note } = await loadProjects(provider);
