@@ -6,13 +6,13 @@ Each step creates a functional, verifiable slice. Do not carry out mutations in 
 - [x] Bun repo + server-rendered HTML + zero runtime npm dependencies.
 - [x] Compose discovery and reading, rejection of obvious symlink names/paths.
 - [x] Unit tests for the file core and HTML escaping.
-- [ ] Run `bun install`, `bun run test`, `bun run check` on a machine equipped with Bun. **Not run when the starter was generated**.
+- [x] Run `bun install`, `bun run test`, `bun run check` on a machine equipped with Bun.
 
 ## P1 — Security entry / identity (agent 01)
-- [ ] Single-admin auth + correctly signed/stored session + logout.
-- [ ] CSRF, Origin/Host, HTTP limits, `no-store` and masked secrets.
-- [ ] Auth required for any Compose read and future mutating endpoints.
-- [ ] Tests for login, CSRF, session, error reporting.
+- [x] Single-admin auth + correctly signed/stored session + logout.
+- [x] CSRF, Origin/Host, HTTP limits, `no-store` and masked secrets.
+- [x] Auth required for any Compose read and future mutating endpoints.
+- [x] Tests for login, CSRF, session, error reporting.
 
 ## P2 — Real stack state (agent 02)
 - [ ] Bounded Docker CLI call for `compose ls` and `compose ps`.

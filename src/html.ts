@@ -11,8 +11,18 @@ export function escapeHtml(value: string): string {
     });
 }
 
-export function documentHtml(title: string, body: string): string {
+export interface DocumentOptions {
+    /** When set, the header renders an authenticated logout form using this CSRF token. */
+    logoutCsrf?: string;
+    mode?: string;
+}
+
+export function documentHtml(title: string, body: string, options: DocumentOptions = {}): string {
     // 'body' must contain ONLY trusted markup assembled with escapeHtml().
+    const logout = options.logoutCsrf
+        ? `<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="${escapeHtml(options.logoutCsrf)}"><button type="submit">Log out</button></form>`
+        : "";
+    const mode = options.mode ?? "Local prototype · read-only";
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -23,12 +33,23 @@ export function documentHtml(title: string, body: string): string {
 </head>
 <body>
   <div class="shell">
-    <header><a href="/" class="brand">Compose Panel</a><span class="mode">Local prototype · read-only</span></header>
+    <header><a href="/" class="brand">Compose Panel</a><span class="mode">${escapeHtml(mode)}</span>${logout}</header>
     <main>${body}</main>
     <footer>Docker and Compose files remain the sources of truth.</footer>
   </div>
 </body>
 </html>`;
+}
+
+export function loginPage(options: { csrf: string; error?: string | null }): string {
+    const error = options.error ? `<p class="error" role="alert">${escapeHtml(options.error)}</p>` : "";
+    return documentHtml("Log in", `<h1>Log in</h1>${error}
+<form method="post" action="/login" class="login-form">
+  <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
+  <label>User <input name="user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+  <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+  <button type="submit">Log in</button>
+</form>`, { mode: "Authentication required" });
 }
 
 export function htmlResponse(body: string, status = 200): Response {
@@ -40,7 +61,8 @@ export function htmlResponse(body: string, status = 200): Response {
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
             "X-Frame-Options": "DENY",
-            "Content-Security-Policy": "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+            "Vary": "Cookie",
+            "Content-Security-Policy": "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
         },
     });
 }
