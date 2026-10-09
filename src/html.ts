@@ -52,6 +52,39 @@ export function loginPage(options: { csrf: string; error?: string | null }): str
 </form>`, { mode: "Authentication required" });
 }
 
+export interface EditPageOptions {
+    name: string;
+    csrf: string;
+    composeFilename: string;
+    composeSource: string;
+    composeHash: string;
+    envSource: string;
+    envHash: string;
+    envExists: boolean;
+    error?: string | null;
+}
+
+export function editPage(options: EditPageOptions): string {
+    const error = options.error ? `<p class="error" role="alert">${escapeHtml(options.error)}</p>` : "";
+    const action = `/stacks/${encodeURIComponent(options.name)}/edit`;
+    return documentHtml(`Edit ${options.name}`, `<p><a href="/stacks/${encodeURIComponent(options.name)}">← ${escapeHtml(options.name)}</a></p>
+<h1>Edit ${escapeHtml(options.name)}</h1>${error}
+<p class="note">Files are saved as raw text; comments and formatting are preserved. The draft is validated with the Compose CLI before writing. Every save keeps a backup.</p>
+<form method="post" action="${action}" class="edit-form">
+  <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
+  <input type="hidden" name="composeHash" value="${escapeHtml(options.composeHash)}">
+  <input type="hidden" name="envHash" value="${escapeHtml(options.envHash)}">
+  <input type="hidden" name="envExists" value="${options.envExists ? "1" : "0"}">
+  <label>${escapeHtml(options.composeFilename)}
+    <textarea name="compose" rows="24" spellcheck="false" autocapitalize="none" required>${escapeHtml(options.composeSource)}</textarea>
+  </label>
+  <label>.env <small>sensitive — never shown in logs</small>
+    <textarea name="env" rows="12" spellcheck="false" autocapitalize="none">${escapeHtml(options.envSource)}</textarea>
+  </label>
+  <button type="submit">Save and validate</button>
+</form>`, { mode: "Editing" });
+}
+
 export function htmlResponse(body: string, status = 200): Response {
     return new Response(body, {
         status,

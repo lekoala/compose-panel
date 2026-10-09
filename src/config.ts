@@ -20,6 +20,8 @@ export interface AppConfig {
     sessionIdleMs: number;
     loginRateLimit: LoginRateLimitConfig;
     maxBodyBytes: number;
+    /** Maximum size of an edited Compose or .env draft. */
+    maxEditBytes: number;
     /** Fixed Docker executable. Never taken from user input. */
     dockerPath: string;
     dockerTimeoutMs: number;
@@ -91,6 +93,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
             blockMs: parsePositiveInt(env, "COMPOSE_PANEL_LOGIN_BLOCK_MS", 15 * 60 * 1000),
         },
         maxBodyBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_BODY_BYTES", 8 * 1024),
+        maxEditBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_EDIT_BYTES", 1024 * 1024),
         dockerPath: env.COMPOSE_PANEL_DOCKER_PATH?.trim() || "docker",
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),
         dockerMaxBytes: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_MAX_BYTES", 1024 * 1024),

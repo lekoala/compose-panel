@@ -29,9 +29,9 @@ Three classes, without a generic framework:
 ## Compose context
 A stack is defined by the paths of its files, its `--project-directory`, its variable sources and its Compose identity. The **folder name is not necessarily the Docker project**. Do not automatically inject `-p <folder>`.
 
-The prototype does not display stacks that contain implicit override files: they will be handled explicitly in the editor phase (P3).
+The prototype does not display or edit stacks that contain implicit override files: multi-file Compose remains rejected rather than guessed. See [ADR 0004](adr/0004-single-file-editing.md).
 
-Draft validation happens in its project directory with temporary files that are not exposed. Preserve relative paths and file order. Verify that the context used for validation is the same as the context used for execution. Reject deployments of ambiguous projects at the MVP.
+Draft validation happens in its project directory with a temporary file that is not exposed, `--project-directory` and `-f` explicit, and the candidate `.env` passed through `--env-file`. Relative paths and file order are preserved. Verify that the context used for validation is the same as the context used for execution. Before writing, the current file is backed up under `<root>/.compose-panel/backups/<stack>/` and the replacement is written atomically while preserving the file mode.
 
 ## Packaging
 Only Bun in the application, Docker CLI + Compose plugin in the Linux image. Mount the Docker socket and the stacks directory (host path == container path). No mandatory `node_modules` runtime. Test the build and the exact Docker CLI/Compose plugin compatibility in CI.

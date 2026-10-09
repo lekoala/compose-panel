@@ -1,6 +1,8 @@
-import { escapeHtml, documentHtml, htmlResponse, loginPage } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage } from "./html.ts";
 import { readStackCompose, StackError } from "./stacks.ts";
 import { loadStackDetail, loadStackStates, type StackDetailStatus } from "./status.ts";
+import { StackConflictError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
+import { StackBusyError, StackLocks } from "./locks.ts";
 import type { ComposeService } from "./compose-state.ts";
 import type { DockerRunner } from "./docker.ts";
 import {
@@ -52,6 +54,8 @@ export interface AppOptions {
     stacksRoot: string;
     /** Docker runner. Defaults to an unavailable stub so callers opt in explicitly. */
     runner?: DockerRunner;
+    /** Per-stack modifying-operation lock. */
+    locks?: StackLocks;
 }
 
 export interface App {
@@ -128,7 +132,7 @@ function clientKey(request: Request, config: AppConfig): string {
     return "direct";
 }
 
-export function createApp({ config, stacksRoot, runner = unavailableRunner }: AppOptions): App {
+export function createApp({ config, stacksRoot, runner = unavailableRunner, locks = new StackLocks() }: AppOptions): App {
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
     const limiter = new LoginRateLimiter(
         config.loginRateLimit.maxAttempts,
@@ -136,8 +140,8 @@ export function createApp({ config, stacksRoot, runner = unavailableRunner }: Ap
         config.loginRateLimit.blockMs,
     );
 
-    async function readForm(request: Request): Promise<URLSearchParams | null> {
-        const text = await readTextLimited(request, config.maxBodyBytes);
+    async function readForm(request: Request, maxBytes = config.maxBodyBytes): Promise<URLSearchParams | null> {
+        const text = await readTextLimited(request, maxBytes);
         if (text === null) return null;
         return new URLSearchParams(text);
     }
@@ -232,11 +236,67 @@ export function createApp({ config, stacksRoot, runner = unavailableRunner }: Ap
         const note = status.note ? `<p class="note">${escapeHtml(status.note)}</p>` : "";
         return htmlResponse(documentHtml(
             stack.name,
-            `<p><a href="/">← All stacks</a></p><h1>${escapeHtml(stack.name)}</h1>`
+            `<p><a href="/">← All stacks</a> · <a href="/stacks/${encodeURIComponent(stack.name)}/edit">Edit files</a></p><h1>${escapeHtml(stack.name)}</h1>`
             + `<p>${escapeHtml(stack.filename)} · read-only · ${stateBadge(status.state)}${project}</p>`
             + `${note}${servicesTable(status.services)}<pre>${escapeHtml(stack.source)}</pre>`,
             { logoutCsrf: csrf },
         ));
+    }
+
+    function decodeName(raw: string): string {
+        try { return decodeURIComponent(raw); }
+        catch { throw new StackError("Invalid name encoding."); }
+    }
+
+    async function renderEdit(
+        name: string,
+        csrf: string,
+        options: { error?: string; draft?: { composeSource: string; envSource: string }; keepDraft?: boolean; status?: number } = {},
+    ): Promise<Response> {
+        const stack = await readEditableStack(stacksRoot, name, config.maxEditBytes);
+        const keep = options.keepDraft === true && options.draft !== undefined;
+        return htmlResponse(editPage({
+            name,
+            csrf,
+            composeFilename: stack.composeFilename,
+            composeSource: keep ? options.draft!.composeSource : stack.composeSource,
+            composeHash: stack.composeHash,
+            envSource: keep ? options.draft!.envSource : stack.envSource,
+            envHash: stack.envHash,
+            envExists: stack.envExists,
+            error: options.error ?? null,
+        }), options.status ?? 200);
+    }
+
+    async function handleSave(request: Request, name: string, csrf: string): Promise<Response> {
+        if (!isAllowedOrigin(request, config)) return plain("Forbidden", 403);
+        const form = await readForm(request, config.maxEditBytes);
+        if (form === null) return plain("Payload too large", 413);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return plain("Forbidden", 403);
+
+        const saveRequest = {
+            composeSource: form.get("compose") ?? "",
+            envSource: form.get("env") ?? "",
+            baseComposeHash: form.get("composeHash") ?? "",
+            baseEnvHash: form.get("envHash") ?? "",
+            baseEnvExists: form.get("envExists") === "1",
+        };
+
+        try {
+            await locks.run(name, () => saveEditableStack(stacksRoot, name, saveRequest, runner, config.maxEditBytes));
+            return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
+        } catch (error) {
+            if (error instanceof StackValidationError) {
+                return renderEdit(name, csrf, { error: error.message, draft: saveRequest, keepDraft: true, status: 400 });
+            }
+            if (error instanceof StackConflictError) {
+                return renderEdit(name, csrf, { error: `${error.message} Reload to see the current content.`, keepDraft: false, status: 409 });
+            }
+            if (error instanceof StackBusyError) {
+                return htmlResponse(documentHtml("Busy", `<h1>Busy</h1><p>${escapeHtml(error.message)}</p><p><a href="/stacks/${encodeURIComponent(name)}">Back</a></p>`), 409);
+            }
+            throw error;
+        }
     }
 
     async function fetch(request: Request): Promise<Response> {
@@ -281,17 +341,18 @@ export function createApp({ config, stacksRoot, runner = unavailableRunner }: Ap
             return response;
         }
 
+        const editMatch = /^\/stacks\/([^/]+)\/edit$/.exec(url.pathname);
+        if (editMatch && method === "POST") {
+            try { return await handleSave(request, decodeName(editMatch[1]!), session.csrf); }
+            catch (error) { return routeError(error, session.csrf); }
+        }
         if (method !== "GET" && method !== "HEAD") return methodNotAllowed("GET");
 
         try {
             if (url.pathname === "/") return await renderStackList(session.csrf);
-            const match = /^\/stacks\/([^/]+)$/.exec(url.pathname);
-            if (match) {
-                let name: string;
-                try { name = decodeURIComponent(match[1]!); }
-                catch { throw new StackError("Invalid name encoding."); }
-                return await renderStackDetail(name, session.csrf);
-            }
+            if (editMatch) return await renderEdit(decodeName(editMatch[1]!), session.csrf);
+            const detailMatch = /^\/stacks\/([^/]+)$/.exec(url.pathname);
+            if (detailMatch) return await renderStackDetail(decodeName(detailMatch[1]!), session.csrf);
             return htmlResponse(documentHtml("Not found", "<h1>Page not found</h1>", { logoutCsrf: session.csrf }), 404);
         } catch (error) {
             return routeError(error, session.csrf);

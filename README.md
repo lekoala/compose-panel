@@ -2,7 +2,7 @@
 
 A **single-server** panel to administer Docker Compose stacks, without a SPA, without an ORM and without a parallel orchestrator. The goal is a small, self-hosted tool that keeps Compose files as the source of truth.
 
-> **Current state: authenticated read-only prototype, NOT production-ready.** A single administrator logs in; sessions, CSRF and login throttling are in place. The real Docker state is shown read-only. It still listens on **`127.0.0.1` only** and no mutating Docker action is implemented. Do not expose it through a reverse proxy until the proxy/TLS contract is reviewed.
+> **Current state: authenticated read-only + file editing, NOT production-ready.** A single administrator logs in; the raw `compose.yaml` and `.env` can be edited with validation, optimistic locking and backups. It still listens on **`127.0.0.1` only** and no mutating Docker action (`up`, `down`, ...) is implemented. Do not expose it through a reverse proxy until the proxy/TLS contract is reviewed.
 
 ## Getting started
 
@@ -40,16 +40,17 @@ bun run check
 - Single-admin authentication: Argon2id password hash, in-memory sessions with idle and absolute timeouts, rotation on login, HttpOnly/SameSite cookies.
 - Per-session CSRF tokens and strict Origin/Referer checks on mutations; login rate limiting; bounded request bodies.
 - Read-only Docker state: bounded `docker compose ls`/`ps` calls with explicit argument arrays, per-stack status derived from the real project (never the folder name), `unknown` when unresolved, and no secrets in errors. Project matching refuses ambiguity.
+- Safe raw editing of `compose.yaml` and `.env`: no YAML round-trip, optimistic concurrency via content hashes, validation with `docker compose config --quiet` in the real project context, per-save backups with rollback, one operation per stack, and `.env` values redacted from errors.
 - Discovery of stacks whose directory contains **exactly one** of the supported Compose names.
-- Name validation and rejection of symbolic links for reads.
-- Unit tests for path safety, HTML escaping, the auth/CSRF flows and Compose output parsing.
+- Name validation and rejection of symbolic links for reads and writes.
+- Unit tests for path safety, HTML escaping, the auth/CSRF flows, Compose output parsing and the editor.
 - `AGENTS.md`, ADRs, roadmap and agent missions ready to delegate.
 
 ## Implementation order
 
 1. **Authentication and CSRF** before any network exposure or write. *(done, P1)*
 2. **Reading the real Docker state** (without blindly inferring the project from the folder name). *(done, P2)*
-3. **Editing** Compose and `.env` with optimistic versioning, validation in the real context, backup and controlled rollback.
+3. **Editing** Compose and `.env` with optimistic versioning, validation in the real context, backup and controlled rollback. *(done, P3)*
 4. **Predefined operations** with a per-stack lock and in-memory status (no automatic recovery).
 5. **Logs** and SSE streaming independent of the operation's execution.
 6. **Reproducible Linux Dockerfile**, CI pipeline, restart test and deployment.

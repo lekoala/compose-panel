@@ -21,10 +21,10 @@ Each step creates a functional, verifiable slice. Do not carry out mutations in 
 - [x] Integration test on a disposable Docker daemon (opt-in, read-only).
 
 ## P3 — Safe editing (agent 03)
-- [ ] Edit raw `compose.yaml` and `.env`; conflict via hash/If-Match.
-- [ ] Validate the draft in the same Compose context (directory, multiple files, env and identity).
-- [ ] Best-effort atomic backup, restore plan if only one of the 2 files changed.
-- [ ] Size limits, file modes, symlinks, no secret leakage.
+- [x] Edit raw `compose.yaml` and `.env`; conflict via hash/If-Match.
+- [x] Validate the draft in the same Compose context (directory, multiple files, env and identity).
+- [x] Best-effort atomic backup, restore plan if only one of the 2 files changed.
+- [x] Size limits, file modes, symlinks, no secret leakage.
 
 ## P4 — Operation management (agent 04)
 - [ ] `up`, `stop`, `restart`, `down`, `pull+up` with immutable/controlled arguments.

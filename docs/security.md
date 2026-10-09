@@ -10,6 +10,13 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Login attempts are rate-limited per client; request bodies and login payloads are size-bounded; every application response is `Cache-Control: no-store`.
 - No Docker call, no modification endpoint. The YAML may still contain secrets: do NOT place the panel behind a public proxy yet.
 
+## Safe editing (P3)
+- `compose.yaml` and `.env` are read and written as raw text: never parsed and re-serialized, so comments and formatting are preserved. Writes are atomic (temp file in the same directory, then rename) and keep the original file mode.
+- Optimistic concurrency: the form carries a content hash for each file; if either changed on disk the save is refused (409) instead of overwriting an external change.
+- Drafts are validated with `docker compose config --quiet` only, in the real project directory with explicit `--project-directory`, `-f` and, when the env is edited, `--env-file`. The interpolated config is never printed or logged.
+- Values from `.env` are redacted from any validation error before it reaches the page. Symlinked files are refused, and a missing `.env` is not created unless it has content.
+- Every save first copies the previous file to `<root>/.compose-panel/backups/<stack>/`; if writing the second file of the pair fails, the first is restored. A save is a modifying operation and holds the per-stack lock.
+
 ## Proxy and TLS contract
 - Default remains direct loopback HTTP with `COMPOSE_PANEL_COOKIE_SECURE=false`.
 - Behind TLS, set `COMPOSE_PANEL_COOKIE_SECURE=true` and, for a proxy, `COMPOSE_PANEL_PUBLIC_ORIGIN=https://<host>` so Origin checks compare against the public origin. Set `COMPOSE_PANEL_TRUST_PROXY=true` only when the proxy overwrites `X-Forwarded-Proto`/`X-Forwarded-For`.
@@ -23,7 +30,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Escape HTML, restrictive CSP, disable caching of sensitive pages, protect any response containing `.env`.
 - Ensure safe resolution of names and files: name allow-list, reject symlinks, protect the root path, no absolute paths supplied by the user.
 - Subprocesses via argument arrays, no shell. No freely user-supplied options. No generic Docker command. *(read-only `compose ls`/`ps` implemented in P2 with a fixed executable, timeouts and output caps; mutations arrive in P4)*
-- Backups before modifications, controlled concurrency, operation limits and graceful shutdown.
+- Backups before modifications, controlled concurrency, operation limits and graceful shutdown. *(backup, per-stack lock and optimistic concurrency implemented in P3; graceful shutdown arrives with operations)*
 - Docker logs may themselves contain secrets. Never include them in unprotected application logs.
 
 ## Mandatory security checks

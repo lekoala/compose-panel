@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp, type App } from "../src/app.ts";
@@ -36,6 +36,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner): App
         sessionIdleMs: 3_600_000,
         loginRateLimit: { windowMs: 60_000, maxAttempts: 5, blockMs: 60_000 },
         maxBodyBytes: 8192,
+        maxEditBytes: 1024 * 1024,
         dockerPath: "docker",
         dockerTimeoutMs: 5000,
         dockerMaxBytes: 1024 * 1024,
@@ -284,5 +285,82 @@ describe("docker status rendering", () => {
         const session = await login(app);
         const html = await (await authed(app, "/", session)).text();
         expect(html).toContain("state-not-created");
+    });
+});
+
+describe("editor routes", () => {
+    const original = "services:\n  app:\n    image: nginx:alpine\n";
+    const okRunner: DockerRunner = async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false });
+
+    beforeEach(async () => {
+        await writeFile(join(root, "demo", "compose.yaml"), original);
+        await rm(join(root, "demo", ".env"), { force: true });
+    });
+
+    async function editForm(app: App, session: string) {
+        const html = await (await authed(app, "/stacks/demo/edit", session)).text();
+        return {
+            csrf: /name="csrf" value="([^"]+)"/.exec(html)![1]!,
+            composeHash: /name="composeHash" value="([^"]+)"/.exec(html)![1]!,
+            envHash: /name="envHash" value="([^"]+)"/.exec(html)![1]!,
+            envExists: /name="envExists" value="([^"]+)"/.exec(html)![1]!,
+        };
+    }
+
+    function postSave(app: App, session: string, fields: Record<string, string>) {
+        return authed(app, "/stacks/demo/edit", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(fields).toString(),
+        });
+    }
+
+    test("renders the raw editor with version tokens", async () => {
+        const app = makeApp({}, okRunner);
+        const session = await login(app);
+        const response = await authed(app, "/stacks/demo/edit", session);
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        expect(html).toContain('name="compose"');
+        expect(html).toContain("nginx:alpine");
+        expect(html).toContain('name="composeHash"');
+    });
+
+    test("rejects a save without a valid CSRF token", async () => {
+        const app = makeApp({}, okRunner);
+        const session = await login(app);
+        const form = await editForm(app, session);
+        const response = await postSave(app, session, { ...form, csrf: "wrong", compose: original });
+        expect(response.status).toBe(403);
+    });
+
+    test("saves a valid change and redirects", async () => {
+        const app = makeApp({}, okRunner);
+        const session = await login(app);
+        const form = await editForm(app, session);
+        const response = await postSave(app, session, { ...form, compose: "services:\n  app:\n    image: nginx:1.27\n" });
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/stacks/demo");
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toContain("nginx:1.27");
+    });
+
+    test("returns a conflict when the file changed underneath", async () => {
+        const app = makeApp({}, okRunner);
+        const session = await login(app);
+        const form = await editForm(app, session);
+        await writeFile(join(root, "demo", "compose.yaml"), "services: {}\n");
+        const response = await postSave(app, session, { ...form, compose: "services:\n  app:\n    image: x\n" });
+        expect(response.status).toBe(409);
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe("services: {}\n");
+    });
+
+    test("keeps the draft on a validation error", async () => {
+        const failing: DockerRunner = async () => ({ code: 1, stdout: "", stderr: "bad config", timedOut: false, truncated: false });
+        const app = makeApp({}, failing);
+        const session = await login(app);
+        const form = await editForm(app, session);
+        const response = await postSave(app, session, { ...form, compose: "services:\n  broken: true\n" });
+        expect(response.status).toBe(400);
+        expect(await response.text()).toContain("services:");
     });
 });
