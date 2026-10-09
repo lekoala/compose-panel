@@ -20,3 +20,11 @@ pre{padding:1rem;overflow:auto;border:1px solid #8885;border-radius:.5rem;white-
 .login-form input{font:inherit;padding:.5rem;border:1px solid #8888;border-radius:.4rem;background:transparent;color:inherit}
 .login-form button{font:inherit;padding:.5rem .75rem;border:1px solid #8888;border-radius:.4rem;background:transparent;color:inherit;cursor:pointer}
 .error{color:#c0392b}
+.state{display:inline-block;padding:.1rem .45rem;border-radius:.75rem;font-size:.75rem;border:1px solid #8888;text-transform:lowercase}
+.state-running{border-color:#2e8b57;color:#2e8b57}
+.state-stopped{border-color:#b8860b;color:#b8860b}
+.state-not-created{opacity:.7}
+.state-unknown{border-color:#c0392b;color:#c0392b}
+.note{padding:.5rem .75rem;border:1px solid #b8860b;border-radius:.4rem;color:#b8860b}
+.services{border-collapse:collapse;max-width:45rem;width:100%}
+.services th,.services td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #8885}

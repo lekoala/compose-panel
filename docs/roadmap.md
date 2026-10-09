@@ -15,10 +15,10 @@ Each step creates a functional, verifiable slice. Do not carry out mutations in 
 - [x] Tests for login, CSRF, session, error reporting.
 
 ## P2 — Real stack state (agent 02)
-- [ ] Bounded Docker CLI call for `compose ls` and `compose ps`.
-- [ ] Do not assume folder name == project identity.
-- [ ] Honest status: active/stopped/unknown; handling of init jobs exiting 0.
-- [ ] Integration test on a disposable Docker daemon.
+- [x] Bounded Docker CLI call for `compose ls` and `compose ps`.
+- [x] Do not assume folder name == project identity.
+- [x] Honest status: active/stopped/unknown; handling of init jobs exiting 0.
+- [x] Integration test on a disposable Docker daemon (opt-in, read-only).
 
 ## P3 — Safe editing (agent 03)
 - [ ] Edit raw `compose.yaml` and `.env`; conflict via hash/If-Match.

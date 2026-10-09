@@ -2,11 +2,11 @@
 
 A **single-server** panel to administer Docker Compose stacks, without a SPA, without an ORM and without a parallel orchestrator. The goal is a small, self-hosted tool that keeps Compose files as the source of truth.
 
-> **Current state: authenticated read-only prototype, NOT production-ready.** A single administrator logs in; sessions, CSRF and login throttling are in place. It still listens on **`127.0.0.1` only** and no mutating Docker action is implemented. Do not expose it through a reverse proxy until the proxy/TLS contract is reviewed.
+> **Current state: authenticated read-only prototype, NOT production-ready.** A single administrator logs in; sessions, CSRF and login throttling are in place. The real Docker state is shown read-only. It still listens on **`127.0.0.1` only** and no mutating Docker action is implemented. Do not expose it through a reverse proxy until the proxy/TLS contract is reviewed.
 
 ## Getting started
 
-Requirements: Bun 1.4.2+ (pin the version in CI), an existing stacks directory, and an admin password hash. Docker is **not** required for this read-only slice.
+Requirements: Bun 1.4.2+ (pin the version in CI), an existing stacks directory, an admin password hash, and the Docker CLI with Compose v2 for real state. Docker is optional: without it, stacks are listed with an `unknown` status rather than an invented one.
 
 ```sh
 bun install
@@ -39,16 +39,16 @@ bun run check
 - Framework-free Bun HTTP server, server-rendered HTML and a small local stylesheet.
 - Single-admin authentication: Argon2id password hash, in-memory sessions with idle and absolute timeouts, rotation on login, HttpOnly/SameSite cookies.
 - Per-session CSRF tokens and strict Origin/Referer checks on mutations; login rate limiting; bounded request bodies.
+- Read-only Docker state: bounded `docker compose ls`/`ps` calls with explicit argument arrays, per-stack status derived from the real project (never the folder name), `unknown` when unresolved, and no secrets in errors. Project matching refuses ambiguity.
 - Discovery of stacks whose directory contains **exactly one** of the supported Compose names.
 - Name validation and rejection of symbolic links for reads.
-- No Docker call at this stage: we avoid displaying invented statuses.
-- Unit tests for path safety, HTML escaping and the auth/CSRF flows.
+- Unit tests for path safety, HTML escaping, the auth/CSRF flows and Compose output parsing.
 - `AGENTS.md`, ADRs, roadmap and agent missions ready to delegate.
 
 ## Implementation order
 
 1. **Authentication and CSRF** before any network exposure or write. *(done, P1)*
-2. **Reading the real Docker state** (without blindly inferring the project from the folder name).
+2. **Reading the real Docker state** (without blindly inferring the project from the folder name). *(done, P2)*
 3. **Editing** Compose and `.env` with optimistic versioning, validation in the real context, backup and controlled rollback.
 4. **Predefined operations** with a per-stack lock and in-memory status (no automatic recovery).
 5. **Logs** and SSE streaming independent of the operation's execution.

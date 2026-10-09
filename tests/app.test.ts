@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp, type App } from "../src/app.ts";
 import type { AppConfig } from "../src/config.ts";
+import type { DockerRunner } from "../src/docker.ts";
 import { resolveRoot } from "../src/stacks.ts";
 
 const PASSWORD = "correct horse battery staple";
@@ -22,7 +23,7 @@ afterAll(async () => {
     await rm(root, { recursive: true, force: true });
 });
 
-function makeApp(overrides: Partial<AppConfig> = {}): App {
+function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner): App {
     const config: AppConfig = {
         stacksDir: root,
         port: 5081,
@@ -35,9 +36,12 @@ function makeApp(overrides: Partial<AppConfig> = {}): App {
         sessionIdleMs: 3_600_000,
         loginRateLimit: { windowMs: 60_000, maxAttempts: 5, blockMs: 60_000 },
         maxBodyBytes: 8192,
+        dockerPath: "docker",
+        dockerTimeoutMs: 5000,
+        dockerMaxBytes: 1024 * 1024,
         ...overrides,
     };
-    return createApp({ config, stacksRoot: root });
+    return createApp({ config, stacksRoot: root, runner });
 }
 
 function setCookies(response: Response): string[] {
@@ -223,5 +227,62 @@ describe("logout", () => {
         expect(done.headers.get("location")).toBe("/login");
 
         expect((await authed(app, "/", session)).status).toBe(302);
+    });
+});
+
+describe("docker status rendering", () => {
+    function composeFile(): string {
+        return join(root, "demo", "compose.yaml");
+    }
+
+    function fakeRunner(lsStatus: string, ps?: string): DockerRunner {
+        return async args => {
+            if (args[0] === "compose" && args[1] === "ls") {
+                return {
+                    code: 0,
+                    stdout: JSON.stringify([{ Name: "demo-proj", Status: lsStatus, ConfigFiles: composeFile() }]),
+                    stderr: "",
+                    timedOut: false,
+                    truncated: false,
+                };
+            }
+            return { code: 0, stdout: ps ?? "", stderr: "", timedOut: false, truncated: false };
+        };
+    }
+
+    test("shows the real project name and running state", async () => {
+        const app = makeApp({}, fakeRunner("running(1)"));
+        const session = await login(app);
+        const html = await (await authed(app, "/", session)).text();
+        expect(html).toContain("demo-proj");
+        expect(html).toContain("state-running");
+    });
+
+    test("does not attribute a project and does not leak stderr", async () => {
+        const app = makeApp({}, async () => ({ code: 1, stdout: "", stderr: "secret-token-in-stderr", timedOut: false, truncated: false }));
+        const session = await login(app);
+        const html = await (await authed(app, "/", session)).text();
+        expect(html).toContain("state-unknown");
+        expect(html).toContain("Docker state is unavailable.");
+        expect(html).not.toContain("secret-token-in-stderr");
+    });
+
+    test("lists services on the detail page and ignores the init exit 0", async () => {
+        const app = makeApp({}, fakeRunner("running(2)", JSON.stringify([
+            { Service: "init", State: "exited", ExitCode: 0 },
+            { Service: "app", State: "running" },
+        ])));
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo", session)).text();
+        expect(html).toContain("<td>init</td>");
+        expect(html).toContain("<td>app</td>");
+        expect(html).toContain("state-running");
+    });
+
+    test("reports a never-deployed stack as not created", async () => {
+        const app = makeApp({}, async () => ({ code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false }));
+        const session = await login(app);
+        const html = await (await authed(app, "/", session)).text();
+        expect(html).toContain("state-not-created");
     });
 });

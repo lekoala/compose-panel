@@ -1,10 +1,16 @@
 import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
+import { createDockerRunner } from "./docker.ts";
 import { resolveRoot } from "./stacks.ts";
 
 const config = loadConfig();
 const stacksRoot = await resolveRoot(config.stacksDir);
-const app = createApp({ config, stacksRoot });
+const runner = createDockerRunner({
+    dockerPath: config.dockerPath,
+    timeoutMs: config.dockerTimeoutMs,
+    maxBytes: config.dockerMaxBytes,
+});
+const app = createApp({ config, stacksRoot, runner });
 
 // IMPORTANT: hardcoded loopback bind. Do not expose the panel until the proxy,
 // TLS and cookie policy (COMPOSE_PANEL_COOKIE_SECURE, PUBLIC_ORIGIN) are reviewed.

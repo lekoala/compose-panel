@@ -1,5 +1,8 @@
 import { escapeHtml, documentHtml, htmlResponse, loginPage } from "./html.ts";
-import { listStacks, readStackCompose, StackError } from "./stacks.ts";
+import { readStackCompose, StackError } from "./stacks.ts";
+import { loadStackDetail, loadStackStates, type StackDetailStatus } from "./status.ts";
+import type { ComposeService } from "./compose-state.ts";
+import type { DockerRunner } from "./docker.ts";
 import {
     CSRF_COOKIE,
     SESSION_COOKIE,
@@ -22,10 +25,33 @@ const BASE_HEADERS: Record<string, string> = {
     "X-Frame-Options": "DENY",
 };
 
+const STATE_LABELS: Record<string, string> = {
+    running: "running",
+    stopped: "stopped",
+    "not-created": "not created",
+    unknown: "unknown",
+};
+
+function stateBadge(state: string): string {
+    return `<span class="state state-${escapeHtml(state)}">${escapeHtml(STATE_LABELS[state] ?? state)}</span>`;
+}
+
+function servicesTable(services: ComposeService[]): string {
+    if (services.length === 0) return "";
+    const rows = services
+        .map(service => `<tr><td>${escapeHtml(service.name)}</td><td>${escapeHtml(service.state)}${service.health ? ` (${escapeHtml(service.health)})` : ""}</td></tr>`)
+        .join("");
+    return `<table class="services"><thead><tr><th>Service</th><th>State</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+const unavailableRunner: DockerRunner = async () => ({ code: -1, stdout: "", stderr: "", timedOut: false, truncated: false });
+
 export interface AppOptions {
     config: AppConfig;
     /** Absolute, canonical stacks directory resolved at startup. */
     stacksRoot: string;
+    /** Docker runner. Defaults to an unavailable stub so callers opt in explicitly. */
+    runner?: DockerRunner;
 }
 
 export interface App {
@@ -102,7 +128,7 @@ function clientKey(request: Request, config: AppConfig): string {
     return "direct";
 }
 
-export function createApp({ config, stacksRoot }: AppOptions): App {
+export function createApp({ config, stacksRoot, runner = unavailableRunner }: AppOptions): App {
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
     const limiter = new LoginRateLimiter(
         config.loginRateLimit.maxAttempts,
@@ -177,6 +203,42 @@ export function createApp({ config, stacksRoot }: AppOptions): App {
         return response;
     }
 
+    async function renderStackList(csrf: string): Promise<Response> {
+        const { stacks, dockerNote } = await loadStackStates(stacksRoot, runner);
+        const rows = stacks.length
+            ? stacks.map(stack => {
+                const project = stack.project ? ` · project ${escapeHtml(stack.project)}` : "";
+                return `<li><a href="/stacks/${encodeURIComponent(stack.name)}">${escapeHtml(stack.name)}</a><small>${escapeHtml(stack.composeFile)} · ${stateBadge(stack.state)}${project}</small></li>`;
+            }).join("")
+            : `<li>No recognized Compose stack.</li>`;
+        const note = dockerNote ? `<p class="note">${escapeHtml(dockerNote)}</p>` : "";
+        return htmlResponse(documentHtml(
+            "Stacks",
+            `<h1>Stacks</h1><p>Read-only — no mutating Docker command is executed.</p>${note}<ul class="stack-list">${rows}</ul>`,
+            { logoutCsrf: csrf },
+        ));
+    }
+
+    async function renderStackDetail(name: string, csrf: string): Promise<Response> {
+        const stack = await readStackCompose(stacksRoot, name);
+        let status: StackDetailStatus;
+        try {
+            status = await loadStackDetail(stacksRoot, name, runner);
+        } catch (error) {
+            if (error instanceof StackError) throw error;
+            status = { project: null, state: "unknown", note: "Status unavailable.", services: [] };
+        }
+        const project = status.project ? ` · project ${escapeHtml(status.project)}` : "";
+        const note = status.note ? `<p class="note">${escapeHtml(status.note)}</p>` : "";
+        return htmlResponse(documentHtml(
+            stack.name,
+            `<p><a href="/">← All stacks</a></p><h1>${escapeHtml(stack.name)}</h1>`
+            + `<p>${escapeHtml(stack.filename)} · read-only · ${stateBadge(status.state)}${project}</p>`
+            + `${note}${servicesTable(status.services)}<pre>${escapeHtml(stack.source)}</pre>`,
+            { logoutCsrf: csrf },
+        ));
+    }
+
     async function fetch(request: Request): Promise<Response> {
         const url = new URL(request.url);
         const method = request.method.toUpperCase();
@@ -222,28 +284,13 @@ export function createApp({ config, stacksRoot }: AppOptions): App {
         if (method !== "GET" && method !== "HEAD") return methodNotAllowed("GET");
 
         try {
-            if (url.pathname === "/") {
-                const stacks = await listStacks(stacksRoot);
-                const rows = stacks.length
-                    ? stacks.map(stack => `<li><a href="/stacks/${encodeURIComponent(stack.name)}">${escapeHtml(stack.name)}</a><small>${escapeHtml(stack.composeFile)}</small></li>`).join("")
-                    : `<li>No recognized Compose stack.</li>`;
-                return htmlResponse(documentHtml(
-                    "Stacks",
-                    `<h1>Stacks</h1><p>Read-only — no Docker command is executed.</p><ul class="stack-list">${rows}</ul>`,
-                    { logoutCsrf: session.csrf },
-                ));
-            }
+            if (url.pathname === "/") return await renderStackList(session.csrf);
             const match = /^\/stacks\/([^/]+)$/.exec(url.pathname);
             if (match) {
                 let name: string;
                 try { name = decodeURIComponent(match[1]!); }
                 catch { throw new StackError("Invalid name encoding."); }
-                const stack = await readStackCompose(stacksRoot, name);
-                return htmlResponse(documentHtml(
-                    stack.name,
-                    `<p><a href="/">← All stacks</a></p><h1>${escapeHtml(stack.name)}</h1><p>${escapeHtml(stack.filename)} · read-only</p><pre>${escapeHtml(stack.source)}</pre>`,
-                    { logoutCsrf: session.csrf },
-                ));
+                return await renderStackDetail(name, session.csrf);
             }
             return htmlResponse(documentHtml("Not found", "<h1>Page not found</h1>", { logoutCsrf: session.csrf }), 404);
         } catch (error) {

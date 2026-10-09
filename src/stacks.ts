@@ -53,7 +53,7 @@ export interface StackDescriptor {
     composeFile: string;
 }
 
-async function composeFile(root: string, name: string): Promise<{ path: string; filename: string }> {
+export async function locateComposeFile(root: string, name: string): Promise<{ path: string; filename: string }> {
     const dir = await stackDir(root, name);
     const found: string[] = [];
     for (const filename of [...COMPOSE_FILES, ...OVERRIDE_FILES]) {
@@ -82,7 +82,7 @@ export async function listStacks(root: string): Promise<StackDescriptor[]> {
     for (const entry of await readdir(root, { withFileTypes: true })) {
         if (!entry.isDirectory() || !STACK_NAME.test(entry.name)) continue;
         try {
-            const located = await composeFile(root, entry.name);
+            const located = await locateComposeFile(root, entry.name);
             list.push({ name: entry.name, composeFile: located.filename });
         } catch (error) {
             // Unsafe, missing or ambiguous stacks are NOT silently editable.
@@ -94,7 +94,7 @@ export async function listStacks(root: string): Promise<StackDescriptor[]> {
 }
 
 export async function readStackCompose(root: string, name: string): Promise<{ name: string; filename: string; source: string }> {
-    const located = await composeFile(root, name);
+    const located = await locateComposeFile(root, name);
     // Linux: opening O_NOFOLLOW closes the final symlink race between lstat and open.
     const handle = await open(located.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {

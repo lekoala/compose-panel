@@ -22,12 +22,12 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Limit file sizes, execution time, log/SSE size, login attempts. *(login attempts and request body size implemented in P1; file/log/SSE limits arrive with the corresponding features)*
 - Escape HTML, restrictive CSP, disable caching of sensitive pages, protect any response containing `.env`.
 - Ensure safe resolution of names and files: name allow-list, reject symlinks, protect the root path, no absolute paths supplied by the user.
-- Subprocesses via argument arrays, no shell. No freely user-supplied options. No generic Docker command.
+- Subprocesses via argument arrays, no shell. No freely user-supplied options. No generic Docker command. *(read-only `compose ls`/`ps` implemented in P2 with a fixed executable, timeouts and output caps; mutations arrive in P4)*
 - Backups before modifications, controlled concurrency, operation limits and graceful shutdown.
 - Docker logs may themselves contain secrets. Never include them in unprotected application logs.
 
 ## Mandatory security checks
-Tests for `../` paths, encoded URLs, non-conforming names, symlinks, double Compose, `.env` symlink, write conflicts, secrets in errors, CSRF, XSS, concurrent operations, Linux shutdown/restart and stuck processes.
+Tests for `../` paths, encoded URLs, non-conforming names, symlinks, double Compose, `.env` symlink, write conflicts, secrets in errors, CSRF, XSS, concurrent operations, malformed Docker CLI output, timeout/output-cap handling, Linux shutdown/restart and stuck processes.
 
 ## CI
 Subprocess tests only in a disposable/isolated Docker daemon. Never mount the CI host's production engine socket in automated tests.
