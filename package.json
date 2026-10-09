@@ -1,0 +1,19 @@
+{
+  "name": "compose-panel",
+  "version": "0.1.0-dev",
+  "private": true,
+  "type": "module",
+  "engines": { "bun": ">=1.4.2" },
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "test": "bun test",
+    "check": "tsc --noEmit",
+    "verify": "bun test && tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.0"
+  }
+}

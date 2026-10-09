@@ -1,0 +1,46 @@
+# Roadmap and PR order
+
+Each step creates a functional, verifiable slice. Do not carry out mutations in parallel with authentication.
+
+## P0 — Current starter: local read-only
+- [x] Bun repo + server-rendered HTML + zero runtime npm dependencies.
+- [x] Compose discovery and reading, rejection of obvious symlink names/paths.
+- [x] Unit tests for the file core and HTML escaping.
+- [ ] Run `bun install`, `bun run test`, `bun run check` on a machine equipped with Bun. **Not run when the starter was generated**.
+
+## P1 — Security entry / identity (agent 01)
+- [ ] Single-admin auth + correctly signed/stored session + logout.
+- [ ] CSRF, Origin/Host, HTTP limits, `no-store` and masked secrets.
+- [ ] Auth required for any Compose read and future mutating endpoints.
+- [ ] Tests for login, CSRF, session, error reporting.
+
+## P2 — Real stack state (agent 02)
+- [ ] Bounded Docker CLI call for `compose ls` and `compose ps`.
+- [ ] Do not assume folder name == project identity.
+- [ ] Honest status: active/stopped/unknown; handling of init jobs exiting 0.
+- [ ] Integration test on a disposable Docker daemon.
+
+## P3 — Safe editing (agent 03)
+- [ ] Edit raw `compose.yaml` and `.env`; conflict via hash/If-Match.
+- [ ] Validate the draft in the same Compose context (directory, multiple files, env and identity).
+- [ ] Best-effort atomic backup, restore plan if only one of the 2 files changed.
+- [ ] Size limits, file modes, symlinks, no secret leakage.
+
+## P4 — Operation management (agent 04)
+- [ ] `up`, `stop`, `restart`, `down`, `pull+up` with immutable/controlled arguments.
+- [ ] In-memory lock per stack, also for saving.
+- [ ] Drain `SIGTERM`, timeout, concurrency rejection, tracking independent of the tab.
+- [ ] After a crash: the UI re-reads Docker and does not announce an unconfirmed success.
+
+## P5 — Logs and SSE (agent 05)
+- [ ] SSE subscription to existing operation output, disconnect ≠ cancellation.
+- [ ] Compose follow logs separated, killed when the last reader leaves.
+- [ ] Backpressure, buffer limit, heartbeat, explicit timeout.
+
+## P6 — Linux production (agent 06)
+- [ ] Multi-stage image with Bun, Docker CLI and Compose plugin installed and verified.
+- [ ] Isolated CI, linux/amd64 build at minimum, real smoke tests.
+- [ ] `stop_grace_period`, restart, mount, backups, rollback procedure documented.
+- [ ] Release candidate after file, security and interruption tests.
+
+**V1 completion criterion**: the admin can edit a stack and request `up`, disconnect the browser, find the real status again, stop the panel without affecting containers already running. No dishonest guarantees after a hard crash.

@@ -1,0 +1,26 @@
+# Product — strict MVP
+
+## Problem
+Administer a small number of Docker Compose stacks on **a single host**, from the browser, without heavy tooling and without locking data into a proprietary database.
+
+## Personas
+A trusted technical administrator. No multi-tenancy, no access for untrusted users. Mounting the Docker socket is equivalent to granting very high privileges on the host.
+
+## V1 (acceptance criteria)
+- Display valid Compose directories and the **real** state of projects/services.
+- Read/edit the raw Compose file and `.env`, without automatic rewriting of comments.
+- Validate a change against the effective directory, files and project identity.
+- Save with concurrent-change detection and the ability to return to the previous state.
+- Start, stop, restart, perform a pull followed by an up (predefined, explicit actions).
+- Follow progress via SSE and review the real state after an interruption.
+- View Compose logs, without an interactive console.
+- Single-administrator authentication, CSRF, correct sessions and minimal audit logging without secrets.
+
+## Out of scope (do not implement without an ADR)
+Agents, remote control, terminal / PTY, graphical Compose editor, file generation, general-purpose file manager, panel self-update, Restic backups, encrypted secrets editor, scheduler, public API, multi-user, CPU/RAM dashboards, registry UI, plugins, Kubernetes, notifications.
+
+## Assumed non-goals
+- No guaranteed operation outcome after a panel crash: the outcome may be unknown.
+- No orchestrator: container restart policies belong to Docker.
+- No automatic resumption of interrupted `pull`/`up` commands.
+- No API or protocol compatibility with other panels.

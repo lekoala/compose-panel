@@ -1,0 +1,15 @@
+/* Minimal provisional stylesheet. Replace with pinned static Actual CSS after auth. */
+:root{font-family:ui-sans-serif,system-ui,sans-serif;color-scheme:light dark;line-height:1.5}
+*{box-sizing:border-box}
+body{margin:0}
+a{color:inherit;text-underline-offset:.18em}
+.shell{max-width:72rem;margin:auto;padding:1.5rem}
+header{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding-bottom:1rem;border-bottom:1px solid #8885}
+.brand{text-decoration:none;font-size:1.25rem;font-weight:700}
+.mode,small,footer{opacity:.7;font-size:.875rem}
+main{padding-block:2rem;min-height:65vh}
+footer{border-top:1px solid #8885;padding-block:1rem}
+h1{margin-top:0}
+.stack-list{padding:0;list-style:none;max-width:45rem}
+.stack-list li{display:flex;justify-content:space-between;gap:1rem;padding:1rem;border-bottom:1px solid #8885}
+pre{padding:1rem;overflow:auto;border:1px solid #8885;border-radius:.5rem;white-space:pre;tab-size:2;max-height:70vh}
