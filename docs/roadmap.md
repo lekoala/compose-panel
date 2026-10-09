@@ -44,3 +44,6 @@ Each step creates a functional, verifiable slice. Do not carry out mutations in 
 - [ ] Release candidate after file, security and interruption tests.
 
 **V1 completion criterion**: the admin can edit a stack and request `up`, disconnect the browser, find the real status again, stop the panel without affecting containers already running. No dishonest guarantees after a hard crash.
+
+## Post-V1 (not scheduled, not claimed)
+- Engine-neutral completion: a Podman `ComposeProvider`, validated by integration tests on `config`, `ps`, `pull`, `up`, `down`, project names and file mounts before any compatibility is announced. The boundary exists now (ADR 0005); no Podman support is claimed in V1.

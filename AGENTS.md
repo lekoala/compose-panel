@@ -8,6 +8,7 @@ Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`,
 - HTML from the server, minimal vanilla JS, optional pinned static Actual CSS. No Vue, React, Socket.IO, ORM, Redis, scheduler, generic job framework, remote agents, or interactive terminal.
 - No arbitrary Docker command or arbitrary file browser. Only explicit allowed actions.
 - No database or durable operation queue in V1. No claim of restart recovery. A crash may leave an operation outcome unknown.
+- Compose CLI calls go through the `ComposeProvider` boundary (`src/compose-provider.ts`); do not scatter engine-specific argument building or `if (engine === ...)` checks. V1 targets Docker Compose only.
 
 ## Security invariants
 1. Auth before non-loopback exposure or any mutation. Keep `127.0.0.1` hard-coded until auth and deployment protections are reviewed.

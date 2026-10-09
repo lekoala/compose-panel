@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { rm, writeFile } from "node:fs/promises";
 import { locateComposeFile, StackError } from "./stacks.ts";
 import { backupFile, hashContent, randomSuffix, readFileSafe, writeFileAtomic } from "./fs-safe.ts";
-import type { DockerRunner } from "./docker.ts";
+import type { ComposeProvider } from "./compose-provider.ts";
 
 export const ENV_FILENAME = ".env";
 const ABSENT_HASH = hashContent("");
@@ -92,7 +92,7 @@ export interface ValidationResult {
  * interpolated config). Temp files are removed whatever happens.
  */
 export async function validateDraft(
-    runner: DockerRunner,
+    provider: ComposeProvider,
     directory: string,
     composeSource: string,
     envSource: string | undefined,
@@ -102,15 +102,16 @@ export async function validateDraft(
     let envTmp: string | null = null;
     try {
         await writeFile(composeTmp, composeSource, { mode: 0o600 });
-        const args = ["compose"];
         if (envSource !== undefined) {
             envTmp = join(directory, `.cp-draft-env-${randomSuffix()}`);
             await writeFile(envTmp, envSource, { mode: 0o600 });
-            args.push("--env-file", envTmp);
         }
-        args.push("--project-directory", directory, "-f", composeTmp, "config", "--quiet");
 
-        const result = await runner(args, { cwd: directory });
+        const result = await provider.validateConfig({
+            directory,
+            composeFile: composeTmp,
+            envFile: envTmp ?? undefined,
+        });
         if (result.timedOut) return { ok: false, message: "Compose validation timed out." };
         if (result.code !== 0) {
             const raw = firstLines(result.stderr) || "Compose validation failed.";
@@ -148,7 +149,7 @@ export async function saveEditableStack(
     root: string,
     name: string,
     request: SaveRequest,
-    runner: DockerRunner,
+    provider: ComposeProvider,
     maxBytes: number,
 ): Promise<SaveResult> {
     const located = await locateComposeFile(root, name);
@@ -177,7 +178,7 @@ export async function saveEditableStack(
     }
 
     const secrets = [...collectSecrets(currentEnv?.source ?? ""), ...collectSecrets(request.envSource)];
-    const validation = await validateDraft(runner, directory, request.composeSource, envChanged ? request.envSource : undefined, secrets);
+    const validation = await validateDraft(provider, directory, request.composeSource, envChanged ? request.envSource : undefined, secrets);
     if (!validation.ok) throw new StackValidationError(validation.message ?? "Compose validation failed.");
 
     const backupDir = join(root, ".compose-panel", "backups", name);

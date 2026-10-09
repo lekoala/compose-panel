@@ -24,6 +24,8 @@ export interface AppConfig {
     maxEditBytes: number;
     /** Fixed Docker executable. Never taken from user input. */
     dockerPath: string;
+    /** Compose engine/provider identifier. V1 supports "docker". */
+    composeEngine: string;
     dockerTimeoutMs: number;
     dockerMaxBytes: number;
 }
@@ -95,6 +97,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         maxBodyBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_BODY_BYTES", 8 * 1024),
         maxEditBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_EDIT_BYTES", 1024 * 1024),
         dockerPath: env.COMPOSE_PANEL_DOCKER_PATH?.trim() || "docker",
+        composeEngine: env.COMPOSE_PANEL_COMPOSE_ENGINE?.trim() || "docker",
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),
         dockerMaxBytes: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_MAX_BYTES", 1024 * 1024),
     };

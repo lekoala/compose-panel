@@ -1,4 +1,5 @@
 import { createApp } from "./app.ts";
+import { createComposeProvider } from "./compose-provider.ts";
 import { loadConfig } from "./config.ts";
 import { createDockerRunner } from "./docker.ts";
 import { resolveRoot } from "./stacks.ts";
@@ -10,7 +11,12 @@ const runner = createDockerRunner({
     timeoutMs: config.dockerTimeoutMs,
     maxBytes: config.dockerMaxBytes,
 });
-const app = createApp({ config, stacksRoot, runner });
+const provider = createComposeProvider({ runner, engine: config.composeEngine });
+const capabilities = await provider.detect();
+if (!capabilities.available) {
+    console.warn(`Compose provider "${capabilities.engine}" did not answer; stack status will be reported as unknown.`);
+}
+const app = createApp({ config, stacksRoot, provider });
 
 // IMPORTANT: hardcoded loopback bind. Do not expose the panel until the proxy,
 // TLS and cookie policy (COMPOSE_PANEL_COOKIE_SECURE, PUBLIC_ORIGIN) are reviewed.

@@ -3,6 +3,7 @@ import { readStackCompose, StackError } from "./stacks.ts";
 import { loadStackDetail, loadStackStates, type StackDetailStatus } from "./status.ts";
 import { StackConflictError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
+import { createComposeProvider, type ComposeProvider } from "./compose-provider.ts";
 import type { ComposeService } from "./compose-state.ts";
 import type { DockerRunner } from "./docker.ts";
 import {
@@ -54,6 +55,8 @@ export interface AppOptions {
     stacksRoot: string;
     /** Docker runner. Defaults to an unavailable stub so callers opt in explicitly. */
     runner?: DockerRunner;
+    /** Pre-built Compose provider. Built from `runner` when omitted. */
+    provider?: ComposeProvider;
     /** Per-stack modifying-operation lock. */
     locks?: StackLocks;
 }
@@ -132,7 +135,10 @@ function clientKey(request: Request, config: AppConfig): string {
     return "direct";
 }
 
-export function createApp({ config, stacksRoot, runner = unavailableRunner, locks = new StackLocks() }: AppOptions): App {
+export function createApp(options: AppOptions): App {
+    const { config, stacksRoot, locks = new StackLocks() } = options;
+    const provider = options.provider
+        ?? createComposeProvider({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
     const limiter = new LoginRateLimiter(
         config.loginRateLimit.maxAttempts,
@@ -208,7 +214,7 @@ export function createApp({ config, stacksRoot, runner = unavailableRunner, lock
     }
 
     async function renderStackList(csrf: string): Promise<Response> {
-        const { stacks, dockerNote } = await loadStackStates(stacksRoot, runner);
+        const { stacks, dockerNote } = await loadStackStates(stacksRoot, provider);
         const rows = stacks.length
             ? stacks.map(stack => {
                 const project = stack.project ? ` · project ${escapeHtml(stack.project)}` : "";
@@ -227,7 +233,7 @@ export function createApp({ config, stacksRoot, runner = unavailableRunner, lock
         const stack = await readStackCompose(stacksRoot, name);
         let status: StackDetailStatus;
         try {
-            status = await loadStackDetail(stacksRoot, name, runner);
+            status = await loadStackDetail(stacksRoot, name, provider);
         } catch (error) {
             if (error instanceof StackError) throw error;
             status = { project: null, state: "unknown", note: "Status unavailable.", services: [] };
@@ -283,7 +289,7 @@ export function createApp({ config, stacksRoot, runner = unavailableRunner, lock
         };
 
         try {
-            await locks.run(name, () => saveEditableStack(stacksRoot, name, saveRequest, runner, config.maxEditBytes));
+            await locks.run(name, () => saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes));
             return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
         } catch (error) {
             if (error instanceof StackValidationError) {

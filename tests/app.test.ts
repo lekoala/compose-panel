@@ -38,6 +38,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner): App
         maxBodyBytes: 8192,
         maxEditBytes: 1024 * 1024,
         dockerPath: "docker",
+        composeEngine: "docker",
         dockerTimeoutMs: 5000,
         dockerMaxBytes: 1024 * 1024,
         ...overrides,

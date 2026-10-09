@@ -13,12 +13,14 @@ import {
     type SaveRequest,
 } from "../src/editor.ts";
 import type { CommandResult, DockerRunner } from "../src/docker.ts";
+import { createComposeProvider } from "../src/compose-provider.ts";
 
 const MAX = 1024 * 1024;
 const COMPOSE = "services:\n  app:\n    image: nginx:alpine\n# keep this comment\n";
 const ENV = "DB_PASSWORD=supersecretvalue\n# keep env comment\n";
 const okResult: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
 const okRunner: DockerRunner = async () => okResult;
+const asProvider = (runner: DockerRunner) => createComposeProvider({ runner });
 
 let root: string;
 
@@ -86,7 +88,7 @@ describe("saveEditableStack", () => {
         const stack = await current();
         const nextCompose = COMPOSE.replace("nginx:alpine", "nginx:1.27-alpine");
 
-        const result = await saveEditableStack(root, "demo", req(stack, { composeSource: nextCompose }), runner, MAX);
+        const result = await saveEditableStack(root, "demo", req(stack, { composeSource: nextCompose }), asProvider(runner), MAX);
 
         expect(result.changed).toBe(true);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(nextCompose);
@@ -103,14 +105,14 @@ describe("saveEditableStack", () => {
     test("passes the draft .env through --env-file", async () => {
         const { runner, calls } = recordingRunner();
         const stack = await current();
-        await saveEditableStack(root, "demo", req(stack, { envSource: "DB_PASSWORD=changedvalue\n" }), runner, MAX);
+        await saveEditableStack(root, "demo", req(stack, { envSource: "DB_PASSWORD=changedvalue\n" }), asProvider(runner), MAX);
         expect(calls[0]!).toContain("--env-file");
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe("DB_PASSWORD=changedvalue\n");
     });
 
     test("is a no-op when nothing changed", async () => {
         const stack = await current();
-        const result = await saveEditableStack(root, "demo", req(stack), okRunner, MAX);
+        const result = await saveEditableStack(root, "demo", req(stack), asProvider(okRunner), MAX);
         expect(result.changed).toBe(false);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
     });
@@ -118,7 +120,7 @@ describe("saveEditableStack", () => {
     test("refuses to overwrite an external change", async () => {
         const stack = await current();
         await writeFile(join(root, "demo", "compose.yaml"), "services: {}\n");
-        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), okRunner, MAX))
+        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), asProvider(okRunner), MAX))
             .rejects.toThrow(StackConflictError);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe("services: {}\n");
     });
@@ -126,7 +128,7 @@ describe("saveEditableStack", () => {
     test("does not publish an invalid draft", async () => {
         const failing: DockerRunner = async () => ({ code: 1, stdout: "", stderr: "services.app.ports must be a list", timedOut: false, truncated: false });
         const stack = await current();
-        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), failing, MAX))
+        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), asProvider(failing), MAX))
             .rejects.toThrow(StackValidationError);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
     });
@@ -134,7 +136,7 @@ describe("saveEditableStack", () => {
     test("does not write when Docker is unavailable", async () => {
         const unavailable: DockerRunner = async () => ({ code: -1, stdout: "", stderr: "", timedOut: false, truncated: false });
         const stack = await current();
-        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), unavailable, MAX))
+        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), asProvider(unavailable), MAX))
             .rejects.toThrow(StackValidationError);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
     });
@@ -149,7 +151,7 @@ describe("saveEditableStack", () => {
         });
         const stack = await current();
         try {
-            await saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), leaking, MAX);
+            await saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), asProvider(leaking), MAX);
             throw new Error("expected validation to fail");
         } catch (error) {
             expect(error).toBeInstanceOf(StackValidationError);
@@ -162,7 +164,7 @@ describe("saveEditableStack", () => {
         await rm(join(root, "demo", ".env"));
         const stack = await current();
         const request = req(stack, { envSource: "TOKEN=abcdefgh\n" });
-        const result = await saveEditableStack(root, "demo", request, okRunner, MAX);
+        const result = await saveEditableStack(root, "demo", request, asProvider(okRunner), MAX);
         expect(result.changed).toBe(true);
         expect(result.envExists).toBe(true);
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe("TOKEN=abcdefgh\n");

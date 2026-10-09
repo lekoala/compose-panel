@@ -4,7 +4,7 @@
 The starter is **read-only** and runs no Docker command. On Windows, developing HTML and pure logic is possible. Process, signal and Docker tests must pass on Linux (CI).
 
 ## Safety of future commands
-Build Docker Compose calls with `Bun.spawn(["docker", "compose", ...], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" })`. Do not use a shell. Consume both streams even if no SSE is connected. Set timeouts and output caps. Preserve the argument order, the project directory, any Compose files and env sources.
+Add new operations to the `ComposeProvider` (`src/compose-provider.ts`), not to controllers. The Docker provider builds calls with `Bun.spawn(["docker", "compose", ...], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" })`. Do not use a shell. Consume both streams even if no SSE is connected. Set timeouts and output caps. Preserve the argument order, the project directory, any Compose files and env sources.
 
 ## YAML validation
 Use `docker compose config --quiet` with the effective project and explicit input files. This is not a dry-run of `up`. Test that build and volume paths stay the same between the validated draft and the saved version. Do not log `config --environment` or an interpolated YAML containing secrets.

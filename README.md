@@ -59,7 +59,9 @@ See [docs/roadmap.md](docs/roadmap.md), [AGENTS.md](AGENTS.md), [agents/](agents
 
 ## Structural decisions
 
-Stacks remain directories with ordinary Compose files, and Docker stays the source of truth for containers. No interactive terminal, no remote agents, no graphical Compose generation, no arbitrary Docker control. No SQLite until a real need for persistence is demonstrated. This V1 targets **a single instance on a single Linux host**.
+Stacks remain directories with ordinary Compose files, and the container engine stays the source of truth for state. No interactive terminal, no remote agents, no graphical Compose generation, no arbitrary engine control. No SQLite until a real need for persistence is demonstrated. This V1 targets **a single instance on a single Linux host**.
+
+The product is centered on the Compose specification, not on the Docker brand: engine-specific CLI calls sit behind a `ComposeProvider` boundary (ADR 0005). V1 targets Docker Compose only and does **not** claim Podman compatibility yet, but no structural choice blocks adding it later.
 
 Compatibility with other panels relies on **mounting the same stacks directories**, not on migrating their databases. Never run two panels in write mode against the same files.
 

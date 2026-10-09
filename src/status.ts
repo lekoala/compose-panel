@@ -10,7 +10,7 @@ import {
     summarizeProjectStatus,
     summarizeServices,
 } from "./compose-state.ts";
-import type { DockerRunner } from "./docker.ts";
+import type { ComposeProvider } from "./compose-provider.ts";
 
 const DOCKER_UNAVAILABLE = "Docker state is unavailable.";
 
@@ -34,9 +34,9 @@ export interface StackDetailStatus {
     services: ComposeService[];
 }
 
-async function loadProjects(runner: DockerRunner): Promise<{ projects: ComposeProject[]; note: string | null }> {
+async function loadProjects(provider: ComposeProvider): Promise<{ projects: ComposeProject[]; note: string | null }> {
     try {
-        const result = await runner(["compose", "ls", "--all", "--format", "json"]);
+        const result = await provider.listProjects();
         if (result.timedOut) return { projects: [], note: "Docker did not answer in time." };
         if (result.code !== 0) return { projects: [], note: DOCKER_UNAVAILABLE };
         return { projects: parseComposeLs(result.stdout), note: null };
@@ -45,9 +45,9 @@ async function loadProjects(runner: DockerRunner): Promise<{ projects: ComposePr
     }
 }
 
-export async function loadStackStates(root: string, runner: DockerRunner): Promise<StackListStatus> {
+export async function loadStackStates(root: string, provider: ComposeProvider): Promise<StackListStatus> {
     const stacks = await listStacks(root);
-    const { projects, note } = await loadProjects(runner);
+    const { projects, note } = await loadProjects(provider);
     const result: StackStatus[] = [];
 
     for (const stack of stacks) {
@@ -78,9 +78,9 @@ export async function loadStackStates(root: string, runner: DockerRunner): Promi
     return { stacks: result, dockerNote: note };
 }
 
-export async function loadStackDetail(root: string, name: string, runner: DockerRunner): Promise<StackDetailStatus> {
+export async function loadStackDetail(root: string, name: string, provider: ComposeProvider): Promise<StackDetailStatus> {
     const location = await locateComposeFile(root, name);
-    const { projects, note } = await loadProjects(runner);
+    const { projects, note } = await loadProjects(provider);
     if (note) return { project: null, state: "unknown", note, services: [] };
 
     const match = findProjectForStack(projects, location.path);
@@ -91,10 +91,11 @@ export async function loadStackDetail(root: string, name: string, runner: Docker
 
     const project = match.project;
     try {
-        const result = await runner(
-            ["compose", "-p", project.name, "-f", location.filename, "ps", "--all", "--format", "json"],
-            { cwd: dirname(location.path) },
-        );
+        const result = await provider.projectServices({
+            project: project.name,
+            composeFile: location.filename,
+            cwd: dirname(location.path),
+        });
         if (result.timedOut) return { project: project.name, state: "unknown", note: "Docker did not answer in time.", services: [] };
         if (result.code !== 0) return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
         const services = parseComposePs(result.stdout);
