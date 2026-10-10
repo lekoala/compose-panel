@@ -551,6 +551,10 @@ export function createApp(options: AppOptions): App {
     async function handleOperationEvents(name: string, request: Request, sessionId: string): Promise<Response> {
         // Validates the name and rejects unknown stacks before a slot is taken.
         await locateComposeFile(stacksRoot, name);
+        // The session may have been revoked while we awaited: re-check
+        // synchronously before subscribing so a logout during discovery cannot
+        // let the stream register and keep receiving data.
+        if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
         const guard = { id: sessionId, isAlive: () => sessions.isActive(sessionId) };
         return sseResponse(request, (send, close) => {
             let sentOutput = "";
@@ -594,6 +598,8 @@ export function createApp(options: AppOptions): App {
             throw new StackError("Docker state is unavailable. Refusing to follow without a verified project.", 503);
         }
         if (shuttingDown) throw new StackError("The server is shutting down; new log follows are refused.", 503);
+        // Re-check the session after the awaited discovery, before subscribing.
+        if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
         const guard = { id: sessionId, isAlive: () => sessions.isActive(sessionId) };
         if (context.kind === "absent") {
             return sseResponse(request, (send, close) => {

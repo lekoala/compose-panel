@@ -105,8 +105,22 @@ function parseEnvValue(raw: string): string {
         return out;
     }
     if (value.startsWith("'")) {
-        const end = value.indexOf("'", 1);
-        return end === -1 ? value.slice(1) : value.slice(1, end);
+        let out = "";
+        for (let i = 1; i < value.length; i += 1) {
+            const ch = value[i]!;
+            if (ch === "\\" && i + 1 < value.length) {
+                const next = value[i + 1]!;
+                // Only `\'` and `\\` are escapes; any other backslash is literal.
+                if (next === "'" || next === "\\") {
+                    out += next;
+                    i += 1;
+                    continue;
+                }
+            }
+            if (ch === "'") break;
+            out += ch;
+        }
+        return out;
     }
     const comment = value.search(/(^|\s)#/);
     return (comment === -1 ? value : value.slice(0, comment)).trim();
@@ -142,20 +156,29 @@ export async function validateDraft(
     envSource: string | undefined,
     secrets: string[],
     projectName?: string,
+    liveEnvFile?: string | null,
 ): Promise<ValidationResult> {
     const composeTmp = join(directory, `.cp-draft-${randomSuffix()}.yaml`);
     let envTmp: string | null = null;
     try {
         await writeFile(composeTmp, composeSource, { mode: 0o600 });
+        // Use the same environment context as a mutation: a draft env when the
+        // .env is edited, otherwise the verified live .env explicitly, otherwise
+        // nothing. This keeps validation and execution from diverging (e.g. via
+        // COMPOSE_ENV_FILES when .env is left unchanged).
+        let envFile: string | undefined;
         if (envSource !== undefined) {
             envTmp = join(directory, `.cp-draft-env-${randomSuffix()}`);
             await writeFile(envTmp, envSource, { mode: 0o600 });
+            envFile = envTmp;
+        } else if (liveEnvFile) {
+            envFile = liveEnvFile;
         }
 
         const result = await provider.validateConfig({
             directory,
             composeFile: composeTmp,
-            envFile: envTmp ?? undefined,
+            envFile,
             projectName,
         });
         if (result.timedOut) return { ok: false, message: "Compose validation timed out." };
@@ -254,6 +277,7 @@ export async function saveEditableStack(
             envChanged ? request.envSource : undefined,
             secrets,
             context?.kind === "resolved" ? context.project ?? undefined : undefined,
+            currentEnvExists ? envPath : null,
         );
         if (!validation.ok) throw new StackValidationError(validation.message ?? "Compose validation failed.");
 

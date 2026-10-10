@@ -754,6 +754,33 @@ describe("event streams", () => {
         expect(app.logs.isActive("demo")).toBe(false);
     });
 
+    test("refuses a stream when the session is revoked during discovery", async () => {
+        let release!: (result: CommandResult) => void;
+        const gate = new Promise<CommandResult>(resolve => { release = resolve; });
+        let gated = false;
+        const base = controllableProvider().provider;
+        const provider: ComposeProvider = { ...base, listProjects: () => (gated ? gate : base.listProjects()) };
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+
+        // Start discovery (now gated), then revoke the session before it resolves.
+        gated = true;
+        const pending = authed(app, "/stacks/demo/logs/events", session);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const out = await authed(app, "/logout", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf }).toString(),
+        });
+        expect(out.status).toBe(303);
+
+        release({ code: 0, stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]), stderr: "", timedOut: false, truncated: false });
+        const response = await pending;
+        expect(response.status).toBe(401);
+        await response.body?.cancel();
+    });
+
     test("detail page wires live streams and CSP allows same-origin scripts", async () => {
         const { provider } = controllableProvider();
         const app = makeApp({}, undefined, provider);

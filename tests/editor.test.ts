@@ -98,6 +98,12 @@ describe("secret handling", () => {
         expect(secrets).not.toContain("audit-secret # comment");
     });
 
+    test("handles an escaped quote inside a single-quoted value", () => {
+        const secrets = collectSecrets("TOKEN='super\\'secret'\n");
+        expect(secrets).toContain("super'secret");
+        expect(redactSecrets("error super'secret here", secrets)).toBe("error *** here");
+    });
+
     test("redacts before truncating so a boundary secret is not leaked as a prefix", async () => {
         const leaking: DockerRunner = async () => ({
             code: 1,
@@ -144,6 +150,25 @@ describe("saveEditableStack", () => {
         await saveEditableStack(root, "demo", req(stack, { envSource: "DB_PASSWORD=changedvalue\n" }), asProvider(runner), MAX);
         expect(calls.find(call => call.includes("config"))!).toContain("--env-file");
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe("DB_PASSWORD=changedvalue\n");
+    });
+
+    test("validates against the live .env when only the Compose file changes", async () => {
+        const { runner, calls } = recordingRunner();
+        const stack = await current();
+        await saveEditableStack(root, "demo", req(stack, { composeSource: COMPOSE.replace("nginx:alpine", "nginx:1.27-alpine") }), asProvider(runner), MAX);
+        const args = calls.find(call => call.includes("config") && call.includes("--quiet"))!;
+        const position = args.indexOf("--env-file");
+        expect(position).toBeGreaterThan(-1);
+        expect(args[position + 1]).toBe(join(root, "demo", ".env"));
+    });
+
+    test("omits --env-file when the stack has no .env", async () => {
+        await rm(join(root, "demo", ".env"));
+        const { runner, calls } = recordingRunner();
+        const stack = await current();
+        await saveEditableStack(root, "demo", req(stack, { composeSource: COMPOSE.replace("nginx:alpine", "nginx:1.28-alpine") }), asProvider(runner), MAX);
+        const args = calls.find(call => call.includes("config") && call.includes("--quiet"))!;
+        expect(args.includes("--env-file")).toBe(false);
     });
 
     test("is a no-op when nothing changed", async () => {

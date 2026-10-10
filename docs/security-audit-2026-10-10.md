@@ -36,6 +36,16 @@ Scope: all application TypeScript, browser JavaScript, authentication, filesyste
   other operator variables still pass through by design. Regression:
   `composeEnvironment` strips panel variables and preserves others.
 
+- **Review follow-up (2026-10-10).** A code review of this remediation found
+  four residual defects, now fixed: draft validation and execution could use
+  different environment contexts when `.env` was unchanged (validation now
+  passes the verified live `.env` explicitly); a stream could register after a
+  logout that landed during Docker discovery (the session is re-checked just
+  before subscribing); the CI production-boot loop could pass without a ready
+  server (now fails explicitly); and an escaped quote inside a single-quoted
+  `.env` value bypassed redaction (now handled). Regression tests added for
+  each.
+
 ## Findings
 
 ### A1 — Medium: parallel login requests bypass the attempt limit

@@ -21,6 +21,13 @@
   truncating; validate the `Host` header against loopback and the configured
   public origin before routing; strip the `COMPOSE_PANEL_*` namespace from
   Compose subprocesses per ADR 0008.
+- Review follow-up on that remediation: draft validation now uses the same
+  environment context as a mutation (live `.env` passed explicitly) so the two
+  cannot diverge via implicit `COMPOSE_ENV_FILES`; the SSE session is re-checked
+  just before subscribing so a logout during discovery cannot register a stream;
+  escaped quotes inside single-quoted `.env` values are handled by the secret
+  collector; the CI production-boot step fails explicitly if the server never
+  becomes ready.
 - Supply-chain hardening: base image pinned by version and multi-arch digest,
   every GitHub Action pinned to a commit SHA, and Trivy failing on
   `CRITICAL,HIGH` for both the repository (dependencies + secrets) and the

@@ -37,7 +37,12 @@ jobs:
           STACKS_DIR=/tmp/prod-only/stacks COMPOSE_PANEL_ADMIN_PASSWORD_HASH="$HASH" bun src/server.ts &
           PANEL_PID=$!
           trap "kill $PANEL_PID" EXIT
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:5081/health/live && break || sleep 1; done
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5081/health/live; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" = "1"
       - name: Scan repository (dependencies and secrets)
         uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
         with:
