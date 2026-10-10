@@ -3,19 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "bun": ">=1.4.2" },
+  "engines": { "bun": ">=1.4.3" },
   "scripts": {
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
     "test": "bun test",
-    "check": "tsc --noEmit",
+    "typecheck": "bun check",
     "docker:build": "docker build -t compose-panel:local .",
-    "verify": "bun test && tsc --noEmit",
+    "verify": "bun test && bun check",
     "hash-password": "bun src/scripts/hash-password.ts"
   },
   "dependencies": {},
   "devDependencies": {
-    "@types/bun": "^1.4.2",
-    "typescript": "^7.0.0"
+    "@types/bun": "^1.4.2"
   }
 }

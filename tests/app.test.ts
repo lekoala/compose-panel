@@ -567,6 +567,8 @@ describe("event streams", () => {
         const app = makeApp();
         const session = await login(app);
         expect((await authed(app, "/stacks/..%2Fsecret/operations/events", session)).status).toBe(400);
+        expect((await authed(app, "/stacks/a%0A/operations/events", session)).status).toBe(400);
+        expect((await authed(app, "/stacks/a%00/logs/events", session)).status).toBe(400);
         expect((await authed(app, "/stacks/nope/operations/events", session)).status).toBe(404);
         expect((await authed(app, "/stacks/nope/logs/events", session)).status).toBe(404);
     });

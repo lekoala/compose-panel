@@ -1,7 +1,7 @@
 # CI — pipeline
 
-The pipeline lives in `.github/workflows/ci.yml` (Linux runners, Bun 1.4.2
-pinned): `bun install --frozen-lockfile`, `bun run check`, `bun run test`,
+The pipeline lives in `.github/workflows/ci.yml` (Linux runners, Bun 1.4.3
+pinned): `bun install --frozen-lockfile`, `bun run typecheck`, `bun run test`,
 then a reproducible image build, a socket-less smoke test (reads and auth
 only, no Docker socket mounted) and a Trivy scan that fails on CRITICAL.
 PR builds never publish images.

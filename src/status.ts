@@ -1,5 +1,5 @@
 import { dirname } from "node:path";
-import { listStacks, locateComposeFile } from "./stacks.ts";
+import { listStacks, locateComposeFile, StackError } from "./stacks.ts";
 import {
     ComposeProject,
     ComposeService,
@@ -46,7 +46,16 @@ async function loadProjects(provider: ComposeProvider): Promise<{ projects: Comp
 }
 
 export async function loadStackStates(root: string, provider: ComposeProvider): Promise<StackListStatus> {
-    const stacks = await listStacks(root);
+    let stacks: Awaited<ReturnType<typeof listStacks>>;
+    try {
+        stacks = await listStacks(root);
+    } catch (error) {
+        // A deleted or replaced STACKS_DIR at runtime is not an empty panel and
+        // not a Docker problem: fail closed instead of a 500 with log spam.
+        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        if (code === "ENOENT" || code === "ENOTDIR") throw new StackError("Stacks directory is unavailable.", 503);
+        throw error;
+    }
     const { projects, note } = await loadProjects(provider);
     const result: StackStatus[] = [];
 

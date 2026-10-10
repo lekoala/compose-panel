@@ -33,7 +33,7 @@ Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`,
 - If docs disagree, open a small ADR. Do not silently redefine scope.
 
 ## Quality gates
-`bun run test` and `bun run check`. For Docker-related code, add an isolated Linux integration test and document manual verification before calling the PR done. No live Docker deployment in unattended CI.
+`bun run test` and `bun run typecheck` (`bun check` builtin, no `tsc` dependency). For Docker-related code, add an isolated Linux integration test and document manual verification before calling the PR done. No live Docker deployment in unattended CI.
 
 ## PR report template
 Summary; changed files; behavior; failure and rollback behavior; tests run; dependency delta; security considerations; known limitations.

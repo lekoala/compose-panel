@@ -11,7 +11,7 @@ A **single-server** panel to administer Docker Compose stacks, without a SPA, wi
 
 ## Getting started
 
-Requirements: Bun 1.4.2+ (pin the version in CI), an existing stacks directory, an admin password hash, and the Docker CLI with Compose v2 for real state. Docker is optional: without it, stacks are listed with an `unknown` status rather than an invented one.
+Requirements: Bun 1.4.3+ (pin the version in CI), an existing stacks directory, an admin password hash, and the Docker CLI with Compose v2 for real state. Docker is optional: without it, stacks are listed with an `unknown` status rather than an invented one.
 
 ```sh
 bun install
@@ -36,7 +36,7 @@ Open `http://127.0.0.1:5081` and log in. Stacks are listed with their real Docke
 
 ```sh
 bun run test
-bun run check
+bun run typecheck
 ```
 
 ## What exists in 0.1

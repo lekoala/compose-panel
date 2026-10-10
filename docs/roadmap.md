@@ -6,7 +6,7 @@ Each step creates a functional, verifiable slice. Do not carry out mutations in 
 - [x] Bun repo + server-rendered HTML + zero runtime npm dependencies.
 - [x] Compose discovery and reading, rejection of obvious symlink names/paths.
 - [x] Unit tests for the file core and HTML escaping.
-- [x] Run `bun install`, `bun run test`, `bun run check` on a machine equipped with Bun.
+- [x] Run `bun install`, `bun run test`, `bun run typecheck` on a machine equipped with Bun.
 
 ## P1 — Security entry / identity (agent 01)
 - [x] Single-admin auth + correctly signed/stored session + logout.

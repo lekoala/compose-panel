@@ -54,7 +54,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Docker logs may themselves contain secrets. Never include them in unprotected application logs.
 
 ## Mandatory security checks
-Tests for `../` paths, encoded URLs, non-conforming names, symlinks, double Compose, `.env` symlink, write conflicts, secrets in errors, CSRF, XSS, concurrent operations, malformed Docker CLI output, timeout/output-cap handling, SSE auth/subscriber limits/slow readers, log follow kill-on-last-reader/timeout, Linux shutdown/restart and stuck processes.
+Tests for `../` paths, encoded URLs, trailing-newline/NUL/double-encoded names, missing STACKS_DIR (fail-closed 503, no Docker call), non-conforming names, symlinks, double Compose, `.env` symlink, write conflicts, secrets in errors, CSRF, XSS, concurrent operations, malformed Docker CLI output, timeout/output-cap handling, SSE auth/subscriber limits/slow readers, log follow kill-on-last-reader/timeout, Linux shutdown/restart and stuck processes.
 
 ## CI
 Subprocess tests only in a disposable/isolated Docker daemon. Never mount the CI host's production engine socket in automated tests.

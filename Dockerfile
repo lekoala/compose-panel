@@ -1,6 +1,6 @@
 # Compose Panel — single-process Bun app + Docker CLI, built from scratch.
 # No other panel image is used as a base.
-ARG BUN_VERSION=1.4.2
+ARG BUN_VERSION=1.4.3
 # Pinned engine versions: rebuilding the same commit installs the same tools.
 # Refresh deliberately (never silently) and re-verify with the smoke checklist.
 ARG DOCKER_CLI_VERSION=5:29.9.0-1~debian.13~trixie

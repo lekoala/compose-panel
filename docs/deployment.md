@@ -8,7 +8,7 @@ truth, so removing the panel never stops your services.
 
 - Linux host with Docker Engine + Compose v2 and the stacks directory
   (e.g. `/opt/stacks`) already managed by `docker compose`.
-- Bun 1.4.2+ on the build machine (pinned in CI and the Dockerfile).
+- Bun 1.4.3+ on the build machine (pinned in CI and the Dockerfile).
 - An admin password hash generated **outside** the image:
   `COMPOSE_PANEL_PASSWORD='...' bun run hash-password`.
 
