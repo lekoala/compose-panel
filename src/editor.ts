@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { rm, writeFile } from "node:fs/promises";
 import { locateComposeFile, StackError } from "./stacks.ts";
 import { resolveProjectContext } from "./status.ts";
-import { backupFile, hashContent, randomSuffix, readFileSafe, writeFileAtomic } from "./fs-safe.ts";
+import { backupFile, hashContent, randomSuffix, readFileSafe, writeFileAtomic, type SafeFile } from "./fs-safe.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
 
 export const ENV_FILENAME = ".env";
@@ -19,6 +19,19 @@ export class StackValidationError extends Error {
     constructor(message: string) {
         super(message);
         this.name = "StackValidationError";
+    }
+}
+
+/**
+ * A save that changed files without completing. Carries the backup paths so
+ * the UI can point at manual recovery. Never invents a success.
+ */
+export class StackPartialError extends StackError {
+    readonly backupPaths: string[];
+    constructor(message: string, backupPaths: string[] = []) {
+        super(message, 500);
+        this.name = "StackPartialError";
+        this.backupPaths = backupPaths;
     }
 }
 
@@ -144,16 +157,24 @@ export interface SaveResult {
 }
 
 /**
- * Save the Compose/.env pair under an optimistic lock: re-check the base hashes,
- * validate in context, back up, then write atomically. If the second write fails
- * the first is restored.
+ * Save the Compose/.env pair under an optimistic lock: check the base hashes,
+ * validate in context, re-check what validation may have raced with, back up
+ * both files before touching either, then write atomically. A failure after
+ * the first write restores it and reports a partial result with backup
+ * references instead of an ordinary error.
  */
+export interface SaveOptions {
+    /** Override for the atomic file writer. Test seam for commit-phase failures. */
+    writer?: (path: string, content: string, mode: number) => Promise<void>;
+}
+
 export async function saveEditableStack(
     root: string,
     name: string,
     request: SaveRequest,
     provider: ComposeProvider,
     maxBytes: number,
+    options: SaveOptions = {},
 ): Promise<SaveResult> {
     const located = await locateComposeFile(root, name);
     const directory = dirname(located.path);
@@ -196,26 +217,62 @@ export async function saveEditableStack(
     );
     if (!validation.ok) throw new StackValidationError(validation.message ?? "Compose validation failed.");
 
-    const backupDir = join(root, ".compose-panel", "backups", name);
-    const backupPaths: string[] = [];
-    let composeWritten = false;
-
-    if (composeChanged) {
-        backupPaths.push(await backupFile(composePath, backupDir, located.filename));
-        await writeFileAtomic(composePath, request.composeSource, currentCompose.mode);
-        composeWritten = true;
+    // Validation awaits a subprocess for seconds; an external writer may have
+    // acted meanwhile. Re-locate (presence/identity) and re-read both files:
+    // anything divergent is a conflict, never a silent overwrite. The lock
+    // only serializes panel requests, not outside editors.
+    const relocated = await locateComposeFile(root, name);
+    if (relocated.path !== located.path) {
+        throw new StackConflictError("The stack directory changed on disk during validation.");
+    }
+    let freshCompose: SafeFile | null;
+    let freshEnv: SafeFile | null;
+    try {
+        freshCompose = await readFileSafe(composePath, maxBytes);
+        freshEnv = await readFileSafe(envPath, maxBytes);
+    } catch {
+        throw new StackConflictError("The files changed on disk during validation.");
+    }
+    if (!freshCompose) throw new StackError("Compose file not found.", 404);
+    if (freshCompose.hash !== currentCompose.hash) {
+        throw new StackConflictError("The Compose file changed on disk during validation.");
+    }
+    if (freshEnv !== null ? freshEnv.hash !== currentEnvHash : currentEnvExists) {
+        throw new StackConflictError("The .env file changed on disk during validation.");
     }
 
-    if (envChanged) {
-        if (currentEnv) backupPaths.push(await backupFile(envPath, backupDir, ENV_FILENAME));
-        try {
-            await writeFileAtomic(envPath, request.envSource, currentEnv?.mode ?? 0o600);
-        } catch (error) {
-            if (composeWritten) {
-                await writeFileAtomic(composePath, currentCompose.source, currentCompose.mode).catch(() => {});
-            }
-            throw error;
+    const backupDir = join(root, ".compose-panel", "backups", name);
+    const backupPaths: string[] = [];
+    const writer = options.writer ?? writeFileAtomic;
+    let composeWritten = false;
+
+    // Phase 1 — back up everything before changing anything. A failure here
+    // leaves both live files untouched, so it stays an ordinary error.
+    if (composeChanged) backupPaths.push(await backupFile(composePath, backupDir, located.filename));
+    if (envChanged && freshEnv) backupPaths.push(await backupFile(envPath, backupDir, ENV_FILENAME));
+
+    // Phase 2 — commit with rollback. Each rename is atomic; the only
+    // inconsistent state is "first write done, second failed".
+    try {
+        if (composeChanged) {
+            await writer(composePath, request.composeSource, freshCompose.mode);
+            composeWritten = true;
         }
+        if (envChanged) await writer(envPath, request.envSource, freshEnv?.mode ?? 0o600);
+    } catch (error) {
+        if (!composeWritten) throw error;
+        try {
+            await writer(composePath, freshCompose.source, freshCompose.mode);
+        } catch {
+            throw new StackPartialError(
+                `Save failed and the Compose file could not be restored. Recover it manually from: ${backupPaths.join(", ")}`,
+                backupPaths,
+            );
+        }
+        throw new StackPartialError(
+            `Save failed after writing the Compose file; it was restored from backup (${backupPaths.join(", ")}).`,
+            backupPaths,
+        );
     }
 
     return {

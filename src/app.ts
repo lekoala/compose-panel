@@ -2,7 +2,7 @@ import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage, logsPanel,
 import { dirname } from "node:path";
 import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
-import { StackConflictError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
+import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
 import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
 import { LogManager } from "./logs.ts";
@@ -332,6 +332,9 @@ export function createApp(options: AppOptions): App {
             }
             if (error instanceof StackBusyError) {
                 return htmlResponse(documentHtml("Busy", `<h1>Busy</h1><p>${escapeHtml(error.message)}</p><p><a href="/stacks/${encodeURIComponent(name)}">Back</a></p>`), 409);
+            }
+            if (error instanceof StackPartialError) {
+                return renderEdit(name, csrf, { error: error.message, draft: saveRequest, keepDraft: true, status: 500 });
             }
             throw error;
         }

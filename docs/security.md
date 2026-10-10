@@ -15,7 +15,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Optimistic concurrency: the form carries a content hash for each file; if either changed on disk the save is refused (409) instead of overwriting an external change.
 - Drafts are validated with `docker compose config --quiet` only, in the real project directory with explicit `--project-directory`, `-f` and, when the env is edited, `--env-file`. The interpolated config is never printed or logged.
 - Values from `.env` are redacted from any validation error before it reaches the page. Symlinked files are refused, and a missing `.env` is not created unless it has content.
-- Every save first copies the previous file to `<root>/.compose-panel/backups/<stack>/`; if writing the second file of the pair fails, the first is restored. A save is a modifying operation and holds the per-stack lock.
+- Every save first copies the previous file to `<root>/.compose-panel/backups/<stack>/`; if writing the second file of the pair fails, the first is restored and the failure is reported as partial with backup references, never as success. Files are re-read after validation, so an external change during the validation window is a conflict, not a silent overwrite. A save is a modifying operation and holds the per-stack lock.
 
 ## Operations (P4)
 - Mutating actions are a fixed allow-list (`up`, `stop`, `restart`, `down`, `pull-up`); there is no generic "run command" endpoint and no user-supplied option.

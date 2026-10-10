@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { hashContent } from "../src/fs-safe.ts";
+import { hashContent, writeFileAtomic } from "../src/fs-safe.ts";
 import {
     StackConflictError,
+    StackPartialError,
     StackValidationError,
     collectSecrets,
     readEditableStack,
@@ -12,6 +13,7 @@ import {
     saveEditableStack,
     type SaveRequest,
 } from "../src/editor.ts";
+import { StackError } from "../src/stacks.ts";
 import type { CommandResult, DockerRunner } from "../src/docker.ts";
 import { createComposeProvider } from "../src/compose-provider.ts";
 
@@ -123,6 +125,99 @@ describe("saveEditableStack", () => {
         await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), asProvider(okRunner), MAX))
             .rejects.toThrow(StackConflictError);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe("services: {}\n");
+    });
+
+    test("refuses a save when compose changes during validation", async () => {
+        const stack = await current();
+        const external = "services:\n  external: true\n";
+        const racingRunner: DockerRunner = async args => {
+            if (args.includes("config")) {
+                await writeFile(join(root, "demo", "compose.yaml"), external);
+                return okResult;
+            }
+            return okResult;
+        };
+        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), asProvider(racingRunner), MAX))
+            .rejects.toThrow(StackConflictError);
+        // The external change is preserved; the draft was never published.
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(external);
+        expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe(ENV);
+    });
+
+    test("refuses when compose is removed during validation", async () => {
+        const stack = await current();
+        const racingRunner: DockerRunner = async args => {
+            if (args.includes("config")) {
+                await rm(join(root, "demo", "compose.yaml"));
+                return okResult;
+            }
+            return okResult;
+        };
+        try {
+            await saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), asProvider(racingRunner), MAX);
+            throw new Error("expected the save to fail");
+        } catch (error) {
+            expect(error).toBeInstanceOf(StackError);
+            expect((error as StackError).status).toBe(404);
+        }
+        expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe(ENV);
+    });
+
+    test("leaves both files untouched when backups cannot be taken", async () => {
+        // Block the backup directory with a regular file.
+        await mkdir(join(root, ".compose-panel", "backups"), { recursive: true });
+        await writeFile(join(root, ".compose-panel", "backups", "demo"), "blocker");
+        const stack = await current();
+        await expect(saveEditableStack(root, "demo", req(stack, {
+            composeSource: "services:\n  app:\n    image: x\n",
+            envSource: "DB_PASSWORD=changedvalue\n",
+        }), asProvider(okRunner), MAX)).rejects.toThrow();
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
+        expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe(ENV);
+    });
+
+    test("restores compose and reports partial when the env write fails", async () => {
+        const stack = await current();
+        const written: string[] = [];
+        const writer = async (path: string, content: string, mode: number) => {
+            written.push(path);
+            if (path.endsWith(".env")) throw new Error("disk full");
+            await writeFileAtomic(path, content, mode);
+        };
+        const error = await saveEditableStack(root, "demo", req(stack, {
+            composeSource: "services:\n  app:\n    image: x\n",
+            envSource: "DB_PASSWORD=changedvalue\n",
+        }), asProvider(okRunner), MAX, { writer }).catch(error => error);
+        expect(error).toBeInstanceOf(StackPartialError);
+        expect((error as StackPartialError).backupPaths.length).toBe(2);
+        expect((error as Error).message).toContain("restored from backup");
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
+        expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe(ENV);
+        // Compose was written, then written back by the restore.
+        expect(written.filter(path => path.endsWith("compose.yaml")).length).toBe(2);
+    });
+
+    test("reports manual recovery when the restore also fails", async () => {
+        const stack = await current();
+        const draft = "services:\n  app:\n    image: x\n";
+        let calls = 0;
+        const writer = async (path: string, content: string, mode: number) => {
+            calls += 1;
+            if (calls === 1) {
+                await writeFileAtomic(path, content, mode);
+                return;
+            }
+            throw new Error("disk full");
+        };
+        const error = await saveEditableStack(root, "demo", req(stack, {
+            composeSource: draft,
+            envSource: "DB_PASSWORD=changedvalue\n",
+        }), asProvider(okRunner), MAX, { writer }).catch(error => error);
+        expect(error).toBeInstanceOf(StackPartialError);
+        expect((error as Error).message).toContain("could not be restored");
+        expect((error as StackPartialError).backupPaths.length).toBe(2);
+        // Compose is left at the draft: the message must say so honestly.
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(draft);
     });
 
     test("does not publish an invalid draft", async () => {
