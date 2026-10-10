@@ -6,7 +6,7 @@ First minimal release. Single Linux host, single trusted administrator,
 always bound to `127.0.0.1`; remote access through an SSH tunnel or HTTPS with
 Caddy on the same host.
 
-- Security review 2026-10-10 fixes (`docs/security-review-2026-10-10.md`):
+- Security review 2026-10-10 fixes:
   saves and operations re-check the session after reading the body, after
   project discovery and before writing, so a request left pending across logout
   or expiry does nothing (SEC-01); the default audit layout is lstat-checked

@@ -34,12 +34,14 @@ jobs:
           bun install --production --frozen-lockfile
           test ! -e node_modules/@types
           HASH=$(COMPOSE_PANEL_PASSWORD=ci-prod-only bun src/scripts/hash-password.ts | tail -1)
-          STACKS_DIR=/tmp/prod-only/stacks COMPOSE_PANEL_ADMIN_PASSWORD_HASH="$HASH" bun src/server.ts &
+          STACKS_DIR=/tmp/prod-only/stacks COMPOSE_PANEL_ADMIN_USER=cioperator COMPOSE_PANEL_ADMIN_PASSWORD_HASH="$HASH" bun src/server.ts &
           PANEL_PID=$!
-          trap "kill $PANEL_PID" EXIT
+          trap "kill $PANEL_PID 2>/dev/null || true" EXIT
           ready=0
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:5081/health/live; then ready=1; break; fi
+            # A refused configuration exits at once: fail now, not after 30 s.
+            if ! kill -0 "$PANEL_PID" 2>/dev/null; then echo "The panel exited during startup." >&2; exit 1; fi
             sleep 1
           done
           test "$ready" = "1"
