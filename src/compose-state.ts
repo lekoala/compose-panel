@@ -18,6 +18,25 @@ export interface ComposeService {
     state: string;
     health: string | null;
     exitCode: number | null;
+    /** Container name, used to match `compose images` rows. */
+    container: string | null;
+    /** Image reference as configured (e.g. "nginx:1.27-alpine"). */
+    image: string | null;
+}
+
+/** One `compose images` row: which image ID a container actually runs. */
+export interface ContainerImage {
+    container: string;
+    imageId: string;
+}
+
+/** The parts of `docker image inspect` the panel uses. Labels are untrusted text. */
+export interface ImageDetails {
+    id: string;
+    repoTags: string[];
+    repoDigests: string[];
+    created: string | null;
+    labels: Record<string, string>;
 }
 
 /** Honest status vocabulary. "unknown" is never silently turned into "stopped". */
@@ -83,9 +102,51 @@ export function parseComposePs(stdout: string): ComposeService[] {
             state: typeof record.State === "string" ? record.State : "unknown",
             health: typeof record.Health === "string" && record.Health ? record.Health : null,
             exitCode: typeof record.ExitCode === "number" ? record.ExitCode : null,
+            container: typeof record.Name === "string" && record.Name ? record.Name : null,
+            image: typeof record.Image === "string" && record.Image ? record.Image : null,
         });
     }
     return services;
+}
+
+export function parseComposeImages(stdout: string): ContainerImage[] {
+    const rows: ContainerImage[] = [];
+    for (const row of parseJsonRows(stdout)) {
+        if (!row || typeof row !== "object") throw new ComposeStateError("Unexpected compose images output.");
+        const record = row as Record<string, unknown>;
+        if (typeof record.ContainerName === "string" && typeof record.ID === "string" && record.ContainerName && record.ID) {
+            rows.push({ container: record.ContainerName, imageId: record.ID });
+        }
+    }
+    return rows;
+}
+
+function strings(value: unknown): string[] {
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+export function parseImageInspect(stdout: string): ImageDetails[] {
+    const details: ImageDetails[] = [];
+    for (const row of parseJsonRows(stdout)) {
+        if (!row || typeof row !== "object") continue;
+        const record = row as Record<string, unknown>;
+        if (typeof record.Id !== "string" || !record.Id) continue;
+        const config = record.Config && typeof record.Config === "object" ? record.Config as Record<string, unknown> : {};
+        const labels: Record<string, string> = {};
+        if (config.Labels && typeof config.Labels === "object") {
+            for (const [key, value] of Object.entries(config.Labels as Record<string, unknown>)) {
+                if (typeof value === "string") labels[key] = value;
+            }
+        }
+        details.push({
+            id: record.Id,
+            repoTags: strings(record.RepoTags),
+            repoDigests: strings(record.RepoDigests),
+            created: typeof record.Created === "string" ? record.Created : null,
+            labels,
+        });
+    }
+    return details;
 }
 
 export function summarizeServices(services: ComposeService[]): StackState {

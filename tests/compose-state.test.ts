@@ -38,8 +38,8 @@ describe("parseComposePs", () => {
             { Service: "init", State: "exited", ExitCode: 0 },
         ]));
         expect(services).toEqual([
-            { name: "app", state: "running", health: "healthy", exitCode: 0 },
-            { name: "init", state: "exited", health: null, exitCode: 0 },
+            { name: "app", state: "running", health: "healthy", exitCode: 0, container: null, image: null },
+            { name: "init", state: "exited", health: null, exitCode: 0, container: null, image: null },
         ]);
     });
 
@@ -58,18 +58,18 @@ describe("summarizeServices", () => {
     test("no services means not created", () => expect(summarizeServices([])).toBe("not-created"));
     test("a running app wins over an init job exited 0", () => {
         expect(summarizeServices([
-            { name: "init", state: "exited", health: null, exitCode: 0 },
-            { name: "app", state: "running", health: null, exitCode: null },
+            { name: "init", state: "exited", health: null, exitCode: 0, container: null, image: null },
+            { name: "app", state: "running", health: null, exitCode: null, container: null, image: null },
         ])).toBe("running");
     });
     test("all exited is stopped", () => {
-        expect(summarizeServices([{ name: "app", state: "exited", health: null, exitCode: 0 }])).toBe("stopped");
+        expect(summarizeServices([{ name: "app", state: "exited", health: null, exitCode: 0, container: null, image: null }])).toBe("stopped");
     });
     test("created only is stopped", () => {
-        expect(summarizeServices([{ name: "app", state: "created", health: null, exitCode: null }])).toBe("stopped");
+        expect(summarizeServices([{ name: "app", state: "created", health: null, exitCode: null, container: null, image: null }])).toBe("stopped");
     });
     test("an unrecognized state is unknown", () => {
-        expect(summarizeServices([{ name: "app", state: "dead-ish", health: null, exitCode: null }])).toBe("unknown");
+        expect(summarizeServices([{ name: "app", state: "dead-ish", health: null, exitCode: null, container: null, image: null }])).toBe("unknown");
     });
 });
 

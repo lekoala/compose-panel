@@ -1,6 +1,7 @@
 import type { ComposeService } from "./compose-state.ts";
 import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
+import type { ImageVersion, ServiceUpdate } from "./updates.ts";
 import packageJson from "../package.json";
 
 const VERSION = packageJson.version;
@@ -163,13 +164,41 @@ function healthBadge(health: string | null): string {
     return `<span class="state ${cls}">${escapeHtml(health)}</span>`;
 }
 
-export function servicesSection(services: ComposeService[], state: string): string {
+function versionText(version: ImageVersion): string {
+    return version.version ?? (version.created ? `built ${version.created}` : version.digest ?? "unknown version");
+}
+
+/** "1.27.1 → 1.27.2"; when both sides read the same, the digests tell them apart. */
+function updateSides(update: ServiceUpdate): [string, string] {
+    const from = versionText(update.from);
+    const to = versionText(update.to);
+    if (from !== to) return [from, to];
+    return [`${from} (${update.from.digest ?? "?"})`, `${to} (${update.to.digest ?? "?"})`];
+}
+
+export function updateText(update: ServiceUpdate): string {
+    return updateSides(update).join(" → ");
+}
+
+function imageCell(service: ComposeService, update: ServiceUpdate | undefined): string {
+    if (!service.image) return `<span class="muted">—</span>`;
+    const image = `<code>${escapeHtml(service.image)}</code>`;
+    if (!update) return image;
+    // Link targets come from image labels: validated as http(s) in updates.ts,
+    // escaped here, and opened without referrer or opener access.
+    const link = update.link
+        ? ` <a href="${escapeHtml(update.link.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(update.link.label)} ↗</a>`
+        : "";
+    return `${image}<div class="update"><span class="state state-update">Update ready</span> <span><span class="version">${escapeHtml(updateSides(update)[0])}</span> → <span class="version">${escapeHtml(updateSides(update)[1])}</span></span>${link}</div>`;
+}
+
+export function servicesSection(services: ComposeService[], state: string, updates: Record<string, ServiceUpdate> = {}): string {
     let content: string;
     if (services.length > 0) {
         const rows = services
-            .map(service => `<tr><td>${escapeHtml(service.name)}</td><td>${serviceBadge(service)}</td><td>${healthBadge(service.health)}</td></tr>`)
+            .map(service => `<tr><td>${escapeHtml(service.name)}</td><td>${serviceBadge(service)}</td><td class="col-optional">${healthBadge(service.health)}</td><td>${imageCell(service, updates[service.name])}</td></tr>`)
             .join("");
-        content = `<div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th>Container</th><th>Health check</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        content = `<div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th>Container</th><th class="col-optional">Health check</th><th>Image</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     } else if (state === "not-created") {
         content = `<p class="muted">No containers yet. Use <em>Up</em> to create them.</p>`;
     } else {
@@ -179,8 +208,9 @@ export function servicesSection(services: ComposeService[], state: string): stri
 }
 
 const OPERATIONS: { action: OperationAction; label: string; help: string; style: string; needsDeployment: boolean }[] = [
-    { action: "up", label: "Up", help: "Create or update the containers so they match the Compose file. Use this after editing.", style: "btn-primary", needsDeployment: false },
-    { action: "pull-up", label: "Pull + up", help: "Download newer versions of the images first, then run Up.", style: "", needsDeployment: false },
+    { action: "up", label: "Up", help: "Create or update the containers so they match the Compose file and the local images. Use this after editing or after Pull.", style: "btn-primary", needsDeployment: false },
+    { action: "pull", label: "Pull", help: "Check for newer images and download them. No container is touched: services with a newer image are then marked “Update ready”.", style: "", needsDeployment: false },
+    { action: "pull-up", label: "Pull + up", help: "Pull, then Up, in one step: services with a newer image are recreated right away.", style: "", needsDeployment: false },
     { action: "restart", label: "Restart", help: "Restart the existing containers. Does not apply file changes.", style: "", needsDeployment: true },
     { action: "stop", label: "Stop", help: "Stop the containers without removing them. Up starts them again.", style: "", needsDeployment: true },
     { action: "down", label: "Down", help: "Stop and remove the containers and networks. Volumes and images are kept.", style: "btn-danger", needsDeployment: true },
@@ -188,7 +218,7 @@ const OPERATIONS: { action: OperationAction; label: string; help: string; style:
 
 export const OPERATION_LABELS: Record<OperationAction, string> = Object.fromEntries(OPERATIONS.map(op => [op.action, op.label])) as Record<OperationAction, string>;
 
-export function operationControls(name: string, csrf: string, options: { busy: boolean; deployed: boolean }): string {
+export function operationControls(name: string, csrf: string, options: { busy: boolean; deployed: boolean; updatesReady?: string[] }): string {
     const action = `/stacks/${encodeURIComponent(name)}/operations`;
     const rows = OPERATIONS.map(op => {
         const blocked = options.busy || (op.needsDeployment && !options.deployed);
@@ -208,8 +238,10 @@ export function operationControls(name: string, csrf: string, options: { busy: b
     const status = options.busy
         ? note("info", "An action is running. The buttons unlock when it finishes.", { id: "op-busy-note" })
         : !options.deployed
-            ? `<p class="muted">This stack is not deployed yet, so only <em>Up</em> and <em>Pull + up</em> are available.</p>`
-            : "";
+            ? `<p class="muted">This stack is not deployed yet, so only <em>Up</em>, <em>Pull</em> and <em>Pull + up</em> are available.</p>`
+            : options.updatesReady && options.updatesReady.length > 0
+                ? note("info", `Update ready for ${options.updatesReady.join(", ")}: Up recreates ${options.updatesReady.length === 1 ? "it" : "them"} with the newer image. The other services are not affected by the image change. Details under Services.`)
+                : "";
     return `<section class="card"><h2>Actions</h2>`
         + `<p class="muted">Actions run on the server and keep going if you close this page. Only one action or save runs at a time per stack.</p>`
         + `${status}<div class="op-list">${rows}</div></section>`;

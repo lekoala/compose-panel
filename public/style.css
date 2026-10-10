@@ -177,3 +177,9 @@ footer a{color:inherit}
 .stat-not-created .stat-label::before{background:transparent;border:1.5px dashed var(--muted)}
 .stat-unknown .stat-label::before{background:var(--danger)}
 @media (max-width:40rem){.stat{min-width:0;flex:1 1 6rem;padding:.6rem .7rem}.stat-value{font-size:1.35rem}.stat-label{font-size:.8rem;white-space:nowrap;gap:.35rem}}
+
+/* Image update ready */
+.state-update{border-color:var(--info);color:var(--info);background:var(--info-bg)}
+.update{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem .5rem;margin-top:.35rem;font-size:.875rem}
+.update a{white-space:nowrap}
+.update .version{white-space:nowrap}

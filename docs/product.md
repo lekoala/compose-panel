@@ -11,7 +11,7 @@ A trusted technical administrator. No multi-tenancy, no access for untrusted use
 - Read/edit the raw Compose file and `.env`, without automatic rewriting of comments.
 - Validate a change against the effective directory, files and project identity.
 - Save with concurrent-change detection and the ability to return to the previous state.
-- Start, stop, restart, perform a pull followed by an up (predefined, explicit actions).
+- Start, stop, restart, pull images on their own or followed by an up (predefined, explicit actions), and see which services have an update ready, from which version to which, before applying it ([ADR 0011](adr/0011-pull-and-update-ready.md)).
 - Follow progress via SSE and review the real state after an interruption.
 - View Compose logs, without an interactive console.
 - Single-administrator authentication, CSRF, correct sessions and minimal audit logging without secrets.

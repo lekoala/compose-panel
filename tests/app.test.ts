@@ -77,6 +77,8 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         listProjects: async () => ({ ...empty, stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]) }),
         projectName: async () => "demo-proj",
         projectServices: async () => empty,
+        projectImages: async () => empty,
+        inspectImages: async () => empty,
         validateConfig: async () => empty,
         pull: async () => empty,
         up: async () => empty,
@@ -762,6 +764,49 @@ describe("operations routes", () => {
         const html = await (await authed(app, "/stacks/demo", session)).text();
         expect(html).toMatch(/value="down"><button type="submit" class="btn btn-danger" disabled/);
         expect(html).toMatch(/value="up"><button type="submit" class="btn btn-primary" data-op-button/);
+    });
+
+    test("Pull runs on an undeployed stack without creating anything", async () => {
+        const calls: string[][] = [];
+        const runner: DockerRunner = async args => {
+            calls.push(args);
+            if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+            if (args.includes("config")) return { code: 0, stdout: '{"name":"demo-proj"}', stderr: "", timedOut: false, truncated: false };
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+        const app = makeApp({}, runner);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await postOperation(app, session, csrf, "pull")).status).toBe(303);
+        await waitIdle(app);
+        const pull = calls.find(args => args.includes("pull"))!;
+        expect(pull).toEqual(expect.arrayContaining(["-p", "demo-proj", "pull"]));
+        expect(calls.some(args => args.includes("up"))).toBe(false);
+    });
+
+    test("shows which services have an update ready, from → to, with a link", async () => {
+        const oldId = `sha256:${"a".repeat(64)}`;
+        const newId = `sha256:${"b".repeat(64)}`;
+        const runner: DockerRunner = async args => {
+            const reply = (stdout: string) => ({ code: 0, stdout, stderr: "", timedOut: false, truncated: false });
+            if (args.includes("ls")) return reply(JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]));
+            if (args.includes("ps")) return reply(JSON.stringify({ Service: "app", Name: "demo-proj-app-1", Image: "nginx:alpine", State: "running", Health: "", ExitCode: 0 }));
+            if (args.includes("images")) return reply(JSON.stringify([{ ContainerName: "demo-proj-app-1", ID: oldId }]));
+            if (args[0] === "image" && args[1] === "inspect") {
+                return reply(JSON.stringify([
+                    { Id: newId, RepoTags: ["nginx:alpine"], Created: "2026-10-05T00:00:00Z", Config: { Labels: { "org.opencontainers.image.version": "1.27.2" } } },
+                    { Id: oldId, RepoTags: [], Created: "2026-09-01T00:00:00Z", Config: { Labels: { "org.opencontainers.image.version": "1.27.1" } } },
+                ]));
+            }
+            return reply("");
+        };
+        const app = makeApp({}, runner);
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo", session)).text();
+        expect(html).toContain("Update ready");
+        expect(html).toContain(`<span class="version">1.27.1</span> → <span class="version">1.27.2</span>`);
+        expect(html).toContain('href="https://hub.docker.com/_/nginx"');
+        expect(html).toContain("Update ready for app: Up recreates it with the newer image.");
     });
 
     test("puts Down behind an explicit confirmation on a deployed stack", async () => {

@@ -14,6 +14,12 @@ Caddy on the same host.
   address trusted without a proxy). Caddy setup, caddy-docker-proxy labels and
   a recommended second barrier are documented; `scripts/proxy-e2e/run.sh`
   (`bun run test:proxy:wsl`) checks the contract against a real Caddy with TLS.
+- Pull on its own and "Update ready" (ADR 0011): `Pull` downloads newer images
+  without touching containers; each service whose container runs an older image
+  than its tag now points to shows "Update ready" with from → to (OCI version
+  label, else build date, else digest) and a link to the release notes, source
+  or Docker Hub page. Derived locally from `compose images` and `image inspect`,
+  read-only; label URLs are validated and escaped.
 - `bun run preview`: the real panel on demo stacks with a simulated Docker
   (no command runs), to try every page, action and stream without any setup.
 - Activity audit and login backoff (P7, ADR 0009): an append-only NDJSON
@@ -26,7 +32,6 @@ Caddy on the same host.
   administrator out; the global verification cap is taken after the delay and
   only answers a transient `429` under distributed load. Behind a trusted proxy
   the client is the last `X-Forwarded-For` entry.
-
 - Verify effective names and collisions before creating Compose projects, pin
   creation identity, reserve project names during panel operations, and end log
   follows for undeployed stacks without a subprocess.

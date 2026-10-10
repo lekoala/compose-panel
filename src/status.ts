@@ -12,6 +12,7 @@ import {
     summarizeServices,
 } from "./compose-state.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
+import { loadImageUpdates, type ServiceUpdate } from "./updates.ts";
 
 const DOCKER_UNAVAILABLE = "Docker is not reachable, so statuses are shown as unknown. Check that the Docker daemon is running and its socket is available to the panel.";
 const DOCKER_SLOW = "Docker did not respond in time, so statuses are shown as unknown. Reload the page to try again.";
@@ -36,6 +37,8 @@ export interface StackDetailStatus {
     state: StackState;
     note: string | null;
     services: ComposeService[];
+    /** Services whose tag points to a newer local image than the container runs. */
+    updates?: Record<string, ServiceUpdate>;
 }
 
 async function loadProjects(provider: ComposeProvider): Promise<{ projects: ComposeProject[]; note: string | null }> {
@@ -178,7 +181,8 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
         if (result.timedOut) return { project: project.name, state: "unknown", note: DOCKER_SLOW, services: [] };
         if (result.code !== 0) return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
         const services = parseComposePs(result.stdout);
-        return { project: project.name, state: summarizeServices(services), note: null, services };
+        const updates = await loadImageUpdates(provider, { project: project.name, composeFile: location.filename, cwd: dirname(location.path) }, services);
+        return { project: project.name, state: summarizeServices(services), note: null, services, updates };
     } catch {
         return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
     }

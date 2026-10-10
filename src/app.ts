@@ -487,9 +487,9 @@ export function createApp(options: AppOptions): App {
             + `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}</p>`
             + (notice ? note(notice.kind, notice.text) : "")
             + (status.note ? note("warn", status.note) : "")
-            + operationControls(stack.name, csrf, { busy: operation?.status === "running", deployed: status.state !== "not-created" })
+            + operationControls(stack.name, csrf, { busy: operation?.status === "running", deployed: status.state !== "not-created", updatesReady: Object.keys(status.updates ?? {}) })
             + operationPanel(operation, stack.name)
-            + servicesSection(status.services, status.state)
+            + servicesSection(status.services, status.state, status.updates)
             + logsPanel(stack.name, config.logTailLines)
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
             { ...pageChrome(csrf), scripts: ["/app.js"] },
@@ -592,11 +592,12 @@ export function createApp(options: AppOptions): App {
         if (!isOperationAction(action)) return renderStackDetail(name, csrf, { kind: "error", text: "Unknown action. Nothing was run." }, 400);
 
         // Fail closed: ambiguous or unreachable project identity never runs
-        // blind. An undeployed stack can only be created (up / pull-up);
-        // destructive actions require a resolved project passed as explicit -p.
-        // Resolve a new project's effective name through Compose, check for
-        // collisions, then pin that identity explicitly before creation.
-        const creates = action === "up" || action === "pull-up";
+        // blind. An undeployed stack can only be created (up / pull-up) or have
+        // its images downloaded (pull, which touches no container); destructive
+        // actions require a resolved project passed as explicit -p. Resolve a
+        // new project's effective name through Compose, check for collisions,
+        // then pin that identity explicitly.
+        const creates = action === "up" || action === "pull-up" || action === "pull";
         const context = await resolveProjectContext(stacksRoot, name, provider, creates);
         if (context.kind === "invalid") {
             throw new StackError(ENV_NOT_REGULAR, 409);

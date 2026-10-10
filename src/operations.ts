@@ -3,7 +3,7 @@ import type { CommandResult } from "./docker.ts";
 import type { ComposeProvider, ComposeTarget } from "./compose-provider.ts";
 import { StackLocks, StackBusyError } from "./locks.ts";
 
-export const OPERATION_ACTIONS = ["up", "stop", "restart", "down", "pull-up"] as const;
+export const OPERATION_ACTIONS = ["up", "pull", "stop", "restart", "down", "pull-up"] as const;
 export type OperationAction = typeof OPERATION_ACTIONS[number];
 
 export function isOperationAction(value: string): value is OperationAction {
@@ -253,6 +253,7 @@ export class OperationManager {
 function runAction(provider: ComposeProvider, action: Exclude<OperationAction, "pull-up">, target: ComposeTarget): Promise<CommandResult> {
     switch (action) {
         case "up": return provider.up(target);
+        case "pull": return provider.pull(target);
         case "stop": return provider.stop(target);
         case "restart": return provider.restart(target);
         case "down": return provider.down(target);

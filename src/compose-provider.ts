@@ -50,6 +50,14 @@ export interface ComposeProvider {
     /** Resolve only the effective name; never return or publish interpolated config. */
     projectName(input: { composeFile: string; cwd: string; envFile?: string }): Promise<string | null>;
     projectServices(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult>;
+    /** Read-only: which image ID each container of the project runs. */
+    projectImages(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult>;
+    /**
+     * Read-only: local details (ID, digests, creation date, labels) of images
+     * given by reference or ID. References that do not look like an image
+     * reference or ID are dropped, never passed to the CLI.
+     */
+    inspectImages(refs: string[]): Promise<CommandResult>;
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult>;
     pull(target: ComposeTarget): Promise<CommandResult>;
     up(target: ComposeTarget): Promise<CommandResult>;
@@ -124,6 +132,21 @@ class DockerComposeProvider implements ComposeProvider {
         );
     }
 
+    projectImages(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult> {
+        if (!this.caps.operations.ps) return Promise.reject(new ComposeUnsupportedError("images"));
+        return this.runner(
+            ["compose", "-p", input.project, "-f", input.composeFile, "images", "--format", "json"],
+            { cwd: input.cwd },
+        );
+    }
+
+    inspectImages(refs: string[]): Promise<CommandResult> {
+        const safe = [...new Set(refs)].filter(isImageReference);
+        if (safe.length === 0) return Promise.resolve({ code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false });
+        // `--` ends option parsing: a reference can never be read as a flag.
+        return this.runner(["image", "inspect", "--", ...safe]);
+    }
+
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult> {
         if (!this.caps.operations.config) return Promise.reject(new ComposeUnsupportedError("config"));
         const args = ["compose"];
@@ -183,6 +206,14 @@ class DockerComposeProvider implements ComposeProvider {
         });
         return { code: result.code, timedOut: result.timedOut, terminationUnconfirmed: result.terminationUnconfirmed };
     }
+}
+
+const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
+const IMAGE_REFERENCE = /^[a-z0-9][a-z0-9._/:@-]{0,254}$/i;
+
+/** An image ID, or a reference like `registry:5000/ns/name:tag@sha256:…`. */
+export function isImageReference(value: string): boolean {
+    return IMAGE_ID.test(value) || (IMAGE_REFERENCE.test(value) && !value.includes(".."));
 }
 
 export interface ComposeProviderOptions {
