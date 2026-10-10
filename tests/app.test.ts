@@ -638,6 +638,22 @@ describe("operations routes", () => {
         expect(html).toMatch(/value="up"><button type="submit" class="btn btn-primary" data-op-button/);
     });
 
+    test("puts Down behind an explicit confirmation on a deployed stack", async () => {
+        const deployed: DockerRunner = async args => {
+            if (args.includes("ls")) return { code: 0, stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]), stderr: "", timedOut: false, truncated: false };
+            if (args.includes("ps")) return { code: 0, stdout: JSON.stringify({ Service: "app", State: "running", Health: "", ExitCode: 0 }), stderr: "", timedOut: false, truncated: false };
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+        const app = makeApp({}, deployed);
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo", session)).text();
+        const confirm = /<details class="op-confirm">[\s\S]*?<\/details>/.exec(html)?.[0] ?? "";
+        expect(confirm).toContain('value="down">');
+        expect(confirm).toContain("Yes, remove the containers");
+        // The only form that submits "down" is the one inside the disclosure.
+        expect(html.split('value="down"').length - 1).toBe(1);
+    });
+
     test("explains an expired session instead of a bare 401", async () => {
         const app = makeApp({}, dispatch(async () => okResult));
         const response = await app.fetch(new Request(`${ORIGIN}/stacks/demo/operations`, {

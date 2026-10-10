@@ -228,6 +228,53 @@
                 if (typeof form.requestSubmit === "function") form.requestSubmit();
             }
         });
+        Array.prototype.forEach.call(form.querySelectorAll("textarea[data-code]"), wireIndent);
+        Array.prototype.forEach.call(form.querySelectorAll("textarea[data-sensitive]"), maskSensitive);
+        var actions = form.querySelector(".form-actions");
+        if (actions) {
+            var hint = document.createElement("p");
+            hint.className = "muted keys";
+            hint.textContent = "Tab indents. Press Esc, then Tab, to leave a field. Ctrl+S (⌘S) saves.";
+            actions.parentNode.insertBefore(hint, actions.nextSibling);
+        }
+    }
+
+    /* Tab inserts two spaces (YAML forbids tab indentation). Esc releases the
+     * next Tab so keyboard users can still leave the field. */
+    function wireIndent(area) {
+        var release = false;
+        area.addEventListener("keydown", function (e) {
+            if (e.key === "Escape") { release = true; return; }
+            if (e.key !== "Tab" || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || release) {
+                if (e.key !== "Shift") release = false;
+                return;
+            }
+            e.preventDefault();
+            // execCommand keeps the browser's undo history; fall back if unsupported.
+            if (!document.execCommand || !document.execCommand("insertText", false, "  ")) {
+                area.setRangeText("  ", area.selectionStart, area.selectionEnd, "end");
+                area.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+        });
+        area.addEventListener("blur", function () { release = false; });
+    }
+
+    /* Hide secret values until asked, e.g. when the screen is shared. The field
+     * is only hidden, not removed, so the form still submits it unchanged. */
+    function maskSensitive(area) {
+        if (!area.value) return;
+        var lines = area.value.split("\n").filter(function (line) { return line.trim() !== ""; }).length;
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "btn reveal";
+        button.textContent = "Show values (" + lines + " line" + (lines === 1 ? "" : "s") + ")";
+        area.hidden = true;
+        area.parentNode.insertBefore(button, area);
+        button.addEventListener("click", function () {
+            area.hidden = false;
+            button.remove();
+            area.focus();
+        });
     }
 
     document.addEventListener("DOMContentLoaded", function () {

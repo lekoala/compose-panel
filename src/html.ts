@@ -116,10 +116,10 @@ ${error}
   <input type="hidden" name="envHash" value="${escapeHtml(options.envHash)}">
   <input type="hidden" name="envExists" value="${options.envExists ? "1" : "0"}">
   <label>${escapeHtml(options.composeFilename)}
-    <textarea name="compose" rows="24" spellcheck="false" autocapitalize="none" required>${escapeHtml(options.composeSource)}</textarea>
+    <textarea name="compose" rows="24" spellcheck="false" autocapitalize="none" required data-code>${escapeHtml(options.composeSource)}</textarea>
   </label>
   <label>.env <span class="hint">${escapeHtml(envHint)}</span>
-    <textarea name="env" rows="12" spellcheck="false" autocapitalize="none">${escapeHtml(options.envSource)}</textarea>
+    <textarea name="env" rows="12" spellcheck="false" autocapitalize="none" data-sensitive data-code>${escapeHtml(options.envSource)}</textarea>
   </label>
   <div class="form-actions">
     <button type="submit" class="btn btn-primary" data-busy-label="Checking and saving…">Check and save</button>
@@ -143,10 +143,11 @@ export function stateBadge(state: string): string {
 function serviceBadge(service: ComposeService): string {
     const state = service.state.toLowerCase();
     if (state === "exited") {
-        // An init job that exited 0 is finished, not broken.
+        // An init job that exited 0 is finished, not broken. A non-zero code is
+        // not necessarily a crash either: `docker stop` itself yields 137/143.
         const done = service.exitCode === 0;
         const label = service.exitCode === null ? "Exited" : `Exited (code ${service.exitCode})`;
-        return `<span class="state ${done ? "state-done" : "state-failed"}">${escapeHtml(label)}</span>`;
+        return `<span class="state ${done ? "state-done" : "state-stopped"}">${escapeHtml(label)}</span>`;
     }
     const cls = state === "running" ? "state-running" : state === "restarting" || state === "dead" ? "state-failed" : "state-stopped";
     const label = state.charAt(0).toUpperCase() + state.slice(1);
@@ -192,8 +193,14 @@ export function operationControls(name: string, csrf: string, options: { busy: b
         // Only actions that need a deployment are locked by it; the busy lock
         // is released by app.js when the running action finishes.
         const lock = op.needsDeployment && !options.deployed ? ` data-needs-deployment` : "";
-        const form = `<form method="post" action="${action}" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="action" value="${op.action}"><button type="submit" class="btn ${op.style}"${disabled}${lock} data-op-button data-busy-label="Starting…">${op.label}</button></form>`;
-        return `<div class="op-row">${form}<p class="op-help">${escapeHtml(op.help)}</p></div>`;
+        const form = (label: string) => `<form method="post" action="${action}" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="action" value="${op.action}"><button type="submit" class="btn ${op.style}"${disabled}${lock} data-op-button data-busy-label="Starting…">${escapeHtml(label)}</button></form>`;
+        if (op.action === "down" && options.deployed) {
+            // Destructive: a disclosure asks for a second, explicit click. Works without JS.
+            return `<details class="op-confirm"><summary class="op-row"><span class="btn ${op.style}">${op.label}…</span><span class="op-help">${escapeHtml(op.help)}</span></summary>`
+                + `<div class="op-confirm-panel">${note("warn", `This stops and removes every container and network of ${name}. Volumes and images are kept, and Up recreates the containers. Click Down… again to cancel.`)}`
+                + `${form("Yes, remove the containers")}</div></details>`;
+        }
+        return `<div class="op-row">${form(op.label)}<p class="op-help">${escapeHtml(op.help)}</p></div>`;
     }).join("");
     const status = options.busy
         ? note("info", "An action is running. The buttons unlock when it finishes.", { id: "op-busy-note" })

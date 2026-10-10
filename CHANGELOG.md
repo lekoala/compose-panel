@@ -49,7 +49,9 @@ loopback HTTP only (`127.0.0.1`, no proxy/TLS yet).
   table with a summary and an explanatory empty state; readable pages instead
   of bare `401`/`403`/`413` text; a standalone centered sign-in page. Local
   times, scroll-aware live output, double-submit guard, unsaved-changes warning
-  and Ctrl/Cmd+S in the editor. Self-contained stylesheet with light/dark color
+  and Ctrl/Cmd+S in the editor. Down asks for an explicit second click (works
+  without JS); `.env` values are hidden until "Show values" is clicked; Tab
+  indents in the editor (Esc, then Tab, leaves the field). Self-contained stylesheet with light/dark color
   tokens, laid out for phones (44 px touch targets, 16 px fields, no
   horizontal scroll).
 - A draft kept after a failed save keeps the file versions it was based on, so

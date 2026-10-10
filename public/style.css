@@ -142,3 +142,17 @@ details[open] > summary{margin-bottom:.75rem}
   .output{max-height:60vh}
   .form-actions .btn{flex:1}
 }
+
+/* Confirmation for destructive actions and editor helpers */
+.op-confirm > summary{list-style:none;cursor:pointer;font-weight:400}
+.op-confirm-panel .btn-danger{background:var(--danger);color:var(--bg);font-weight:600}
+.op-confirm > summary::-webkit-details-marker{display:none}
+.op-confirm > summary .btn{width:100%}
+.op-confirm[open] > summary .btn{background:var(--danger-bg)}
+.op-confirm-panel{margin:.25rem 0 .5rem;padding-left:9rem}
+.op-confirm-panel .note{margin-top:0}
+.op-confirm-panel .op-form .btn{width:auto}
+.reveal{align-self:flex-start;font-weight:400}
+.form textarea[hidden]{display:none}
+.keys{margin:0;font-size:.85rem}
+@media (max-width:36rem){.op-confirm-panel{padding-left:0}}
