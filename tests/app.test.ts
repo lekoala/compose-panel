@@ -703,8 +703,7 @@ describe("event streams", () => {
     });
 });
 
-describe("verified project context", () => {
-    const okResult: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+describe("verified project context", () => {    const okResult: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
     const lsOf = (projects: unknown): CommandResult => ({ code: 0, stdout: JSON.stringify(projects), stderr: "", timedOut: false, truncated: false });
 
     interface Spy { mutations: string[][]; validates: string[][]; }
@@ -836,5 +835,55 @@ describe("verified project context", () => {
         const position = spy.validates[0]!.indexOf("-p");
         expect(position).toBeGreaterThan(-1);
         expect(spy.validates[0]![position + 1]).toBe("demo-proj");
+    });
+});
+
+describe("shutdown policy", () => {
+    beforeEach(async () => {
+        await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+        await rm(join(root, "demo", ".env"), { force: true });
+    });
+
+    async function shutdownApp(): Promise<{ app: App; session: string; csrf: string }> {
+        const { provider } = controllableProvider();
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const html = await (await authed(app, "/", session)).text();
+        const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+        await app.beginShutdown(50);
+        return { app, session, csrf };
+    }
+
+    test("refuses saves, operations and new follows once shutdown started", async () => {
+        const { app, session, csrf } = await shutdownApp();
+
+        const editHtml = await (await authed(app, "/stacks/demo/edit", session)).text();
+        const save = await authed(app, "/stacks/demo/edit", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                csrf,
+                compose: "services:\n  app:\n    image: nginx:alpine\n",
+                env: "",
+                composeHash: /name="composeHash" value="([^"]+)"/.exec(editHtml)![1]!,
+                envHash: /name="envHash" value="([^"]+)"/.exec(editHtml)![1]!,
+                envExists: /name="envExists" value="([^"]+)"/.exec(editHtml)![1]!,
+            }).toString(),
+        });
+        expect(save.status).toBe(409);
+        expect(await save.text()).toContain("shutting down");
+
+        const operation = await authed(app, "/stacks/demo/operations", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, action: "up" }).toString(),
+        });
+        expect(operation.status).toBe(409);
+
+        const follow = await authed(app, "/stacks/demo/logs/events", session);
+        expect(follow.status).toBe(503);
+        await follow.body!.cancel();
+
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toContain("nginx:alpine");
     });
 });

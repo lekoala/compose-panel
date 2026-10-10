@@ -125,6 +125,12 @@ test("refuses new operations once shutdown started", async () => {
     expect(() => manager.start({ stack: "demo", action: "up", target })).toThrow(OperationsDisabledError);
 });
 
+test("refuses new operations immediately on refuseNew", () => {
+    const manager = new OperationManager(new StackLocks(), fakeProvider(), { timeoutMs: 1000, maxBytes: 10_000 });
+    manager.refuseNew();
+    expect(() => manager.start({ stack: "demo", action: "up", target })).toThrow(OperationsDisabledError);
+});
+
 test("subscribers receive live updates and unsubscribe without cancelling", async () => {
     let release!: () => void;
     const gate = new Promise<CommandResult>(resolve => { release = () => resolve(ok); });

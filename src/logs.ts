@@ -1,4 +1,5 @@
 import type { ComposeProvider, ComposeTarget } from "./compose-provider.ts";
+import { StackError } from "./stacks.ts";
 
 export interface LogManagerOptions {
     tailLines: number;
@@ -12,6 +13,7 @@ export interface LogSnapshot {
 }
 
 interface LogStream {
+    stack: string;
     target: ComposeTarget;
     buffer: string;
     truncated: boolean;
@@ -37,11 +39,17 @@ export function stripAnsi(text: string): string {
  */
 export class LogManager {
     private readonly streams = new Map<string, LogStream>();
+    private refusing = false;
 
     constructor(
         private readonly provider: ComposeProvider,
         private readonly options: LogManagerOptions,
     ) {}
+
+    /** Refuse new subscriptions synchronously. Existing readers keep going. */
+    refuseNew(): void {
+        this.refusing = true;
+    }
 
     isActive(stack: string): boolean {
         return this.streams.has(stack);
@@ -63,61 +71,70 @@ export class LogManager {
         listener: (chunk: string) => void,
         onEnd: (reason: "ended" | "timeout") => void,
     ): { replay: LogSnapshot; unsubscribe: () => void } {
+        if (this.refusing) throw new StackError("The server is shutting down; new log follows are refused.", 503);
         let stream = this.streams.get(stack);
         if (!stream) {
             stream = this.start(stack, target);
             this.streams.set(stack, stream);
         }
-        stream.listeners.add(listener);
-        stream.endListeners.add(onEnd);
-        const replay: LogSnapshot = { text: stream.buffer, truncated: stream.truncated };
+        // Capture the instance: a later replacement must not receive this
+        // reader's unsubscribe, and this reader must not stop the replacement.
+        const owned = stream;
+        owned.listeners.add(listener);
+        owned.endListeners.add(onEnd);
+        const replay: LogSnapshot = { text: owned.buffer, truncated: owned.truncated };
         let done = false;
         return {
             replay,
             unsubscribe: () => {
                 if (done) return;
                 done = true;
-                const current = this.streams.get(stack);
-                if (!current) return;
-                current.listeners.delete(listener);
-                current.endListeners.delete(onEnd);
-                if (current.listeners.size === 0) this.stop(stack, "ended");
+                owned.listeners.delete(listener);
+                owned.endListeners.delete(onEnd);
+                if (this.streams.get(stack) === owned && owned.listeners.size === 0) {
+                    this.stop(owned, "ended");
+                }
             },
         };
     }
 
-    /** Kill every follow subprocess. Used on server shutdown. */
-    async shutdown(): Promise<void> {
-        const stacks = [...this.streams.keys()];
-        for (const stack of stacks) this.stop(stack, "ended");
-        await Promise.allSettled([...this.streams.values()].map(stream => stream.done));
+    /**
+     * Abort every follow and wait for confirmation, bounded. Late provider
+     * completions are dropped by instance check; entries are already gone.
+     */
+    async shutdown(graceMs: number): Promise<void> {
+        this.refuseNew();
+        const pending = [...this.streams.values()].map(stream => stream.done);
+        for (const stream of this.streams.values()) this.stop(stream, "ended");
+        if (pending.length === 0) return;
+        await Promise.race([Promise.allSettled(pending), new Promise<void>(resolve => setTimeout(resolve, graceMs))]);
     }
 
     private start(stack: string, target: ComposeTarget): LogStream {
         const controller = new AbortController();
         const stream: LogStream = {
+            stack,
             target,
             buffer: "",
             truncated: false,
             listeners: new Set(),
             endListeners: new Set(),
             controller,
-            timer: setTimeout(() => this.stop(stack, "timeout"), this.options.timeoutMs),
+            timer: setTimeout(() => this.stop(stream, "timeout"), this.options.timeoutMs),
             done: Promise.resolve(),
             ended: false,
         };
         const fullTarget = { ...target, tailLines: this.options.tailLines };
-        stream.done = this.provider.followLogs(fullTarget, chunk => this.ingest(stack, chunk), controller.signal)
+        stream.done = this.provider.followLogs(fullTarget, chunk => this.ingest(stream, chunk), controller.signal)
             .then(
-                () => this.finish(stack, "ended"),
-                () => this.finish(stack, "ended"),
+                () => this.finish(stream, "ended"),
+                () => this.finish(stream, "ended"),
             );
         return stream;
     }
 
-    private ingest(stack: string, raw: string): void {
-        const stream = this.streams.get(stack);
-        if (!stream || stream.ended) return;
+    private ingest(stream: LogStream, raw: string): void {
+        if (stream.ended) return;
         const chunk = stripAnsi(raw);
         if (!chunk) return;
         const combined = stream.buffer ? `${stream.buffer}${chunk}` : chunk;
@@ -135,25 +152,22 @@ export class LogManager {
         }
     }
 
-    private finish(stack: string, reason: "ended" | "timeout"): void {
-        const stream = this.streams.get(stack);
-        if (!stream || stream.ended) return;
+    private finish(stream: LogStream, reason: "ended" | "timeout"): void {
+        if (stream.ended) return;
         stream.ended = true;
         clearTimeout(stream.timer);
         for (const listener of [...stream.endListeners]) {
             try { listener(reason); }
             catch { /* ignore */ }
         }
-        this.streams.delete(stack);
+        // Only remove our own entry: a replacement started after us keeps
+        // running under the same stack name.
+        if (this.streams.get(stream.stack) === stream) this.streams.delete(stream.stack);
     }
 
-    private stop(stack: string, reason: "ended" | "timeout"): void {
-        const stream = this.streams.get(stack);
-        if (!stream || stream.ended) return;
-        clearTimeout(stream.timer);
+    private stop(stream: LogStream, reason: "ended" | "timeout"): void {
+        if (stream.ended) return;
         try { stream.controller.abort(); } catch { /* already aborted */ }
-        // If the provider never settles (stuck process), still notify readers.
-        // finish() will no-op thanks to the `ended` flag when the process exits.
-        if (reason === "timeout") this.finish(stack, reason);
+        this.finish(stream, reason);
     }
 }

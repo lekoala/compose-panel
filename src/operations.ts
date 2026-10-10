@@ -124,9 +124,14 @@ export class OperationManager {
         return operation;
     }
 
+    /** Refuse new operations synchronously. Running ones keep going. */
+    refuseNew(): void {
+        this.shuttingDown = true;
+    }
+
     /** Stop accepting new operations and wait (bounded) for running ones. */
     async shutdown(graceMs: number): Promise<void> {
-        this.shuttingDown = true;
+        this.refuseNew();
         if (this.tasks.size === 0) return;
         const drained = Promise.allSettled([...this.tasks]);
         await Promise.race([drained, new Promise<void>(resolve => setTimeout(resolve, graceMs))]);

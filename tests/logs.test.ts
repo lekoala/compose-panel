@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { LogManager, stripAnsi } from "../src/logs.ts";
+import { StackError } from "../src/stacks.ts";
 import type { ComposeCapabilities, ComposeProvider, ComposeTarget } from "../src/compose-provider.ts";
 import type { CommandResult } from "../src/docker.ts";
 
@@ -39,6 +40,36 @@ function manager(provider: ComposeProvider, overrides = {}) {
     return new LogManager(provider, { tailLines: 50, maxBytes: 1024, timeoutMs: 60_000, ...overrides });
 }
 
+/** Provider whose follow calls settle only when told to (or on abort). */
+function deferredProvider(): {
+    provider: ComposeProvider;
+    calls: FollowCall[];
+    resolvers: (() => void)[];
+} {
+    const calls: FollowCall[] = [];
+    const resolvers: (() => void)[] = [];
+    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
+    const provider: ComposeProvider = {
+        engine: "fake",
+        capabilities: () => caps,
+        detect: async () => caps,
+        listProjects: async () => ok,
+        projectServices: async () => ok,
+        validateConfig: async () => ok,
+        pull: async () => ok,
+        up: async () => ok,
+        stop: async () => ok,
+        restart: async () => ok,
+        down: async () => ok,
+        followLogs: (followTarget, onChunk, signal) => new Promise(resolve => {
+            calls.push({ target: followTarget, onChunk, signal });
+            resolvers.push(() => resolve({ code: 0, timedOut: false }));
+            signal.addEventListener("abort", () => resolve({ code: 137, timedOut: false }), { once: true });
+        }),
+    };
+    return { provider, calls, resolvers };
+}
+
 test("stripAnsi removes color escapes", () => {
     expect(stripAnsi("\x1b[32mok\x1b[0m plain")).toBe("ok plain");
 });
@@ -73,7 +104,7 @@ test("leaving the last reader aborts the follow subprocess", async () => {
     expect(calls[0]!.signal.aborted).toBe(false);
     b.unsubscribe();
     expect(calls[0]!.signal.aborted).toBe(true);
-    await logs.shutdown();
+    await logs.shutdown(1000);
     expect(logs.isActive("demo")).toBe(false);
 });
 
@@ -106,8 +137,75 @@ test("shutdown kills active follows", async () => {
     const { provider, calls } = controllableProvider();
     const logs = manager(provider);
     logs.subscribe("demo", target, () => {}, () => {});
-    await logs.shutdown();
+    await logs.shutdown(1000);
     expect(calls[0]!.signal.aborted).toBe(true);
     expect(logs.isActive("demo")).toBe(false);
     expect(logs.subscriberCount()).toBe(0);
+});
+
+test("a timed-out stream cannot kill or contaminate its replacement", async () => {
+    const { provider, calls, resolvers } = deferredProvider();
+    const logs = manager(provider, { timeoutMs: 20 });
+    let reasonA: string | null = null;
+    const subA = logs.subscribe("demo", target, () => {}, end => { reasonA = end; });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect(reasonA!).toBe("timeout");
+    expect(logs.isActive("demo")).toBe(false);
+
+    const receivedB: string[] = [];
+    const subB = logs.subscribe("demo", target, chunk => receivedB.push(chunk), () => {});
+    expect(calls.length).toBe(2);
+
+    // The old stream settles late and emits stale output: both are dropped.
+    resolvers[0]!();
+    calls[0]!.onChunk("stale\n");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(logs.isActive("demo")).toBe(true);
+    expect(receivedB.join("")).not.toContain("stale");
+
+    // The old reader leaving does not stop the replacement.
+    subA.unsubscribe();
+    expect(logs.isActive("demo")).toBe(true);
+    expect(calls[1]!.signal.aborted).toBe(false);
+    subB.unsubscribe();
+    expect(calls[1]!.signal.aborted).toBe(true);
+});
+
+test("shutdown stays bounded when a follow never settles", async () => {
+    const caps: ComposeCapabilities = { engine: "stuck", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
+    const stuck: ComposeProvider = {
+        engine: "stuck",
+        capabilities: () => caps,
+        detect: async () => caps,
+        listProjects: async () => ok,
+        projectServices: async () => ok,
+        validateConfig: async () => ok,
+        pull: async () => ok,
+        up: async () => ok,
+        stop: async () => ok,
+        restart: async () => ok,
+        down: async () => ok,
+        followLogs: () => new Promise(() => {}),
+    };
+    const logs = manager(stuck, { timeoutMs: 60_000 });
+    let ended = false;
+    logs.subscribe("demo", target, () => {}, () => { ended = true; });
+    const started = Date.now();
+    await logs.shutdown(50);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(ended).toBe(true);
+    expect(logs.isActive("demo")).toBe(false);
+});
+
+test("refuses new subscriptions once shutdown started", async () => {
+    const { provider } = controllableProvider();
+    const logs = manager(provider);
+    logs.refuseNew();
+    try {
+        logs.subscribe("demo", target, () => {}, () => {});
+        throw new Error("expected subscribe to fail");
+    } catch (error) {
+        expect(error).toBeInstanceOf(StackError);
+        expect((error as StackError).status).toBe(503);
+    }
 });

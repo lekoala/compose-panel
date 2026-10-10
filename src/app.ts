@@ -168,6 +168,7 @@ export function createApp(options: AppOptions): App {
         timeoutMs: config.logTimeoutMs,
     });
     let activeSse = 0;
+    let shuttingDown = false;
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
     const limiter = new LoginRateLimiter(
         config.loginRateLimit.maxAttempts,
@@ -321,7 +322,10 @@ export function createApp(options: AppOptions): App {
         };
 
         try {
-            await locks.run(name, () => saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes));
+            await locks.run(name, () => {
+                if (shuttingDown) throw new OperationsDisabledError();
+                return saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes);
+            });
             return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
         } catch (error) {
             if (error instanceof StackValidationError) {
@@ -330,7 +334,7 @@ export function createApp(options: AppOptions): App {
             if (error instanceof StackConflictError) {
                 return renderEdit(name, csrf, { error: `${error.message} Reload to see the current content.`, keepDraft: false, status: 409 });
             }
-            if (error instanceof StackBusyError) {
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
                 return htmlResponse(documentHtml("Busy", `<h1>Busy</h1><p>${escapeHtml(error.message)}</p><p><a href="/stacks/${encodeURIComponent(name)}">Back</a></p>`), 409);
             }
             if (error instanceof StackPartialError) {
@@ -417,6 +421,8 @@ export function createApp(options: AppOptions): App {
         };
         let cleanup = () => {};
         let doClose = () => {};
+        let startError: unknown = null;
+        let startFailed = false;
         const stream = new ReadableStream<Uint8Array>({
             start(controller) {
                 const encoder = new TextEncoder();
@@ -455,7 +461,12 @@ export function createApp(options: AppOptions): App {
                 request.signal.addEventListener("abort", onAbort, { once: true });
                 try {
                     cleanup = wire(send, close);
-                } catch {
+                } catch (error) {
+                    // A synchronous subscription refusal (e.g. server shutting
+                    // down) must surface as an error status, not an empty 200
+                    // stream. start() runs synchronously, so rethrow below.
+                    startFailed = true;
+                    startError = error;
                     close();
                 }
             },
@@ -463,6 +474,7 @@ export function createApp(options: AppOptions): App {
                 doClose();
             },
         }, { highWaterMark: 64 });
+        if (startFailed) throw startError;
         return new Response(stream, { headers: sseHeaders() });
     }
 
@@ -630,8 +642,17 @@ export function createApp(options: AppOptions): App {
         logs,
         sseSubscriptions: () => activeSse,
         beginShutdown: async (graceMs: number) => {
-            await logs.shutdown();
-            await operations.shutdown(graceMs);
+            // Refuse everything synchronously first: no new mutation, save or
+            // follow can slip in while the drains below are awaited.
+            shuttingDown = true;
+            operations.refuseNew();
+            logs.refuseNew();
+            // One shared deadline for both drains; unresolved work stays
+            // unknown and is never reported as done.
+            await Promise.race([
+                Promise.allSettled([logs.shutdown(graceMs), operations.shutdown(graceMs)]),
+                new Promise<void>(resolve => setTimeout(resolve, graceMs)),
+            ]);
         },
     };
 }
