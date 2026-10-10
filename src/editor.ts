@@ -69,16 +69,55 @@ export async function readEditableStack(root: string, name: string, maxBytes: nu
 /** Values from a .env file that must never appear in an error message or a log. */
 export function collectSecrets(envSource: string): string[] {
     const secrets = new Set<string>();
-    for (const line of envSource.split(/\r?\n/)) {
-        const trimmed = line.trim();
+    const add = (value: string) => {
+        if (value.length >= 4) secrets.add(value);
+        if (!/[\r\n]/.test(value)) return;
+        // A multiline value may be echoed whole, with escaped newlines, or one
+        // line at a time: redact every form.
+        secrets.add(value.replace(/\r?\n/g, "\\n"));
+        for (const part of value.split(/\r?\n/)) {
+            if (part.trim().length >= 4) secrets.add(part.trim());
+        }
+    };
+    const lines = envSource.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+        const trimmed = lines[i]!.trim();
         if (!trimmed || trimmed.startsWith("#")) continue;
         const entry = trimmed.startsWith("export ") ? trimmed.slice(7).trim() : trimmed;
         const index = entry.indexOf("=");
         if (index === -1) continue;
-        const value = parseEnvValue(entry.slice(index + 1));
-        if (value.length >= 4) secrets.add(value);
+        let raw = entry.slice(index + 1).trim();
+        const quote = raw[0];
+        if ((quote === '"' || quote === "'") && !closesQuote(raw, quote)) {
+            // A quoted value may span lines. An unterminated quote is left as a
+            // single-line value so the following entries are still collected.
+            let end = i + 1;
+            let joined = raw;
+            for (; end < lines.length; end += 1) {
+                joined += `\n${lines[end]}`;
+                if (closesQuote(joined, quote)) break;
+            }
+            if (end < lines.length) {
+                raw = joined;
+                i = end;
+            }
+        }
+        add(parseEnvValue(raw));
     }
     return [...secrets];
+}
+
+/** Whether a value opened by `quote` is closed, with the escapes `parseEnvValue` honors. */
+function closesQuote(raw: string, quote: string): boolean {
+    for (let i = 1; i < raw.length; i += 1) {
+        const ch = raw[i]!;
+        if (ch === "\\" && i + 1 < raw.length && (quote === '"' || raw[i + 1] === "'" || raw[i + 1] === "\\")) {
+            i += 1;
+            continue;
+        }
+        if (ch === quote) return true;
+    }
+    return false;
 }
 
 /**
@@ -128,7 +167,9 @@ function parseEnvValue(raw: string): string {
 
 export function redactSecrets(text: string, secrets: string[]): string {
     let output = text;
-    for (const secret of secrets) {
+    // Longest first: a short value contained in a longer one would otherwise be
+    // replaced first and leave the rest of the longer value readable.
+    for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
         if (secret.length < 4) continue;
         output = output.split(secret).join("***");
     }
@@ -183,6 +224,11 @@ export async function validateDraft(
         });
         if (result.timedOut) return { ok: false, message: "docker compose config did not answer in time. Check that Docker is responsive, then save again." };
         if (result.code !== 0) {
+            // The runner already cut the output: a secret crossing that cut
+            // survives as a fragment no redaction can recognize. Show nothing of it.
+            if (result.truncated) {
+                return { ok: false, message: "docker compose config rejected the file. Its message was too long to show safely; run docker compose config --quiet in the stack folder to read it." };
+            }
             // Redact BEFORE truncating: a secret crossing the line/char boundary
             // would otherwise survive as an unreplaceable prefix.
             const raw = firstLines(redactSecrets(result.stderr, secrets)) || "docker compose config rejected the file without giving a reason.";
@@ -221,6 +267,8 @@ export interface SaveResult {
 export interface SaveOptions {
     /** Override for the atomic file writer. Test seam for commit-phase failures. */
     writer?: (path: string, content: string, mode: number) => Promise<void>;
+    /** Called after validation, before any backup or write; throwing aborts the save untouched. */
+    beforeCommit?: () => void;
 }
 
 export async function saveEditableStack(
@@ -310,6 +358,7 @@ export async function saveEditableStack(
             throw new StackConflictError("The .env file changed on disk while it was being checked.");
         }
 
+        options.beforeCommit?.();
         const backupDir = await ensureBackupDir(root, name);
         const backupPaths: string[] = [];
         const writer = options.writer ?? writeFileAtomic;

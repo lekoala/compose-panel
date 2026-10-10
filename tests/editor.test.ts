@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FileSafetyError, hashContent, writeFileAtomic } from "../src/fs-safe.ts";
@@ -11,6 +12,7 @@ import {
     readEditableStack,
     redactSecrets,
     saveEditableStack,
+    validateDraft,
     type SaveRequest,
 } from "../src/editor.ts";
 import { StackError } from "../src/stacks.ts";
@@ -367,5 +369,46 @@ describe("saveEditableStack", () => {
         await symlink(join(outside, "secret.env"), join(root, "demo", ".env"));
         await expect(current()).rejects.toThrow();
         await rm(outside, { recursive: true, force: true });
+    });
+});
+
+describe("secret redaction edge cases", () => {
+    test("redacts the longest value first when values overlap", () => {
+        const secrets = collectSecrets("SHORT=abcd\nLONG=abcd-sensitive-suffix\n");
+        expect(redactSecrets("bad value abcd-sensitive-suffix", secrets)).toBe("bad value ***");
+        expect(redactSecrets("bad value abcd", secrets)).toBe("bad value ***");
+    });
+
+    test("collects multiline quoted values whole and line by line", () => {
+        const env = "TOKEN='firstline\nlast-secret-line'\nNEXT=another-value\nDQ=\"one-line\nsecond-line\"\n";
+        const secrets = collectSecrets(env);
+        expect(redactSecrets("invalid containerPort: firstline\nlast-secret-line", secrets)).toBe("invalid containerPort: ***");
+        expect(redactSecrets("invalid containerPort: firstline\\nlast-secret-line", secrets)).toBe("invalid containerPort: ***");
+        expect(redactSecrets("near last-secret-line", secrets)).toBe("near ***");
+        expect(redactSecrets("near second-line", secrets)).toBe("near ***");
+        expect(secrets).toContain("another-value");
+    });
+
+    test("an unterminated quote does not swallow the following entries", () => {
+        const secrets = collectSecrets("A='opened-never-closed\nB=second-value\n");
+        expect(secrets).toContain("second-value");
+        expect(secrets).toContain("opened-never-closed");
+    });
+
+    test("never shows a diagnostic the runner truncated", async () => {
+        const capped: DockerRunner = async () => ({ code: 1, stdout: "", stderr: "error: synthetic-sec", timedOut: false, truncated: true });
+        const result = await validateDraft(asProvider(capped), join(root, "demo"), COMPOSE, undefined, ["synthetic-secret-value"]);
+        expect(result.ok).toBe(false);
+        expect(result.message).not.toContain("synthetic");
+        expect(result.message).toContain("too long to show safely");
+    });
+
+    test("a save stopped before commit writes nothing", async () => {
+        const request = req(await current(), { composeSource: "services:\n  app:\n    image: nginx:1.27\n" });
+        await expect(saveEditableStack(root, "demo", request, asProvider(okRunner), MAX, {
+            beforeCommit: () => { throw new Error("session ended"); },
+        })).rejects.toThrow("session ended");
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
+        expect(existsSync(join(root, ".compose-panel"))).toBe(false);
     });
 });

@@ -137,6 +137,8 @@ export interface RateLimitVerdict {
     retryAfterSec: number;
     /** Bounded delay to apply before verifying, once a key is over its limit. */
     delayMs: number;
+    /** Why an attempt was refused: a parallel attempt of the same key, or too many tracked keys. */
+    reason?: "parallel" | "capacity";
 }
 
 /**
@@ -154,6 +156,11 @@ export interface RateLimitVerdict {
  *   `acquireSlot`, so waiting attempts never hold one of the scarce slots.
  * Distinct sources can still contend for the global cap (transient 429); a
  * distributed attack is a host-level concern (firewall, fail2ban, CrowdSec).
+ *
+ * Memory is bounded by `maxTrackedKeys`. Past it, attempts from a key not yet
+ * tracked are refused until windows expire; tracked keys are never evicted, so
+ * no throttle is silently reset. Entries are kept in window-start order, so
+ * expiry only visits expired entries (amortized constant work per attempt).
  */
 export class LoginRateLimiter {
     private readonly attempts = new Map<string, { count: number; windowStart: number }>();
@@ -168,6 +175,8 @@ export class LoginRateLimiter {
         private readonly now: () => number = Date.now,
         /** Global ceiling on concurrent password verifications. */
         private readonly maxInFlight: number = 8,
+        /** Ceiling on distinct keys tracked at once. */
+        private readonly maxTrackedKeys: number = 10_000,
     ) {}
 
     check(key: string): RateLimitVerdict {
@@ -185,7 +194,7 @@ export class LoginRateLimiter {
      * `acquireSlot`; call `settle` exactly once in every case.
      */
     tryReserve(key: string): RateLimitVerdict {
-        if (this.active.has(key)) return { allowed: false, retryAfterSec: 1, delayMs: 0 };
+        if (this.active.has(key)) return { allowed: false, retryAfterSec: 1, delayMs: 0, reason: "parallel" };
         const now = this.now();
         this.sweep(now);
         let entry = this.attempts.get(key);
@@ -194,6 +203,9 @@ export class LoginRateLimiter {
             entry = undefined;
         }
         if (!entry) {
+            if (this.attempts.size >= this.maxTrackedKeys) {
+                return { allowed: false, retryAfterSec: this.secondsUntilExpiry(now), delayMs: 0, reason: "capacity" };
+            }
             entry = { count: 0, windowStart: now };
             this.attempts.set(key, entry);
         }
@@ -231,10 +243,17 @@ export class LoginRateLimiter {
         const now = this.now();
         const entry = this.attempts.get(key);
         if (!entry || now - entry.windowStart > this.windowMs) {
+            // Re-insert at the end to keep window-start order.
+            this.attempts.delete(key);
             this.attempts.set(key, { count: 1, windowStart: now });
             return;
         }
         entry.count += 1;
+    }
+
+    /** Number of keys currently tracked. */
+    trackedKeys(): number {
+        return this.attempts.size;
     }
 
     reset(key: string): void {
@@ -248,11 +267,22 @@ export class LoginRateLimiter {
         return Math.min(this.backoffMaxMs, 250 * 2 ** over);
     }
 
-    /** Bound memory under many distinct sources: drop expired windows. */
+    /**
+     * Drop expired windows. The map is in window-start order, so the walk stops
+     * at the first live window; an expired key still in progress is skipped.
+     */
     private sweep(now: number): void {
-        if (this.attempts.size < 1024) return;
         for (const [key, entry] of this.attempts) {
-            if (now - entry.windowStart > this.windowMs && !this.active.has(key)) this.attempts.delete(key);
+            if (now - entry.windowStart <= this.windowMs) break;
+            if (!this.active.has(key)) this.attempts.delete(key);
         }
+    }
+
+    /** Seconds until the oldest tracked window expires (at least 1). */
+    private secondsUntilExpiry(now: number): number {
+        for (const entry of this.attempts.values()) {
+            return Math.max(1, Math.ceil((entry.windowStart + this.windowMs - now) / 1000));
+        }
+        return 1;
     }
 }

@@ -1,7 +1,8 @@
 import { constants } from "node:fs";
 import type { Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { FileSafetyError, checkManagedDir, ensureManagedDir } from "./fs-safe.ts";
 
 export type AuditRotation = "day" | "month";
 
@@ -28,6 +29,12 @@ export interface AuditEntry extends AuditEvent {
 export interface AuditLogOptions {
     /** Absolute directory that holds the period files. Created owner-only. */
     dir: string;
+    /**
+     * Trusted ancestor of `dir`. Every directory between it and `dir` must be
+     * a real folder, never a symlink, for writes, reads and pruning. Defaults
+     * to the parent of `dir`, so only `dir` itself is checked.
+     */
+    root?: string;
     enabled?: boolean;
     rotation?: AuditRotation;
     /** Number of period files to keep; the oldest are pruned on rollover. */
@@ -49,6 +56,7 @@ const MAX_FIELD = 500;
 /** Room kept below the size cap for the single "suspended" marker line. */
 const MARKER_HEADROOM = 1024;
 const SUSPENDED_MARKER = '"result":"suspended"';
+const LINKED_DIR = "The audit folder, or a folder above it, is a symbolic link or not a folder.";
 
 export class AuditError extends Error {
     constructor(message: string) {
@@ -75,6 +83,8 @@ function clampField(value: string | undefined): string | undefined {
  */
 export class AuditLog {
     private readonly dir: string;
+    private readonly root: string;
+    private readonly components: string[];
     private readonly enabled: boolean;
     private readonly rotation: AuditRotation;
     private readonly retainFiles: number;
@@ -91,6 +101,12 @@ export class AuditLog {
 
     constructor(options: AuditLogOptions) {
         this.dir = options.dir;
+        this.root = options.root ?? dirname(options.dir);
+        const path = relative(this.root, this.dir);
+        if (!path || isAbsolute(path) || path.split(sep).includes("..")) {
+            throw new AuditError("The audit folder must be inside its root folder.");
+        }
+        this.components = path.split(sep).filter(Boolean);
         this.enabled = options.enabled ?? true;
         this.rotation = options.rotation ?? "day";
         this.retainFiles = options.retainFiles ?? 31;
@@ -185,11 +201,8 @@ export class AuditLog {
     async listPeriods(): Promise<string[]> {
         if (!this.enabled) return [];
         try {
-            const names = await readdir(this.dir);
-            return names
-                .filter(name => this.isValidPeriod(name.slice(0, -4)))
-                .map(name => name.slice(0, -4))
-                .sort((a, b) => b.localeCompare(a));
+            if (!(await this.existingDir())) return [];
+            return await this.periodsOnDisk();
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
             this.onError(error);
@@ -201,6 +214,7 @@ export class AuditLog {
     async readPeriod(period: string, maxLines = this.maxReadLines): Promise<AuditEntry[]> {
         if (!this.enabled) return [];
         if (!this.isValidPeriod(period)) throw new AuditError("This activity period is not valid.");
+        if (!(await this.existingDir())) return [];
         const path = join(this.dir, `${period}.log`);
         let text: string;
         let truncated: boolean;
@@ -239,13 +253,38 @@ export class AuditLog {
         return Math.max(64 * 1024, Math.min(2 * 1024 * 1024, this.maxReadLines * 1024));
     }
 
+    /**
+     * Create the audit folder below its trusted root. Each component in between
+     * is lstat-checked, so an existing symlink cannot redirect the log.
+     */
     private async ensureDir(): Promise<void> {
-        await mkdir(this.dir, { recursive: true, mode: 0o700 });
-        const info = await lstat(this.dir);
-        if (info.isSymbolicLink() || !info.isDirectory()) {
-            throw new AuditError("The audit folder is a symbolic link or not a folder.");
-        }
+        await mkdir(this.root, { recursive: true, mode: 0o700 });
+        try { await ensureManagedDir(this.root, this.components, LINKED_DIR); }
+        catch (error) { throw this.asAuditError(error); }
         try { await chmod(this.dir, 0o700); } catch { /* Best effort (Windows ignores POSIX modes). */ }
+    }
+
+    /** Whether the audit folder exists, refusing symlinked components like `ensureDir`. */
+    private async existingDir(): Promise<boolean> {
+        try { return (await checkManagedDir(this.root, this.components, LINKED_DIR)) !== null; }
+        catch (error) { throw this.asAuditError(error); }
+    }
+
+    private asAuditError(error: unknown): unknown {
+        return error instanceof FileSafetyError ? new AuditError(error.message) : error;
+    }
+
+    /**
+     * Period keys of the regular `<period>.log` files, most recent first. Any
+     * other entry (another extension, a folder, a symlink) is never listed, so
+     * pruning cannot delete it.
+     */
+    private async periodsOnDisk(): Promise<string[]> {
+        const entries = await readdir(this.dir, { withFileTypes: true });
+        return entries
+            .filter(entry => entry.isFile() && entry.name.endsWith(".log") && this.isValidPeriod(basename(entry.name, ".log")))
+            .map(entry => basename(entry.name, ".log"))
+            .sort((a, b) => b.localeCompare(a));
     }
 
     /** Size of an existing regular log file, 0 when absent; refuses links and non-files. */
@@ -286,10 +325,8 @@ export class AuditLog {
     }
 
     private async prune(): Promise<void> {
-        const names = (await readdir(this.dir)).filter(name => this.isValidPeriod(name.slice(0, -4)));
-        names.sort((a, b) => b.localeCompare(a));
-        for (const name of names.slice(this.retainFiles)) {
-            try { await unlink(join(this.dir, name)); }
+        for (const period of (await this.periodsOnDisk()).slice(this.retainFiles)) {
+            try { await unlink(join(this.dir, `${period}.log`)); }
             catch (error) { this.onError(error); }
         }
     }

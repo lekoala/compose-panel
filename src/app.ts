@@ -15,6 +15,7 @@ import {
     SESSION_COOKIE,
     LoginRateLimiter,
     SessionStore,
+    type Session,
     clearedSessionCookie,
     csrfCookie,
     parseCookies,
@@ -158,6 +159,9 @@ function isAllowedOrigin(request: Request, config: AppConfig): boolean {
     return false;
 }
 
+/** The session was revoked or expired while a mutation was being prepared. */
+class SessionEndedError extends Error {}
+
 const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"] as const;
 
 /**
@@ -200,6 +204,9 @@ export function createApp(options: AppOptions): App {
         ?? createComposeProvider({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
     const audit = options.audit ?? new AuditLog({
         dir: config.audit.dir ?? join(stacksRoot, ".compose-panel", "audit"),
+        // The default layout is checked from the stacks root down, so a
+        // symlinked .compose-panel cannot redirect the log.
+        root: config.audit.dir ? undefined : stacksRoot,
         enabled: config.audit.enabled,
         rotation: config.audit.rotation,
         retainFiles: config.audit.retainFiles,
@@ -279,6 +286,15 @@ export function createApp(options: AppOptions): App {
     const access = config.publicOrigin ? `${new URL(config.publicOrigin).host} (proxy)` : `127.0.0.1:${config.port} (loopback)`;
     function pageChrome(csrf: string | undefined): { logoutCsrf?: string; access: string; timezone?: string } {
         return { logoutCsrf: csrf, access, timezone: config.timeZone || undefined };
+    }
+
+    function sessionEnded(): Response {
+        return htmlResponse(messagePage(
+            "Signed out",
+            "Your session has ended (signed out, timed out, or the panel restarted), so nothing was done. Sign in again, then retry.",
+            { href: "/login", label: "Sign in" },
+            { bare: true },
+        ), 401);
     }
 
     async function readForm(request: Request, maxBytes = config.maxBodyBytes): Promise<URLSearchParams | null> {
@@ -367,6 +383,10 @@ export function createApp(options: AppOptions): App {
         // Only a parallel attempt from the same key is refused, so a source
         // cannot bypass its own delay. The reservation is settled below.
         const verdict = limiter.tryReserve(key);
+        if (!verdict.allowed && verdict.reason === "capacity") {
+            await recordLoginNoise({ event: "login", result: "refused", actor: key, detail: "too many sources tracked" });
+            return loginFailure("The panel is busy with sign-in attempts from many addresses. Try again later.", 429, verdict.retryAfterSec);
+        }
         if (!verdict.allowed) {
             await recordLoginNoise({ event: "login", result: "refused", actor: key, detail: "parallel attempt" });
             return loginFailure("Another sign-in attempt from your address is still being checked. Try again in a moment.", 429, verdict.retryAfterSec);
@@ -530,12 +550,15 @@ export function createApp(options: AppOptions): App {
         }), options.status ?? 200);
     }
 
-    async function handleSave(request: Request, name: string, csrf: string): Promise<Response> {
+    async function handleSave(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
         const back = `/stacks/${encodeURIComponent(name)}/edit`;
         if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
         const form = await readForm(request, config.maxEditBytes);
         if (form === null) return tooLarge(csrf, back);
         if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        // The body may have arrived long after the session was checked.
+        if (!sessions.isActive(session.id)) return sessionEnded();
 
         const saveRequest = {
             composeSource: form.get("compose") ?? "",
@@ -548,7 +571,10 @@ export function createApp(options: AppOptions): App {
         try {
             const task = locks.run(name, () => {
                 if (shuttingDown) throw new OperationsDisabledError();
-                return saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes);
+                return saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes, {
+                    // Validation awaits a subprocess: re-check right before writing.
+                    beforeCommit: () => { if (!sessions.isActive(session.id)) throw new SessionEndedError(); },
+                });
             });
             saves.add(task);
             let result: Awaited<typeof task>;
@@ -574,6 +600,10 @@ export function createApp(options: AppOptions): App {
                 await recordAudit({ event: "save", result: "refused", actor: clientKey(request, config), stack: name, detail: error.message });
                 return renderEdit(name, csrf, { error: { title: "Not saved.", message: error.message }, draft: saveRequest, keepDraft: true, status: 409 });
             }
+            if (error instanceof SessionEndedError) {
+                await recordAudit({ event: "save", result: "refused", actor: clientKey(request, config), stack: name, detail: "session ended" });
+                return sessionEnded();
+            }
             if (error instanceof StackPartialError) {
                 await recordAudit({ event: "save", result: "partial", actor: clientKey(request, config), stack: name });
                 return renderEdit(name, csrf, { error: { title: "Save incomplete.", message: error.message }, draft: saveRequest, keepDraft: true, status: 500 });
@@ -582,12 +612,15 @@ export function createApp(options: AppOptions): App {
         }
     }
 
-    async function handleOperation(request: Request, name: string, csrf: string): Promise<Response> {
+    async function handleOperation(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
         const back = `/stacks/${encodeURIComponent(name)}`;
         if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
         const form = await readForm(request);
         if (form === null) return tooLarge(csrf, back);
         if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        // The body may have arrived long after the session was checked.
+        if (!sessions.isActive(session.id)) return sessionEnded();
 
         const action = form.get("action") ?? "";
         if (!isOperationAction(action)) return renderStackDetail(name, csrf, { kind: "error", text: "Unknown action. Nothing was run." }, 400);
@@ -611,6 +644,11 @@ export function createApp(options: AppOptions): App {
         }
         if (context.kind === "absent" && !creates) {
             throw new StackError("This stack is not deployed yet, so there is nothing to stop, restart or remove. Use Up or Pull + up to create it.", 409);
+        }
+        // Project discovery awaits Docker: re-check before starting anything.
+        if (!sessions.isActive(session.id)) {
+            await recordAudit({ event: "operation", result: "refused", actor: clientKey(request, config), stack: name, action, detail: "session ended" });
+            return sessionEnded();
         }
         try {
             operations.start({
@@ -872,12 +910,7 @@ export function createApp(options: AppOptions): App {
         if (!session) {
             if (isEventStream) return plain("Unauthorized", 401);
             if (method === "GET" || method === "HEAD") return redirect("/login", 302);
-            return htmlResponse(messagePage(
-                "Signed out",
-                "Your session has ended (signed out, timed out, or the panel restarted), so nothing was done. Sign in again, then retry.",
-                { href: "/login", label: "Sign in" },
-                { bare: true },
-            ), 401);
+            return sessionEnded();
         }
 
         if (isEventStream) {
@@ -907,13 +940,13 @@ export function createApp(options: AppOptions): App {
 
         const editMatch = /^\/stacks\/([^/]+)\/edit$/.exec(url.pathname);
         if (editMatch && method === "POST") {
-            try { return await handleSave(request, decodeName(editMatch[1]!), session.csrf); }
+            try { return await handleSave(request, decodeName(editMatch[1]!), session); }
             catch (error) { return routeError(error, session.csrf, safeName(editMatch[1]!)); }
         }
         const operationsMatch = /^\/stacks\/([^/]+)\/operations$/.exec(url.pathname);
         if (operationsMatch) {
             if (method !== "POST") return methodNotAllowed("POST");
-            try { return await handleOperation(request, decodeName(operationsMatch[1]!), session.csrf); }
+            try { return await handleOperation(request, decodeName(operationsMatch[1]!), session); }
             catch (error) { return routeError(error, session.csrf, safeName(operationsMatch[1]!)); }
         }
         if (method !== "GET" && method !== "HEAD") return methodNotAllowed("GET");

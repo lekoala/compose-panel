@@ -1,5 +1,7 @@
 # Security review — 2026-10-10
 
+> **Status (2026-10-10, after review):** SEC-01 to SEC-05 are fixed, each with regression tests that fail on the reviewed code (`tests/app.test.ts`, `tests/audit.test.ts`, `tests/auth.test.ts`, `tests/editor.test.ts`). Verification: Windows 274 passed / 15 skipped; Linux (WSL) 288 passed / 1 skipped (real-daemon test); typecheck clean; the review probes rerun on Linux, including real Compose `config` with a multiline secret, now redact or refuse. The "Other observations" below remain open. The text below is the original review, unchanged.
+
 Reviewed revision: `73f8624`, with an initially clean working tree. This is a source review and isolated verification, not a production penetration test. Application code was not changed and the findings below remain open.
 
 Scope note: concurrent time-zone changes appeared in `src/config.ts` and `src/html.ts` while the report was being completed. They were not made or reverted by this review. Test results below apply to the inspected snapshot before those changes; they do not certify the final concurrent working tree. Source line references refer to that snapshot.

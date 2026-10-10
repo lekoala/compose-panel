@@ -25,9 +25,9 @@ afterAll(async () => {
     await rm(root, { recursive: true, force: true });
 });
 
-function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, provider?: ComposeProvider, audit?: AuditLog): App {
+function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, provider?: ComposeProvider, audit?: AuditLog, stacksRoot: string = root): App {
     const config: AppConfig = {
-        stacksDir: root,
+        stacksDir: stacksRoot,
         port: 5081,
         adminUser: "admin",
         adminPasswordHash: passwordHash,
@@ -57,7 +57,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         logTimeoutMs: 1_800_000,
         ...overrides,
     };
-    return createApp({ config, stacksRoot: root, runner, provider, audit });
+    return createApp({ config, stacksRoot, runner, provider, audit });
 }
 
 interface FollowCall {
@@ -1412,5 +1412,163 @@ describe("shutdown policy", () => {
         await follow.body!.cancel();
 
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toContain("nginx:alpine");
+    });
+});
+
+describe("session revocation during a pending mutation", () => {
+    const ok: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+    const compose = "services:\n  app:\n    image: nginx:alpine\n";
+
+    beforeEach(async () => {
+        await writeFile(join(root, "demo", "compose.yaml"), compose);
+        await rm(join(root, "demo", ".env"), { force: true });
+    });
+
+    async function csrfOf(app: App, session: string): Promise<string> {
+        const html = await (await authed(app, "/", session)).text();
+        return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+    }
+
+    function logout(app: App, session: string, csrf: string): Promise<Response> {
+        return authed(app, "/logout", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf }).toString(),
+        });
+    }
+
+    /** A request whose body arrives only when `finish` is called. */
+    function pendingPost(app: App, path: string, session: string): { response: Promise<Response>; finish: (fields: Record<string, string>) => void } {
+        let controller!: ReadableStreamDefaultController<Uint8Array>;
+        const body = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+        const response = authed(app, path, session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body,
+        });
+        return {
+            response,
+            finish: fields => {
+                controller.enqueue(new TextEncoder().encode(new URLSearchParams(fields).toString()));
+                controller.close();
+            },
+        };
+    }
+
+    /**
+     * Runner that records mutations. Once `armed`, calls matching `gated`
+     * wait until `release` is called.
+     */
+    function gatedRunner(gated: (args: string[]) => boolean) {
+        const mutations: string[] = [];
+        let armed = false;
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const runner: DockerRunner = async args => {
+            if (armed && gated(args)) await gate;
+            if (args.includes("ls")) return { ...ok, stdout: "[]" };
+            if (args.includes("config") && !args.includes("--quiet")) return { ...ok, stdout: '{"name":"demo"}' };
+            if (["up", "stop", "restart", "down", "pull"].some(action => args.includes(action))) mutations.push(args.join(" "));
+            return ok;
+        };
+        return { runner, mutations, arm: () => { armed = true; }, release: () => release() };
+    }
+
+    test("a body that arrives after logout runs nothing", async () => {
+        const { runner, mutations } = gatedRunner(() => false);
+        const app = makeApp({}, runner);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const pending = pendingPost(app, "/stacks/demo/operations", session);
+        await Bun.sleep(5);
+        expect((await logout(app, session, csrf)).status).toBe(303);
+        pending.finish({ csrf, action: "up" });
+        const response = await pending.response;
+        expect(response.status).toBe(401);
+        expect(await response.text()).toContain("nothing was done");
+        expect(mutations).toEqual([]);
+        expect(app.operations.activeCount()).toBe(0);
+    });
+
+    test("a body that arrives after idle expiry runs nothing", async () => {
+        const { runner, mutations } = gatedRunner(() => false);
+        const app = makeApp({ sessionIdleMs: 300 }, runner);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const pending = pendingPost(app, "/stacks/demo/operations", session);
+        await Bun.sleep(400);
+        pending.finish({ csrf, action: "up" });
+        expect((await pending.response).status).toBe(401);
+        expect(mutations).toEqual([]);
+    });
+
+    test("a logout during project discovery runs nothing", async () => {
+        const gated = gatedRunner(args => args.includes("ls"));
+        const app = makeApp({}, gated.runner);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        gated.arm();
+        const response = authed(app, "/stacks/demo/operations", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, action: "up" }).toString(),
+        });
+        await Bun.sleep(5);
+        expect((await logout(app, session, csrf)).status).toBe(303);
+        gated.release();
+        expect((await response).status).toBe(401);
+        expect(gated.mutations).toEqual([]);
+        expect(app.operations.activeCount()).toBe(0);
+    });
+
+    test("a logout during save validation writes nothing", async () => {
+        const gated = gatedRunner(args => args.includes("--quiet"));
+        const app = makeApp({}, gated.runner);
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo/edit", session)).text();
+        const field = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(html)![1]!;
+        const csrf = field("csrf");
+        gated.arm();
+        const response = authed(app, "/stacks/demo/edit", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                csrf,
+                compose: "services:\n  app:\n    image: nginx:1.27\n",
+                env: "",
+                composeHash: field("composeHash"),
+                envHash: field("envHash"),
+                envExists: field("envExists"),
+            }).toString(),
+        });
+        await Bun.sleep(20);
+        expect((await logout(app, session, csrf)).status).toBe(303);
+        gated.release();
+        expect((await response).status).toBe(401);
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(compose);
+    });
+});
+
+describe("default activity log layout", () => {
+    test("a symlinked .compose-panel cannot redirect the log", async () => {
+        const stacks = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-app-audit-")));
+        const outside = await mkdtemp(join(tmpdir(), "compose-panel-app-outside-"));
+        try {
+            try {
+                await symlink(outside, join(stacks, ".compose-panel"), "junction");
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === "EPERM") return;
+                throw error;
+            }
+            const app = makeApp({}, undefined, undefined, undefined, stacks);
+            const session = await login(app);
+            expect(session).toBeTruthy();
+            expect(await readdir(outside)).toEqual([]);
+            const html = await (await authed(app, "/audit", session)).text();
+            expect(html).not.toContain('"event"');
+        } finally {
+            await rm(stacks, { recursive: true, force: true });
+            await rm(outside, { recursive: true, force: true });
+        }
     });
 });

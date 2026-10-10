@@ -6,6 +6,16 @@ First minimal release. Single Linux host, single trusted administrator,
 always bound to `127.0.0.1`; remote access through an SSH tunnel or HTTPS with
 Caddy on the same host.
 
+- Security review 2026-10-10 fixes (`docs/security-review-2026-10-10.md`):
+  saves and operations re-check the session after reading the body, after
+  project discovery and before writing, so a request left pending across logout
+  or expiry does nothing (SEC-01); the default audit layout is lstat-checked
+  from the stacks root down for writes, reads and pruning (SEC-02); validation
+  errors redact the longest values first and multiline quoted values, and a
+  diagnostic cut by the runner is replaced by a fixed message (SEC-03); audit
+  retention only lists and deletes regular `<period>.log` files (SEC-04); login
+  tracking is capped at 10,000 client keys with amortized expiry (SEC-05).
+
 - Display time zone: container logs (`compose logs --timestamps`), the activity
   log and action start times are shown in one zone. `COMPOSE_PANEL_TIMEZONE`
   (an IANA name such as `Europe/Brussels`) fixes it for every reader; unset uses

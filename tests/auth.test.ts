@@ -162,3 +162,58 @@ describe("LoginRateLimiter reservations", () => {
         expect(limiter.tryReserve("k").delayMs).toBeGreaterThan(0);
     });
 });
+
+describe("LoginRateLimiter tracked-key bound", () => {
+    test("refuses new keys at capacity without evicting or resetting tracked ones", () => {
+        let now = 0;
+        const limiter = new LoginRateLimiter(1, 1000, 60_000, () => now, 100, 50);
+        for (let i = 0; i < 50; i += 1) {
+            const key = `2001:db8::${i.toString(16)}`;
+            expect(limiter.tryReserve(key).allowed).toBe(true);
+            limiter.settle(key, false, false);
+        }
+        expect(limiter.trackedKeys()).toBe(50);
+
+        now = 400;
+        const refused = limiter.tryReserve("2001:db8::fresh");
+        expect(refused.allowed).toBe(false);
+        expect(refused.reason).toBe("capacity");
+        expect(refused.retryAfterSec).toBe(1);
+        expect(limiter.trackedKeys()).toBe(50);
+
+        // A tracked key keeps its count: its next attempt is still delayed.
+        const tracked = limiter.tryReserve("2001:db8::0");
+        expect(tracked.allowed).toBe(true);
+        expect(tracked.delayMs).toBeGreaterThan(0);
+        limiter.settle("2001:db8::0", false, false);
+
+        // Once windows expire, room is made again.
+        now = 1001;
+        expect(limiter.tryReserve("2001:db8::fresh").allowed).toBe(true);
+        expect(limiter.trackedKeys()).toBe(1);
+    });
+
+    test("expiry keeps window order when a window restarts", () => {
+        let now = 0;
+        const limiter = new LoginRateLimiter(5, 100, 1000, () => now, 100, 1000);
+        limiter.tryReserve("a"); limiter.settle("a", false, false);
+        now = 10;
+        limiter.tryReserve("b"); limiter.settle("b", false, false);
+        now = 150; // a expired: its window restarts and it moves behind b
+        limiter.tryReserve("a"); limiter.settle("a", false, false);
+        now = 205; // b expired, a (150) still live
+        limiter.tryReserve("c"); limiter.settle("c", false, false);
+        expect(limiter.trackedKeys()).toBe(2);
+        expect(limiter.check("a").delayMs).toBe(0);
+    });
+
+    test("an expired key still in progress is not dropped", () => {
+        let now = 0;
+        const limiter = new LoginRateLimiter(5, 100, 1000, () => now, 100, 1000);
+        limiter.tryReserve("slow"); // left active
+        now = 500;
+        limiter.tryReserve("other"); limiter.settle("other", false, false);
+        expect(limiter.trackedKeys()).toBe(2);
+        expect(limiter.tryReserve("slow").reason).toBe("parallel");
+    });
+});

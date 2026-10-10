@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -192,6 +192,93 @@ describe("AuditLog", () => {
             await audit.record({ event: "login", result: "success" });
             expect(await audit.listPeriods()).toEqual([]);
             expect(await audit.readPeriod("2024-03-01")).toEqual([]);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe("AuditLog managed paths and retention", () => {
+    const NOW = Date.parse("2026-10-10T12:00:00.000Z");
+
+    /** Directory link; a junction on Windows (no privilege needed), a symlink elsewhere. */
+    async function linkDir(target: string, path: string): Promise<boolean> {
+        try {
+            await symlink(target, path, "junction");
+            return true;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EPERM") return false;
+            throw error;
+        }
+    }
+
+    test("refuses a symlinked folder between the root and the audit folder", async () => {
+        const root = await tempDir();
+        try {
+            const outside = join(root, "outside");
+            await mkdir(outside);
+            if (!(await linkDir(outside, join(root, ".compose-panel")))) return;
+            const errors: unknown[] = [];
+            const audit = new AuditLog({ dir: join(root, ".compose-panel", "audit"), root, now: () => NOW, onError: error => errors.push(error) });
+            await audit.record({ event: "login", result: "failure" });
+            expect(errors.length).toBe(1);
+            expect(errors[0]).toBeInstanceOf(AuditError);
+            expect(existsSync(join(outside, "audit"))).toBe(false);
+
+            // Reads refuse the same path, even once something exists behind it.
+            await mkdir(join(outside, "audit"));
+            await writeFile(join(outside, "audit", "2026-10-10.log"), `${JSON.stringify({ ts: "x", event: "planted", result: "x" })}\n`);
+            await expect(audit.readPeriod("2026-10-10")).rejects.toBeInstanceOf(AuditError);
+            expect(await audit.listPeriods()).toEqual([]);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses a symlinked audit folder for reads", async () => {
+        const root = await tempDir();
+        try {
+            const outside = join(root, "outside");
+            await mkdir(outside);
+            await writeFile(join(outside, "2026-10-10.log"), `${JSON.stringify({ ts: "x", event: "planted", result: "x" })}\n`);
+            if (!(await linkDir(outside, join(root, "audit")))) return;
+            const audit = new AuditLog({ dir: join(root, "audit"), now: () => NOW, onError: () => {} });
+            await expect(audit.readPeriod("2026-10-10")).rejects.toBeInstanceOf(AuditError);
+            expect(await audit.listPeriods()).toEqual([]);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("creates the default layout below its root", async () => {
+        const root = await tempDir();
+        try {
+            const audit = new AuditLog({ dir: join(root, ".compose-panel", "audit"), root, now: () => NOW });
+            await audit.record({ event: "login", result: "success" });
+            expect((await audit.readPeriod("2026-10-10")).length).toBe(1);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("rejects an audit folder outside its root", () => {
+        expect(() => new AuditLog({ dir: "/var/audit", root: "/srv/stacks" })).toThrow(AuditError);
+    });
+
+    test("retention removes only regular <period>.log files", async () => {
+        const dir = await tempDir();
+        try {
+            await writeFile(join(dir, "2000-01-01.txt"), "unrelated");
+            await writeFile(join(dir, "2000-01-01.log.bak"), "unrelated");
+            await writeFile(join(dir, "2000-01-01log"), "unrelated");
+            await mkdir(join(dir, "2000-01-02.log"));
+            await writeFile(join(dir, "2000-01-03.log"), "");
+            const audit = new AuditLog({ dir, retainFiles: 1, now: () => NOW });
+            await audit.record({ event: "login", result: "success" });
+
+            const names = (await readdir(dir)).sort();
+            expect(names).toEqual(["2000-01-01.log.bak", "2000-01-01.txt", "2000-01-01log", "2000-01-02.log", "2026-10-10.log"]);
+            expect(await audit.listPeriods()).toEqual(["2026-10-10"]);
         } finally {
             await rm(dir, { recursive: true, force: true });
         }

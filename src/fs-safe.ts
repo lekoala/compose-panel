@@ -96,14 +96,14 @@ export function sameDirIdentity(a: DirIdentity, b: DirIdentity): boolean {
 }
 
 /**
- * Ensure <root>/.compose-panel/backups/<name> exists as real directories.
- * Every managed component is lstat-checked: symlinks and non-directories are
- * refused, so backups cannot be redirected outside the stacks root. Created
- * directories are owner-only (backups hold Compose files and .env secrets).
+ * Walk `components` below `root`, lstat-checking each one: a symlink or a
+ * non-directory throws `message`, so a managed tree cannot be redirected
+ * outside `root`. A missing component is created owner-only when `create`
+ * is set; otherwise the walk stops and returns null. `root` itself is trusted.
  */
-export async function ensureBackupDir(root: string, name: string): Promise<string> {
+async function walkManagedDir(root: string, components: string[], create: boolean, message: string): Promise<string | null> {
     let current = root;
-    for (const component of [".compose-panel", "backups", name]) {
+    for (const component of components) {
         current = join(current, component);
         let info: Stats | null = null;
         try {
@@ -112,6 +112,7 @@ export async function ensureBackupDir(root: string, name: string): Promise<strin
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
         if (!info) {
+            if (!create) return null;
             await mkdir(current, { recursive: false, mode: 0o700 });
             try {
                 await chmod(current, 0o700);
@@ -120,9 +121,27 @@ export async function ensureBackupDir(root: string, name: string): Promise<strin
             }
             continue;
         }
-        if (info.isSymbolicLink() || !info.isDirectory()) {
-            throw new FileSafetyError("The backup folder is a symbolic link or not a folder, so nothing was saved.");
-        }
+        if (info.isSymbolicLink() || !info.isDirectory()) throw new FileSafetyError(message);
     }
     return current;
+}
+
+/** Create the managed directories below a trusted root, refusing symlinked components. */
+export async function ensureManagedDir(root: string, components: string[], message: string): Promise<string> {
+    return (await walkManagedDir(root, components, true, message))!;
+}
+
+/** Check existing managed directories below a trusted root; null when one is missing. */
+export function checkManagedDir(root: string, components: string[], message: string): Promise<string | null> {
+    return walkManagedDir(root, components, false, message);
+}
+
+/**
+ * Ensure <root>/.compose-panel/backups/<name> exists as real directories.
+ * Every managed component is lstat-checked: symlinks and non-directories are
+ * refused, so backups cannot be redirected outside the stacks root. Created
+ * directories are owner-only (backups hold Compose files and .env secrets).
+ */
+export function ensureBackupDir(root: string, name: string): Promise<string> {
+    return ensureManagedDir(root, [".compose-panel", "backups", name], "The backup folder is a symbolic link or not a folder, so nothing was saved.");
 }
