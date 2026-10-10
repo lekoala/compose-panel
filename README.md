@@ -43,7 +43,7 @@ bun run typecheck
 
 ## What exists in 0.1
 
-- Framework-free Bun HTTP server, server-rendered HTML and a small local stylesheet.
+- Framework-free Bun HTTP server, server-rendered HTML and a small self-contained stylesheet (light/dark, usable on a phone).
 - Single-admin authentication: Argon2id password hash, in-memory sessions with idle and absolute timeouts, rotation on login, HttpOnly/SameSite cookies.
 - Per-session CSRF tokens and strict Origin/Referer checks on mutations; login rate limiting; bounded request bodies.
 - Read-only Docker state: bounded `docker compose ls`/`ps` calls with explicit argument arrays, per-stack status derived from the real project (never the folder name), `unknown` when unresolved, and no secrets in errors. Project matching refuses ambiguity.
@@ -54,7 +54,7 @@ bun run typecheck
 - Reproducible Linux image (`bun run docker:build`, Bun + Docker CLI + Compose plugin verified inside), `deploy/compose.yaml` with host networking, `stop_grace_period` past the drain window, and backup/rollback plus manual verification in `docs/deployment.md`. Linux CI runs tests, typecheck, image build, socket-less smoke test and a Trivy scan, and never publishes.
 - Name validation and rejection of symbolic links for reads and writes.
 - Unit tests for path safety, HTML escaping, the auth/CSRF flows, Compose output parsing, the editor, the operation manager, SSE framing and the log manager.
-- `AGENTS.md`, ADRs, roadmap and agent missions ready to delegate.
+- `AGENTS.md`, ADRs and roadmap.
 
 ## Implementation order
 

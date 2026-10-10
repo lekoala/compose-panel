@@ -41,6 +41,20 @@ loopback HTTP only (`127.0.0.1`, no proxy/TLS yet).
   `test`, `guest`) are refused at startup unless `COMPOSE_PANEL_DEV=true`
   (development only). First-party examples, the deployment env sample and the CI
   smoke test now use a unique username.
+- Interface: every label and message rewritten to say what happened and what
+  to do next ("Nothing was run", "Saving does not restart anything: use Up");
+  one-line help per action; actions locked while one runs and, on an undeployed
+  stack, the ones that need a deployment; a reload link when an action ends;
+  service badges (an init job that exited 0 shows as done); stack list as a
+  table with a summary and an explanatory empty state; readable pages instead
+  of bare `401`/`403`/`413` text; a standalone centered sign-in page. Local
+  times, scroll-aware live output, double-submit guard, unsaved-changes warning
+  and Ctrl/Cmd+S in the editor. Self-contained stylesheet with light/dark color
+  tokens, laid out for phones (44 px touch targets, 16 px fields, no
+  horizontal scroll).
+- A draft kept after a failed save keeps the file versions it was based on, so
+  a change made on disk in the meantime is still detected as a conflict instead
+  of being overwritten by the next save.
 - Supply-chain hardening: base image pinned by version and multi-arch digest,
   every GitHub Action pinned to a commit SHA, and Trivy failing on
   `CRITICAL,HIGH` for both the repository (dependencies + secrets) and the
