@@ -20,6 +20,9 @@ Caddy on the same host.
   label, else build date, else digest) and a link to the release notes, source
   or Docker Hub page. Derived locally from `compose images` and `image inspect`,
   read-only; label URLs are validated and escaped.
+- Migration guide from Dockge (`docs/migrating-from-dockge.md`): compatibility
+  check script, `global.env`, backup, switch-over without stopping stacks,
+  closing Dockge's exposed port, rollback.
 - `bun run preview`: the real panel on demo stacks with a simulated Docker
   (no command runs), to try every page, action and stream without any setup.
 - Activity audit and login backoff (P7, ADR 0009): an append-only NDJSON

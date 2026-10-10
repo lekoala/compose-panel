@@ -10,6 +10,7 @@ Add new operations to the `ComposeProvider` (`src/compose-provider.ts`), not to 
 Use `docker compose config --quiet` with the effective project and explicit input files. This is not a dry-run of `up`. Test that build and volume paths stay the same between the validated draft and the saved version. Do not log `config --environment` or an interpolated YAML containing secrets.
 
 ## Before switching over from another panel
+Coming from Dockge: follow [migrating-from-dockge.md](migrating-from-dockge.md). In general:
 - Back up the stacks directories and the other panel's data volume (rollback).
 - Keep exactly the same absolute paths mounted for the stacks.
 - Stop **concurrent administration operations** between the two panels. Do not run both in write mode at the same time.

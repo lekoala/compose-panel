@@ -85,6 +85,7 @@ bun run test:proxy:wsl  # on Windows: end-to-end check behind a real Caddy (TLS)
 - [docs/architecture.md](docs/architecture.md) and [docs/adr/](docs/adr/): how it is built and why
 - [docs/security.md](docs/security.md): threat model and invariants
 - [docs/deployment.md](docs/deployment.md): deploying, backups, rollback, release checklist
+- [docs/migrating-from-dockge.md](docs/migrating-from-dockge.md): switching from Dockge, step by step
 - [docs/operations.md](docs/operations.md): adding Compose commands safely, switching over from another panel
 - [docs/roadmap.md](docs/roadmap.md): what may come next
 - [CHANGELOG.md](CHANGELOG.md): what changed
