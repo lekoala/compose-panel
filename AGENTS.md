@@ -1,6 +1,6 @@
 # Agent instructions — Compose Panel
 
-Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`, and `docs/roadmap.md` before editing code. This is a minimal application, not a port of an existing panel. Past milestones (P0–P6) are recorded in `docs/roadmap.md` and `CHANGELOG.md`.
+Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`, and `docs/roadmap.md` before editing code. This is a minimal application, not a port of an existing panel. Past milestones (P0–P6) are recorded in `CHANGELOG.md`; `docs/roadmap.md` lists unscheduled next steps, each needing an ADR first.
 
 ## Non-negotiable scope
 - One local Linux Docker Engine and one Bun web process. Single trusted administrator.
