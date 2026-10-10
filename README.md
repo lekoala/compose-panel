@@ -81,6 +81,8 @@ bun run test:proxy:wsl  # on Windows: end-to-end check behind a real Caddy (TLS)
 
 ## Documentation
 
+The same pages are published as a static site at <https://lekoala.github.io/compose-panel/> (built with `bun run docs:build`, deployed by `.github/workflows/pages.yml`).
+
 - [docs/product.md](docs/product.md): scope and non-goals
 - [docs/architecture.md](docs/architecture.md) and [docs/adr/](docs/adr/): how it is built and why
 - [docs/security.md](docs/security.md): threat model and invariants

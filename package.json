@@ -14,6 +14,8 @@
     "test:wsl": "wsl -- bash scripts/test-wsl.sh",
     "test:proxy:wsl": "wsl -- bash scripts/proxy-e2e/run.sh",
     "preview": "bun scripts/preview.ts",
+    "docs:build": "bun scripts/build-docs.ts",
+    "docs:preview": "bun scripts/build-docs.ts --serve",
     "hash-password": "bun src/scripts/hash-password.ts"
   },
   "dependencies": {},
