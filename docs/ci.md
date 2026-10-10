@@ -13,6 +13,15 @@ is pinned by version and multi-arch digest in the `Dockerfile`, and every GitHub
 Action is pinned to a full commit SHA (with the human tag in a comment). Bump
 them deliberately and re-run the smoke checklist when you do.
 
+Image metadata: the runtime stage carries OCI `org.opencontainers.image.*`
+labels (title, description, url, source, licenses, vendor, version, revision).
+`VERSION`/`REVISION` are passed as build args from CI (`package.json` version and
+`GITHUB_SHA`) and default to `dev`/`unknown` for a local build; both are
+deterministic so the same commit rebuilds identically. There is **no OCI icon
+field** — a registry logo (e.g. the GHCR package or Docker Hub repository
+avatar) is configured on the registry side, not from the image. The panel's own
+favicon/logo ship in `public/` and are served by the app.
+
 Dependency audit: `bun audit` runs on every build (baseline 2026-10-10: no
 vulnerabilities, 4 packages). Fix advisories with deliberate version bumps,
 regenerate the lockfile and re-run `bun run verify`; never rewrite ranges

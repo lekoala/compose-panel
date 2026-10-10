@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - run: docker build -t compose-panel:ci .
+      - run: docker build -t compose-panel:ci --build-arg VERSION="$(node -p "require('./package.json').version")" --build-arg REVISION="${GITHUB_SHA}" .
       - name: "Smoke test (no Docker socket: reads and auth only)"
         run: |
           set -e

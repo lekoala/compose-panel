@@ -26,6 +26,8 @@ jobs:
         run: |
           VER="${GITHUB_REF_NAME#v}"
           docker buildx build --platform linux/amd64 --load \
+            --build-arg VERSION="$VER" \
+            --build-arg REVISION="${GITHUB_SHA}" \
             -t ghcr.io/lekoala/compose-panel:"$VER" \
             -t ghcr.io/lekoala/compose-panel:latest .
       - name: Scan image (gate before any push)

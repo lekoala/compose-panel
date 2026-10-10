@@ -19,6 +19,12 @@ RUN bun install --frozen-lockfile
 FROM oven/bun:${BUN_VERSION}-slim@${BUN_DIGEST} AS runtime
 ARG DOCKER_CLI_VERSION
 ARG DOCKER_COMPOSE_VERSION
+# OCI image metadata. Version and revision are deterministic build inputs (no
+# timestamp), so the same commit still builds a byte-identical image. There is
+# no OCI "icon" field: a registry logo is configured on the registry side.
+ARG BUN_VERSION
+ARG VERSION=dev
+ARG REVISION=unknown
 # Docker CLI + Compose plugin from Docker's official apt repository so the
 # exact engine the panel shells out to is present and verifiable in the image.
 # (Build-time shell only; the panel itself never uses a shell at runtime.)
@@ -42,6 +48,15 @@ COPY public ./public
 # loopback (host networking) or an SSH tunnel, never a public port.
 ENV PORT=5081 \
     STACKS_DIR=/stacks
+LABEL org.opencontainers.image.title="Compose Panel" \
+    org.opencontainers.image.description="Single-server panel to administer Docker Compose stacks (loopback-only, one trusted administrator)." \
+    org.opencontainers.image.url="https://github.com/lekoala/compose-panel" \
+    org.opencontainers.image.source="https://github.com/lekoala/compose-panel" \
+    org.opencontainers.image.licenses="EUPL-1.2" \
+    org.opencontainers.image.vendor="LeKoala" \
+    org.opencontainers.image.version="${VERSION}" \
+    org.opencontainers.image.revision="${REVISION}" \
+    org.opencontainers.image.base.name="docker.io/oven/bun:${BUN_VERSION}-slim"
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://127.0.0.1:5081/health/live || exit 1
 ENTRYPOINT ["bun", "src/server.ts"]

@@ -24,7 +24,9 @@
 - Supply-chain hardening: base image pinned by version and multi-arch digest,
   every GitHub Action pinned to a commit SHA, and Trivy failing on
   `CRITICAL,HIGH` for both the repository (dependencies + secrets) and the
-  built image.
+  built image. OCI `org.opencontainers.image.*` labels (title, description,
+  source, licenses, version, revision) are embedded; the icon itself remains a
+  registry-side setting.
 - Toolchain: Bun 1.4.3 with the built-in `bun check` type checker (`typescript`
   removed), `bun audit` and a production-only boot check in CI, trapped-name and
   missing-STACKS_DIR regression tests, and `docs/security-audit-2026-10-10.md`.
