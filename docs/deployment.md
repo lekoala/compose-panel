@@ -202,7 +202,7 @@ public origin, since the header would then be client-controlled.
 Automated CI builds the image, scans it and runs unit tests, but the
 following need a real Linux host with Docker and are done by hand before any
 release. Verified 2026-10-10 against image `compose-panel:local`
-(linux/amd64, Bun 1.4.2, Compose v5.6.0, Docker Desktop Linux daemon):
+(linux/amd64, Bun 1.4.3, Compose v5.6.0, Docker Desktop Linux daemon):
 
 - [x] Image builds (`docker build -t compose-panel:local .`).
 - [x] Login smoke test: login page → 303 login → stack list shows the stack.

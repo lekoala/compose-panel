@@ -6,6 +6,13 @@ First minimal release. Single Linux host, single trusted administrator,
 always bound to `127.0.0.1`; remote access through an SSH tunnel or HTTPS with
 Caddy on the same host.
 
+- Lifecycle test on a disposable daemon: `scripts/docker-lab/run.sh`
+  (`bun run test:docker-lab:wsl`) starts a labelled Docker-in-Docker daemon on
+  a private Unix socket and runs `tests/docker-lifecycle-linux.test.ts` against
+  the real server: project collisions by `name:` and `.env` are refused with
+  no container created, and `SIGTERM` during a delayed `up` refuses new actions,
+  drains within the grace period and leaves containers running. Opt-in only;
+  the test refuses any daemon without the lab label or with containers.
 - Security review 2026-10-10 fixes:
   saves and operations re-check the session after reading the body, after
   project discovery and before writing, so a request left pending across logout

@@ -79,6 +79,32 @@ runs only with `COMPOSE_PANEL_TEST_DOCKER=1`, on a disposable isolated daemon
 with secret-free fixtures — never on a production socket, never in
 unattended CI.
 
+The lifecycle test (`tests/docker-lifecycle-linux.test.ts`) creates and removes
+containers, so it runs only on a lab daemon started by
+`scripts/docker-lab/run.sh` (`bun run test:docker-lab:wsl` from Windows). The
+script starts a privileged `docker:dind` container whose daemon listens on a
+Unix socket in a private temporary directory (no TCP port) and carries the
+engine label `compose-panel-lab=1`, then removes it with its storage on exit.
+Privileged DinD isolates Docker resources, not the host: run it on a
+development machine or a throwaway VM, never on a server with real stacks.
+Before the first mutation the test refuses to continue unless `DOCKER_HOST` is
+a `unix://` socket that is not a default daemon socket, `DOCKER_CONTEXT` and
+`COMPOSE_*` overrides are unset, the daemon has the lab label and it has no
+container. It starts the real server (`bun src/server.ts`) and checks:
+
+- an existing project cannot be taken over by another folder declaring the same
+  `name:` or `COMPOSE_PROJECT_NAME` in `.env` (`409`, no container created);
+- a unique project is created and stays manageable with the plain CLI;
+- on `SIGTERM` during an accepted `up`, a new action is refused (`409`), the
+  running one finishes within `COMPOSE_PANEL_SHUTDOWN_GRACE_MS`, the process
+  exits 0 and the containers keep running.
+
+The delay is deterministic: `COMPOSE_PANEL_DOCKER_PATH` points to a marked
+fixture wrapper that holds only `up` of the delayed project before handing
+every call to the real Docker CLI. Not covered: `SIGKILL` (no state survives
+a restart by design) and save validation timing, which unit tests
+cover.
+
 ## Publication (tags only)
 
 Releases are published by `.github/workflows/release.yml`, triggered only by
