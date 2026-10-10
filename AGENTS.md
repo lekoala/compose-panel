@@ -1,6 +1,6 @@
 # Agent instructions — Compose Panel
 
-Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`, and `docs/roadmap.md` before editing code. Read the assigned `agents/NN-*.md`. This is a NEW minimal application, not a port of an existing panel.
+Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`, and `docs/roadmap.md` before editing code. This is a minimal application, not a port of an existing panel. Past milestones (P0–P6) are recorded in `docs/roadmap.md` and `CHANGELOG.md`.
 
 ## Non-negotiable scope
 - One local Linux Docker Engine and one Bun web process. Single trusted administrator.
@@ -23,6 +23,7 @@ Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`,
 10. Existing stacks must remain manageable by `docker compose` CLI without this panel.
 
 ## Working style
+- Language: code, comments, identifiers, tests, UI strings and documentation in English.
 - Make one vertical, testable change per PR. Explain why every new dependency is necessary.
 - No speculative abstractions, event buses or plugin systems.
 - Add regression tests for every nontrivial bug or security issue.

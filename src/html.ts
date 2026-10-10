@@ -26,7 +26,7 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
     const logout = options.logoutCsrf
         ? `<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="${escapeHtml(options.logoutCsrf)}"><button type="submit">Log out</button></form>`
         : "";
-    const mode = options.mode ?? "Local prototype · read-only";
+    const mode = options.mode ?? "Single admin · local";
     const scripts = (options.scripts ?? []).map(src => `<script src="${escapeHtml(src)}" defer></script>`).join("");
     return `<!doctype html>
 <html lang="en">

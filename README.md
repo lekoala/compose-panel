@@ -27,14 +27,14 @@ $env:COMPOSE_PANEL_ADMIN_PASSWORD_HASH = '$argon2id$...'
 bun run dev
 ```
 
-Open `http://127.0.0.1:5081` and log in. The stack names are listed and the Compose file can be viewed **read-only**. The starter intentionally rejects projects that require an explicit override file or several primary Compose files. The `.env` file is intentionally inaccessible in this slice. See [.env.example](.env.example) for every setting.
+Open `http://127.0.0.1:5081` and log in. Stacks are listed with their real Docker state; the `compose.yaml` and `.env` can be edited raw (comments preserved) with validation, backups and conflict detection. Projects that require an explicit override file or several primary Compose files are rejected rather than guessed. See [.env.example](.env.example) for every setting.
 
 ```sh
 bun run test
 bun run check
 ```
 
-## What exists in this starter
+## What exists in 0.1
 
 - Framework-free Bun HTTP server, server-rendered HTML and a small local stylesheet.
 - Single-admin authentication: Argon2id password hash, in-memory sessions with idle and absolute timeouts, rotation on login, HttpOnly/SameSite cookies.
@@ -58,7 +58,7 @@ bun run check
 5. **Logs** and SSE streaming independent of the operation's execution. *(done, P5)*
 6. **Reproducible Linux Dockerfile**, CI pipeline, restart test and deployment. *(done, P6 — loopback only; see `docs/deployment.md`)*
 
-See [docs/roadmap.md](docs/roadmap.md), [AGENTS.md](AGENTS.md), [agents/](agents/) and [docs/security.md](docs/security.md).
+See [docs/roadmap.md](docs/roadmap.md), [AGENTS.md](AGENTS.md) and [docs/security.md](docs/security.md).
 
 ## Structural decisions
 
@@ -70,4 +70,4 @@ Compatibility with other panels relies on **mounting the same stacks directories
 
 ## Name and license
 
-The project name is **Compose Panel**. Choose the license before any public release. No third-party panel code was copied into this starter.
+The project name is **Compose Panel**, copyright 2026 LeKoala, licensed under the EUPL-1.2 (see [LICENSE](LICENSE)). No third-party panel code was copied into it.

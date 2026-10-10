@@ -67,7 +67,7 @@ export async function locateComposeFile(root: string, name: string): Promise<{ p
         if (info.isSymbolicLink()) throw new StackError("Symbolic Compose file not allowed.");
         if (info.isFile()) {
             if ((OVERRIDE_FILES as readonly string[]).includes(filename)) {
-                throw new StackError("Compose override file detected: not supported in the prototype.");
+                throw new StackError("Compose override file detected: not supported.");
             }
             found.push(filename);
         }

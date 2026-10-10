@@ -2,7 +2,7 @@
 
 Each step creates a functional, verifiable slice. Do not carry out mutations in parallel with authentication.
 
-## P0 — Current starter: local read-only
+## P0 — Initial slice: local read-only
 - [x] Bun repo + server-rendered HTML + zero runtime npm dependencies.
 - [x] Compose discovery and reading, rejection of obvious symlink names/paths.
 - [x] Unit tests for the file core and HTML escaping.

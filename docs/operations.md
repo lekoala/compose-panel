@@ -1,7 +1,7 @@
 # Operations and validation
 
 ## Local development
-The starter is **read-only** and runs no Docker command. On Windows, developing HTML and pure logic is possible. Process, signal and Docker tests must pass on Linux (CI).
+The panel runs real Docker commands for state, validation, operations and log follows. On Windows, developing HTML and pure logic is possible without Docker. Process, signal and Docker tests must pass on Linux (CI).
 
 ## Safety of future commands
 Add new operations to the `ComposeProvider` (`src/compose-provider.ts`), not to controllers. The Docker provider builds calls with `Bun.spawn(["docker", "compose", ...], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" })`. Do not use a shell. Consume both streams even if no SSE is connected. Set timeouts and output caps. Preserve the argument order, the project directory, any Compose files and env sources.

@@ -14,6 +14,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    # Local dev default. For a release, pin a published image instead:
+    # image: ghcr.io/lekoala/compose-panel:0.1.0
     image: compose-panel:local
     container_name: compose-panel
     # Share the host network namespace so the loopback bind IS the host
