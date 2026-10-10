@@ -15,6 +15,11 @@ Caddy on the same host.
   diagnostic cut by the runner is replaced by a fixed message (SEC-03); audit
   retention only lists and deletes regular `<period>.log` files (SEC-04); login
   tracking is capped at 10,000 client keys with amortized expiry (SEC-05).
+- Image maintenance: the base image reference is literal so Dependabot can
+  propose Bun digest refreshes; CI also runs weekly so new fixable CVEs and
+  expired Trivy exceptions surface without a push. Documentation no longer
+  claims byte-for-byte reproducible builds (apt resolves some packages at
+  build time).
 
 - Display time zone: container logs (`compose logs --timestamps`), the activity
   log and action start times are shown in one zone. `COMPOSE_PANEL_TIMEZONE`

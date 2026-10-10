@@ -2,9 +2,10 @@
 
 The pipeline lives in `.github/workflows/ci.yml` (Linux runners, Bun 1.4.3
 pinned): `bun install --frozen-lockfile`, `bun audit`, `bun run typecheck`, `bun run test`,
-then a reproducible image build, a socket-less smoke test (reads and auth
+then a pinned image build, a socket-less smoke test (reads and auth
 only, no Docker socket mounted) and Trivy scans that fail on CRITICAL/HIGH.
-PR builds never publish images.
+PR builds never publish images. The workflow also runs weekly on the default
+branch, so new fixable CVEs and expired exceptions fail without a push.
 
 Scans: a filesystem scan covers dependencies and secrets
 (`scanners: vuln,secret`, skipping `node_modules`/`private`/`.git`), and the
@@ -15,16 +16,31 @@ finding still fails the build unless `.trivyignore.yaml` lists it with a
 reason, the exact path and an `expired_at` date; past that date the entry stops
 applying and the scan fails again. Remove an entry as soon as a pinned version
 carries the fix. The image installs no `gnupg` (apt reads the `.asc` key
-directly), to keep unused packages and their CVEs out. The base image
+directly), to keep unused packages and their CVEs out. The build runs no
+`apt-get upgrade`: Debian fixes arrive through deliberate base digest
+refreshes, not as a side effect of the build date. The base image
 is pinned by version and multi-arch digest in the `Dockerfile`, and every GitHub
 Action is pinned to a full commit SHA (with the human tag in a comment). Bump
 them deliberately and re-run the smoke checklist when you do.
 
+Update tracking: Dependabot (`.github/dependabot.yml`) proposes base image
+digest refreshes for the pinned Bun tag; the `FROM` reference is written
+literally because Dependabot does not resolve `ARG` values in `FROM`. Bun
+version bumps stay manual (Dockerfile `FROM` and `base.name` label, workflow
+`bun-version`). Docker CLI and Compose come from apt and the Compose release
+page, which Dependabot cannot track: check for a new Compose release before
+the earliest `expired_at` in `.trivyignore.yaml`, and bump
+`DOCKER_COMPOSE_VERSION` with the CI `COMPOSE_VERSION`/`COMPOSE_SHA256`.
+
+Reproducibility: the base image and Docker tooling versions are pinned and
+builds are security-scanned, but exact byte-for-byte reproducibility is not
+guaranteed (apt resolves `ca-certificates` and `curl` at build time).
+
 Image metadata: the runtime stage carries OCI `org.opencontainers.image.*`
 labels (title, description, url, source, licenses, vendor, version, revision).
 `VERSION`/`REVISION` are passed as build args from CI (`package.json` version and
-`GITHUB_SHA`) and default to `dev`/`unknown` for a local build; both are
-deterministic so the same commit rebuilds identically. There is **no OCI icon
+`GITHUB_SHA`) and default to `dev`/`unknown` for a local build; no timestamp
+is added. There is **no OCI icon
 field** — a registry logo (e.g. the GHCR package or Docker Hub repository
 avatar) is configured on the registry side, not from the image. The panel's own
 favicon/logo ship in `public/` and are served by the app.

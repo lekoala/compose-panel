@@ -1,0 +1,15 @@
+# Base image digest refresh only. Version bumps (Bun, Docker CLI, Compose) stay
+# manual and deliberate: see the Dockerfile and docs/ci.md. Dependabot cannot
+# track the apt-installed Docker CLI/Compose versions.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: oven/bun
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+          - version-update:semver-patch

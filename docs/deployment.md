@@ -204,7 +204,7 @@ following need a real Linux host with Docker and are done by hand before any
 release. Verified 2026-10-10 against image `compose-panel:local`
 (linux/amd64, Bun 1.4.2, Compose v5.6.0, Docker Desktop Linux daemon):
 
-- [x] Image builds reproducibly (`docker build -t compose-panel:local .`).
+- [x] Image builds (`docker build -t compose-panel:local .`).
 - [x] Login smoke test: login page → 303 login → stack list shows the stack.
 - [x] Read: detail page shows the Compose file and the real project state.
 - [x] Validate + save: edited service saved (303), file on disk updated.

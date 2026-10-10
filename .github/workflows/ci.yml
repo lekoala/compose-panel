@@ -1,4 +1,4 @@
-# Linux CI: unit tests, typecheck, reproducible image build, smoke test and
+# Linux CI: unit tests, typecheck, pinned image build, smoke test and
 # vulnerability scan. This workflow NEVER publishes images and NEVER mounts a
 # Docker socket into a test: the smoke test runs the panel WITHOUT a socket
 # (mutations fail honestly) and the Docker-dependent integration test stays
@@ -8,6 +8,10 @@ name: ci
 on:
   push:
   pull_request:
+  # Weekly run on the default branch: new fixable CVEs and expired
+  # .trivyignore.yaml entries fail the scan even when nothing is pushed.
+  schedule:
+    - cron: "0 6 * * 1"
 
 jobs:
   test:
