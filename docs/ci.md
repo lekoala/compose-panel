@@ -3,8 +3,15 @@
 The pipeline lives in `.github/workflows/ci.yml` (Linux runners, Bun 1.4.3
 pinned): `bun install --frozen-lockfile`, `bun audit`, `bun run typecheck`, `bun run test`,
 then a reproducible image build, a socket-less smoke test (reads and auth
-only, no Docker socket mounted) and a Trivy scan that fails on CRITICAL.
+only, no Docker socket mounted) and Trivy scans that fail on CRITICAL/HIGH.
 PR builds never publish images.
+
+Scans: a filesystem scan covers dependencies and secrets
+(`scanners: vuln,secret`, skipping `node_modules`/`private`/`.git`), and the
+built image is scanned separately. Both gate on `CRITICAL,HIGH`. The base image
+is pinned by version and multi-arch digest in the `Dockerfile`, and every GitHub
+Action is pinned to a full commit SHA (with the human tag in a comment). Bump
+them deliberately and re-run the smoke checklist when you do.
 
 Dependency audit: `bun audit` runs on every build (baseline 2026-10-10: no
 vulnerabilities, 4 packages). Fix advisories with deliberate version bumps,

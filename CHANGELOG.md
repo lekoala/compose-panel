@@ -21,6 +21,10 @@
   truncating; validate the `Host` header against loopback and the configured
   public origin before routing; strip the `COMPOSE_PANEL_*` namespace from
   Compose subprocesses per ADR 0008.
+- Supply-chain hardening: base image pinned by version and multi-arch digest,
+  every GitHub Action pinned to a commit SHA, and Trivy failing on
+  `CRITICAL,HIGH` for both the repository (dependencies + secrets) and the
+  built image.
 - Toolchain: Bun 1.4.3 with the built-in `bun check` type checker (`typescript`
   removed), `bun audit` and a production-only boot check in CI, trapped-name and
   missing-STACKS_DIR regression tests, and `docs/security-audit-2026-10-10.md`.
