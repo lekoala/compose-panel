@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { rm, writeFile } from "node:fs/promises";
 import { locateComposeFile, StackError } from "./stacks.ts";
 import { resolveProjectContext } from "./status.ts";
-import { backupFile, hashContent, randomSuffix, readFileSafe, writeFileAtomic, type SafeFile } from "./fs-safe.ts";
+import { backupFile, dirIdentity, ensureBackupDir, hashContent, randomSuffix, readFileSafe, sameDirIdentity, writeFileAtomic, type SafeFile } from "./fs-safe.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
 
 export const ENV_FILENAME = ".env";
@@ -180,6 +180,7 @@ export async function saveEditableStack(
     const directory = dirname(located.path);
     const composePath = located.path;
     const envPath = join(directory, ENV_FILENAME);
+    const stackIdentity = await dirIdentity(directory);
 
     const currentCompose = await readFileSafe(composePath, maxBytes);
     if (!currentCompose) throw new StackError("Compose file not found.", 404);
@@ -225,6 +226,11 @@ export async function saveEditableStack(
     if (relocated.path !== located.path) {
         throw new StackConflictError("The stack directory changed on disk during validation.");
     }
+    // The path can stay identical while the directory object is swapped.
+    // dev/ino names the object on Linux; a mismatch is a conflict.
+    if (!sameDirIdentity(await dirIdentity(directory), stackIdentity)) {
+        throw new StackConflictError("The stack directory was replaced on disk during validation.");
+    }
     let freshCompose: SafeFile | null;
     let freshEnv: SafeFile | null;
     try {
@@ -241,7 +247,7 @@ export async function saveEditableStack(
         throw new StackConflictError("The .env file changed on disk during validation.");
     }
 
-    const backupDir = join(root, ".compose-panel", "backups", name);
+    const backupDir = await ensureBackupDir(root, name);
     const backupPaths: string[] = [];
     const writer = options.writer ?? writeFileAtomic;
     let composeWritten = false;

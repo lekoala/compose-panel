@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { hashContent, writeFileAtomic } from "../src/fs-safe.ts";
+import { FileSafetyError, hashContent, writeFileAtomic } from "../src/fs-safe.ts";
 import {
     StackConflictError,
     StackPartialError,
@@ -174,6 +174,42 @@ describe("saveEditableStack", () => {
         }), asProvider(okRunner), MAX)).rejects.toThrow();
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe(ENV);
+    });
+
+    test.skipIf(process.platform === "win32")("refuses a symlinked backup hierarchy and leaves the target alone", async () => {
+        const outside = await mkdtemp(join(tmpdir(), "compose-panel-outside-"));
+        try {
+            await writeFile(join(outside, "planted.txt"), "outside\n");
+            await symlink(outside, join(root, ".compose-panel"));
+            const stack = await current();
+            await expect(saveEditableStack(root, "demo", req(stack, {
+                composeSource: "services:\n  app:\n    image: x\n",
+            }), asProvider(okRunner), MAX)).rejects.toThrow(FileSafetyError);
+            expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
+            expect(await readdir(outside)).toEqual(["planted.txt"]);
+        } finally {
+            await rm(outside, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses a replaced stack directory even with identical content", async () => {
+        const stack = await current();
+        const racingRunner: DockerRunner = async args => {
+            if (args.includes("config")) {
+                const compose = await readFile(join(root, "demo", "compose.yaml"), "utf8");
+                const env = await readFile(join(root, "demo", ".env"), "utf8");
+                await rm(join(root, "demo"), { recursive: true });
+                await mkdir(join(root, "demo"));
+                await writeFile(join(root, "demo", "compose.yaml"), compose);
+                await writeFile(join(root, "demo", ".env"), env);
+                return okResult;
+            }
+            return okResult;
+        };
+        // Hashes still match: only the directory identity check can fire.
+        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), asProvider(racingRunner), MAX))
+            .rejects.toThrow(StackConflictError);
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
     });
 
     test("restores compose and reports partial when the env write fails", async () => {

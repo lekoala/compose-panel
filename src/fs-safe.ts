@@ -72,9 +72,57 @@ export async function writeFileAtomic(path: string, content: string, mode: numbe
 
 /** Copy a file into a backup directory, returning the backup path. */
 export async function backupFile(path: string, backupDir: string, label: string): Promise<string> {
-    await mkdir(backupDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const destination = join(backupDir, `${label}.${stamp}.${randomSuffix()}`);
-    await copyFile(path, destination);
+    await copyFile(path, destination, constants.COPYFILE_EXCL);
     return destination;
+}
+
+/** Identity of a directory object, for detecting replacement between checks. */
+export interface DirIdentity {
+    dev: number;
+    ino: number;
+}
+
+/** lstat a directory and refuse symlinks. The dev/ino pair names the object. */
+export async function dirIdentity(path: string): Promise<DirIdentity> {
+    const info = await lstat(path);
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new FileSafetyError("Directory not allowed.");
+    return { dev: info.dev, ino: info.ino };
+}
+
+export function sameDirIdentity(a: DirIdentity, b: DirIdentity): boolean {
+    return a.dev === b.dev && a.ino === b.ino;
+}
+
+/**
+ * Ensure <root>/.compose-panel/backups/<name> exists as real directories.
+ * Every managed component is lstat-checked: symlinks and non-directories are
+ * refused, so backups cannot be redirected outside the stacks root. Created
+ * directories are owner-only (backups hold Compose files and .env secrets).
+ */
+export async function ensureBackupDir(root: string, name: string): Promise<string> {
+    let current = root;
+    for (const component of [".compose-panel", "backups", name]) {
+        current = join(current, component);
+        let info: Stats | null = null;
+        try {
+            info = await lstat(current);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        if (!info) {
+            await mkdir(current, { recursive: false, mode: 0o700 });
+            try {
+                await chmod(current, 0o700);
+            } catch {
+                // Best effort; some platforms (Windows) ignore POSIX modes.
+            }
+            continue;
+        }
+        if (info.isSymbolicLink() || !info.isDirectory()) {
+            throw new FileSafetyError("Backup path is not a real directory.");
+        }
+    }
+    return current;
 }
