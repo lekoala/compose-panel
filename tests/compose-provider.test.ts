@@ -74,4 +74,23 @@ describe("DockerComposeProvider", () => {
             "compose", "--env-file", "draft.env", "--project-directory", "/opt/stacks/demo", "-f", "draft.yaml", "config", "--quiet",
         ]);
     });
+
+    test("reads a bounded log snapshot with explicit arguments", async () => {
+        const { runner, calls } = recording();
+        const provider = createComposeProvider({ runner });
+        await provider.readLogs({ project: "demo", composeFile: "compose.yaml", cwd: "/opt/stacks/demo", envFile: "/opt/stacks/demo/.env", tailLines: 50 });
+        expect(calls[0]!.args).toEqual([
+            "compose", "-p", "demo", "--env-file", "/opt/stacks/demo/.env",
+            "--project-directory", "/opt/stacks/demo", "-f", "compose.yaml",
+            "logs", "--tail", "50", "--timestamps", "--no-color",
+        ]);
+        expect(calls[0]!.cwd).toBe("/opt/stacks/demo");
+    });
+
+    test("refuses a log read when the provider has no logs capability", async () => {
+        const { runner } = recording();
+        const provider = createComposeProvider({ runner });
+        (provider.capabilities().operations as { logs: boolean }).logs = false;
+        await expect(provider.readLogs({ composeFile: "compose.yaml", cwd: "/opt/stacks/demo" })).rejects.toThrow(/does not support/);
+    });
 });

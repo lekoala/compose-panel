@@ -1,11 +1,11 @@
-import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, type NoteKind } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, type NoteKind } from "./html.ts";
 import { dirname, join } from "node:path";
 import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
 import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
-import { LogManager } from "./logs.ts";
+import { LogManager, stripAnsi } from "./logs.ts";
 import { AuditLog, AuditError } from "./audit.ts";
 import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
 import { createComposeProvider, type ComposeProvider } from "./compose-provider.ts";
@@ -504,7 +504,7 @@ export function createApp(options: AppOptions): App {
             stack.name,
             `<p class="crumbs"><a href="/">← All stacks</a></p>`
             + `<div class="page-head"><h1>${escapeHtml(stack.name)}</h1><a href="${href}/edit" class="btn">Edit files</a></div>`
-            + `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}</p>`
+            + `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}${healthSummaryBadge(status.services)}</p>`
             + (notice ? note(notice.kind, notice.text) : "")
             + (status.note ? note("warn", status.note) : "")
             + operationControls(stack.name, csrf, { busy: operation?.status === "running", deployed: status.state !== "not-created", updatesReady: Object.keys(status.updates ?? {}) })
@@ -853,6 +853,45 @@ export function createApp(options: AppOptions): App {
         }, guard);
     }
 
+    /**
+     * Bounded one-shot log history for the stack page. Same fail-closed project
+     * context as the follow, but no subprocess is left running. Returns plain
+     * text so the page can show it inline and a browser without JavaScript can
+     * open the same URL. Docker stderr is never echoed (logs may hold secrets):
+     * failures get a fixed message.
+     */
+    async function handleLogsSnapshot(name: string, sessionId: string): Promise<Response> {
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind === "invalid") return plain(ENV_NOT_REGULAR, 409);
+        if (context.kind === "ambiguous") {
+            return plain("Several Docker Compose projects match this stack. The panel will not guess which logs to read.", 409);
+        }
+        if (context.kind === "unavailable") {
+            return plain("Docker did not respond, so the panel could not read this stack's logs.", 503);
+        }
+        if (context.kind === "absent") return plain("This stack is not deployed yet, so there are no logs.", 200);
+        // Re-check the session after the awaited discovery.
+        if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
+        const target = {
+            project: context.project ?? undefined,
+            composeFile: context.composeFile,
+            cwd: context.cwd,
+            envFile: context.envFile ?? undefined,
+            tailLines: config.logTailLines,
+        };
+        let result: Awaited<ReturnType<ComposeProvider["readLogs"]>>;
+        try {
+            result = await provider.readLogs(target);
+        } catch {
+            return plain("Docker could not read these logs. Reload the page to try again.", 502);
+        }
+        if (result.timedOut) return plain("Docker did not respond in time. Reload the page to try again.", 504);
+        if (result.code !== 0) return plain("Docker could not read these logs. The stack or its containers may have changed; reload the page.", 502);
+        const text = stripAnsi(result.stdout).replace(/\s+$/, "");
+        if (!text) return plain("No recent logs for this stack.", 200);
+        return plain(result.truncated ? `${text}\n\n[Output shortened: only the most recent part is kept.]` : text, 200);
+    }
+
     function sseError(error: unknown): Response {
         if (error instanceof StackError) return plain(error.message, error.status);
         console.error("Internal error", error);
@@ -955,6 +994,8 @@ export function createApp(options: AppOptions): App {
             if (url.pathname === "/") return await renderStackList(session.csrf);
             if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
             if (editMatch) return await renderEdit(decodeName(editMatch[1]!), session.csrf);
+            const logSnapshotMatch = /^\/stacks\/([^/]+)\/logs$/.exec(url.pathname);
+            if (logSnapshotMatch) return await handleLogsSnapshot(decodeName(logSnapshotMatch[1]!), session.id);
             const detailMatch = /^\/stacks\/([^/]+)$/.exec(url.pathname);
             if (detailMatch) {
                 // Fixed messages only: the query flag is never reflected.

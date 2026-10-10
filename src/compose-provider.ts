@@ -65,6 +65,12 @@ export interface ComposeProvider {
     restart(target: ComposeTarget): Promise<CommandResult>;
     down(target: ComposeTarget): Promise<CommandResult>;
     /**
+     * One-shot history read: `compose logs --tail N --timestamps --no-color`,
+     * bounded by the runner timeout and output cap and without following.
+     * A short read, never a subscription (see `followLogs`).
+     */
+    readLogs(target: ComposeTarget & { tailLines?: number }): Promise<CommandResult>;
+    /**
      * Follow `compose logs` until it exits or `signal` aborts. Chunks are
      * forwarded to `onChunk` as they arrive; the caller caps and broadcasts.
      * Aborting the signal kills the subprocess. Never uses a shell.
@@ -182,6 +188,21 @@ class DockerComposeProvider implements ComposeProvider {
 
     down(target: ComposeTarget): Promise<CommandResult> {
         return this.mutation(target, ["down"]);
+    }
+
+    readLogs(target: ComposeTarget & { tailLines?: number }): Promise<CommandResult> {
+        if (!this.caps.operations.logs) return Promise.reject(new ComposeUnsupportedError("logs"));
+        const tail = target.tailLines ?? 200;
+        const args = ["compose"];
+        if (target.project) args.push("-p", target.project);
+        if (target.envFile) args.push("--env-file", target.envFile);
+        args.push(
+            "--project-directory", target.cwd,
+            "-f", target.composeFile,
+            "logs", "--tail", String(tail), "--timestamps", "--no-color",
+        );
+        // A bounded short read: the runner's timeout and output cap apply.
+        return this.runner(args, { cwd: target.cwd, timeoutMs: target.timeoutMs, maxBytes: target.maxBytes });
     }
 
     async followLogs(

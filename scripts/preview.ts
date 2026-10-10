@@ -235,6 +235,14 @@ const runner: DockerRunner = async (args, options) => {
 };
 
 const provider = createComposeProvider({ runner });
+// One-shot history reads also normally spawn `docker compose logs`; simulate them.
+provider.readLogs = async target => {
+    const services = projects.get(target.project ?? "") ?? [];
+    if (services.length === 0) return ok("");
+    const stamp = new Date().toISOString();
+    const stdout = services.map(service => `${service.name}-1  | ${stamp} started (simulated history)`).join("\n") + "\n";
+    return ok(stdout);
+};
 // Log follows normally spawn `docker compose logs`; simulate them instead.
 provider.followLogs = async (target, onChunk, signal) => {
     const services = projects.get(target.project ?? "") ?? [];

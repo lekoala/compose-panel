@@ -6,6 +6,8 @@ The panel runs real Docker commands for state, validation, operations and log fo
 ## Safety of future commands
 Add new operations to the `ComposeProvider` (`src/compose-provider.ts`), not to controllers. The Docker provider builds calls with `Bun.spawn(["docker", "compose", ...], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" })`. Do not use a shell. Consume both streams even if no SSE is connected. Set timeouts and output caps. Preserve the argument order, the project directory, any Compose files and env sources.
 
+Reads that can replace a long-running subscription belong on the boundary too. `readLogs` (one-shot `compose logs --tail N --timestamps --no-color`, bounded by the runner timeout and output cap) is the counterpart to `followLogs`: it serves the history snapshot the stack page loads on open, while `LogManager` keeps owning only the SSE follow.
+
 ## YAML validation
 Use `docker compose config --quiet` with the effective project and explicit input files. This is not a dry-run of `up`. Test that build and volume paths stay the same between the validated draft and the saved version. Do not log `config --environment` or an interpolated YAML containing secrets.
 

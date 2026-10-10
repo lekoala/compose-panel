@@ -21,6 +21,7 @@ function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "restart
         projectImages: async () => ok,
         inspectImages: async () => ok,
         validateConfig: async () => ok,
+        readLogs: async () => ok,
         pull: run("pull"),
         up: run("up"),
         stop: run("stop"),

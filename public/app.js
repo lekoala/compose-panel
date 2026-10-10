@@ -153,7 +153,9 @@
     }
 
     function wireLogs(section) {
+        var snapshot = section.getAttribute("data-logs-snapshot");
         var url = section.getAttribute("data-logs-stream");
+        var refresh = document.getElementById("logs-refresh");
         var follow = document.getElementById("logs-follow");
         var stop = document.getElementById("logs-stop");
         var status = document.getElementById("logs-status");
@@ -162,12 +164,51 @@
         var carry = "";
         if (!url || typeof EventSource === "undefined") return;
         if (!follow || !stop || !output) return;
-        follow.addEventListener("click", function () {
+
+        function setStatus(text) {
+            if (status) status.textContent = text;
+        }
+
+        /* History: the last lines, one bounded request, no process left running. */
+        function loadSnapshot() {
+            if (!snapshot || typeof fetch !== "function") return;
+            setStatus("Loading recent lines…");
+            fetch(snapshot, { headers: { "Accept": "text/plain" } })
+                .then(function (response) { return response.text(); })
+                .then(function (text) {
+                    if (source) return;
+                    output.textContent = localizeLogText(text);
+                    output.scrollTop = output.scrollHeight;
+                    setStatus("Not following.");
+                })
+                .catch(function () {
+                    if (source) return;
+                    setStatus("Could not read the logs. Reload the page to try again.");
+                });
+        }
+
+        function shutdown(reloadSnapshot) {
+            if (carry) {
+                appendText(output, localizeLogText(carry), MAX_OUTPUT_CHARS);
+                carry = "";
+            }
+            if (source) {
+                try { source.close(); } catch { /* ignore */ }
+                source = null;
+            }
+            follow.disabled = false;
+            if (refresh) refresh.disabled = false;
+            stop.disabled = true;
+            if (reloadSnapshot) loadSnapshot();
+        }
+
+        function openFollow() {
             var opened = false;
             if (source) return;
             output.textContent = "";
             setStatus("Connecting…");
             follow.disabled = true;
+            if (refresh) refresh.disabled = true;
             stop.disabled = false;
             source = new EventSource(url);
             source.addEventListener("replay", function (e) {
@@ -199,40 +240,30 @@
             });
             source.addEventListener("end", function (e) {
                 setStatus(e.data || "The log stream ended.");
-                shutdown();
+                shutdown(false);
             });
             source.onerror = function () {
                 if (source && source.readyState === 2) {
                     // CLOSED: the server refused the stream (not a dropped connection).
                     setStatus(opened
-                        ? "The connection was closed. Click Follow logs to reconnect."
+                        ? "The connection was closed. Click Follow live to reconnect."
                         : "Could not start following logs. Reload the page: any problem with Docker or this stack is shown at the top.");
-                    shutdown();
+                    shutdown(false);
                     return;
                 }
                 setStatus("Connection lost. Reconnecting…");
             };
-        });
+        }
+
+        follow.addEventListener("click", openFollow);
+        if (refresh) refresh.addEventListener("click", function () { if (!source) loadSnapshot(); });
         stop.addEventListener("click", function () {
             setStatus("Stopped following.");
-            shutdown();
+            shutdown(false);
         });
-        window.addEventListener("pagehide", shutdown);
-        function setStatus(text) {
-            if (status) status.textContent = text;
-        }
-        function shutdown() {
-            if (carry) {
-                appendText(output, localizeLogText(carry), MAX_OUTPUT_CHARS);
-                carry = "";
-            }
-            if (source) {
-                try { source.close(); } catch { /* ignore */ }
-                source = null;
-            }
-            follow.disabled = false;
-            stop.disabled = true;
-        }
+        window.addEventListener("pagehide", function () { shutdown(false); });
+        // Show history on open, without starting a permanent follow.
+        loadSnapshot();
     }
 
     /* Show times in the panel's display zone (or the reader's own) instead of UTC. */

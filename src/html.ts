@@ -165,10 +165,30 @@ function serviceBadge(service: ComposeService): string {
     return `<span class="state ${cls}">${escapeHtml(label)}</span>`;
 }
 
+const HEALTH_LABELS: Record<string, string> = { healthy: "Healthy", unhealthy: "Unhealthy", starting: "Starting" };
+
+/**
+ * Health is Docker's own check result, shown only when the column is relevant
+ * (see `servicesSection`). It is never merged into the run-state badge.
+ */
 function healthBadge(health: string | null): string {
-    if (!health) return `<span class="muted">—</span>`;
-    const cls = health === "healthy" ? "state-done" : health === "unhealthy" ? "state-failed" : "state-stopped";
-    return `<span class="state ${cls}">${escapeHtml(health)}</span>`;
+    if (!health) return `<span class="muted">Not configured</span>`;
+    const key = health.toLowerCase();
+    const cls = key === "healthy" ? "state-done" : key === "unhealthy" ? "state-failed" : "state-stopped";
+    return `<span class="state ${cls}">${escapeHtml(HEALTH_LABELS[key] ?? health)}</span>`;
+}
+
+/**
+ * Stack-level health marker, kept apart from the run-state badge: a container
+ * can be Running while Docker's health check fails. Empty when nothing is wrong.
+ */
+export function healthSummaryBadge(services: ComposeService[]): string {
+    const count = (value: string) => services.filter(service => (service.health ?? "").toLowerCase() === value).length;
+    const unhealthy = count("unhealthy");
+    if (unhealthy > 0) return `<span class="state state-failed">Health: ${unhealthy} unhealthy</span>`;
+    const starting = count("starting");
+    if (starting > 0) return `<span class="state state-stopped">Health: ${starting} starting</span>`;
+    return "";
 }
 
 function versionText(version: ImageVersion): string {
@@ -202,10 +222,17 @@ function imageCell(service: ComposeService, update: ServiceUpdate | undefined): 
 export function servicesSection(services: ComposeService[], state: string, updates: Record<string, ServiceUpdate> = {}): string {
     let content: string;
     if (services.length > 0) {
+        // Only show the health column when at least one service declares a
+        // health check; otherwise it is an empty column with no information.
+        const showHealth = services.some(service => service.health !== null);
         const rows = services
-            .map(service => `<tr><td>${escapeHtml(service.name)}</td><td>${serviceBadge(service)}</td><td class="col-optional">${healthBadge(service.health)}</td><td>${imageCell(service, updates[service.name])}</td></tr>`)
+            .map(service => {
+                const health = showHealth ? `<td class="col-optional">${healthBadge(service.health)}</td>` : "";
+                return `<tr><td>${escapeHtml(service.name)}</td><td>${serviceBadge(service)}</td>${health}<td>${imageCell(service, updates[service.name])}</td></tr>`;
+            })
             .join("");
-        content = `<div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th>Container</th><th class="col-optional">Health check</th><th>Image</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        const healthHead = showHealth ? `<th class="col-optional">Health check</th>` : "";
+        content = `<div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th>Container</th>${healthHead}<th>Image</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     } else if (state === "not-created") {
         content = `<p class="muted">No containers yet. Use <em>Up</em> to create them.</p>`;
     } else {
@@ -300,14 +327,14 @@ export function operationPanel(operation: OperationView | null, stack?: string):
 }
 
 export function logsPanel(name: string, tailLines: number, timezone = ""): string {
-    const stream = `/stacks/${encodeURIComponent(name)}/logs/events`;
+    const base = `/stacks/${encodeURIComponent(name)}/logs`;
     const zoneHint = timezone
         ? ` Times are shown in <strong>${escapeHtml(timezone)}</strong>.`
         : ` Times are shown in your browser's time zone.`;
-    return `<section class="card logs" data-logs-stream="${stream}"><h2>Logs</h2>`
-        + `<p class="muted">Shows the last ${tailLines} lines of every service, then new lines as they arrive. Following stops when you click <em>Stop following</em> or leave the page.${zoneHint}</p>`
-        + `<div class="toolbar"><button type="button" class="btn" id="logs-follow">Follow logs</button><button type="button" class="btn" id="logs-stop" disabled>Stop following</button></div>`
-        + `<p id="logs-status" class="muted" role="status"></p>`
+    return `<section class="card logs" data-logs-snapshot="${base}" data-logs-stream="${base}/events"><h2>Logs</h2>`
+        + `<p class="muted">Shows the last ${tailLines} lines of every service. <em>Follow live</em> then keeps new lines arriving. Following stops when you click <em>Stop following</em> or leave the page.${zoneHint}</p>`
+        + `<div class="toolbar"><a class="btn" id="logs-latest" href="${base}">Latest ${tailLines} lines</a><button type="button" class="btn" id="logs-refresh">Refresh</button><button type="button" class="btn" id="logs-follow">Follow live</button><button type="button" class="btn" id="logs-stop" disabled>Stop following</button></div>`
+        + `<p id="logs-status" class="muted" role="status">Not following.</p>`
         + `<pre class="output" id="logs-output"></pre>`
         + `</section>`;
 }

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.1 — unreleased
+
+- Logs on open: the stack page now shows the last
+  `COMPOSE_PANEL_LOG_TAIL_LINES` (200) lines as soon as it loads, instead of an
+  empty box until *Follow logs* is clicked. A new bounded, read-only
+  `readLogs` operation on the `ComposeProvider` backs a `GET /stacks/<name>/logs`
+  snapshot (plain text, `no-store`); *Refresh* re-reads it and *Follow live*
+  keeps the existing SSE follow, whose replay replaces the shown history so
+  nothing is duplicated. No permanent process runs for a snapshot, Docker stderr
+  is never echoed, and the read is bounded by the Docker timeout and output cap.
+  Logs Docker has already rotated away cannot be recovered. A browser without
+  JavaScript can open the *Latest lines* link to read the same snapshot.
+- Service health: the *Health check* column is hidden entirely when no service
+  declares a health check, and otherwise shows `Healthy`, `Unhealthy`,
+  `Starting` or `Not configured`. An unhealthy service is also surfaced as a
+  separate `Health: N unhealthy` badge beside the run-state badge, so a running
+  container with a failing health check is never confused with a stopped one.
+
 ## 0.1.0 — 10-10-2026
 
 First minimal release. Single Linux host, single trusted administrator,

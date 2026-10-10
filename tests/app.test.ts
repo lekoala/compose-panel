@@ -81,6 +81,7 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         projectImages: async () => empty,
         inspectImages: async () => empty,
         validateConfig: async () => empty,
+        readLogs: async () => empty,
         pull: async () => empty,
         up: async () => empty,
         stop: async () => empty,
@@ -1295,6 +1296,62 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         expect(await response.text()).toContain("event: end");
         expect(calls).toHaveLength(0);
         expect(app.sseSubscriptions()).toBe(0);
+    });
+
+    test("serves a bounded log snapshot over an authenticated GET without following", async () => {
+        const { provider, calls } = controllableProvider();
+        provider.readLogs = async () => ({ code: 0, stdout: "2026-10-10T10:00:00Z app-1  | hello\n", stderr: "", timedOut: false, truncated: false });
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const response = await authed(app, "/stacks/demo/logs", session);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("text/plain");
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(await response.text()).toContain("hello");
+        expect(calls).toHaveLength(0);
+        expect(app.logs.isActive("demo")).toBe(false);
+    });
+
+    test("requires a session for the log snapshot", async () => {
+        const { provider } = controllableProvider();
+        const app = makeApp({}, undefined, provider);
+        expect((await app.fetch(new Request(`${ORIGIN}/stacks/demo/logs`))).status).toBe(302);
+        expect((await authed(app, "/stacks/a%00/logs", await login(app))).status).toBe(400);
+    });
+
+    test("never echoes Docker stderr in the log snapshot", async () => {
+        const { provider } = controllableProvider();
+        provider.readLogs = async () => ({ code: 1, stdout: "", stderr: "secret-token", timedOut: false, truncated: false });
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const response = await authed(app, "/stacks/demo/logs", session);
+        expect(response.status).toBe(502);
+        expect(await response.text()).not.toContain("secret-token");
+    });
+
+    test("an absent stack has no log snapshot and runs no Docker read", async () => {
+        const { provider } = controllableProvider();
+        provider.listProjects = async () => lsOf([]);
+        let reads = 0;
+        provider.readLogs = async () => { reads += 1; return { code: 0, stdout: "x", stderr: "", timedOut: false, truncated: false }; };
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const response = await authed(app, "/stacks/demo/logs", session);
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("not deployed");
+        expect(reads).toBe(0);
+    });
+
+    test("refuses the log snapshot for an unknown or ambiguous stack", async () => {
+        const { provider } = controllableProvider();
+        provider.listProjects = async () => lsOf([
+            projectEntry("demo-proj", join(root, "demo", "compose.yaml")),
+            projectEntry("other", join(root, "demo", "compose.yaml")),
+        ]);
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        expect((await authed(app, "/stacks/nope/logs", session)).status).toBe(404);
+        expect((await authed(app, "/stacks/demo/logs", session)).status).toBe(409);
     });
 
     test("validation uses the resolved project identity", async () => {
