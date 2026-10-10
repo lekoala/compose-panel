@@ -40,5 +40,6 @@ allow-list and migration notes.
   the subprocess environment while another variable is preserved.
 - The deployment env file (`deploy/compose-panel.env`) keeps using the
   namespace, so no operator change is required.
-- This narrows H2 of the security audit. Other process variables still reach
-  Compose by design; the residual exposure is documented, not eliminated.
+- This narrows the inherited-environment risk identified during the security
+  review. Other process variables still reach Compose by design; the residual
+  exposure is documented, not eliminated.
