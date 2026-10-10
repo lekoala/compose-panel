@@ -112,8 +112,13 @@ details[open] > summary{margin-bottom:.75rem}
 .form textarea{font-family:var(--mono);font-size:.875rem;white-space:pre;tab-size:2;resize:vertical}
 .form-actions{display:flex;gap:.5rem;flex-wrap:wrap}
 .edit-form{max-width:60rem}
-.login{max-width:22rem;margin:2rem auto}
-.login-mark{display:block;margin-bottom:1rem}
+.bare{min-height:100vh;display:grid;place-items:center;padding:1rem}
+.login{width:100%;max-width:24rem;margin:0;padding:2rem;text-align:center;box-shadow:0 1px 2px rgb(0 0 0 / .04),0 8px 24px rgb(0 0 0 / .06)}
+.login h1{font-size:1.5rem;margin:0 0 .25rem}
+.login .lead{margin-inline:auto}
+.login .form,.login .note{text-align:left}
+.login .form{margin-top:1.5rem}
+.login-mark{display:block;margin:0 auto 1rem}
 .login .btn{width:100%}
 
 /* Small screens and touch: admin on the go */
@@ -126,6 +131,7 @@ details[open] > summary{margin-bottom:.75rem}
 }
 @media (max-width:40rem){
   .shell{padding:.75rem .75rem}
+  .login{padding:1.5rem 1.25rem}
   main{padding-block:1.25rem}
   h1{font-size:1.45rem}
   .user,.col-optional{display:none}

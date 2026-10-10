@@ -773,6 +773,7 @@ export function createApp(options: AppOptions): App {
                 "Signed out",
                 "Your session has ended (signed out, timed out, or the panel restarted), so nothing was done. Sign in again, then retry.",
                 { href: "/login", label: "Sign in" },
+                { bare: true },
             ), 401);
         }
 

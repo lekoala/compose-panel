@@ -31,6 +31,8 @@ export interface DocumentOptions {
     user?: string;
     /** Same-origin scripts to load with defer (e.g. "/app.js"). */
     scripts?: string[];
+    /** Standalone centered page without header and footer (sign-in, signed out). */
+    bare?: boolean;
 }
 
 export function documentHtml(title: string, body: string, options: DocumentOptions = {}): string {
@@ -55,32 +57,34 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
   ${scripts}
 </head>
 <body>
-  <div class="shell">
+  ${options.bare ? `<main class="bare">${body}</main>` : `<div class="shell">
     <header><a href="/" class="brand"><img src="/favicon.svg" alt="" width="20" height="20">Compose Panel</a>${logout}</header>
     <main>${body}</main>
     <footer>Your Compose files and Docker stay the source of truth: every stack shown here can still be managed with the <code>docker compose</code> CLI.</footer>
-  </div>
+  </div>`}
 </body>
 </html>`;
 }
 
 /** A simple page with a heading, a message and a way back. */
 export function messagePage(title: string, message: string, back: { href: string; label: string }, options: DocumentOptions = {}): string {
-    return documentHtml(title, `<h1>${escapeHtml(title)}</h1><p class="lead">${escapeHtml(message)}</p><p><a href="${escapeHtml(back.href)}">${escapeHtml(back.label)}</a></p>`, options);
+    const content = `<h1>${escapeHtml(title)}</h1><p class="lead">${escapeHtml(message)}</p><p><a href="${escapeHtml(back.href)}">${escapeHtml(back.label)}</a></p>`;
+    return documentHtml(title, options.bare ? `<div class="login card">${content}</div>` : content, options);
 }
 
 export function loginPage(options: { csrf: string; error?: string | null }): string {
     const error = options.error ? note("error", options.error) : "";
-    return documentHtml("Sign in", `<div class="login">
-<picture><source media="(prefers-color-scheme: dark)" srcset="/icon-boot-on-dark.svg"><img src="/icon-boot-on-light.svg" alt="" width="80" height="80" class="login-mark"></picture>
-<h1>Sign in</h1>${error}
+    return documentHtml("Sign in", `<div class="login card">
+<picture><source media="(prefers-color-scheme: dark)" srcset="/icon-boot-on-dark.svg"><img src="/icon-boot-on-light.svg" alt="" width="64" height="64" class="login-mark"></picture>
+<h1>Compose Panel</h1>
+<p class="muted">Sign in to manage your stacks.</p>${error}
 <form method="post" action="/login" class="form">
   <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
   <label>Username <input name="user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></label>
   <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
   <button type="submit" class="btn btn-primary">Sign in</button>
 </form>
-</div>`);
+</div>`, { bare: true });
 }
 
 export interface EditPageOptions {
