@@ -7,8 +7,10 @@ import type { CommandResult } from "../src/docker.ts";
 const ok: CommandResult = { code: 0, stdout: "done", stderr: "", timedOut: false, truncated: false };
 const target: ComposeTarget = { composeFile: "/stacks/demo/compose.yaml", cwd: "/stacks/demo" };
 
-function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "restart" | "down", () => Promise<CommandResult>>> = {}): ComposeProvider {
+function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "restart" | "down", (target: ComposeTarget) => Promise<CommandResult>>> = {}): ComposeProvider {
     const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
+    const run = (kind: "pull" | "up" | "stop" | "restart" | "down") =>
+        async (target: ComposeTarget) => (handlers[kind] ?? (async () => ok))(target);
     return {
         engine: "fake",
         capabilities: () => caps,
@@ -16,11 +18,11 @@ function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "restart
         listProjects: async () => ok,
         projectServices: async () => ok,
         validateConfig: async () => ok,
-        pull: handlers.pull ?? (async () => ok),
-        up: handlers.up ?? (async () => ok),
-        stop: handlers.stop ?? (async () => ok),
-        restart: handlers.restart ?? (async () => ok),
-        down: handlers.down ?? (async () => ok),
+        pull: run("pull"),
+        up: run("up"),
+        stop: run("stop"),
+        restart: run("restart"),
+        down: run("down"),
         followLogs: async () => ({ code: 0, timedOut: false }),
     };
 }
@@ -158,4 +160,48 @@ test("subscribe returns the current snapshot for late observers", async () => {
     expect(sub.snapshot?.status).toBe("succeeded");
     expect(sub.snapshot?.output).toContain("done");
     sub.unsubscribe();
+});
+
+test("forwards live chunks before completion without duplicating the result", async () => {
+    let resolveUp!: (result: CommandResult) => void;
+    const gate = new Promise<CommandResult>(resolve => { resolveUp = resolve; });
+    const provider = fakeProvider({
+        up: target => {
+            target.onOutput?.("pulling layer 1\n");
+            target.onOutput?.("pulling layer 2\n");
+            return gate;
+        },
+    });
+    const manager = new OperationManager(new StackLocks(), provider, { timeoutMs: 1000, maxBytes: 10_000 });
+    const updates: string[] = [];
+    manager.subscribe("demo", operation => updates.push(operation.output));
+    const started = manager.start({ stack: "demo", action: "up", target });
+    // Progress is visible while the command still runs.
+    expect(started.output).toContain("pulling layer 1");
+    expect(updates.join("\n")).toContain("pulling layer 2");
+    resolveUp(ok);
+    await settle(manager);
+    const final = manager.forStack("demo")!;
+    expect(final.status).toBe("succeeded");
+    // Streamed content supersedes the buffered result: each layer exactly once.
+    expect(final.output.match(/pulling layer 1/g)!.length).toBe(1);
+    expect(final.output.match(/pulling layer 2/g)!.length).toBe(1);
+});
+
+test("pull-up keeps buffered pull output alongside streamed up output", async () => {
+    const pulled: CommandResult = { code: 0, stdout: "pulled", stderr: "", timedOut: false, truncated: false };
+    const provider = fakeProvider({
+        pull: async () => pulled,
+        up: async target => {
+            target.onOutput?.("starting\n");
+            return ok;
+        },
+    });
+    const manager = new OperationManager(new StackLocks(), provider, { timeoutMs: 1000, maxBytes: 10_000 });
+    manager.start({ stack: "demo", action: "pull-up", target });
+    await settle(manager);
+    const final = manager.forStack("demo")!;
+    expect(final.status).toBe("succeeded");
+    expect(final.output).toContain("pulled");
+    expect(final.output).toContain("starting");
 });

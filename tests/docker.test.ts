@@ -20,6 +20,41 @@ test("times out a hanging process", async () => {
     expect(result.timedOut).toBe(true);
 });
 
+test("delivers pipe chunks before the process exits", async () => {
+    const seen: string[] = [];
+    const pending = runCommand(process.execPath, ["-e", "process.stdout.write('early\\n'); setTimeout(() => {}, 500)"], {
+        timeoutMs: 5000,
+        onChunk: chunk => seen.push(chunk),
+    });
+    const deadline = Date.now() + 4000;
+    while (seen.length === 0 && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(seen.join("")).toContain("early");
+    const result = await pending;
+    expect(result.code).toBe(0);
+    expect(result.timedOut).toBe(false);
+});
+
+test("drains chatty output past the cap instead of wedging the child", async () => {
+    const live: string[] = [];
+    const result = await runCommand(
+        process.execPath,
+        ["-e", "for (let i = 0; i < 300000; i++) process.stdout.write('0123456789abcdef\\n')"],
+        {
+            maxBytes: 100,
+            timeoutMs: 15000,
+            onChunk: chunk => live.push(chunk),
+        },
+    );
+    // Megabytes flowed through a 100-byte cap: the child exited on its own.
+    expect(result.timedOut).toBe(false);
+    expect(result.code).toBe(0);
+    expect(result.truncated).toBe(true);
+    expect(result.stdout.length).toBeLessThanOrEqual(100);
+    expect(live.join("").length).toBeGreaterThan(1000);
+});
+
 test("does not throw when the executable is missing", async () => {
     const result = await runCommand("compose-panel-no-such-binary", []);
     expect(result.code).toBe(SPAWN_FAILURE);

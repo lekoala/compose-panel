@@ -143,20 +143,37 @@ export class OperationManager {
         target: ComposeTarget,
         release: () => void,
     ): Promise<void> {
+        // Live pipe chunks land here while the command runs. When any flowed
+        // for a call, the retained output is already complete and the bulk
+        // append for that call is skipped (it would duplicate). Buffered
+        // providers that ignore onOutput keep the old append path. The flag
+        // resets per call so a streamed pull never masks a buffered up.
+        let live = false;
+        const streaming: ComposeTarget = {
+            ...target,
+            onOutput: chunk => {
+                live = true;
+                this.appendText(operation, chunk);
+            },
+        };
+        const runStreamed = async (call: (target: ComposeTarget) => Promise<CommandResult>): Promise<CommandResult> => {
+            live = false;
+            const result = await call(streaming);
+            if (!live) this.append(operation, result);
+            return result;
+        };
         try {
             let result: CommandResult;
             if (action === "pull-up") {
-                const pulled = await this.provider.pull(target);
-                this.append(operation, pulled);
+                const pulled = await runStreamed(target => this.provider.pull(target));
                 if (pulled.code !== 0 || pulled.timedOut) {
                     this.finalize(operation, pulled);
                     return;
                 }
-                result = await this.provider.up(target);
+                result = await runStreamed(target => this.provider.up(target));
             } else {
-                result = await runAction(this.provider, action, target);
+                result = await runStreamed(target => runAction(this.provider, action, target));
             }
-            this.append(operation, result);
             this.finalize(operation, result);
         } catch (error) {
             operation.status = "unknown";

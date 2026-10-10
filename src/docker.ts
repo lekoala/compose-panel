@@ -10,31 +10,54 @@ export interface RunOptions {
     cwd?: string;
     timeoutMs?: number;
     maxBytes?: number;
+    /** Forwarded every pipe chunk as it arrives; retention stays capped. */
+    onChunk?: (chunk: string) => void;
 }
 
 export type DockerRunner = (args: string[], options?: RunOptions) => Promise<CommandResult>;
 
 const SPAWN_FAILURE_CODE = -1;
 
-async function readCapped(stream: ReadableStream<Uint8Array> | undefined, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
+async function readCapped(
+    stream: ReadableStream<Uint8Array> | undefined,
+    maxBytes: number,
+    onChunk?: (chunk: string) => void,
+): Promise<{ text: string; truncated: boolean }> {
     if (!stream) return { text: "", truncated: false };
     const reader = stream.getReader();
     const chunks: Uint8Array[] = [];
     let total = 0;
     let truncated = false;
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        if (total + value.byteLength > maxBytes) {
-            const remaining = maxBytes - total;
-            if (remaining > 0) chunks.push(value.subarray(0, remaining));
-            truncated = true;
-            await reader.cancel();
-            break;
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value || value.byteLength === 0) continue;
+            const text = Buffer.from(value).toString("utf8");
+            // Live delivery first: observers see progress while running.
+            if (onChunk && text) {
+                try { onChunk(text); }
+                catch { /* a broken observer must not fail the command */ }
+            }
+            if (total >= maxBytes) {
+                // Past the cap: keep draining so a chatty process can exit,
+                // discard the rest. Stopping here could wedge the child on a
+                // full pipe and hang the command.
+                truncated = true;
+                continue;
+            }
+            const room = maxBytes - total;
+            if (value.byteLength <= room) {
+                chunks.push(value);
+                total += value.byteLength;
+            } else {
+                chunks.push(value.subarray(0, room));
+                total = maxBytes;
+                truncated = true;
+            }
         }
-        chunks.push(value);
-        total += value.byteLength;
+    } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
     }
     return { text: Buffer.concat(chunks).toString("utf8"), truncated };
 }
@@ -72,8 +95,8 @@ export async function runCommand(file: string, args: string[], options: RunOptio
 
     try {
         const [out, err] = await Promise.all([
-            readCapped(proc.stdout, maxBytes),
-            readCapped(proc.stderr, maxBytes),
+            readCapped(proc.stdout, maxBytes, options.onChunk),
+            readCapped(proc.stderr, maxBytes, options.onChunk),
         ]);
         const code = await proc.exited;
         return { code, stdout: out.text, stderr: err.text, timedOut, truncated: out.truncated || err.truncated };

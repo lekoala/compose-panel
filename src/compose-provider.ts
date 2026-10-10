@@ -28,6 +28,8 @@ export interface ComposeTarget {
     cwd: string;
     timeoutMs?: number;
     maxBytes?: number;
+    /** Live pipe chunks while a mutation runs. Retention stays capped. */
+    onOutput?: (chunk: string) => void;
 }
 
 /**
@@ -115,7 +117,7 @@ class DockerComposeProvider implements ComposeProvider {
         const args = ["compose"];
         if (target.project) args.push("-p", target.project);
         args.push("--project-directory", target.cwd, "-f", target.composeFile, ...command);
-        return this.runner(args, { cwd: target.cwd, timeoutMs: target.timeoutMs, maxBytes: target.maxBytes });
+        return this.runner(args, { cwd: target.cwd, timeoutMs: target.timeoutMs, maxBytes: target.maxBytes, onChunk: target.onOutput });
     }
 
     pull(target: ComposeTarget): Promise<CommandResult> {
