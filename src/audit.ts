@@ -7,7 +7,7 @@ export type AuditRotation = "day" | "month";
 
 /** Fields an audit line may carry. Never contains passwords, hashes or .env values. */
 export interface AuditEvent {
-    /** Stable event name, e.g. "login", "logout", "save", "operation", "startup". */
+    /** Stable event name: "login", "logout", "save", "operation" or "audit" (the log itself). */
     event: string;
     /** Outcome, e.g. "success", "failure", "refused", "unknown". */
     result: string;
@@ -34,6 +34,10 @@ export interface AuditLogOptions {
     retainFiles?: number;
     /** Maximum entries returned by `readPeriod`. */
     maxReadLines?: number;
+    /** Size cap of one period file; once reached, later events of that period are dropped. */
+    maxFileBytes?: number;
+    /** Cap on noisy events (unauthenticated refusals/failures) written per minute. */
+    noisyPerMinute?: number;
     now?: () => number;
     /** Sink for write failures; defaults to `console.error`. */
     onError?: (error: unknown) => void;
@@ -42,6 +46,9 @@ export interface AuditLogOptions {
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH_RE = /^\d{4}-\d{2}$/;
 const MAX_FIELD = 500;
+/** Room kept below the size cap for the single "suspended" marker line. */
+const MARKER_HEADROOM = 1024;
+const SUSPENDED_MARKER = '"result":"suspended"';
 
 export class AuditError extends Error {
     constructor(message: string) {
@@ -74,7 +81,13 @@ export class AuditLog {
     private readonly maxReadLines: number;
     private readonly now: () => number;
     private readonly onError: (error: unknown) => void;
+    private readonly maxFileBytes: number;
+    private readonly noisyPerMinute: number;
     private lastPeriod: string | null = null;
+    private readonly suspended = new Set<string>();
+    private noisyMinute = -1;
+    private noisyCount = 0;
+    private noisyDropped = 0;
 
     constructor(options: AuditLogOptions) {
         this.dir = options.dir;
@@ -82,28 +95,45 @@ export class AuditLog {
         this.rotation = options.rotation ?? "day";
         this.retainFiles = options.retainFiles ?? 31;
         this.maxReadLines = options.maxReadLines ?? 2000;
+        this.maxFileBytes = Math.max(4 * MARKER_HEADROOM, options.maxFileBytes ?? 10 * 1024 * 1024);
+        this.noisyPerMinute = options.noisyPerMinute ?? 60;
         this.now = options.now ?? Date.now;
         this.onError = options.onError ?? (error => console.error("Audit log write failed", error));
     }
 
-    /** Append one event. Never throws; a failure is surfaced through `onError`. */
-    async record(event: AuditEvent): Promise<void> {
+    /**
+     * Append one event. Never throws; a failure is surfaced through `onError`.
+     * `noisy` marks events an unauthenticated client can trigger at will (sign-in
+     * refusals and failures): past `noisyPerMinute` they are only counted, and
+     * one summary line later records how many were left out.
+     */
+    async record(event: AuditEvent, options: { noisy?: boolean } = {}): Promise<void> {
         if (!this.enabled) return;
         try {
             const ts = this.now();
             const period = this.periodFor(ts);
+            const lines: string[] = [];
+            const minute = Math.floor(ts / 60_000);
+            if (minute !== this.noisyMinute) {
+                if (this.noisyDropped > 0) {
+                    lines.push(this.format(ts, {
+                        event: "audit",
+                        result: "suppressed",
+                        detail: `${this.noisyDropped} more sign-in refusals or failures were not recorded individually (limit ${this.noisyPerMinute} per minute)`,
+                    }));
+                }
+                this.noisyMinute = minute;
+                this.noisyCount = 0;
+                this.noisyDropped = 0;
+            }
+            if (options.noisy && ++this.noisyCount > this.noisyPerMinute) {
+                this.noisyDropped += 1;
+            } else {
+                lines.push(this.format(ts, event));
+            }
+            if (lines.length === 0) return;
             await this.ensureDir();
-            const entry: AuditEntry = {
-                ts: new Date(ts).toISOString(),
-                event: clampField(event.event) ?? "unknown",
-                result: clampField(event.result) ?? "unknown",
-                ...(clampField(event.actor) ? { actor: clampField(event.actor) } : {}),
-                ...(clampField(event.stack) ? { stack: clampField(event.stack) } : {}),
-                ...(clampField(event.action) ? { action: clampField(event.action) } : {}),
-                ...(clampField(event.username) ? { username: clampField(event.username) } : {}),
-                ...(clampField(event.detail) ? { detail: clampField(event.detail) } : {}),
-            };
-            await this.appendLine(`${period}.log`, `${JSON.stringify(entry)}\n`);
+            await this.append(period, lines.join(""), ts);
             if (this.lastPeriod !== period) {
                 this.lastPeriod = period;
                 await this.prune();
@@ -111,6 +141,44 @@ export class AuditLog {
         } catch (error) {
             this.onError(error);
         }
+    }
+
+    private format(ts: number, event: AuditEvent): string {
+        const entry: AuditEntry = {
+            ts: new Date(ts).toISOString(),
+            event: clampField(event.event) ?? "unknown",
+            result: clampField(event.result) ?? "unknown",
+            ...(clampField(event.actor) ? { actor: clampField(event.actor) } : {}),
+            ...(clampField(event.stack) ? { stack: clampField(event.stack) } : {}),
+            ...(clampField(event.action) ? { action: clampField(event.action) } : {}),
+            ...(clampField(event.username) ? { username: clampField(event.username) } : {}),
+            ...(clampField(event.detail) ? { detail: clampField(event.detail) } : {}),
+        };
+        return `${JSON.stringify(entry)}\n`;
+    }
+
+    /**
+     * Append to a period file within its size cap. Past the cap (minus a small
+     * headroom), one "suspended" marker closes the period and later events of
+     * that period are dropped. The marker is looked up in the file's tail after
+     * a restart, so it is written once.
+     */
+    private async append(period: string, text: string, ts: number): Promise<void> {
+        if (this.suspended.has(period)) return;
+        const path = join(this.dir, `${period}.log`);
+        const size = await this.regularFileSize(path);
+        const limit = this.maxFileBytes - MARKER_HEADROOM;
+        if (size + Buffer.byteLength(text, "utf8") <= limit) {
+            await this.appendLine(path, text);
+            return;
+        }
+        this.suspended.add(period);
+        if (size > 0 && (await this.readTail(path, MARKER_HEADROOM * 2)).text.includes(SUSPENDED_MARKER)) return;
+        await this.appendLine(path, this.format(ts, {
+            event: "audit",
+            result: "suspended",
+            detail: `size limit of ${this.maxFileBytes} bytes reached; later events of this period are not recorded`,
+        }));
     }
 
     /** Period keys (most recent first) currently present on disk. */
@@ -180,14 +248,21 @@ export class AuditLog {
         try { await chmod(this.dir, 0o700); } catch { /* Best effort (Windows ignores POSIX modes). */ }
     }
 
-    private async appendLine(filename: string, line: string): Promise<void> {
-        const path = join(this.dir, filename);
-        let info: Stats | null = null;
+    /** Size of an existing regular log file, 0 when absent; refuses links and non-files. */
+    private async regularFileSize(path: string): Promise<number> {
+        let info: Stats;
         try { info = await lstat(path); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-        if (info && (info.isSymbolicLink() || !info.isFile())) {
+        catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+            throw error;
+        }
+        if (info.isSymbolicLink() || !info.isFile()) {
             throw new AuditError("The audit file is a symbolic link or not a regular file.");
         }
+        return info.size;
+    }
+
+    private async appendLine(path: string, line: string): Promise<void> {
         const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0), 0o600);
         try { await handle.write(line, undefined, "utf8"); }
         finally { await handle.close(); }

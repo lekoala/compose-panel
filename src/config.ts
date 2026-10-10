@@ -16,6 +16,8 @@ export interface AuditConfig {
     retainFiles: number;
     /** Maximum entries rendered for one period. */
     maxReadLines: number;
+    /** Size cap of one period file. */
+    maxFileBytes: number;
 }
 
 export interface AppConfig {
@@ -160,6 +162,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
             rotation: parseRotation(env),
             retainFiles: parsePositiveInt(env, "COMPOSE_PANEL_AUDIT_RETAIN_FILES", 31),
             maxReadLines: parsePositiveInt(env, "COMPOSE_PANEL_AUDIT_MAX_READ_LINES", 2000),
+            maxFileBytes: parsePositiveInt(env, "COMPOSE_PANEL_AUDIT_MAX_FILE_BYTES", 10 * 1024 * 1024),
         },
         maxBodyBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_BODY_BYTES", 8 * 1024),
         maxEditBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_EDIT_BYTES", 1024 * 1024),

@@ -278,7 +278,10 @@ export interface AuditPageOptions {
 
 const AUDIT_RESULT_CLASS: Record<string, string> = {
     success: "state-done",
+    succeeded: "state-done",
+    started: "state-running",
     failure: "state-failed",
+    failed: "state-failed",
     partial: "state-failed",
     conflict: "state-stopped",
     refused: "state-stopped",
@@ -307,7 +310,7 @@ export function auditPage(options: AuditPageOptions): string {
                 ? `${escapeHtml(entry.actor ?? "—")} <span class="muted">(${escapeHtml(entry.username)})</span>`
                 : escapeHtml(entry.actor ?? "—");
             const detail = entry.detail ? escapeHtml(entry.detail) : "";
-            return `<tr><td><time datetime="${escapeHtml(entry.ts ?? "")}">${escapeHtml(when)}</time></td>`
+            return `<tr><td><time datetime="${escapeHtml(entry.ts ?? "")}" data-local-time="full">${escapeHtml(when)}</time></td>`
                 + `<td>${escapeHtml(entry.event)}</td>`
                 + `<td><span class="state ${resultClass}">${escapeHtml(entry.result)}</span></td>`
                 + `<td>${actor}</td><td>${stack}</td><td>${action}</td><td class="col-optional">${detail}</td></tr>`;
@@ -324,7 +327,7 @@ export function auditPage(options: AuditPageOptions): string {
         + selector
         + (options.selected ? `<p class="muted">Showing <code>${escapeHtml(options.selected)}.log</code> (${options.entries.length} entries, most recent last).</p>` : "")
         + table,
-        { logoutCsrf: options.csrf, user: options.user },
+        { logoutCsrf: options.csrf, user: options.user, scripts: ["/app.js"] },
     );
 }
 

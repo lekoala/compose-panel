@@ -140,18 +140,24 @@ export interface RateLimitVerdict {
 }
 
 /**
- * Per-client attempt throttle that never refuses a valid credential.
+ * Per-client attempt throttle with no per-client lockout.
  *
  * The panel is a single-admin, loopback-first tool. A hard lockout keyed by
  * client would let anyone deny the real admin access simply by failing logins.
- * So once a key is over its limit we no longer return a refusal: we return a
- * bounded, exponentially growing delay instead. A correct password therefore
- * always goes through (after a short wait under attack), while an attacker's
- * verification rate collapses against Argon2id. The only hard refusal is the
- * global in-flight cap, which bounds CPU/memory and is transient.
+ * So once a key is over its limit we return a bounded, exponentially growing
+ * delay instead of a refusal, and a correct password still goes through.
+ *
+ * Two rules keep the delay effective and stop one source from starving others:
+ * - one verification at a time per key: parallel attempts from the same key are
+ *   refused, so a source cannot bypass its delay by sending requests in parallel;
+ * - the global verification slot is taken only *after* the delay, by
+ *   `acquireSlot`, so waiting attempts never hold one of the scarce slots.
+ * Distinct sources can still contend for the global cap (transient 429); a
+ * distributed attack is a host-level concern (firewall, fail2ban, CrowdSec).
  */
 export class LoginRateLimiter {
     private readonly attempts = new Map<string, { count: number; windowStart: number }>();
+    private readonly active = new Set<string>();
     private inFlight = 0;
 
     constructor(
@@ -173,20 +179,19 @@ export class LoginRateLimiter {
 
     /**
      * Check-and-reserve in one synchronous step. The attempt is counted before
-     * any awaited password work, so N concurrent requests cannot all pass the
-     * limit before the first failure is recorded. Call `settle` exactly once
-     * afterwards. Returns a refusal only when the global in-flight cap is hit;
-     * a per-key over-limit attempt is allowed with a `delayMs` to wait first.
+     * any awaited work, so N concurrent requests cannot all pass the limit
+     * before the first failure is recorded. Refuses only while another attempt
+     * of the same key is in progress. On success, wait `delayMs`, then call
+     * `acquireSlot`; call `settle` exactly once in every case.
      */
     tryReserve(key: string): RateLimitVerdict {
+        if (this.active.has(key)) return { allowed: false, retryAfterSec: 1, delayMs: 0 };
         const now = this.now();
+        this.sweep(now);
         let entry = this.attempts.get(key);
         if (entry && now - entry.windowStart > this.windowMs) {
             this.attempts.delete(key);
             entry = undefined;
-        }
-        if (this.inFlight >= this.maxInFlight) {
-            return { allowed: false, retryAfterSec: 1, delayMs: 0 };
         }
         if (!entry) {
             entry = { count: 0, windowStart: now };
@@ -194,17 +199,26 @@ export class LoginRateLimiter {
         }
         const delayMs = this.delayFor(entry.count);
         entry.count += 1;
-        this.inFlight += 1;
+        this.active.add(key);
         return { allowed: true, retryAfterSec: 0, delayMs };
     }
 
+    /** Take a global verification slot. False when the cap is reached (transient). */
+    acquireSlot(): boolean {
+        if (this.inFlight >= this.maxInFlight) return false;
+        this.inFlight += 1;
+        return true;
+    }
+
     /**
-     * Release a reservation made by `tryReserve`. On success the reservation is
-     * removed without erasing other outstanding failures; on failure it stays
-     * counted, so the next attempt on this key is delayed further.
+     * Release a reservation made by `tryReserve`, and the slot if one was
+     * acquired. On success the reservation is removed without erasing other
+     * outstanding failures; on failure it stays counted, so the next attempt on
+     * this key is delayed further.
      */
-    settle(key: string, success: boolean): void {
-        if (this.inFlight > 0) this.inFlight -= 1;
+    settle(key: string, success: boolean, slotHeld: boolean): void {
+        if (slotHeld && this.inFlight > 0) this.inFlight -= 1;
+        this.active.delete(key);
         const entry = this.attempts.get(key);
         if (!entry) return;
         if (success) {
@@ -232,5 +246,13 @@ export class LoginRateLimiter {
         const over = count - this.maxAttempts;
         if (over < 0) return 0;
         return Math.min(this.backoffMaxMs, 250 * 2 ** over);
+    }
+
+    /** Bound memory under many distinct sources: drop expired windows. */
+    private sweep(now: number): void {
+        if (this.attempts.size < 1024) return;
+        for (const [key, entry] of this.attempts) {
+            if (now - entry.windowStart > this.windowMs && !this.active.has(key)) this.attempts.delete(key);
+        }
     }
 }

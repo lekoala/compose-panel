@@ -144,6 +144,47 @@ describe("AuditLog", () => {
         }
     });
 
+    test("caps a period file and closes it with a single marker, also across restarts", async () => {
+        const dir = await tempDir();
+        try {
+            const now = () => Date.parse("2024-03-01T10:00:00.000Z");
+            const options = { dir, now, maxFileBytes: 4096, noisyPerMinute: 1_000_000 };
+            const audit = new AuditLog(options);
+            for (let i = 0; i < 200; i += 1) await audit.record({ event: "save", result: "success", detail: "x".repeat(100) });
+            // A restarted panel must not write a second marker.
+            const restarted = new AuditLog(options);
+            await restarted.record({ event: "save", result: "success" });
+            const raw = await readFile(join(dir, "2024-03-01.log"), "utf8");
+            expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(4096);
+            expect(raw.split('"result":"suspended"').length - 1).toBe(1);
+            const entries = await audit.readPeriod("2024-03-01");
+            expect(entries.at(-1)!.result).toBe("suspended");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("rate-caps noisy events and summarizes what was left out", async () => {
+        const dir = await tempDir();
+        try {
+            let now = Date.parse("2024-03-01T10:00:00.000Z");
+            const audit = new AuditLog({ dir, now: () => now, noisyPerMinute: 3 });
+            for (let i = 0; i < 10; i += 1) await audit.record({ event: "login", result: "failure" }, { noisy: true });
+            // Normal events are never dropped by the noisy cap.
+            await audit.record({ event: "save", result: "success" });
+            now += 60_000;
+            await audit.record({ event: "login", result: "success" });
+            const entries = await audit.readPeriod("2024-03-01");
+            expect(entries.filter(entry => entry.result === "failure").length).toBe(3);
+            expect(entries.some(entry => entry.event === "save")).toBe(true);
+            const summary = entries.find(entry => entry.result === "suppressed");
+            expect(summary?.detail).toContain("7 more");
+            expect(entries.at(-1)!.result).toBe("success");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
     test("disabled log is a no-op", async () => {
         const dir = await tempDir();
         try {

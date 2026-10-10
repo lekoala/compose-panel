@@ -84,7 +84,7 @@ Useful variables: `COMPOSE_PANEL_AUDIT_ENABLED` (default `true`),
 Every failed login is a line like:
 
 ```json
-{"ts":"2026-10-10T09:00:00.000Z","event":"login","result":"failure","actor":"203.0.113.7","username":"operator","detail":"over limit, delayed"}
+{"ts":"2026-10-10T09:00:00.000Z","event":"login","result":"failure","actor":"203.0.113.7","username":"admin account","detail":"over limit, delayed"}
 ```
 
 ### Host-level ban (fail2ban / CrowdSec)
@@ -92,9 +92,9 @@ Every failed login is a line like:
 The panel throttles logins itself (a bounded delay, never a lockout), so a real
 source ban belongs at the host, on the SSH daemon and on this audit file. This
 is only meaningful once the panel is reachable from other hosts **and**
-`COMPOSE_PANEL_TRUST_PROXY=true` with a proxy that overwrites
-`X-Forwarded-For` — otherwise `actor` stays `direct` and every request shares
-one key. A minimal fail2ban jail (NDJSON parsed with a regex filter):
+`COMPOSE_PANEL_TRUST_PROXY=true` behind a proxy that sets or appends
+`X-Forwarded-For`: the panel uses the last entry, the one your proxy added.
+Otherwise `actor` stays `direct` and every request shares one key. A minimal fail2ban jail (NDJSON parsed with a regex filter):
 
 ```ini
 # /etc/fail2ban/filter.d/compose-panel.conf

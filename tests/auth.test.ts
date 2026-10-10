@@ -115,31 +115,48 @@ describe("LoginRateLimiter", () => {
 });
 
 describe("LoginRateLimiter reservations", () => {
-    test("over-limit attempts are allowed with a delay, never refused", () => {
+    test("over-limit attempts are delayed, never refused by count", () => {
         const limiter = new LoginRateLimiter(5, 60_000, 60_000, () => 0, 100);
-        const verdicts = Array.from({ length: 12 }, () => limiter.tryReserve("k"));
-        expect(verdicts.every(v => v.allowed)).toBe(true);
-        expect(verdicts.slice(0, 5).every(v => v.delayMs === 0)).toBe(true);
-        expect(verdicts.slice(5).every(v => v.delayMs > 0)).toBe(true);
+        const delays: number[] = [];
+        for (let i = 0; i < 12; i += 1) {
+            const verdict = limiter.tryReserve("k");
+            expect(verdict.allowed).toBe(true);
+            delays.push(verdict.delayMs);
+            limiter.settle("k", false, limiter.acquireSlot());
+        }
+        expect(delays.slice(0, 5).every(delay => delay === 0)).toBe(true);
+        expect(delays.slice(5).every(delay => delay > 0)).toBe(true);
     });
 
-    test("the global in-flight cap still refuses transiently", () => {
+    test("refuses a parallel attempt from the same key so its delay cannot be bypassed", () => {
+        const limiter = new LoginRateLimiter(5, 60_000, 60_000, () => 0, 100);
+        expect(limiter.tryReserve("k").allowed).toBe(true);
+        expect(limiter.tryReserve("k").allowed).toBe(false);
+        // Other sources are unaffected.
+        expect(limiter.tryReserve("other").allowed).toBe(true);
+        limiter.settle("k", false, false);
+        expect(limiter.tryReserve("k").allowed).toBe(true);
+    });
+
+    test("waiting attempts do not hold global slots; the cap applies only to verifications", () => {
         const limiter = new LoginRateLimiter(100, 60_000, 60_000, () => 0, 3);
-        expect(limiter.tryReserve("a").allowed).toBe(true);
-        expect(limiter.tryReserve("b").allowed).toBe(true);
-        expect(limiter.tryReserve("c").allowed).toBe(true);
-        const refused = limiter.tryReserve("d");
-        expect(refused.allowed).toBe(false);
-        expect(refused.retryAfterSec).toBe(1);
+        // Ten sources reserved (e.g. sleeping on their delay): no slot taken yet.
+        for (let i = 0; i < 10; i += 1) expect(limiter.tryReserve(`k${i}`).allowed).toBe(true);
+        expect(limiter.acquireSlot()).toBe(true);
+        expect(limiter.acquireSlot()).toBe(true);
+        expect(limiter.acquireSlot()).toBe(true);
+        expect(limiter.acquireSlot()).toBe(false);
+        limiter.settle("k0", false, true);
+        expect(limiter.acquireSlot()).toBe(true);
     });
 
     test("a correct credential releases only its own reservation", () => {
         const limiter = new LoginRateLimiter(3, 60_000, 60_000, () => 0, 100);
-        limiter.tryReserve("k"); limiter.settle("k", false); // count 1
-        limiter.tryReserve("k"); limiter.settle("k", false); // count 2
-        limiter.tryReserve("k"); limiter.settle("k", true);  // count 1, not 0
-        limiter.tryReserve("k"); limiter.settle("k", false); // count 2
-        limiter.tryReserve("k"); limiter.settle("k", false); // count 3
+        limiter.tryReserve("k"); limiter.settle("k", false, false); // count 1
+        limiter.tryReserve("k"); limiter.settle("k", false, false); // count 2
+        limiter.tryReserve("k"); limiter.settle("k", true, false);  // count 1, not 0
+        limiter.tryReserve("k"); limiter.settle("k", false, false); // count 2
+        limiter.tryReserve("k"); limiter.settle("k", false, false); // count 3
         // Prior failures carried over: the next attempt is delayed. A full reset
         // on success would have left it at 0 and undelayed.
         expect(limiter.tryReserve("k").delayMs).toBeGreaterThan(0);

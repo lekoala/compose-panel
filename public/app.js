@@ -191,7 +191,8 @@
     function localizeTimes() {
         each("time[data-local-time]", function (el) {
             var date = new Date(el.getAttribute("datetime"));
-            if (!isNaN(date.getTime())) el.textContent = date.toLocaleTimeString();
+            if (isNaN(date.getTime())) return;
+            el.textContent = el.getAttribute("data-local-time") === "full" ? date.toLocaleString() : date.toLocaleTimeString();
         });
     }
 

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp, type App } from "../src/app.ts";
@@ -39,7 +39,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         sessionTtlMs: 3_600_000,
         sessionIdleMs: 3_600_000,
         loginRateLimit: { windowMs: 60_000, maxAttempts: 5, backoffMaxMs: 1 },
-        audit: { enabled: true, dir: null, rotation: "day", retainFiles: 31, maxReadLines: 2000 },
+        audit: { enabled: true, dir: null, rotation: "day", retainFiles: 31, maxReadLines: 2000, maxFileBytes: 10 * 1024 * 1024 },
         maxBodyBytes: 8192,
         maxEditBytes: 1024 * 1024,
         dockerPath: "docker",
@@ -456,6 +456,74 @@ describe("activity log", () => {
             expect(html).toContain("Activity log");
             expect(html).toContain("login");
             expect(html).toContain("success");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("never logs the typed username, which may be a mistyped password", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-user-"));
+        try {
+            const audit = new AuditLog({ dir });
+            const app = makeApp({}, undefined, undefined, audit);
+            const { cookie, csrf } = await loginCsrf(app);
+            expect((await postLogin(app, cookie, csrf, "Hunter2-secret", "wrong")).status).toBe(401);
+            const again = await loginCsrf(app);
+            expect((await postLogin(app, again.cookie, again.csrf, "admin", "wrong")).status).toBe(401);
+            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).not.toContain("Hunter2-secret");
+            expect(raw).toContain('"username":"unknown user"');
+            expect(raw).toContain('"username":"admin account"');
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("behind a trusted proxy, the actor is the address the proxy appended", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-xff-"));
+        try {
+            const audit = new AuditLog({ dir });
+            const app = makeApp({ trustProxy: true }, undefined, undefined, audit);
+            const { cookie, csrf } = await loginCsrf(app);
+            // The first entry is client-controlled; only the last one comes from our proxy.
+            const response = await app.fetch(new Request(`${ORIGIN}/login`, {
+                method: "POST",
+                headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: `cp_csrf=${cookie}`, "x-forwarded-for": "203.0.113.66, 198.51.100.7" },
+                body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
+            }));
+            expect(response.status).toBe(401);
+            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).toContain('"actor":"198.51.100.7"');
+            expect(raw).not.toContain("203.0.113.66");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("records the final outcome of an action", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-op-"));
+        try {
+            const audit = new AuditLog({ dir });
+            const runner: DockerRunner = async args => {
+                if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+                if (args.includes("config")) return { code: 0, stdout: '{"name":"demo-proj"}', stderr: "", timedOut: false, truncated: false };
+                if (args.includes("up")) return { code: 1, stdout: "", stderr: "boom", timedOut: false, truncated: false };
+                return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+            };
+            const app = makeApp({}, runner, undefined, audit);
+            const session = await login(app);
+            const page = await (await authed(app, "/", session)).text();
+            const csrf = /name="csrf" value="([^"]+)"/.exec(page)![1]!;
+            await authed(app, "/stacks/demo/operations", session, {
+                method: "POST",
+                headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({ csrf, action: "up" }).toString(),
+            });
+            for (let i = 0; i < 200 && app.operations.activeCount() > 0; i += 1) await new Promise(resolve => setTimeout(resolve, 1));
+            await new Promise(resolve => setTimeout(resolve, 20));
+            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).toContain('"event":"operation","result":"started"');
+            expect(raw).toContain('"event":"operation","result":"failed","stack":"demo","action":"up","detail":"exit code 1"');
         } finally {
             await rm(dir, { recursive: true, force: true });
         }

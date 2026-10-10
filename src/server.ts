@@ -32,6 +32,9 @@ if (!config.cookieSecure) {
 if (config.publicOrigin && !config.cookieSecure) {
     console.warn("COMPOSE_PANEL_PUBLIC_ORIGIN is set but cookies are not Secure; set COMPOSE_PANEL_COOKIE_SECURE=true behind TLS.");
 }
+if (process.env.COMPOSE_PANEL_LOGIN_BLOCK_MS) {
+    console.warn("COMPOSE_PANEL_LOGIN_BLOCK_MS is ignored: failed sign-ins are now delayed, never locked out (ADR 0009). Use COMPOSE_PANEL_LOGIN_BACKOFF_MAX_MS.");
+}
 if (config.devMode) {
     console.warn("COMPOSE_PANEL_DEV=true: development mode. Weak usernames are allowed; never use this in production.");
 }

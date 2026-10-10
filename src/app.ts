@@ -184,8 +184,12 @@ function isAllowedHost(request: Request, config: AppConfig): boolean {
 
 function clientKey(request: Request, config: AppConfig): string {
     if (config.trustProxy) {
+        // The last entry is the one our own proxy appended. Earlier entries
+        // come from the client and can be forged, which would let an attacker
+        // dodge the throttle or put someone else's address in the audit log.
         const forwarded = request.headers.get("x-forwarded-for");
-        if (forwarded) return forwarded.split(",")[0]!.trim();
+        const last = forwarded?.split(",").map(part => part.trim()).filter(Boolean).pop();
+        if (last) return last;
     }
     return "direct";
 }
@@ -194,21 +198,33 @@ export function createApp(options: AppOptions): App {
     const { config, stacksRoot, locks = new StackLocks() } = options;
     const provider = options.provider
         ?? createComposeProvider({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
-    const operations = new OperationManager(locks, provider, {
-        timeoutMs: config.operationTimeoutMs,
-        maxBytes: config.dockerMaxBytes,
-    });
-    const logs = new LogManager(provider, {
-        tailLines: config.logTailLines,
-        maxBytes: config.logMaxBytes,
-        timeoutMs: config.logTimeoutMs,
-    });
     const audit = options.audit ?? new AuditLog({
         dir: config.audit.dir ?? join(stacksRoot, ".compose-panel", "audit"),
         enabled: config.audit.enabled,
         rotation: config.audit.rotation,
         retainFiles: config.audit.retainFiles,
         maxReadLines: config.audit.maxReadLines,
+        maxFileBytes: config.audit.maxFileBytes,
+    });
+    const operations = new OperationManager(locks, provider, {
+        timeoutMs: config.operationTimeoutMs,
+        maxBytes: config.dockerMaxBytes,
+        // The outcome is recorded when the action ends, even if nobody watches it.
+        onFinish: operation => void audit.record({
+            event: "operation",
+            result: operation.status,
+            stack: operation.stack,
+            action: operation.action,
+            detail: [
+                operation.exitCode !== null ? `exit code ${operation.exitCode}` : "",
+                operation.timedOut ? "timed out" : "",
+            ].filter(Boolean).join(", ") || undefined,
+        }),
+    });
+    const logs = new LogManager(provider, {
+        tailLines: config.logTailLines,
+        maxBytes: config.logMaxBytes,
+        timeoutMs: config.logTimeoutMs,
     });
     let activeSse = 0;
     let shuttingDown = false;
@@ -252,6 +268,11 @@ export function createApp(options: AppOptions): App {
     /** Best-effort activity record. `record` never throws, so awaiting is safe. */
     function recordAudit(event: Parameters<AuditLog["record"]>[0]): Promise<void> {
         return audit.record(event);
+    }
+
+    /** Sign-in refusals and failures: anyone can trigger them, so they are rate-capped in the log. */
+    function recordLoginNoise(event: Parameters<AuditLog["record"]>[0]): Promise<void> {
+        return audit.record(event, { noisy: true });
     }
 
     async function readForm(request: Request, maxBytes = config.maxBodyBytes): Promise<URLSearchParams | null> {
@@ -315,7 +336,7 @@ export function createApp(options: AppOptions): App {
         // sandboxed context) is refused, but as a soft POST→GET redirect to the
         // login page with an explanation instead of a bare 403.
         if (!isAllowedOrigin(request, config)) {
-            await recordAudit({ event: "login", result: "refused", actor: clientKey(request, config), detail: "origin blocked" });
+            await recordLoginNoise({ event: "login", result: "refused", actor: clientKey(request, config), detail: "origin blocked" });
             return redirect("/login?e=blocked", 303);
         }
         const form = await readForm(request);
@@ -325,7 +346,7 @@ export function createApp(options: AppOptions): App {
         const cookieToken = cookies[CSRF_COOKIE] ?? "";
         const formToken = form.get("csrf") ?? "";
         if (!cookieToken || !formToken || !safeEqual(cookieToken, formToken)) {
-            await recordAudit({ event: "login", result: "refused", actor: clientKey(request, config), detail: "stale form" });
+            await recordLoginNoise({ event: "login", result: "refused", actor: clientKey(request, config), detail: "stale form" });
             return loginFailure("The sign-in form expired. Please sign in again.", 403);
         }
 
@@ -334,24 +355,40 @@ export function createApp(options: AppOptions): App {
         // so a burst of concurrent requests cannot all pass the limit before the
         // first failure is recorded. A per-key over-limit attempt is not refused
         // (that would let an attacker lock out the real admin); it is delayed.
-        // The reservation is settled below.
+        // Only a parallel attempt from the same key is refused, so a source
+        // cannot bypass its own delay. The reservation is settled below.
         const verdict = limiter.tryReserve(key);
         if (!verdict.allowed) {
-            // Only the global in-flight cap refuses, and only transiently.
-            await recordAudit({ event: "login", result: "refused", actor: key, detail: "verification capacity reached" });
-            return loginFailure("The panel is busy with other sign-in attempts. Try again in a moment.", 429, verdict.retryAfterSec);
+            await recordLoginNoise({ event: "login", result: "refused", actor: key, detail: "parallel attempt" });
+            return loginFailure("Another sign-in attempt from your address is still being checked. Try again in a moment.", 429, verdict.retryAfterSec);
         }
-        if (verdict.delayMs > 0) await sleep(verdict.delayMs);
 
         const user = form.get("user") ?? "";
         const password = form.get("password") ?? "";
         let success = false;
+        let slotHeld = false;
         try {
+            // Wait before taking a global verification slot, so delayed attempts
+            // never hold one of the scarce slots while sleeping.
+            if (verdict.delayMs > 0) await sleep(verdict.delayMs);
+            slotHeld = limiter.acquireSlot();
+            if (!slotHeld) {
+                await recordLoginNoise({ event: "login", result: "refused", actor: key, detail: "verification capacity reached" });
+                return loginFailure("The panel is busy with other sign-in attempts. Try again in a moment.", 429, 1);
+            }
             // Verify unconditionally to keep the response time independent of the username.
             const passwordOk = await verifyPassword(config.adminPasswordHash, password);
             success = passwordOk && user === config.adminUser;
             if (!success) {
-                await recordAudit({ event: "login", result: "failure", actor: key, username: user, detail: verdict.delayMs > 0 ? "over limit, delayed" : undefined });
+                // Never log the typed username itself: people regularly type
+                // their password into that field by mistake.
+                await recordLoginNoise({
+                    event: "login",
+                    result: "failure",
+                    actor: key,
+                    username: user === config.adminUser ? "admin account" : "unknown user",
+                    detail: verdict.delayMs > 0 ? "over limit, delayed" : undefined,
+                });
                 return loginFailure("Wrong username or password.", 401);
             }
             await recordAudit({ event: "login", result: "success", actor: key });
@@ -364,7 +401,7 @@ export function createApp(options: AppOptions): App {
             );
             return response;
         } finally {
-            limiter.settle(key, success);
+            limiter.settle(key, success, slotHeld);
         }
     }
 

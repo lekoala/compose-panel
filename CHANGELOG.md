@@ -7,11 +7,14 @@ loopback HTTP only (`127.0.0.1`, no proxy/TLS yet).
 
 - Activity audit and login backoff (P7, ADR 0009): an append-only NDJSON
   activity log (daily files under `.compose-panel/audit/`, retention, bounded
-  reads) records sign-ins, saves and operation starts without passwords, hashes
-  or `.env` values, exposed through a read-only `/audit` page behind auth.
-  Per-client login lockout is replaced by a bounded progressive delay so a valid
-  administrator is never refused; only a transient global in-flight cap answers
-  `429`.
+  reads, per-file size cap, per-minute cap on sign-in noise) records sign-ins,
+  saves and operation starts and outcomes without passwords, hashes, `.env`
+  values or typed usernames, exposed through a read-only `/audit` page behind
+  auth. Per-client login lockout is replaced by a bounded progressive delay with
+  one attempt in progress per client, so a single source cannot lock the
+  administrator out; the global verification cap is taken after the delay and
+  only answers a transient `429` under distributed load. Behind a trusted proxy
+  the client is the last `X-Forwarded-For` entry.
 
 - Verify effective names and collisions before creating Compose projects, pin
   creation identity, reserve project names during panel operations, and end log

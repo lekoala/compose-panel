@@ -35,6 +35,8 @@ export class OperationsDisabledError extends Error {
 export interface OperationManagerOptions {
     timeoutMs: number;
     maxBytes: number;
+    /** Called once when an operation reaches its final status (e.g. for the audit log). */
+    onFinish?: (operation: OperationView) => void;
 }
 
 /**
@@ -205,6 +207,10 @@ export class OperationManager {
     }
 
     private emit(operation: OperationView): void {
+        if (operation.status !== "running" && this.options.onFinish) {
+            try { this.options.onFinish(operation); }
+            catch { /* recording must not fail the operation */ }
+        }
         const set = this.listeners.get(operation.stack);
         if (!set || set.size === 0) return;
         for (const listener of [...set]) {
