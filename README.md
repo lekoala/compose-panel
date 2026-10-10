@@ -41,6 +41,8 @@ bun run test
 bun run typecheck
 ```
 
+On Windows, `bun run test:wsl` runs the same suite on Linux through WSL. It needs Bun installed in the default WSL distribution, and it copies the working tree into the Linux file system so that the signal, symlink and file-mode tests actually run.
+
 ## What exists in 0.1
 
 - Framework-free Bun HTTP server, server-rendered HTML and a small self-contained stylesheet (light/dark, usable on a phone).
