@@ -16,6 +16,7 @@ function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "restart
         capabilities: () => caps,
         detect: async () => caps,
         listProjects: async () => ok,
+        projectName: async () => "demo-proj",
         projectServices: async () => ok,
         validateConfig: async () => ok,
         pull: run("pull"),
@@ -204,4 +205,40 @@ test("pull-up keeps buffered pull output alongside streamed up output", async ()
     expect(final.status).toBe("succeeded");
     expect(final.output).toContain("pulled");
     expect(final.output).toContain("starting");
+    expect(final.output).toBe("pulled\nstarting\n");
+});
+
+test("preserves fragmented text and CRLF exactly", async () => {
+    const provider = fakeProvider({ up: async target => {
+        for (const chunk of ["hel", "lo\r", "\n", "é🙂\n"]) target.onOutput?.(chunk);
+        return ok;
+    } });
+    const manager = new OperationManager(new StackLocks(), provider, { timeoutMs: 1000, maxBytes: 1000 });
+    manager.start({ stack: "demo", action: "up", target });
+    await settle(manager);
+    expect(manager.forStack("demo")!.output).toBe("hello\r\né🙂\n");
+});
+
+test("retains the stack lock after unconfirmed process termination", async () => {
+    const locks = new StackLocks();
+    const provider = fakeProvider({ up: async () => ({ ...ok, code: -1, timedOut: true, terminationUnconfirmed: true }) });
+    const manager = new OperationManager(locks, provider, { timeoutMs: 1000, maxBytes: 1000 });
+    manager.start({ stack: "demo", action: "up", target });
+    await settle(manager);
+    expect(manager.forStack("demo")!.status).toBe("unknown");
+    expect(locks.isLocked("demo")).toBe(true);
+    expect(() => manager.start({ stack: "demo", action: "up", target })).toThrow(StackBusyError);
+});
+
+test("different stacks cannot mutate the same project concurrently", async () => {
+    let finish!: (result: CommandResult) => void;
+    const provider = fakeProvider({ up: () => new Promise(resolve => { finish = resolve; }) });
+    const manager = new OperationManager(new StackLocks(), provider, { timeoutMs: 1000, maxBytes: 1000 });
+    const shared = { ...target, project: "shared" };
+    manager.start({ stack: "one", action: "up", target: shared });
+    expect(() => manager.start({ stack: "two", action: "up", target: shared })).toThrow(StackBusyError);
+    finish(ok);
+    await settle(manager);
+    expect(() => manager.start({ stack: "two", action: "stop", target: shared })).not.toThrow();
+    await settle(manager);
 });

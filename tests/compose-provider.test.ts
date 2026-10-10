@@ -28,6 +28,19 @@ describe("createComposeProvider", () => {
 });
 
 describe("DockerComposeProvider", () => {
+    test("extracts only the effective project identity and rejects unreliable output", async () => {
+        const { runner, calls } = recording({ ...ok, stdout: '{"name":"from-env","services":{"app":{"environment":{"TOKEN":"private"}}}}' });
+        expect(await createComposeProvider({ runner }).projectName({ composeFile: "/opt/demo/compose.yaml", cwd: "/opt/demo" })).toBe("from-env");
+        expect(calls[0]!.args).toEqual(["compose", "--project-directory", "/opt/demo", "-f", "/opt/demo/compose.yaml", "config", "--format", "json"]);
+        for (const result of [
+            { ...ok, stdout: "not JSON" }, { ...ok, stdout: '{"name":""}' },
+            { ...ok, stdout: '{"name":"valid"}', truncated: true },
+            { ...ok, stdout: '{"name":"valid"}', timedOut: true },
+            { ...ok, code: 1, stderr: "secret" },
+        ]) {
+            expect(await createComposeProvider({ runner: async () => result }).projectName({ composeFile: "compose.yaml", cwd: "/opt/demo" })).toBeNull();
+        }
+    });
     test("detects availability", async () => {
         const { runner } = recording(ok);
         const provider = createComposeProvider({ runner });

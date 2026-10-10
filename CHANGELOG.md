@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Verify effective names and collisions before creating Compose projects, pin
+  creation identity, reserve project names during panel operations, and end log
+  follows for undeployed stacks without a subprocess.
+- Drain accepted saves during shutdown and pin Linux stack directories open
+  during validation to prevent inode reuse from hiding replacements.
+- Bound subprocess termination with signal escalation; keep mutation locks and
+  log ownership when child exit cannot be confirmed.
+- Preserve streamed text fragments, CRLF and split UTF-8 through the runner,
+  SSE frames and browser. Add isolated Linux process and browser regressions.
+
 ## 0.1.0 — 2026-10-10
 
 First minimal release. Single Linux host, single trusted administrator,

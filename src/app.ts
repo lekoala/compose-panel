@@ -169,6 +169,7 @@ export function createApp(options: AppOptions): App {
     });
     let activeSse = 0;
     let shuttingDown = false;
+    const saves = new Set<Promise<unknown>>();
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
     const limiter = new LoginRateLimiter(
         config.loginRateLimit.maxAttempts,
@@ -322,10 +323,13 @@ export function createApp(options: AppOptions): App {
         };
 
         try {
-            await locks.run(name, () => {
+            const task = locks.run(name, () => {
                 if (shuttingDown) throw new OperationsDisabledError();
                 return saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes);
             });
+            saves.add(task);
+            try { await task; }
+            finally { saves.delete(task); }
             return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
         } catch (error) {
             if (error instanceof StackValidationError) {
@@ -356,17 +360,16 @@ export function createApp(options: AppOptions): App {
         // Fail closed: ambiguous or unreachable project identity never runs
         // blind. An undeployed stack can only be created (up / pull-up);
         // destructive actions require a resolved project passed as explicit -p.
-        // For a new project Compose derives the identity itself, and a
-        // cross-directory name clash fails inside Compose (non-zero exit),
-        // never as a silent takeover.
-        const context = await resolveProjectContext(stacksRoot, name, provider);
+        // Resolve a new project's effective name through Compose, check for
+        // collisions, then pin that identity explicitly before creation.
+        const creates = action === "up" || action === "pull-up";
+        const context = await resolveProjectContext(stacksRoot, name, provider, creates);
         if (context.kind === "ambiguous") {
-            throw new StackError("Several Docker projects match this stack. Refusing to guess which one to control.", 409);
+            throw new StackError("The Compose project is ambiguous or its name is already in use by another stack. Refusing to guess which one to control.", 409);
         }
         if (context.kind === "unavailable") {
             throw new StackError("Docker state is unavailable. Refusing to run without a verified project.", 503);
         }
-        const creates = action === "up" || action === "pull-up";
         if (context.kind === "absent" && !creates) {
             throw new StackError("This stack is not deployed yet. Only Up (or Pull + up) can create it.", 409);
         }
@@ -489,7 +492,7 @@ export function createApp(options: AppOptions): App {
                 if (full.length >= sentOutput.length && full.startsWith(sentOutput)) {
                     const delta = full.slice(sentOutput.length);
                     sentOutput = full;
-                    if (delta) send(formatSseEvent("output", delta));
+                    if (delta) send(formatSseEvent("output", JSON.stringify({ text: delta })));
                 } else {
                     sentOutput = full;
                     send(formatSseEvent("snapshot", operationSnapshot(operation)));
@@ -519,12 +522,21 @@ export function createApp(options: AppOptions): App {
         if (context.kind === "unavailable") {
             throw new StackError("Docker state is unavailable. Refusing to follow without a verified project.", 503);
         }
+        if (shuttingDown) throw new StackError("The server is shutting down; new log follows are refused.", 503);
+        if (context.kind === "absent") {
+            return sseResponse(request, (send, close) => {
+                send(formatSseEvent("replay", JSON.stringify({ text: "", truncated: false })));
+                send(formatSseEvent("end", "This stack is not deployed."));
+                close();
+                return () => {};
+            });
+        }
         const target = { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd };
         return sseResponse(request, (send, close) => {
             const sub = logs.subscribe(
                 name,
                 target,
-                chunk => send(formatSseEvent("chunk", chunk)),
+                chunk => send(formatSseEvent("chunk", JSON.stringify({ text: chunk }))),
                 reason => {
                     send(formatSseEvent("end", reason === "timeout" ? "Follow stopped: time limit reached." : "Follow ended."));
                     close();
@@ -647,12 +659,15 @@ export function createApp(options: AppOptions): App {
             shuttingDown = true;
             operations.refuseNew();
             logs.refuseNew();
-            // One shared deadline for both drains; unresolved work stays
+            // One shared deadline for operations, saves and follows; unresolved work stays
             // unknown and is never reported as done.
-            await Promise.race([
-                Promise.allSettled([logs.shutdown(graceMs), operations.shutdown(graceMs)]),
-                new Promise<void>(resolve => setTimeout(resolve, graceMs)),
-            ]);
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await Promise.race([
+                    Promise.allSettled([logs.shutdown(graceMs), operations.shutdown(graceMs), ...saves]),
+                    new Promise<void>(resolve => { timer = setTimeout(resolve, graceMs); }),
+                ]);
+            } finally { clearTimeout(timer); }
         },
     };
 }

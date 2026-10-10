@@ -26,6 +26,7 @@ Three classes, without a generic framework:
 ## Restart semantics
 - Browser disconnect ≠ cancellation.
 - `SIGTERM`: stop accepting new mutations, allow a bounded drain window; check that subprocesses have finished.
+- Saves accepted before shutdown participate in the same drain deadline as Docker operations and log follows. A save still pending at that deadline has no guaranteed outcome after process exit; no replay occurs.
 - `SIGKILL`/crash: the manager's state is lost, **outcome unknown**. No automatic replay. On reconnection, re-read `docker compose ls/ps`.
 - V1: no operation persistence. Add an ADR if a durable history requirement is demonstrated.
 - Docker must not be started or stopped because of the panel. The panel may disappear without stopping containers already started.
@@ -34,6 +35,10 @@ Three classes, without a generic framework:
 A stack is defined by the paths of its files, its `--project-directory`, its variable sources and its Compose identity. The **folder name is not necessarily the Docker project**. Do not automatically inject `-p <folder>`.
 
 Stacks that contain implicit override files are not displayed or edited: multi-file Compose remains rejected rather than guessed. See [ADR 0004](adr/0004-single-file-editing.md).
+
+New projects have their effective name resolved through the provider before creation. A refreshed Docker project list must not already contain that name; `up`/`pull-up` then use explicit `-p`. Panel operations reserve both the stack and the project identity, so two undeployed directories cannot concurrently create the same project. This is not a transaction with external Compose CLI writers.
+
+On Linux a save keeps the original directory open until commit/rollback completes, preventing deleted-inode reuse from defeating the post-validation directory identity check. Filesystem checks remain point-in-time checks against local writers, not a filesystem transaction.
 
 Draft validation happens in its project directory with a temporary file that is not exposed, `--project-directory` and `-f` explicit, and the candidate `.env` passed through `--env-file`. Relative paths and file order are preserved. Verify that the context used for validation is the same as the context used for execution. Before writing, the current file is backed up under `<root>/.compose-panel/backups/<stack>/` and the replacement is written atomically while preserving the file mode.
 

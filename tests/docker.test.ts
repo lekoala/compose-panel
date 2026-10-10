@@ -59,3 +59,21 @@ test("does not throw when the executable is missing", async () => {
     const result = await runCommand("compose-panel-no-such-binary", []);
     expect(result.code).toBe(SPAWN_FAILURE);
 });
+
+test("preserves UTF-8 split between separate pipe writes", async () => {
+    const seen: string[] = [];
+    const result = await runCommand(process.execPath, ["-e", "const b = Buffer.from('é🙂'); process.stdout.write(b.subarray(0, 1)); setTimeout(() => process.stdout.write(b.subarray(1, 4)), 30); setTimeout(() => process.stdout.write(b.subarray(4)), 60)"], { onChunk: text => seen.push(text) });
+    expect(seen.join("")).toBe("é🙂");
+    expect(result.stdout).toBe("é🙂");
+});
+
+test("aborts a running child and confirms its exit within the kill deadline", async () => {
+    const controller = new AbortController();
+    const result = await runCommand(process.execPath, ["-e", "process.stdout.write('ready'); setInterval(() => {}, 1000)"], {
+        timeoutMs: 5000, signal: controller.signal,
+        onChunk: () => controller.abort(),
+    });
+    expect(result.timedOut).toBe(true);
+    expect(result.terminationUnconfirmed).toBe(false);
+    expect(result.code).not.toBe(0);
+});

@@ -20,6 +20,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run test
+      - name: Compose config integration (no daemon access)
+        run: COMPOSE_PANEL_TEST_DOCKER=0 COMPOSE_PANEL_TEST_COMPOSE_CONFIG=1 bun test tests/compose-config-linux.test.ts
 
   image:
     runs-on: ubuntu-latest

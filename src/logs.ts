@@ -23,6 +23,7 @@ interface LogStream {
     timer: ReturnType<typeof setTimeout>;
     done: Promise<void>;
     ended: boolean;
+    settled: boolean;
 }
 
 /** Strip ANSI color escapes so the browser shows strictly textual output. */
@@ -52,7 +53,7 @@ export class LogManager {
     }
 
     isActive(stack: string): boolean {
-        return this.streams.has(stack);
+        return this.streams.get(stack)?.ended === false;
     }
 
     subscriberCount(): number {
@@ -73,6 +74,7 @@ export class LogManager {
     ): { replay: LogSnapshot; unsubscribe: () => void } {
         if (this.refusing) throw new StackError("The server is shutting down; new log follows are refused.", 503);
         let stream = this.streams.get(stack);
+        if (stream?.ended) throw new StackError("The previous log follow has not confirmed termination yet. Try again later.", 409);
         if (!stream) {
             stream = this.start(stack, target);
             this.streams.set(stack, stream);
@@ -100,14 +102,18 @@ export class LogManager {
 
     /**
      * Abort every follow and wait for confirmation, bounded. Late provider
-     * completions are dropped by instance check; entries are already gone.
+     * completions are dropped by instance check; stopped entries remain owned
+     * until exit is confirmed, preventing overlapping replacement processes.
      */
     async shutdown(graceMs: number): Promise<void> {
         this.refuseNew();
         const pending = [...this.streams.values()].map(stream => stream.done);
         for (const stream of this.streams.values()) this.stop(stream, "ended");
         if (pending.length === 0) return;
-        await Promise.race([Promise.allSettled(pending), new Promise<void>(resolve => setTimeout(resolve, graceMs))]);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await Promise.race([Promise.allSettled(pending), new Promise<void>(resolve => { timer = setTimeout(resolve, graceMs); })]);
+        } finally { clearTimeout(timer); }
     }
 
     private start(stack: string, target: ComposeTarget): LogStream {
@@ -123,12 +129,20 @@ export class LogManager {
             timer: setTimeout(() => this.stop(stream, "timeout"), this.options.timeoutMs),
             done: Promise.resolve(),
             ended: false,
+            settled: false,
         };
         const fullTarget = { ...target, tailLines: this.options.tailLines };
         stream.done = this.provider.followLogs(fullTarget, chunk => this.ingest(stream, chunk), controller.signal)
             .then(
-                () => this.finish(stream, "ended"),
-                () => this.finish(stream, "ended"),
+                result => {
+                    stream.settled = !result.terminationUnconfirmed;
+                    this.finish(stream, "ended");
+                    if (stream.settled && this.streams.get(stack) === stream) this.streams.delete(stack);
+                },
+                () => {
+                    // Rejection cannot prove that a spawned child exited.
+                    this.finish(stream, "ended");
+                },
             );
         return stream;
     }
@@ -162,7 +176,7 @@ export class LogManager {
         }
         // Only remove our own entry: a replacement started after us keeps
         // running under the same stack name.
-        if (this.streams.get(stream.stack) === stream) this.streams.delete(stream.stack);
+        if (stream.settled && this.streams.get(stream.stack) === stream) this.streams.delete(stream.stack);
     }
 
     private stop(stream: LogStream, reason: "ended" | "timeout"): void {

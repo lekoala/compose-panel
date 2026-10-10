@@ -82,7 +82,7 @@ export type ProjectContextKind = "resolved" | "absent" | "ambiguous" | "unavaila
 
 export interface ProjectContext {
     kind: ProjectContextKind;
-    /** Set only when kind === "resolved". Never guessed. */
+    /** Deployed identity, or verified creation identity for an absent stack. */
     project: string | null;
     /** Absolute Compose file path, filename and directory for target building. */
     composeFile: string;
@@ -95,20 +95,36 @@ export interface ProjectContext {
  * old nullable lookup, ambiguous and unavailable discovery are distinct from
  * "no project yet", so callers can refuse to act instead of running blind.
  */
-export async function resolveProjectContext(root: string, name: string, provider: ComposeProvider): Promise<ProjectContext> {
+export async function resolveProjectContext(root: string, name: string, provider: ComposeProvider, verifyCreation = false): Promise<ProjectContext> {
     const location = await locateComposeFile(root, name);
     const base = { composeFile: location.path, filename: location.filename, cwd: dirname(location.path) };
     let projects: ComposeProject[];
     try {
         const result = await provider.listProjects();
-        if (result.timedOut || result.code !== 0) return { kind: "unavailable", project: null, ...base };
+        if (result.timedOut || result.truncated || result.code !== 0) return { kind: "unavailable", project: null, ...base };
         projects = parseComposeLs(result.stdout);
     } catch {
         return { kind: "unavailable", project: null, ...base };
     }
     const match = findProjectForStack(projects, location.path);
     if (match.ambiguous) return { kind: "ambiguous", project: null, ...base };
-    if (!match.project) return { kind: "absent", project: null, ...base };
+    if (!match.project) {
+        if (!verifyCreation) return { kind: "absent", project: null, ...base };
+        try {
+            const project = await provider.projectName({ composeFile: base.composeFile, cwd: base.cwd });
+            if (!project) return { kind: "unavailable", project: null, ...base };
+            // Refresh after config resolution; another CLI may have created a
+            // project while the effective name was being evaluated.
+            const refreshed = await provider.listProjects();
+            if (refreshed.code !== 0 || refreshed.timedOut || refreshed.truncated) return { kind: "unavailable", project: null, ...base };
+            if (parseComposeLs(refreshed.stdout).some(entry => entry.name === project)) {
+                return { kind: "ambiguous", project: null, ...base };
+            }
+            return { kind: "absent", project, ...base };
+        } catch {
+            return { kind: "unavailable", project: null, ...base };
+        }
+    }
     return { kind: "resolved", project: match.project.name, ...base };
 }
 

@@ -21,6 +21,7 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         capabilities: () => caps,
         detect: async () => caps,
         listProjects: async () => ok,
+        projectName: async () => "demo-proj",
         projectServices: async () => ok,
         validateConfig: async () => ok,
         pull: async () => ok,
@@ -54,6 +55,7 @@ function deferredProvider(): {
         capabilities: () => caps,
         detect: async () => caps,
         listProjects: async () => ok,
+        projectName: async () => "demo-proj",
         projectServices: async () => ok,
         validateConfig: async () => ok,
         pull: async () => ok,
@@ -178,6 +180,7 @@ test("shutdown stays bounded when a follow never settles", async () => {
         capabilities: () => caps,
         detect: async () => caps,
         listProjects: async () => ok,
+        projectName: async () => "demo-proj",
         projectServices: async () => ok,
         validateConfig: async () => ok,
         pull: async () => ok,
@@ -208,4 +211,26 @@ test("refuses new subscriptions once shutdown started", async () => {
         expect(error).toBeInstanceOf(StackError);
         expect((error as StackError).status).toBe(503);
     }
+});
+
+test("does not replace an aborted follow until its process exit is confirmed", async () => {
+    const { provider, calls } = controllableProvider();
+    let finish!: (result: { code: number; timedOut: boolean }) => void;
+    provider.followLogs = (target, onChunk, signal) => new Promise(resolve => {
+        calls.push({ target, onChunk, signal });
+        finish = resolve;
+    });
+    const logs = manager(provider);
+    const sub = logs.subscribe("demo", target, () => {}, () => {});
+    sub.unsubscribe();
+    expect(calls[0]!.signal.aborted).toBe(true);
+    expect(() => logs.subscribe("demo", target, () => {}, () => {})).toThrow(StackError);
+    expect(calls).toHaveLength(1);
+    finish({ code: 137, timedOut: false });
+    await Promise.resolve();
+    const replacement = logs.subscribe("demo", target, () => {}, () => {});
+    expect(calls).toHaveLength(2);
+    replacement.unsubscribe();
+    finish({ code: 137, timedOut: false });
+    await logs.shutdown(100);
 });

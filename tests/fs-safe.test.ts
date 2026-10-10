@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FileSafetyError, backupFile, dirIdentity, ensureBackupDir, sameDirIdentity } from "../src/fs-safe.ts";
@@ -77,7 +77,9 @@ describe("dirIdentity", () => {
         const before = await dirIdentity(target);
         expect(sameDirIdentity(before, await dirIdentity(target))).toBe(true);
         // Replace the directory with byte-identical content: same path, new object.
-        await rm(target, { recursive: true });
+        // Keep the first object alive: dev/ino is not a generation counter
+        // and Linux is allowed to recycle an inode after deletion.
+        await rename(target, join(root, "original-stack"));
         await mkdir(target);
         await writeFile(join(target, "compose.yaml"), "services: {}\n");
         expect(sameDirIdentity(before, await dirIdentity(target))).toBe(false);

@@ -46,6 +46,7 @@ export class OperationManager {
     private readonly last = new Map<string, OperationView>();
     private readonly listeners = new Map<string, Set<(operation: OperationView) => void>>();
     private readonly tasks = new Set<Promise<void>>();
+    private readonly projects = new Set<string>();
     private shuttingDown = false;
 
     constructor(
@@ -98,6 +99,11 @@ export class OperationManager {
         if (this.shuttingDown) throw new OperationsDisabledError();
         const release = this.locks.tryAcquire(input.stack);
         if (!release) throw new StackBusyError();
+        if (input.target.project && this.projects.has(input.target.project)) {
+            release();
+            throw new StackBusyError("Another operation is already running for this Compose project.");
+        }
+        if (input.target.project) this.projects.add(input.target.project);
 
         const operation: OperationView = {
             id: randomSuffix(),
@@ -134,7 +140,10 @@ export class OperationManager {
         this.refuseNew();
         if (this.tasks.size === 0) return;
         const drained = Promise.allSettled([...this.tasks]);
-        await Promise.race([drained, new Promise<void>(resolve => setTimeout(resolve, graceMs))]);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await Promise.race([drained, new Promise<void>(resolve => { timer = setTimeout(resolve, graceMs); })]);
+        } finally { clearTimeout(timer); }
     }
 
     private async execute(
@@ -149,6 +158,7 @@ export class OperationManager {
         // providers that ignore onOutput keep the old append path. The flag
         // resets per call so a streamed pull never masks a buffered up.
         let live = false;
+        let terminationUnconfirmed = false;
         const streaming: ComposeTarget = {
             ...target,
             onOutput: chunk => {
@@ -158,7 +168,11 @@ export class OperationManager {
         };
         const runStreamed = async (call: (target: ComposeTarget) => Promise<CommandResult>): Promise<CommandResult> => {
             live = false;
+            // This separator belongs between commands (pull then up), never
+            // between arbitrary fragments of one command's pipe output.
+            if (operation.output && !operation.output.endsWith("\n")) this.appendText(operation, "\n");
             const result = await call(streaming);
+            terminationUnconfirmed ||= result.terminationUnconfirmed === true;
             if (!live) this.append(operation, result);
             return result;
         };
@@ -181,7 +195,12 @@ export class OperationManager {
             this.appendText(operation, error instanceof Error ? error.message : "operation failed");
             this.emit(operation);
         } finally {
-            release();
+            // Do not allow another mutation to overlap an unconfirmed child.
+            // The UI reports unknown; restarting loses this in-memory lock.
+            if (!terminationUnconfirmed) {
+                if (target.project) this.projects.delete(target.project);
+                release();
+            }
         }
     }
 
@@ -199,7 +218,7 @@ export class OperationManager {
         operation.exitCode = result.code;
         operation.timedOut = result.timedOut;
         // Success is only ever announced after a clean exit 0.
-        if (result.timedOut) operation.status = "unknown";
+        if (result.timedOut || result.terminationUnconfirmed) operation.status = "unknown";
         else if (result.code === 0) operation.status = "succeeded";
         else operation.status = "failed";
         this.emit(operation);
@@ -208,15 +227,16 @@ export class OperationManager {
     private append(operation: OperationView, result: CommandResult): void {
         const chunk = [result.stdout, result.stderr].filter(text => text.length > 0).join("\n");
         this.appendText(operation, chunk);
+        operation.truncated ||= result.truncated;
     }
 
     private appendText(operation: OperationView, chunk: string): void {
-        if (!chunk) return;
-        const combined = operation.output ? `${operation.output}\n${chunk}` : chunk;
+        if (!chunk || operation.truncated) return;
+        const combined = operation.output + chunk;
         const buffer = Buffer.from(combined, "utf8");
         if (buffer.byteLength > this.options.maxBytes) {
             operation.truncated = true;
-            operation.output = buffer.subarray(0, this.options.maxBytes).toString("utf8");
+            operation.output = new TextDecoder().decode(buffer.subarray(0, this.options.maxBytes), { stream: true });
         } else {
             operation.output = combined;
         }

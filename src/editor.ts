@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
-import { rm, writeFile } from "node:fs/promises";
+import { open, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import { locateComposeFile, StackError } from "./stacks.ts";
 import { resolveProjectContext } from "./status.ts";
 import { backupFile, dirIdentity, ensureBackupDir, hashContent, randomSuffix, readFileSafe, sameDirIdentity, writeFileAtomic, type SafeFile } from "./fs-safe.ts";
@@ -180,112 +181,120 @@ export async function saveEditableStack(
     const directory = dirname(located.path);
     const composePath = located.path;
     const envPath = join(directory, ENV_FILENAME);
-    const stackIdentity = await dirIdentity(directory);
-
-    const currentCompose = await readFileSafe(composePath, maxBytes);
-    if (!currentCompose) throw new StackError("Compose file not found.", 404);
-    const currentEnv = await readFileSafe(envPath, maxBytes);
-    const currentEnvExists = currentEnv !== null;
-    const currentEnvHash = currentEnv ? currentEnv.hash : ABSENT_HASH;
-
-    if (currentCompose.hash !== request.baseComposeHash) throw new StackConflictError("The Compose file changed on disk.");
-    if (currentEnvExists !== request.baseEnvExists || currentEnvHash !== request.baseEnvHash) {
-        throw new StackConflictError("The .env file changed on disk.");
-    }
-
-    const composeChanged = request.composeSource !== currentCompose.source;
-    const envDesiredExists = request.baseEnvExists || request.envSource.length > 0;
-    const envChanged = envDesiredExists !== currentEnvExists
-        || (envDesiredExists && currentEnv !== null && request.envSource !== currentEnv.source);
-
-    if (!composeChanged && !envChanged) {
-        return { changed: false, composeHash: currentCompose.hash, envHash: currentEnvHash, envExists: currentEnvExists, backupPaths: [] };
-    }
-
-    const secrets = [...collectSecrets(currentEnv?.source ?? ""), ...collectSecrets(request.envSource)];
-    // Validate in the same project identity mutations will use when it is
-    // known. Saves stay possible while Docker is unreachable or ambiguous
-    // (editing local files, not controlling a project); validation then runs
-    // without -p exactly as before.
-    const context = await resolveProjectContext(root, name, provider).catch(() => null);
-    const validation = await validateDraft(
-        provider,
-        directory,
-        request.composeSource,
-        envChanged ? request.envSource : undefined,
-        secrets,
-        context?.kind === "resolved" ? context.project ?? undefined : undefined,
-    );
-    if (!validation.ok) throw new StackValidationError(validation.message ?? "Compose validation failed.");
-
-    // Validation awaits a subprocess for seconds; an external writer may have
-    // acted meanwhile. Re-locate (presence/identity) and re-read both files:
-    // anything divergent is a conflict, never a silent overwrite. The lock
-    // only serializes panel requests, not outside editors.
-    const relocated = await locateComposeFile(root, name);
-    if (relocated.path !== located.path) {
-        throw new StackConflictError("The stack directory changed on disk during validation.");
-    }
-    // The path can stay identical while the directory object is swapped.
-    // dev/ino names the object on Linux; a mismatch is a conflict.
-    if (!sameDirIdentity(await dirIdentity(directory), stackIdentity)) {
-        throw new StackConflictError("The stack directory was replaced on disk during validation.");
-    }
-    let freshCompose: SafeFile | null;
-    let freshEnv: SafeFile | null;
+    // Keep the original Linux directory inode alive across validation. A
+    // deleted inode may otherwise be recycled immediately for a replacement,
+    // defeating a later dev/ino comparison even with identical file content.
+    const pinned = process.platform === "linux"
+        ? await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+        : null;
     try {
-        freshCompose = await readFileSafe(composePath, maxBytes);
-        freshEnv = await readFileSafe(envPath, maxBytes);
-    } catch {
-        throw new StackConflictError("The files changed on disk during validation.");
-    }
-    if (!freshCompose) throw new StackError("Compose file not found.", 404);
-    if (freshCompose.hash !== currentCompose.hash) {
-        throw new StackConflictError("The Compose file changed on disk during validation.");
-    }
-    if (freshEnv !== null ? freshEnv.hash !== currentEnvHash : currentEnvExists) {
-        throw new StackConflictError("The .env file changed on disk during validation.");
-    }
+        const stackIdentity = pinned ? await pinned.stat() : await dirIdentity(directory);
 
-    const backupDir = await ensureBackupDir(root, name);
-    const backupPaths: string[] = [];
-    const writer = options.writer ?? writeFileAtomic;
-    let composeWritten = false;
+        const currentCompose = await readFileSafe(composePath, maxBytes);
+        if (!currentCompose) throw new StackError("Compose file not found.", 404);
+        const currentEnv = await readFileSafe(envPath, maxBytes);
+        const currentEnvExists = currentEnv !== null;
+        const currentEnvHash = currentEnv ? currentEnv.hash : ABSENT_HASH;
 
-    // Phase 1 — back up everything before changing anything. A failure here
-    // leaves both live files untouched, so it stays an ordinary error.
-    if (composeChanged) backupPaths.push(await backupFile(composePath, backupDir, located.filename));
-    if (envChanged && freshEnv) backupPaths.push(await backupFile(envPath, backupDir, ENV_FILENAME));
-
-    // Phase 2 — commit with rollback. Each rename is atomic; the only
-    // inconsistent state is "first write done, second failed".
-    try {
-        if (composeChanged) {
-            await writer(composePath, request.composeSource, freshCompose.mode);
-            composeWritten = true;
+        if (currentCompose.hash !== request.baseComposeHash) throw new StackConflictError("The Compose file changed on disk.");
+        if (currentEnvExists !== request.baseEnvExists || currentEnvHash !== request.baseEnvHash) {
+            throw new StackConflictError("The .env file changed on disk.");
         }
-        if (envChanged) await writer(envPath, request.envSource, freshEnv?.mode ?? 0o600);
-    } catch (error) {
-        if (!composeWritten) throw error;
+
+        const composeChanged = request.composeSource !== currentCompose.source;
+        const envDesiredExists = request.baseEnvExists || request.envSource.length > 0;
+        const envChanged = envDesiredExists !== currentEnvExists
+            || (envDesiredExists && currentEnv !== null && request.envSource !== currentEnv.source);
+
+        if (!composeChanged && !envChanged) {
+            return { changed: false, composeHash: currentCompose.hash, envHash: currentEnvHash, envExists: currentEnvExists, backupPaths: [] };
+        }
+
+        const secrets = [...collectSecrets(currentEnv?.source ?? ""), ...collectSecrets(request.envSource)];
+        // Validate in the same project identity mutations will use when it is
+        // known. Saves stay possible while Docker is unreachable or ambiguous
+        // (editing local files, not controlling a project); validation then runs
+        // without -p exactly as before.
+        const context = await resolveProjectContext(root, name, provider).catch(() => null);
+        const validation = await validateDraft(
+            provider,
+            directory,
+            request.composeSource,
+            envChanged ? request.envSource : undefined,
+            secrets,
+            context?.kind === "resolved" ? context.project ?? undefined : undefined,
+        );
+        if (!validation.ok) throw new StackValidationError(validation.message ?? "Compose validation failed.");
+
+        // Validation awaits a subprocess for seconds; an external writer may have
+        // acted meanwhile. Re-locate (presence/identity) and re-read both files:
+        // anything divergent is a conflict, never a silent overwrite. The lock
+        // only serializes panel requests, not outside editors.
+        const relocated = await locateComposeFile(root, name);
+        if (relocated.path !== located.path) {
+            throw new StackConflictError("The stack directory changed on disk during validation.");
+        }
+        // The path can stay identical while the directory object is swapped.
+        // dev/ino names the object on Linux; a mismatch is a conflict.
+        if (!sameDirIdentity(await dirIdentity(directory), stackIdentity)) {
+            throw new StackConflictError("The stack directory was replaced on disk during validation.");
+        }
+        let freshCompose: SafeFile | null;
+        let freshEnv: SafeFile | null;
         try {
-            await writer(composePath, freshCompose.source, freshCompose.mode);
+            freshCompose = await readFileSafe(composePath, maxBytes);
+            freshEnv = await readFileSafe(envPath, maxBytes);
         } catch {
+            throw new StackConflictError("The files changed on disk during validation.");
+        }
+        if (!freshCompose) throw new StackError("Compose file not found.", 404);
+        if (freshCompose.hash !== currentCompose.hash) {
+            throw new StackConflictError("The Compose file changed on disk during validation.");
+        }
+        if (freshEnv !== null ? freshEnv.hash !== currentEnvHash : currentEnvExists) {
+            throw new StackConflictError("The .env file changed on disk during validation.");
+        }
+
+        const backupDir = await ensureBackupDir(root, name);
+        const backupPaths: string[] = [];
+        const writer = options.writer ?? writeFileAtomic;
+        let composeWritten = false;
+
+        // Phase 1 — back up everything before changing anything. A failure here
+        // leaves both live files untouched, so it stays an ordinary error.
+        if (composeChanged) backupPaths.push(await backupFile(composePath, backupDir, located.filename));
+        if (envChanged && freshEnv) backupPaths.push(await backupFile(envPath, backupDir, ENV_FILENAME));
+
+        // Phase 2 — commit with rollback. Each rename is atomic; the only
+        // inconsistent state is "first write done, second failed".
+        try {
+            if (composeChanged) {
+                await writer(composePath, request.composeSource, freshCompose.mode);
+                composeWritten = true;
+            }
+            if (envChanged) await writer(envPath, request.envSource, freshEnv?.mode ?? 0o600);
+        } catch (error) {
+            if (!composeWritten) throw error;
+            try {
+                await writer(composePath, freshCompose.source, freshCompose.mode);
+            } catch {
+                throw new StackPartialError(
+                    `Save failed and the Compose file could not be restored. Recover it manually from: ${backupPaths.join(", ")}`,
+                    backupPaths,
+                );
+            }
             throw new StackPartialError(
-                `Save failed and the Compose file could not be restored. Recover it manually from: ${backupPaths.join(", ")}`,
+                `Save failed after writing the Compose file; it was restored from backup (${backupPaths.join(", ")}).`,
                 backupPaths,
             );
         }
-        throw new StackPartialError(
-            `Save failed after writing the Compose file; it was restored from backup (${backupPaths.join(", ")}).`,
-            backupPaths,
-        );
-    }
 
-    return {
-        changed: true,
-        composeHash: composeChanged ? hashContent(request.composeSource) : currentCompose.hash,
-        envHash: envChanged ? hashContent(request.envSource) : currentEnvHash,
-        envExists: envDesiredExists,
-        backupPaths,
-    };
+        return {
+            changed: true,
+            composeHash: composeChanged ? hashContent(request.composeSource) : currentCompose.hash,
+            envHash: envChanged ? hashContent(request.envSource) : currentEnvHash,
+            envExists: envDesiredExists,
+            backupPaths,
+        };
+    } finally { await pinned?.close(); }
 }

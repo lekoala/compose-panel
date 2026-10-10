@@ -1,4 +1,4 @@
-import type { CommandResult, DockerRunner } from "./docker.ts";
+import { runCommand, type CommandResult, type DockerRunner } from "./docker.ts";
 
 export class ComposeUnsupportedError extends Error {
     constructor(operation: string) {
@@ -45,6 +45,8 @@ export interface ComposeProvider {
     /** Probe the provider at startup and record what it can do. */
     detect(): Promise<ComposeCapabilities>;
     listProjects(): Promise<CommandResult>;
+    /** Resolve only the effective name; never return or publish interpolated config. */
+    projectName(input: { composeFile: string; cwd: string }): Promise<string | null>;
     projectServices(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult>;
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult>;
     pull(target: ComposeTarget): Promise<CommandResult>;
@@ -61,7 +63,7 @@ export interface ComposeProvider {
         target: ComposeTarget & { tailLines?: number },
         onChunk: (chunk: string) => void,
         signal: AbortSignal,
-    ): Promise<{ code: number; timedOut: boolean }>;
+    ): Promise<{ code: number; timedOut: boolean; terminationUnconfirmed?: boolean }>;
 }
 
 class DockerComposeProvider implements ComposeProvider {
@@ -94,6 +96,22 @@ class DockerComposeProvider implements ComposeProvider {
     listProjects(): Promise<CommandResult> {
         if (!this.caps.operations.ls) return Promise.reject(new ComposeUnsupportedError("ls"));
         return this.runner(["compose", "ls", "--all", "--format", "json"]);
+    }
+
+    async projectName(input: { composeFile: string; cwd: string }): Promise<string | null> {
+        const result = await this.runner([
+            "compose", "--project-directory", input.cwd, "-f", input.composeFile,
+            "config", "--format", "json",
+        ], { cwd: input.cwd });
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        try {
+            const value: unknown = JSON.parse(result.stdout);
+            const name = (value as { name?: unknown } | null)?.name;
+            return typeof name === "string" && /^[a-z0-9][a-z0-9_-]*$/.test(name) ? name : null;
+        } catch {
+            // Config and stderr may contain secrets; expose neither.
+            return null;
+        }
     }
 
     projectServices(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult> {
@@ -144,7 +162,7 @@ class DockerComposeProvider implements ComposeProvider {
         target: ComposeTarget & { tailLines?: number },
         onChunk: (chunk: string) => void,
         signal: AbortSignal,
-    ): Promise<{ code: number; timedOut: boolean }> {
+    ): Promise<{ code: number; timedOut: boolean; terminationUnconfirmed?: boolean }> {
         if (!this.caps.operations.logs) throw new ComposeUnsupportedError("logs");
         const tail = target.tailLines ?? 200;
         const args = ["compose"];
@@ -154,43 +172,12 @@ class DockerComposeProvider implements ComposeProvider {
             "-f", target.composeFile,
             "logs", "--follow", "--tail", String(tail), "--timestamps",
         );
-        let proc: ReturnType<typeof Bun.spawn>;
-        try {
-            proc = Bun.spawn([this.dockerPath, ...args], {
-                cwd: target.cwd,
-                stdin: "ignore",
-                stdout: "pipe",
-                stderr: "pipe",
-            });
-        } catch {
-            return { code: -1, timedOut: false };
-        }
-        const abort = () => { try { proc.kill(); } catch { /* already exited */ } };
-        if (signal.aborted) abort();
-        else signal.addEventListener("abort", abort, { once: true });
-        try {
-            const forward = async (stream: unknown) => {
-                if (!(stream instanceof ReadableStream)) return;
-                const reader: ReadableStreamDefaultReader<Uint8Array> = stream.getReader();
-                try {
-                    for (;;) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        if (!value || value.byteLength === 0) continue;
-                        onChunk(Buffer.from(value).toString("utf8"));
-                    }
-                } catch {
-                    // The reader rejects once the process is killed; that is the stop path.
-                } finally {
-                    try { reader.releaseLock(); } catch { /* already released */ }
-                }
-            };
-            await Promise.all([forward(proc.stdout), forward(proc.stderr)]);
-            const code = await proc.exited;
-            return { code, timedOut: false };
-        } finally {
-            signal.removeEventListener("abort", abort);
-        }
+        // LogManager owns the follow timeout; the runner owns bounded abort,
+        // signal escalation, pipe cleanup and stateful UTF-8 decoding.
+        const result = await runCommand(this.dockerPath, args, {
+            cwd: target.cwd, timeoutMs: 0, maxBytes: 0, signal, onChunk,
+        });
+        return { code: result.code, timedOut: result.timedOut, terminationUnconfirmed: result.terminationUnconfirmed };
     }
 }
 

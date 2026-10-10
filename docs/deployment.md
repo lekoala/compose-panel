@@ -83,3 +83,33 @@ release. Verified 2026-10-10 against image `compose-panel:local`
 - [x] Removal: deleting the panel container leaves the daemon healthy and
       stack files untouched.
 - [ ] Reverse-proxy/TLS exposure: NOT verified — still forbidden (loopback only).
+
+## Audit correction verification
+
+The checklist above refers to the previously built image. Source corrections
+after that image require separate verification; no rebuild or deployment was
+performed as part of the correction work.
+
+- [x] Isolated Linux child-process fixtures: a mutation runner timeout and a
+      provider log abort both terminate a child ignoring `SIGTERM`; split UTF-8
+      remains intact. Verified in WSL Ubuntu 24.04 with Bun 1.4.0; CI uses pinned
+      Bun 1.4.2, which remains the supported minimum.
+- [x] HTTP/provider fixtures: refuse conflicting new project names, drain an
+      accepted save, bound a stuck save and refuse overlapping log follows.
+- [x] Real config-only Compose verification (WSL, Compose 5.5.1): process
+      environment overrides `.env`; `.env` overrides YAML `name:`; YAML name
+      overrides the directory fallback. The collision refusal uses fixture
+      discovery and real config resolution; no daemon command was issued.
+- [ ] Before releasing the rebuilt image, use a disposable Linux daemon to
+      create a project from one directory and request `up` from another directory
+      with the same `name:` (and then with `COMPOSE_PROJECT_NAME` in `.env`).
+      Expect 409 and unchanged original containers. A unique name must use the
+      resolved `-p` identity and still work from the ordinary Compose CLI.
+- [ ] Follow real logs containing partial lines and non-ASCII text; confirm exact
+      text, stop the last reader, then follow again after process termination.
+- [ ] Send `SIGTERM` while a save is validating and while an operation is running;
+      confirm new requests are refused, accepted work drains within the shared
+      deadline and no containers already started are stopped by panel shutdown.
+
+Never use a production daemon for these release checks. Unknown outcomes after
+the shared deadline or a crash still require inspecting files and Docker state.

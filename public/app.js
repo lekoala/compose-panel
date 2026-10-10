@@ -52,7 +52,7 @@
             } catch { /* keep the server-rendered content */ }
         });
         source.addEventListener("output", function (e) {
-            appendText(output, e.data + "\n", 256 * 1024);
+            try { appendText(output, JSON.parse(e.data).text, 256 * 1024); } catch { /* invalid frame */ }
         });
         source.addEventListener("done", function (e) {
             try { renderStatus(JSON.parse(e.data)); } catch { /* ignore */ }
@@ -107,7 +107,7 @@
                 if (payload && payload.truncated) setStatus("Following… (earlier entries truncated)");
             });
             source.addEventListener("chunk", function (e) {
-                appendText(output, e.data + "\n", 256 * 1024);
+                try { appendText(output, JSON.parse(e.data).text, 256 * 1024); } catch { /* invalid frame */ }
             });
             source.addEventListener("end", function (e) {
                 setStatus(e.data || "Follow ended.");

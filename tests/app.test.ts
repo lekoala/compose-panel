@@ -70,7 +70,8 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         engine: "fake",
         capabilities: () => caps,
         detect: async () => caps,
-        listProjects: async () => empty,
+        listProjects: async () => ({ ...empty, stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]) }),
+        projectName: async () => "demo-proj",
         projectServices: async () => empty,
         validateConfig: async () => empty,
         pull: async () => empty,
@@ -476,6 +477,7 @@ describe("operations routes", () => {
         return async args => {
             if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
             if (args.includes("up")) return onUp();
+            if (args.includes("config")) return { code: 0, stdout: '{"name":"demo-proj"}', stderr: "", timedOut: false, truncated: false };
             return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
         };
     }
@@ -580,6 +582,7 @@ describe("event streams", () => {
         const runner: DockerRunner = async args => {
             if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
             if (args.includes("up")) return okResult;
+            if (args.includes("config")) return { ...okResult, stdout: '{"name":"demo-proj"}' };
             return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
         };
         const app = makeApp();
@@ -616,6 +619,7 @@ describe("event streams", () => {
         const runner: DockerRunner = async args => {
             if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
             if (args.includes("up")) return gate;
+            if (args.includes("config")) return { ...okResult, stdout: '{"name":"demo-proj"}' };
             return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
         };
         const app = makeApp({}, runner);
@@ -712,6 +716,7 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         return async args => {
             if (args[1] === "ls") return lsResult;
             if (args.includes("config")) {
+                if (args.includes("json")) return { ...okResult, stdout: '{"name":"demo-proj"}' };
                 spy.validates.push(args);
                 return okResult;
             }
@@ -786,7 +791,7 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         expect(spy.mutations).toEqual([]);
     });
 
-    test("an undeployed stack allows up without -p but refuses down", async () => {
+    test("an undeployed stack pins its effective name for up and refuses down", async () => {
         const spy: Spy = { mutations: [], validates: [] };
         const app = makeApp({}, spyRunner(lsOf([]), spy));
         const session = await login(app);
@@ -797,7 +802,7 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         const created = await postOperation(app, session, csrf, "up");
         expect(created.status).toBe(303);
         expect(spy.mutations.length).toBe(1);
-        expect(spy.mutations[0]).not.toContain("-p");
+        expect(spy.mutations[0]![spy.mutations[0]!.indexOf("-p") + 1]).toBe("demo-proj");
     });
 
     test("a resolved project is passed as explicit -p", async () => {
@@ -811,6 +816,55 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         const position = spy.mutations[0]!.indexOf("-p");
         expect(position).toBeGreaterThan(-1);
         expect(spy.mutations[0]![position + 1]).toBe("demo-proj");
+    });
+
+    test("refuses creation when the effective name belongs to another file", async () => {
+        const spy: Spy = { mutations: [], validates: [] };
+        const app = makeApp({}, spyRunner(lsOf([projectEntry("demo-proj", "/elsewhere/compose.yaml")]), spy));
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        for (const action of ["up", "pull-up"]) {
+            expect((await postOperation(app, session, csrf, action)).status).toBe(409);
+        }
+        expect(spy.mutations).toEqual([]);
+    });
+
+    test("rechecks name collisions after effective identity resolution", async () => {
+        const spy: Spy = { mutations: [], validates: [] };
+        let resolved = false;
+        const runner = spyRunner(lsOf([]), spy);
+        const app = makeApp({}, async (args, options) => {
+            if (args.includes("config")) resolved = true;
+            if (resolved && args.includes("ls")) return lsOf([projectEntry("demo-proj", "/elsewhere/compose.yaml")]);
+            return runner(args, options);
+        });
+        const session = await login(app);
+        expect((await postOperation(app, session, await csrfOf(app, session), "up")).status).toBe(409);
+        expect(spy.mutations).toEqual([]);
+    });
+
+    test("refuses creation if name resolution fails without exposing config secrets", async () => {
+        const spy: Spy = { mutations: [], validates: [] };
+        const runner = spyRunner(lsOf([]), spy);
+        const app = makeApp({}, (args, options) => args.includes("config")
+            ? Promise.resolve({ ...okResult, code: 1, stderr: "private-secret" }) : runner(args, options));
+        const session = await login(app);
+        const response = await postOperation(app, session, await csrfOf(app, session), "up");
+        expect(response.status).toBe(503);
+        expect(await response.text()).not.toContain("private-secret");
+        expect(spy.mutations).toEqual([]);
+    });
+
+    test("absent stack logs end without spawning any follow", async () => {
+        const { provider, calls } = controllableProvider();
+        provider.listProjects = async () => lsOf([]);
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const response = await authed(app, "/stacks/demo/logs/events", session);
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("event: end");
+        expect(calls).toHaveLength(0);
+        expect(app.sseSubscriptions()).toBe(0);
     });
 
     test("validation uses the resolved project identity", async () => {
@@ -853,6 +907,49 @@ describe("shutdown policy", () => {
         await app.beginShutdown(50);
         return { app, session, csrf };
     }
+
+    async function pendingSave() {
+        const { provider } = controllableProvider();
+        let entered!: () => void;
+        let finish!: () => void;
+        const started = new Promise<void>(resolve => { entered = resolve; });
+        const gate = new Promise<void>(resolve => { finish = resolve; });
+        provider.validateConfig = async () => { entered(); await gate; return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }; };
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo/edit", session)).text();
+        const values: Record<string, string> = {};
+        for (const name of ["csrf", "composeHash", "envHash", "envExists"]) values[name] = new RegExp(`name="${name}" value="([^"]+)"`).exec(html)![1]!;
+        const saved = authed(app, "/stacks/demo/edit", session, {
+            method: "POST", headers: { origin: ORIGIN },
+            body: new URLSearchParams({ ...values, compose: "services:\n  app:\n    image: nginx:alpine\n# drained\n", env: "" }).toString(),
+        });
+        await started;
+        return { app, finish, saved };
+    }
+
+    test("drains a save accepted before shutdown until it finishes", async () => {
+        const { app, finish, saved } = await pendingSave();
+        let drained = false;
+        const shutdown = app.beginShutdown(1000).then(() => { drained = true; });
+        try {
+            await new Promise(resolve => setTimeout(resolve, 20));
+            expect(drained).toBe(false);
+        } finally { finish(); }
+        expect((await saved).status).toBe(303);
+        await shutdown;
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toContain("# drained");
+    });
+
+    test("a stuck save cannot exceed the shared shutdown deadline", async () => {
+        const { app, finish, saved } = await pendingSave();
+        const started = Date.now();
+        try {
+            await app.beginShutdown(30);
+            expect(Date.now() - started).toBeLessThan(1000);
+        } finally { finish(); }
+        await saved;
+    });
 
     test("refuses saves, operations and new follows once shutdown started", async () => {
         const { app, session, csrf } = await shutdownApp();
