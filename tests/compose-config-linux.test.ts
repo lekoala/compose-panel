@@ -8,6 +8,9 @@ import { resolveProjectContext } from "../src/status.ts";
 
 // Real Compose CLI, config only. Discovery is a fixture; no command is allowed
 // to connect to a daemon or create/change Docker resources. Opt in explicitly.
+// The test makes six sequential Compose calls, each bounded by the runner's own
+// 5 s timeout, so Bun's default 5 s per-test limit is too short by design.
+const TEST_TIMEOUT_MS = 40_000;
 test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPOSE_CONFIG !== "1")("real Compose resolves environment/name precedence and rejects conflicting project ownership", async () => {
     const root = await mkdtemp(join(tmpdir(), "compose-panel-config-"));
     const cwd = join(root, "demo");
@@ -25,6 +28,15 @@ test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPO
         await mkdir(cwd);
         await writeFile(composeFile, 'name: ${STACK_ID}\nservices:\n  app:\n    image: busybox:latest\n');
         await writeFile(join(cwd, ".env"), 'STACK_ID=yaml-stack\nCOMPOSE_PROJECT_NAME=env-stack\n');
+        // Preflight: projectName() deliberately hides Compose output, so a
+        // broken or slow Compose would only show up as null or a timeout. The
+        // fixture holds no secret, so surface the real exit status here.
+        const started = Date.now();
+        const probe = await runner(["compose", "--project-directory", cwd, "-f", composeFile, "config", "--format", "json"], { cwd });
+        if (probe.code !== 0 || probe.timedOut) {
+            const version = await runner(["compose", "version"]);
+            throw new Error(`docker compose config failed after ${Date.now() - started} ms: code=${probe.code} timedOut=${probe.timedOut} stderr=${probe.stderr.trim()} (${version.stdout.trim() || version.stderr.trim()})`);
+        }
         expect(await provider.projectName({ cwd, composeFile })).toBe("env-stack");
         projects = [{ Name: "env-stack", Status: "running(1)", ConfigFiles: "/another/compose.yaml" }];
         expect((await resolveProjectContext(root, "demo", provider, true)).kind).toBe("ambiguous");
@@ -42,4 +54,4 @@ test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPO
         else process.env.COMPOSE_PROJECT_NAME = previous;
         await rm(root, { recursive: true, force: true });
     }
-});
+}, TEST_TIMEOUT_MS);

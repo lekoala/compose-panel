@@ -8,7 +8,14 @@ PR builds never publish images.
 
 Scans: a filesystem scan covers dependencies and secrets
 (`scanners: vuln,secret`, skipping `node_modules`/`private`/`.git`), and the
-built image is scanned separately. Both gate on `CRITICAL,HIGH`. The base image
+built image is scanned separately. Both gate on `CRITICAL,HIGH`. The image scans
+(CI and release) skip CVEs that have no fix published (`ignore-unfixed`): most
+come from Debian base packages and no update can remove them. Every fixable
+finding still fails the build unless `.trivyignore.yaml` lists it with a
+reason, the exact path and an `expired_at` date; past that date the entry stops
+applying and the scan fails again. Remove an entry as soon as a pinned version
+carries the fix. The image installs no `gnupg` (apt reads the `.asc` key
+directly), to keep unused packages and their CVEs out. The base image
 is pinned by version and multi-arch digest in the `Dockerfile`, and every GitHub
 Action is pinned to a full commit SHA (with the human tag in a comment). Bump
 them deliberately and re-run the smoke checklist when you do.
@@ -42,8 +49,12 @@ The test job also runs `tests/compose-config-linux.test.ts` with
 `COMPOSE_PANEL_TEST_COMPOSE_CONFIG=1`: real `compose config` resolves project
 names from the directory, YAML, `.env` and process environment. Project discovery
 is stubbed and every real command is restricted to `config`; no daemon access or
-resource mutation occurs. Run the same command manually on Linux with the
-installed Compose CLI. The ordinary test suite skips this opt-in check.
+resource mutation occurs. CI first installs the same Compose plugin version as
+the image (checksum pinned in the workflow), so the test exercises the version
+that ships; bump it together with `DOCKER_COMPOSE_VERSION` in the `Dockerfile`.
+A preflight `config` call reports the exit code, timeout and stderr of a failing
+Compose (fixture data only) instead of a bare test timeout. Run the same command
+manually on Linux with the installed Compose CLI. The ordinary test suite skips this opt-in check.
 
 ## Disposable-daemon integration (opt-in)
 

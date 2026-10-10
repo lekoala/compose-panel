@@ -37,6 +37,9 @@ jobs:
           format: table
           severity: CRITICAL,HIGH
           exit-code: "1"
+          # Fixable findings still fail; see .trivyignore.yaml for the policy.
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io

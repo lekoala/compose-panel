@@ -21,6 +21,20 @@ jobs:
       - run: bun audit
       - run: bun run typecheck
       - run: bun run test
+      # Same Compose plugin version as the image (DOCKER_COMPOSE_VERSION in the
+      # Dockerfile), not whatever the runner ships. Bump both together. The
+      # checksum is pinned here, not fetched from the same release.
+      - name: Install pinned Compose plugin
+        env:
+          COMPOSE_VERSION: v5.6.0
+          COMPOSE_SHA256: 40343e21ca777173e69cff5dbafeb37c6f81f3b0d57d9e597f036e95eb63e76a
+        run: |
+          set -e
+          mkdir -p "$HOME/.docker/cli-plugins"
+          curl -fsSL -o "$HOME/.docker/cli-plugins/docker-compose" "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+          echo "${COMPOSE_SHA256}  $HOME/.docker/cli-plugins/docker-compose" | sha256sum -c -
+          chmod +x "$HOME/.docker/cli-plugins/docker-compose"
+          docker compose version
       - name: Compose config integration (no daemon access)
         run: COMPOSE_PANEL_TEST_DOCKER=0 COMPOSE_PANEL_TEST_COMPOSE_CONFIG=1 bun test tests/compose-config-linux.test.ts
       - name: Production-only boot (no devDependencies)
@@ -79,3 +93,6 @@ jobs:
           format: table
           severity: CRITICAL,HIGH
           exit-code: '1'
+          # Fixable findings still fail; see .trivyignore.yaml for the policy.
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml

@@ -9,6 +9,8 @@ ARG BUN_DIGEST=sha256:14a223fa35747ec728bce300ef85888bc5f7958164d15bbba6a54b22b5
 # Pinned engine versions: rebuilding the same commit installs the same tools.
 # Refresh deliberately (never silently) and re-verify with the smoke checklist.
 ARG DOCKER_CLI_VERSION=5:29.9.0-1~debian.13~trixie
+# Keep COMPOSE_VERSION in .github/workflows/ci.yml on the same release, and
+# drop the matching .trivyignore.yaml entries once a fixed release is pinned.
 ARG DOCKER_COMPOSE_VERSION=5.6.0-1~debian.13~trixie
 
 FROM oven/bun:${BUN_VERSION}-slim@${BUN_DIGEST} AS deps
@@ -28,8 +30,10 @@ ARG REVISION=unknown
 # Docker CLI + Compose plugin from Docker's official apt repository so the
 # exact engine the panel shells out to is present and verifiable in the image.
 # (Build-time shell only; the panel itself never uses a shell at runtime.)
+# No gnupg: apt reads the ASCII-armored key named by signed-by directly, and
+# gnupg would only add unused packages (and their CVEs) to the image.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
