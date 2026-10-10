@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import { rm, writeFile } from "node:fs/promises";
 import { locateComposeFile, StackError } from "./stacks.ts";
+import { resolveProjectContext } from "./status.ts";
 import { backupFile, hashContent, randomSuffix, readFileSafe, writeFileAtomic } from "./fs-safe.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
 
@@ -97,6 +98,7 @@ export async function validateDraft(
     composeSource: string,
     envSource: string | undefined,
     secrets: string[],
+    projectName?: string,
 ): Promise<ValidationResult> {
     const composeTmp = join(directory, `.cp-draft-${randomSuffix()}.yaml`);
     let envTmp: string | null = null;
@@ -111,6 +113,7 @@ export async function validateDraft(
             directory,
             composeFile: composeTmp,
             envFile: envTmp ?? undefined,
+            projectName,
         });
         if (result.timedOut) return { ok: false, message: "Compose validation timed out." };
         if (result.code !== 0) {
@@ -178,7 +181,19 @@ export async function saveEditableStack(
     }
 
     const secrets = [...collectSecrets(currentEnv?.source ?? ""), ...collectSecrets(request.envSource)];
-    const validation = await validateDraft(provider, directory, request.composeSource, envChanged ? request.envSource : undefined, secrets);
+    // Validate in the same project identity mutations will use when it is
+    // known. Saves stay possible while Docker is unreachable or ambiguous
+    // (editing local files, not controlling a project); validation then runs
+    // without -p exactly as before.
+    const context = await resolveProjectContext(root, name, provider).catch(() => null);
+    const validation = await validateDraft(
+        provider,
+        directory,
+        request.composeSource,
+        envChanged ? request.envSource : undefined,
+        secrets,
+        context?.kind === "resolved" ? context.project ?? undefined : undefined,
+    );
     if (!validation.ok) throw new StackValidationError(validation.message ?? "Compose validation failed.");
 
     const backupDir = join(root, ".compose-panel", "backups", name);

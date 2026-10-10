@@ -20,6 +20,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 ## Operations (P4)
 - Mutating actions are a fixed allow-list (`up`, `stop`, `restart`, `down`, `pull-up`); there is no generic "run command" endpoint and no user-supplied option.
 - Every operation runs through the provider with an explicit `--project-directory` and `-f`, plus `-p` when the project is known. The folder name is never assumed to be the project name.
+- Mutations and log follows fail closed on the project context: ambiguous matches and unreachable Docker discovery refuse to act (`409`/`503`) instead of running without `-p`. An undeployed stack only allows creation (`up`, `pull-up`); destructive actions require a resolved project. Draft validation reuses the resolved `-p` identity when known.
 - One operation per stack, enforced by the same per-stack lock as saves; a second request is rejected with `409`. `up` is detached and the panel never attaches a terminal.
 - Success is reported only after exit 0; a timeout is `unknown`; a second file/op state is never invented. Browser disconnect does not cancel an operation.
 - On `SIGTERM`/`SIGINT`, new operations are refused and running ones are drained for a bounded window. There is no persistence and no automatic replay: after a crash the outcome may be unknown and the UI re-reads Docker.

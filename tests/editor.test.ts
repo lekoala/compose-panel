@@ -93,7 +93,7 @@ describe("saveEditableStack", () => {
         expect(result.changed).toBe(true);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(nextCompose);
         // The draft is validated with an explicit -f and --project-directory.
-        const args = calls[0]!;
+        const args = calls.find(call => call.includes("config"))!;
         expect(args).toContain("config");
         expect(args).toContain("--quiet");
         expect(args).toContain("--project-directory");
@@ -106,7 +106,7 @@ describe("saveEditableStack", () => {
         const { runner, calls } = recordingRunner();
         const stack = await current();
         await saveEditableStack(root, "demo", req(stack, { envSource: "DB_PASSWORD=changedvalue\n" }), asProvider(runner), MAX);
-        expect(calls[0]!).toContain("--env-file");
+        expect(calls.find(call => call.includes("config"))!).toContain("--env-file");
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe("DB_PASSWORD=changedvalue\n");
     });
 

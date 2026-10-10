@@ -1,7 +1,7 @@
 import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage, logsPanel, operationControls, operationPanel } from "./html.ts";
 import { dirname } from "node:path";
 import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
-import { loadStackDetail, loadStackStates, resolveProject, type StackDetailStatus } from "./status.ts";
+import { loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
 import { StackConflictError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
 import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
@@ -346,13 +346,28 @@ export function createApp(options: AppOptions): App {
         const action = form.get("action") ?? "";
         if (!isOperationAction(action)) return renderStackDetail(name, csrf, "Unknown operation.", 400);
 
-        const located = await locateComposeFile(stacksRoot, name);
-        const project = await resolveProject(stacksRoot, name, provider);
+        // Fail closed: ambiguous or unreachable project identity never runs
+        // blind. An undeployed stack can only be created (up / pull-up);
+        // destructive actions require a resolved project passed as explicit -p.
+        // For a new project Compose derives the identity itself, and a
+        // cross-directory name clash fails inside Compose (non-zero exit),
+        // never as a silent takeover.
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind === "ambiguous") {
+            throw new StackError("Several Docker projects match this stack. Refusing to guess which one to control.", 409);
+        }
+        if (context.kind === "unavailable") {
+            throw new StackError("Docker state is unavailable. Refusing to run without a verified project.", 503);
+        }
+        const creates = action === "up" || action === "pull-up";
+        if (context.kind === "absent" && !creates) {
+            throw new StackError("This stack is not deployed yet. Only Up (or Pull + up) can create it.", 409);
+        }
         try {
             operations.start({
                 stack: name,
                 action,
-                target: { project: project ?? undefined, composeFile: located.path, cwd: dirname(located.path) },
+                target: { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd },
             });
             return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
         } catch (error) {
@@ -479,9 +494,17 @@ export function createApp(options: AppOptions): App {
     }
 
     async function handleLogsEvents(name: string, request: Request): Promise<Response> {
-        const located = await locateComposeFile(stacksRoot, name);
-        const project = await resolveProject(stacksRoot, name, provider);
-        const target = { project: project ?? undefined, composeFile: located.path, cwd: dirname(located.path) };
+        // Same fail-closed context as mutations: a follow without a verified
+        // project could attach to the wrong one. An undeployed stack simply
+        // yields an empty/ended stream.
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind === "ambiguous") {
+            throw new StackError("Several Docker projects match this stack. Refusing to guess which logs to follow.", 409);
+        }
+        if (context.kind === "unavailable") {
+            throw new StackError("Docker state is unavailable. Refusing to follow without a verified project.", 503);
+        }
+        const target = { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd };
         return sseResponse(request, (send, close) => {
             const sub = logs.subscribe(
                 name,

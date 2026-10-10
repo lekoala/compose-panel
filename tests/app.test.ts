@@ -702,3 +702,139 @@ describe("event streams", () => {
         expect(await script.text()).toContain("EventSource");
     });
 });
+
+describe("verified project context", () => {
+    const okResult: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+    const lsOf = (projects: unknown): CommandResult => ({ code: 0, stdout: JSON.stringify(projects), stderr: "", timedOut: false, truncated: false });
+
+    interface Spy { mutations: string[][]; validates: string[][]; }
+
+    function spyRunner(lsResult: CommandResult, spy: Spy): DockerRunner {
+        return async args => {
+            if (args[1] === "ls") return lsResult;
+            if (args.includes("config")) {
+                spy.validates.push(args);
+                return okResult;
+            }
+            if (["pull", "up", "stop", "restart", "down"].some(action => args.includes(action))) {
+                spy.mutations.push(args);
+                return okResult;
+            }
+            return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+        };
+    }
+
+    function projectEntry(name: string, files: string): { Name: string; Status: string; ConfigFiles: string } {
+        return { Name: name, Status: "running(1)", ConfigFiles: files };
+    }
+
+    beforeEach(async () => {
+        await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+        await rm(join(root, "demo", ".env"), { force: true });
+    });
+
+    async function csrfOf(app: App, session: string): Promise<string> {
+        const html = await (await authed(app, "/", session)).text();
+        return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+    }
+
+    function postOperation(app: App, session: string, csrf: string, action: string) {
+        return authed(app, "/stacks/demo/operations", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, action }).toString(),
+        });
+    }
+
+    test("refuses down on an ambiguous project without calling Docker", async () => {
+        const file = join(root, "demo", "compose.yaml");
+        const spy: Spy = { mutations: [], validates: [] };
+        const app = makeApp({}, spyRunner(lsOf([projectEntry("one", file), projectEntry("two", file)]), spy));
+        const session = await login(app);
+        const response = await postOperation(app, session, await csrfOf(app, session), "down");
+        expect(response.status).toBe(409);
+        expect(await response.text()).toContain("Refusing to guess");
+        expect(spy.mutations).toEqual([]);
+    });
+
+    test("refuses log follow on an ambiguous project", async () => {
+        const file = join(root, "demo", "compose.yaml");
+        const spy: Spy = { mutations: [], validates: [] };
+        const app = makeApp({}, spyRunner(lsOf([projectEntry("one", file), projectEntry("two", file)]), spy));
+        const session = await login(app);
+        const stream = await authed(app, "/stacks/demo/logs/events", session);
+        expect(stream.status).toBe(409);
+        await stream.body!.cancel();
+    });
+
+    test("refuses mutations when Docker discovery fails", async () => {
+        const spy: Spy = { mutations: [], validates: [] };
+        const failing: CommandResult = { code: 1, stdout: "", stderr: "daemon down", timedOut: false, truncated: false };
+        const app = makeApp({}, spyRunner(failing, spy));
+        const session = await login(app);
+        const response = await postOperation(app, session, await csrfOf(app, session), "up");
+        expect(response.status).toBe(503);
+        expect(spy.mutations).toEqual([]);
+    });
+
+    test("a multi-file project match is ambiguous too", async () => {
+        const file = join(root, "demo", "compose.yaml");
+        const spy: Spy = { mutations: [], validates: [] };
+        const app = makeApp({}, spyRunner(lsOf([projectEntry("wide", `${file},/elsewhere/other.yaml`)]), spy));
+        const session = await login(app);
+        const response = await postOperation(app, session, await csrfOf(app, session), "stop");
+        expect(response.status).toBe(409);
+        expect(spy.mutations).toEqual([]);
+    });
+
+    test("an undeployed stack allows up without -p but refuses down", async () => {
+        const spy: Spy = { mutations: [], validates: [] };
+        const app = makeApp({}, spyRunner(lsOf([]), spy));
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const refused = await postOperation(app, session, csrf, "down");
+        expect(refused.status).toBe(409);
+        expect(spy.mutations).toEqual([]);
+        const created = await postOperation(app, session, csrf, "up");
+        expect(created.status).toBe(303);
+        expect(spy.mutations.length).toBe(1);
+        expect(spy.mutations[0]).not.toContain("-p");
+    });
+
+    test("a resolved project is passed as explicit -p", async () => {
+        const file = join(root, "demo", "compose.yaml");
+        const spy: Spy = { mutations: [], validates: [] };
+        const app = makeApp({}, spyRunner(lsOf([projectEntry("demo-proj", file)]), spy));
+        const session = await login(app);
+        const response = await postOperation(app, session, await csrfOf(app, session), "down");
+        expect(response.status).toBe(303);
+        expect(spy.mutations.length).toBe(1);
+        const position = spy.mutations[0]!.indexOf("-p");
+        expect(position).toBeGreaterThan(-1);
+        expect(spy.mutations[0]![position + 1]).toBe("demo-proj");
+    });
+
+    test("validation uses the resolved project identity", async () => {
+        const file = join(root, "demo", "compose.yaml");
+        const spy: Spy = { mutations: [], validates: [] };
+        const app = makeApp({}, spyRunner(lsOf([projectEntry("demo-proj", file)]), spy));
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo/edit", session)).text();
+        const form = {
+            csrf: /name="csrf" value="([^"]+)"/.exec(html)![1]!,
+            composeHash: /name="composeHash" value="([^"]+)"/.exec(html)![1]!,
+            envHash: /name="envHash" value="([^"]+)"/.exec(html)![1]!,
+            envExists: /name="envExists" value="([^"]+)"/.exec(html)![1]!,
+        };
+        const response = await authed(app, "/stacks/demo/edit", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ ...form, compose: "services:\n  app:\n    image: nginx:1.27\n" }).toString(),
+        });
+        expect(response.status).toBe(303);
+        expect(spy.validates.length).toBe(1);
+        const position = spy.validates[0]!.indexOf("-p");
+        expect(position).toBeGreaterThan(-1);
+        expect(spy.validates[0]![position + 1]).toBe("demo-proj");
+    });
+});

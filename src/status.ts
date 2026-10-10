@@ -78,11 +78,38 @@ export async function loadStackStates(root: string, provider: ComposeProvider): 
     return { stacks: result, dockerNote: note };
 }
 
-/** Resolve the Compose project backing a stack, or null when none/ambiguous. */
-export async function resolveProject(root: string, name: string, provider: ComposeProvider): Promise<string | null> {
+export type ProjectContextKind = "resolved" | "absent" | "ambiguous" | "unavailable";
+
+export interface ProjectContext {
+    kind: ProjectContextKind;
+    /** Set only when kind === "resolved". Never guessed. */
+    project: string | null;
+    /** Absolute Compose file path, filename and directory for target building. */
+    composeFile: string;
+    filename: string;
+    cwd: string;
+}
+
+/**
+ * Resolve the verified project context for a mutation or follow. Unlike the
+ * old nullable lookup, ambiguous and unavailable discovery are distinct from
+ * "no project yet", so callers can refuse to act instead of running blind.
+ */
+export async function resolveProjectContext(root: string, name: string, provider: ComposeProvider): Promise<ProjectContext> {
     const location = await locateComposeFile(root, name);
-    const { projects } = await loadProjects(provider);
-    return findProjectForStack(projects, location.path).project?.name ?? null;
+    const base = { composeFile: location.path, filename: location.filename, cwd: dirname(location.path) };
+    let projects: ComposeProject[];
+    try {
+        const result = await provider.listProjects();
+        if (result.timedOut || result.code !== 0) return { kind: "unavailable", project: null, ...base };
+        projects = parseComposeLs(result.stdout);
+    } catch {
+        return { kind: "unavailable", project: null, ...base };
+    }
+    const match = findProjectForStack(projects, location.path);
+    if (match.ambiguous) return { kind: "ambiguous", project: null, ...base };
+    if (!match.project) return { kind: "absent", project: null, ...base };
+    return { kind: "resolved", project: match.project.name, ...base };
 }
 
 export async function loadStackDetail(root: string, name: string, provider: ComposeProvider): Promise<StackDetailStatus> {

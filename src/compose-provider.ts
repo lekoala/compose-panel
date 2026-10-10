@@ -44,7 +44,7 @@ export interface ComposeProvider {
     detect(): Promise<ComposeCapabilities>;
     listProjects(): Promise<CommandResult>;
     projectServices(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult>;
-    validateConfig(input: { directory: string; composeFile: string; envFile?: string }): Promise<CommandResult>;
+    validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult>;
     pull(target: ComposeTarget): Promise<CommandResult>;
     up(target: ComposeTarget): Promise<CommandResult>;
     stop(target: ComposeTarget): Promise<CommandResult>;
@@ -102,9 +102,10 @@ class DockerComposeProvider implements ComposeProvider {
         );
     }
 
-    validateConfig(input: { directory: string; composeFile: string; envFile?: string }): Promise<CommandResult> {
+    validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult> {
         if (!this.caps.operations.config) return Promise.reject(new ComposeUnsupportedError("config"));
         const args = ["compose"];
+        if (input.projectName) args.push("-p", input.projectName);
         if (input.envFile) args.push("--env-file", input.envFile);
         args.push("--project-directory", input.directory, "-f", input.composeFile, "config", "--quiet");
         return this.runner(args, { cwd: input.directory });
