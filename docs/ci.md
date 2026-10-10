@@ -108,10 +108,12 @@ cover.
 ## Publication (tags only)
 
 Releases are published by `.github/workflows/release.yml`, triggered only by
-a maintainer tag (`v*`), after the smoke test and review: build the Linux
-image with Bun + Docker CLI + Compose plugin (pinned, verified with
-`bun --version`, `docker --version`, `docker compose version`), scan it, push
-immutable version tags plus `latest` to GHCR.
+a maintainer tag (bare semver matching `package.json`, e.g. `0.1.0`, no `v`
+prefix), after the smoke test and review: build the Linux image for
+`linux/amd64` and `linux/arm64` (arm64 under QEMU) with Bun + Docker CLI +
+Compose plugin (pinned, verified with `bun --version`, `docker --version`,
+`docker compose version`), scan each platform, then push a multi-platform
+immutable version tag plus `latest` to GHCR.
 
 ## Deployment
 Keep the build and deployment steps separate. Publishing an image must **never** automatically update production stacks.

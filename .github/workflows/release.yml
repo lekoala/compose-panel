@@ -1,17 +1,21 @@
 # Release: publish the panel image to GHCR. Triggered ONLY by a maintainer
-# tag (v*). Nothing here runs on branches or pull requests, so a release can
-# never happen by accident: creating the tag IS the release decision.
+# tag (bare semver, e.g. 0.1.0, no "v" prefix). Nothing here runs on branches
+# or pull requests, so a release can never happen by accident: creating the
+# tag IS the release decision.
 # Dry-run the same build locally first with `bun run docker:build`.
 name: release
 
 on:
   push:
     tags:
-      - "v*"
+      - "[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: read
   packages: write
+
+env:
+  IMAGE: ghcr.io/lekoala/compose-panel
 
 jobs:
   publish:
@@ -20,24 +24,41 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Refuse a tag that does not match package.json
         run: |
-          test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
+          test "$GITHUB_REF_NAME" = "$(node -p "require('./package.json').version")"
+      # QEMU emulates arm64 on the amd64 runner (e.g. Oracle Ampere hosts).
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      # Each platform is built and loaded locally, then scanned, before anything
+      # is pushed. The final multi-platform push reuses the builder cache.
       - name: Build linux/amd64 image (local only, not pushed yet)
         run: |
-          VER="${GITHUB_REF_NAME#v}"
           docker buildx build --platform linux/amd64 --load \
-            --build-arg VERSION="$VER" \
+            --build-arg VERSION="$GITHUB_REF_NAME" \
             --build-arg REVISION="${GITHUB_SHA}" \
-            -t ghcr.io/lekoala/compose-panel:"$VER" \
-            -t ghcr.io/lekoala/compose-panel:latest .
-      - name: Scan image (gate before any push)
+            -t "$IMAGE:scan-amd64" .
+      - name: Scan linux/amd64 image (gate before any push)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ghcr.io/lekoala/compose-panel:latest
+          image-ref: ghcr.io/lekoala/compose-panel:scan-amd64
           format: table
           severity: CRITICAL,HIGH
           exit-code: "1"
           # Fixable findings still fail; see .trivyignore.yaml for the policy.
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+      - name: Build linux/arm64 image (local only, not pushed yet)
+        run: |
+          docker buildx build --platform linux/arm64 --load \
+            --build-arg VERSION="$GITHUB_REF_NAME" \
+            --build-arg REVISION="${GITHUB_SHA}" \
+            -t "$IMAGE:scan-arm64" .
+      - name: Scan linux/arm64 image (gate before any push)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/lekoala/compose-panel:scan-arm64
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "1"
           ignore-unfixed: true
           trivyignores: .trivyignore.yaml
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -45,8 +66,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Push version tag and latest
+      - name: Push multi-platform version tag and latest
         run: |
-          VER="${GITHUB_REF_NAME#v}"
-          docker push ghcr.io/lekoala/compose-panel:"$VER"
-          docker push ghcr.io/lekoala/compose-panel:latest
+          docker buildx build --platform linux/amd64,linux/arm64 --push \
+            --build-arg VERSION="$GITHUB_REF_NAME" \
+            --build-arg REVISION="${GITHUB_SHA}" \
+            -t "$IMAGE:$GITHUB_REF_NAME" \
+            -t "$IMAGE:latest" .
