@@ -68,19 +68,48 @@ export async function readEditableStack(root: string, name: string, maxBytes: nu
 
 /** Values from a .env file that must never appear in an error message or a log. */
 export function collectSecrets(envSource: string): string[] {
-    const secrets: string[] = [];
+    const secrets = new Set<string>();
     for (const line of envSource.split(/\r?\n/)) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("#")) continue;
-        const index = trimmed.indexOf("=");
+        const entry = trimmed.startsWith("export ") ? trimmed.slice(7).trim() : trimmed;
+        const index = entry.indexOf("=");
         if (index === -1) continue;
-        let value = trimmed.slice(index + 1).trim();
-        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-            value = value.slice(1, -1);
-        }
-        if (value.length >= 4) secrets.push(value);
+        const value = parseEnvValue(entry.slice(index + 1));
+        if (value.length >= 4) secrets.add(value);
     }
-    return secrets;
+    return [...secrets];
+}
+
+/**
+ * Extract a .env value using the supported syntax: double quotes (with escapes),
+ * single quotes (literal) and unquoted values where a whitespace-preceded `#`
+ * starts an inline comment. Best effort — a value that cannot be classified is
+ * returned as-is so it is still redacted rather than leaked.
+ */
+function parseEnvValue(raw: string): string {
+    const value = raw.trim();
+    if (value.startsWith('"')) {
+        let out = "";
+        for (let i = 1; i < value.length; i += 1) {
+            const ch = value[i]!;
+            if (ch === "\\" && i + 1 < value.length) {
+                const next = value[i + 1]!;
+                out += next === "n" ? "\n" : next === "t" ? "\t" : next === "r" ? "\r" : next;
+                i += 1;
+                continue;
+            }
+            if (ch === '"') break;
+            out += ch;
+        }
+        return out;
+    }
+    if (value.startsWith("'")) {
+        const end = value.indexOf("'", 1);
+        return end === -1 ? value.slice(1) : value.slice(1, end);
+    }
+    const comment = value.search(/(^|\s)#/);
+    return (comment === -1 ? value : value.slice(0, comment)).trim();
 }
 
 export function redactSecrets(text: string, secrets: string[]): string {
@@ -131,8 +160,10 @@ export async function validateDraft(
         });
         if (result.timedOut) return { ok: false, message: "Compose validation timed out." };
         if (result.code !== 0) {
-            const raw = firstLines(result.stderr) || "Compose validation failed.";
-            return { ok: false, message: redactSecrets(raw, secrets) };
+            // Redact BEFORE truncating: a secret crossing the line/char boundary
+            // would otherwise survive as an unreplaceable prefix.
+            const raw = firstLines(redactSecrets(result.stderr, secrets)) || "Compose validation failed.";
+            return { ok: false, message: raw };
         }
         return { ok: true, message: null };
     } finally {

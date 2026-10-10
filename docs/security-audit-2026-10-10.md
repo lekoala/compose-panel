@@ -22,8 +22,19 @@ Scope: all application TypeScript, browser JavaScript, authentication, filesyste
   before any Docker call and a verified `.env` is passed with `--env-file`.
   Regressions: explicit `--env-file` present/absent and a Linux symlinked-`.env`
   refusal for both mutation and follow.
-- **A4, H1, H2 — open.** Tracked for a later pass (H2 needs an ADR before the
-  environment contract changes).
+- **A4 — fixed.** The secret collector follows the supported `.env` value
+  syntax (inline comments, single/double quotes, `export`) and redaction runs
+  before truncation. Regressions: inline-comment/quote/export collection and a
+  boundary-truncation leak.
+- **H1 — fixed.** The `Host` header is validated against the loopback
+  authorities (on `PORT`) and the configured public origin before routing
+  (`/health/live` exempt). Regressions: unexpected Host rejected, loopback and
+  public-origin hosts accepted.
+- **H2 — addressed.** [ADR 0008](adr/0008-compose-subprocess-environment.md)
+  decides the environment contract: the `COMPOSE_PANEL_*` namespace (including
+  the admin password hash) is stripped from every Docker/Compose subprocess; all
+  other operator variables still pass through by design. Regression:
+  `composeEnvironment` strips panel variables and preserves others.
 
 ## Findings
 
@@ -117,17 +128,20 @@ Existing tests and deployment documentation intentionally accept process `COMPOS
 
 ## Change and rollback report
 
-- Original audit: report only. Remediation pass (A1–A3) touches `src/auth.ts`,
-  `src/app.ts`, `src/status.ts`, `src/compose-provider.ts`, `src/stacks.ts`,
-  `src/editor.ts`, the matching tests, and `docs/security.md`/`CHANGELOG.md`.
-- Application behavior: login throttling, stream revocation and `.env`
-  validation strengthened; the happy paths are unchanged.
-- Failure/rollback behavior: A1–A3 are ordinary code changes; revert the
+- Original audit: report only. Remediation pass (A1–A4, H1–H2) touches
+  `src/auth.ts`, `src/app.ts`, `src/status.ts`, `src/compose-provider.ts`,
+  `src/stacks.ts`, `src/editor.ts`, `src/docker.ts`, adds
+  `docs/adr/0008-compose-subprocess-environment.md`, the matching tests, and
+  `docs/security.md`/`CHANGELOG.md`.
+- Application behavior: login throttling, stream revocation, `.env` validation
+  and redaction, Host validation and the Compose subprocess environment are
+  strengthened; the happy paths are unchanged.
+- Failure/rollback behavior: A1–A4/H1–H2 are ordinary code changes; revert the
   commit and re-run both quality gates to roll back. No deployment or
   application mutation was performed during the audit.
 - Dependency delta: none in the remediation pass (the earlier toolchain change
   removed `typescript`).
 - Still to verify before remote exposure: A2 expiry-close under a real long
-  lived stream, A3 symlinked-`.env` refusal on a Linux host, and the A4/H1/H2
-  decisions. Manually verify session revocation, expected environment inputs
-  and allowed Host behavior on the intended loopback/SSH deployment.
+  lived stream and A3 symlinked-`.env` refusal on a Linux host. Manually verify
+  session revocation, expected environment inputs and allowed Host behavior on
+  the intended loopback/SSH deployment.

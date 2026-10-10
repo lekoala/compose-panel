@@ -79,10 +79,27 @@ async function readCapped(
     }
 }
 
+/**
+ * Environment handed to Docker/Compose subprocesses. Panel-only variables
+ * (the `COMPOSE_PANEL_*` namespace, including the admin password hash) are
+ * stripped so they can never enter Compose interpolation. Everything else is
+ * inherited unchanged, preserving documented precedence such as an operator's
+ * `COMPOSE_PROJECT_NAME`. See docs/adr/0008-compose-subprocess-environment.md.
+ */
+export function composeEnvironment(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+    const filtered: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) continue;
+        if (key.startsWith("COMPOSE_PANEL_")) continue;
+        filtered[key] = value;
+    }
+    return filtered;
+}
+
 function spawnPipe(file: string, args: string[], cwd?: string) {
     return Bun.spawn([file, ...args], {
         cwd,
-        env: process.env,
+        env: composeEnvironment(),
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",

@@ -1,5 +1,18 @@
 import { expect, test } from "bun:test";
-import { SPAWN_FAILURE, runCommand } from "../src/docker.ts";
+import { SPAWN_FAILURE, composeEnvironment, runCommand } from "../src/docker.ts";
+
+test("strips panel-only variables from the subprocess environment", () => {
+    const env = composeEnvironment({
+        PATH: "/usr/bin",
+        COMPOSE_PROJECT_NAME: "keep-me",
+        COMPOSE_PANEL_ADMIN_PASSWORD_HASH: "secret-hash",
+        COMPOSE_PANEL_COOKIE_SECURE: "true",
+    } as NodeJS.ProcessEnv);
+    expect(env.COMPOSE_PANEL_ADMIN_PASSWORD_HASH).toBeUndefined();
+    expect(env.COMPOSE_PANEL_COOKIE_SECURE).toBeUndefined();
+    expect(env.COMPOSE_PROJECT_NAME).toBe("keep-me");
+    expect(env.PATH).toBe("/usr/bin");
+});
 
 test("captures stdout and exit code", async () => {
     const result = await runCommand(process.execPath, ["-e", "process.stdout.write('hello')"]);

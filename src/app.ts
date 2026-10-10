@@ -146,6 +146,30 @@ function isAllowedOrigin(request: Request, config: AppConfig): boolean {
     return candidate === expected;
 }
 
+const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"] as const;
+
+/**
+ * Accept only the loopback authorities (on the configured port) and the
+ * explicitly configured public origin. This rejects an unexpected Host before
+ * routing, which protects against DNS rebinding and proxy misrouting.
+ */
+function isAllowedHost(request: Request, config: AppConfig): boolean {
+    const raw = request.headers.get("host") ?? new URL(request.url).host;
+    if (!raw) return false;
+    const host = raw.toLowerCase();
+    const allowed = new Set<string>();
+    for (const name of LOOPBACK_HOSTS) {
+        allowed.add(name);
+        allowed.add(`${name}:${config.port}`);
+    }
+    if (config.publicOrigin) {
+        const origin = new URL(config.publicOrigin);
+        allowed.add(origin.host.toLowerCase());
+        allowed.add(origin.hostname.toLowerCase());
+    }
+    return allowed.has(host);
+}
+
 function clientKey(request: Request, config: AppConfig): string {
     if (config.trustProxy) {
         const forwarded = request.headers.get("x-forwarded-for");
@@ -604,6 +628,12 @@ export function createApp(options: AppOptions): App {
     async function fetch(request: Request): Promise<Response> {
         const url = new URL(request.url);
         const method = request.method.toUpperCase();
+
+        // Reject an unexpected Host before any routing. Health probes are
+        // exempt so infrastructure checks with a service-name Host still work.
+        if (url.pathname !== "/health/live" && !isAllowedHost(request, config)) {
+            return plain("Invalid Host header.", 400);
+        }
 
         if (url.pathname === "/health/live") {
             if (method !== "GET") return methodNotAllowed("GET");

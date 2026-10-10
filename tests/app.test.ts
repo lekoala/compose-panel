@@ -180,6 +180,31 @@ describe("public routes", () => {
     });
 });
 
+describe("host allow-list", () => {
+    test("rejects an unexpected Host before routing", async () => {
+        const app = makeApp();
+        const response = await app.fetch(new Request("http://attacker.invalid:5081/login"));
+        expect(response.status).toBe(400);
+    });
+
+    test("allows loopback hosts on the configured port", async () => {
+        const app = makeApp();
+        expect((await app.fetch(new Request("http://127.0.0.1:5081/login"))).status).toBe(200);
+        expect((await app.fetch(new Request(`${ORIGIN}/login`))).status).toBe(200);
+    });
+
+    test("allows the configured public origin host", async () => {
+        const app = makeApp({ publicOrigin: "https://panel.example" });
+        expect((await app.fetch(new Request("https://panel.example/login"))).status).toBe(200);
+        expect((await app.fetch(new Request("http://attacker.invalid:5081/login"))).status).toBe(400);
+    });
+
+    test("exempts the health probe from Host validation", async () => {
+        const app = makeApp();
+        expect((await app.fetch(new Request("http://panel.internal:5081/health/live"))).status).toBe(200);
+    });
+});
+
 describe("auth gate", () => {
     test("redirects unauthenticated GET to the login page", async () => {
         const response = await makeApp().fetch(new Request(`${ORIGIN}/`));

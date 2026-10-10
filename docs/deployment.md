@@ -37,6 +37,11 @@ Rules that must stay true:
   persistence is needed or provided.
 - Mounting `/var/run/docker.sock` gives whoever can edit Compose files very
   high control over the host (see `docs/security.md`). Trusted admin only.
+- Panel settings must stay in the `COMPOSE_PANEL_*` namespace. Compose
+  subprocesses get the process environment with that namespace stripped
+  ([ADR 0008](adr/0008-compose-subprocess-environment.md)), so panel secrets
+  never reach a stack. Other variables (e.g. `COMPOSE_PROJECT_NAME`,
+  `DOCKER_HOST`) pass through by design.
 
 ## Backups and rollback
 

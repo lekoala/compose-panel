@@ -82,6 +82,40 @@ describe("secret handling", () => {
         expect(secrets).toContain("supersecretvalue");
         expect(redactSecrets("error near supersecretvalue here", secrets)).toBe("error near *** here");
     });
+
+    test("strips inline comments, quotes and export prefixes when collecting secrets", () => {
+        const secrets = collectSecrets([
+            "TOKEN=audit-secret # comment",
+            'PASS="quoted # not a comment"',
+            "SINGLE='literal value'",
+            "export EXPORTED=exportvalue",
+            "# comment line",
+        ].join("\n"));
+        expect(secrets).toContain("audit-secret");
+        expect(secrets).toContain("quoted # not a comment");
+        expect(secrets).toContain("literal value");
+        expect(secrets).toContain("exportvalue");
+        expect(secrets).not.toContain("audit-secret # comment");
+    });
+
+    test("redacts before truncating so a boundary secret is not leaked as a prefix", async () => {
+        const leaking: DockerRunner = async () => ({
+            code: 1,
+            stdout: "",
+            stderr: `invalid ${"x".repeat(992)}supersecretvalue`,
+            timedOut: false,
+            truncated: false,
+        });
+        const stack = await current();
+        try {
+            await saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), asProvider(leaking), MAX);
+            throw new Error("expected validation to fail");
+        } catch (error) {
+            expect(error).toBeInstanceOf(StackValidationError);
+            expect((error as Error).message).not.toContain("supersecretvalue");
+            expect((error as Error).message).not.toContain("superse");
+        }
+    });
 });
 
 describe("saveEditableStack", () => {
