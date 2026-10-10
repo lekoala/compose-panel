@@ -1,6 +1,9 @@
 import type { ComposeService } from "./compose-state.ts";
 import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
+import packageJson from "../package.json";
+
+const VERSION = packageJson.version;
 
 export function escapeHtml(value: string): string {
     return value.replace(/[&<>"']/g, char => {
@@ -28,8 +31,8 @@ export function note(kind: NoteKind, text: string, options: { title?: string; id
 export interface DocumentOptions {
     /** When set, the header renders an authenticated sign-out form using this CSRF token. */
     logoutCsrf?: string;
-    /** Signed-in user name shown next to the sign-out button. */
-    user?: string;
+    /** How the panel is reached, shown in the footer (e.g. "127.0.0.1:5081 (loopback)"). */
+    access?: string;
     /** Same-origin scripts to load with defer (e.g. "/app.js"). */
     scripts?: string[];
     /** Standalone centered page without header and footer (sign-in, signed out). */
@@ -38,9 +41,8 @@ export interface DocumentOptions {
 
 export function documentHtml(title: string, body: string, options: DocumentOptions = {}): string {
     // 'body' must contain ONLY trusted markup assembled with escapeHtml().
-    const user = options.user ? `<span class="user">${escapeHtml(options.user)}</span>` : "";
     const logout = options.logoutCsrf
-        ? `<div class="session">${user}<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="${escapeHtml(options.logoutCsrf)}"><button type="submit" class="btn btn-quiet">Sign out</button></form></div>`
+        ? `<div class="session"><form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="${escapeHtml(options.logoutCsrf)}"><button type="submit" class="btn btn-quiet">Sign out</button></form></div>`
         : "";
     const scripts = (options.scripts ?? []).map(src => `<script src="${escapeHtml(src)}" defer></script>`).join("");
     return `<!doctype html>
@@ -61,7 +63,7 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
   ${options.bare ? `<main class="bare">${body}</main>` : `<div class="shell">
     <header><a href="/" class="brand"><img src="/favicon.svg" alt="" width="20" height="20">Compose Panel</a>${logout}</header>
     <main>${body}</main>
-    <footer>Your Compose files and Docker stay the source of truth: every stack shown here can still be managed with the <code>docker compose</code> CLI.</footer>
+    <footer>Compose Panel ${escapeHtml(VERSION)}${options.logoutCsrf ? ` · <a href="/audit">Activity log</a>` : ""}${options.access ? ` · ${escapeHtml(options.access)}` : ""}</footer>
   </div>`}
 </body>
 </html>`;
@@ -91,7 +93,7 @@ export function loginPage(options: { csrf: string; error?: string | null }): str
 export interface EditPageOptions {
     name: string;
     csrf: string;
-    user?: string;
+    access?: string;
     composeFilename: string;
     composeSource: string;
     composeHash: string;
@@ -126,7 +128,7 @@ ${error}
     <button type="submit" class="btn btn-primary" data-busy-label="Checking and saving…">Check and save</button>
     <a href="${stackHref}" class="btn">Cancel</a>
   </div>
-</form>`, { logoutCsrf: options.csrf, user: options.user, scripts: ["/app.js"] });
+</form>`, { logoutCsrf: options.csrf, access: options.access, scripts: ["/app.js"] });
 }
 
 const STATE_LABELS: Record<string, string> = {
@@ -270,7 +272,7 @@ export function logsPanel(name: string, tailLines: number): string {
 
 export interface AuditPageOptions {
     csrf: string;
-    user?: string;
+    access?: string;
     periods: string[];
     selected: string | null;
     entries: AuditEntry[];
@@ -293,7 +295,7 @@ export function auditPage(options: AuditPageOptions): string {
         .map(period => `<option value="${escapeHtml(period)}"${period === options.selected ? " selected" : ""}>${escapeHtml(period)}</option>`)
         .join("");
     const selector = options.periods.length > 0
-        ? `<form method="get" action="/audit" class="toolbar"><label class="muted">Period <select name="period">${periodOptions}</select></label><button type="submit" class="btn">Show</button></form>`
+        ? `<form method="get" action="/audit" class="toolbar period"><label for="audit-period">Period</label><select id="audit-period" name="period" data-auto-submit>${periodOptions}</select><button type="submit" class="btn" data-auto-submit-fallback>Show</button></form>`
         : "";
     let table: string;
     if (options.periods.length === 0) {
@@ -327,7 +329,7 @@ export function auditPage(options: AuditPageOptions): string {
         + selector
         + (options.selected ? `<p class="muted">Showing <code>${escapeHtml(options.selected)}.log</code> (${options.entries.length} entries, most recent last).</p>` : "")
         + table,
-        { logoutCsrf: options.csrf, user: options.user, scripts: ["/app.js"] },
+        { logoutCsrf: options.csrf, access: options.access, scripts: ["/app.js"] },
     );
 }
 
@@ -338,7 +340,11 @@ export function htmlResponse(body: string, status = 200): Response {
             "Content-Type": "text/html; charset=utf-8",
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
-            "Referrer-Policy": "no-referrer",
+            // Not "no-referrer": with it, browsers send `Origin: null` on the
+            // panel's own form posts, which the strict Origin check must refuse.
+            // "same-origin" sends the real origin to the panel and nothing to
+            // other sites.
+            "Referrer-Policy": "same-origin",
             "X-Frame-Options": "DENY",
             "Vary": "Cookie",
             "Content-Security-Policy": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",

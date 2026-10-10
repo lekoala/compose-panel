@@ -31,10 +31,10 @@ Rules that must stay true:
   no longer match and stacks report `unknown`.
 - **`stop_grace_period` (35s) must exceed `COMPOSE_PANEL_SHUTDOWN_GRACE_MS`**
   (default 30s) so `SIGTERM` drains running operations instead of killing them.
-- The panel binds **127.0.0.1 only**. With host networking that is the host
-  loopback. Remote access goes through `ssh -L5081:127.0.0.1:5081 you@host`.
-  Do not publish a port or put the panel behind a proxy until the proxy/TLS
-  contract in `docs/security.md` is reviewed.
+- The panel binds **127.0.0.1 only** (hard-coded). With host networking that
+  is the host loopback. Remote access goes through an SSH tunnel
+  (`ssh -L5081:127.0.0.1:5081 you@host`) or through Caddy on the same host
+  (next section). Never add a `ports:` mapping: there is nothing to publish.
 - Sessions live in memory: every panel restart logs the admin out. No session
   persistence is needed or provided.
 - Mounting `/var/run/docker.sock` gives whoever can edit Compose files very
@@ -44,6 +44,78 @@ Rules that must stay true:
   ([ADR 0008](adr/0008-compose-subprocess-environment.md)), so panel secrets
   never reach a stack. Other variables (e.g. `COMPOSE_PROJECT_NAME`,
   `DOCKER_HOST`) pass through by design.
+
+## Behind Caddy (HTTPS)
+
+To use the panel from a browser without a tunnel, put Caddy in front of it on
+the **same host** ([ADR 0010](adr/0010-reverse-proxy-mode.md)). The panel stays
+bound to `127.0.0.1`, so Caddy must reach the host loopback: run it on the host
+itself, or in a container with `network_mode: host`.
+
+1. In `deploy/compose-panel.env`, set the public origin. This single setting
+   turns on Secure cookies and reads the client address from Caddy's
+   `X-Forwarded-For`:
+
+   ```sh
+   COMPOSE_PANEL_PUBLIC_ORIGIN=https://panel.example.com
+   ```
+
+   It must be `https`. Startup is refused if it is `http`, or if
+   `COMPOSE_PANEL_COOKIE_SECURE=false` or `COMPOSE_PANEL_TRUST_PROXY=false` is
+   also set: those combinations would leak the session or let one client slow
+   down everyone's sign-in.
+
+2. Add a site to Caddy. Caddy obtains the certificate, redirects HTTP to HTTPS
+   and streams the live output without extra settings:
+
+   ```caddyfile
+   panel.example.com {
+   	reverse_proxy 127.0.0.1:5081
+   }
+   ```
+
+   With caddy-docker-proxy (labels), the Caddy container must use
+   `network_mode: host` for `127.0.0.1` to mean the host. Then add to the
+   panel service in `deploy/compose.yaml`:
+
+   ```yaml
+   labels:
+     caddy: panel.example.com
+     caddy.reverse_proxy: 127.0.0.1:5081
+   ```
+
+   A Caddy container on a bridge network cannot reach the panel. That is
+   deliberate: the bind is not configurable.
+
+3. Restart the panel and check that it says `Reverse proxy mode: public origin
+   https://panel.example.com, Secure cookies on` at startup. Sign in through the
+   public URL. In this mode, forms posted through the SSH tunnel are refused
+   (wrong Origin): use one access path at a time.
+
+**Add a second barrier.** The panel controls Docker, i.e. the host, and one
+password protects it. In order of preference:
+
+- keep it off the public internet: Tailscale or WireGuard, and a Caddy site
+  bound to that interface;
+- restrict sources in Caddy:
+
+  ```caddyfile
+  panel.example.com {
+  	@outside not remote_ip 203.0.113.0/24
+  	respond @outside 403
+  	reverse_proxy 127.0.0.1:5081
+  }
+  ```
+
+- or add Caddy `basic_auth` in front of the panel's own sign-in;
+- and in every case, ban repeated failures at the host from the activity log
+  (see [Host-level ban](#host-level-ban-fail2ban--crowdsec)).
+
+Only Caddy is tested (`bun run test:proxy:wsl`, or
+`bash scripts/proxy-e2e/run.sh` on Linux: a real Caddy with TLS in front of the
+working tree, with a fake `docker` that never touches a daemon). Other proxies
+need explicit SSE flushing and correct `X-Forwarded-For` handling, and are not
+covered.
 
 ## Backups and rollback
 
@@ -91,10 +163,11 @@ Every failed login is a line like:
 
 The panel throttles logins itself (a bounded delay, never a lockout), so a real
 source ban belongs at the host, on the SSH daemon and on this audit file. This
-is only meaningful once the panel is reachable from other hosts **and**
-`COMPOSE_PANEL_TRUST_PROXY=true` behind a proxy that sets or appends
-`X-Forwarded-For`: the panel uses the last entry, the one your proxy added.
-Otherwise `actor` stays `direct` and every request shares one key. A minimal fail2ban jail (NDJSON parsed with a regex filter):
+is only meaningful behind Caddy (see [Behind Caddy](#behind-caddy-https)):
+then `actor` is the client address, taken from the last `X-Forwarded-For`
+entry, the one Caddy added. Through an SSH tunnel `actor` is `direct`. A
+minimal fail2ban jail (NDJSON parsed with a regex filter), banning the HTTPS
+ports Caddy listens on:
 
 ```ini
 # /etc/fail2ban/filter.d/compose-panel.conf
@@ -106,7 +179,7 @@ failregex = "result":"failure".*"actor":"<HOST>"
 # /etc/fail2ban/jail.d/compose-panel.conf
 [compose-panel]
 enabled  = true
-port     = 5081
+port     = http,https
 filter   = compose-panel
 logpath  = /opt/stacks/.compose-panel/audit/*.log
 maxretry = 10
@@ -114,9 +187,9 @@ findtime = 600
 bantime  = 3600
 ```
 
-Do **not** set `COMPOSE_PANEL_TRUST_PROXY=true` without a proxy in front: the
-`X-Forwarded-For` header would otherwise be client-controlled and the audit
-`actor` (and the login key) spoofable.
+Forwarded addresses are trusted only in proxy mode (`COMPOSE_PANEL_PUBLIC_ORIGIN`
+set); the panel refuses to start with `COMPOSE_PANEL_TRUST_PROXY=true` and no
+public origin, since the header would then be client-controlled.
 
 ## Manual verification (release gate)
 
@@ -140,7 +213,11 @@ release. Verified 2026-10-10 against image `compose-panel:local`
       (`/` → 302, re-login required), health stays `ok`, files intact.
 - [x] Removal: deleting the panel container leaves the daemon healthy and
       stack files untouched.
-- [ ] Reverse-proxy/TLS exposure: NOT verified — still forbidden (loopback only).
+- [x] Reverse proxy mode behind Caddy 2.8.4 with TLS (2026-10-10, WSL Ubuntu
+      24.04, fake `docker`): `scripts/proxy-e2e/run.sh` passes 14/14 — Secure
+      cookies, foreign Origin and Host refused, forged `X-Forwarded-For` ignored,
+      live SSE for actions and logs, UTF-8, sign-out closes open streams.
+- [ ] Same check on the target host with its real Caddy and a real stack.
 
 ## Audit correction verification
 

@@ -124,6 +124,46 @@ function parseOrigin(env: Env): string | null {
     return url.origin;
 }
 
+interface ProxySettings {
+    publicOrigin: string | null;
+    cookieSecure: boolean;
+    trustProxy: boolean;
+}
+
+/**
+ * Proxy mode is all or nothing, with safe defaults. The bind stays loopback, so
+ * a public origin always means a reverse proxy on the same host:
+ * - the public origin must be https (plain HTTP would carry the password and
+ *   the session cookie in clear), except in development mode;
+ * - Secure cookies and the forwarded client address follow from it, and
+ *   turning either off explicitly is refused: without the forwarded address
+ *   every visitor shares one throttle key, so one client could keep the admin
+ *   waiting;
+ * - trusting forwarded headers without a public origin is refused too.
+ */
+function parseProxy(env: Env, devMode: boolean): ProxySettings {
+    const publicOrigin = parseOrigin(env);
+    const explicitSecure = env.COMPOSE_PANEL_COOKIE_SECURE ? parseBool(env, "COMPOSE_PANEL_COOKIE_SECURE", false) : undefined;
+    const explicitTrust = env.COMPOSE_PANEL_TRUST_PROXY ? parseBool(env, "COMPOSE_PANEL_TRUST_PROXY", false) : undefined;
+    if (!publicOrigin) {
+        if (explicitTrust) {
+            throw new Error("COMPOSE_PANEL_TRUST_PROXY=true requires COMPOSE_PANEL_PUBLIC_ORIGIN. Without a reverse proxy there is no forwarded address to trust.");
+        }
+        return { publicOrigin, cookieSecure: explicitSecure ?? false, trustProxy: false };
+    }
+    const https = publicOrigin.startsWith("https:");
+    if (!https && !devMode) {
+        throw new Error("COMPOSE_PANEL_PUBLIC_ORIGIN must use https: plain HTTP would send the password and the session cookie in clear. (COMPOSE_PANEL_DEV=true allows http for local testing only.)");
+    }
+    if (https && explicitSecure === false) {
+        throw new Error("COMPOSE_PANEL_COOKIE_SECURE=false is refused with an https COMPOSE_PANEL_PUBLIC_ORIGIN. Remove it: Secure cookies are the default behind TLS.");
+    }
+    if (explicitTrust === false) {
+        throw new Error("COMPOSE_PANEL_TRUST_PROXY=false is refused with COMPOSE_PANEL_PUBLIC_ORIGIN: every visitor would share one sign-in throttle key. Remove it: the proxy's X-Forwarded-For is used by default.");
+    }
+    return { publicOrigin, cookieSecure: explicitSecure ?? https, trustProxy: true };
+}
+
 export function loadConfig(env: Env = process.env): AppConfig {
     const stacksDir = env.STACKS_DIR;
     if (!stacksDir) throw new Error("STACKS_DIR is required (absolute path to the stacks).");
@@ -144,9 +184,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         port: parsePort(env),
         adminUser,
         adminPasswordHash,
-        cookieSecure: parseBool(env, "COMPOSE_PANEL_COOKIE_SECURE", false),
-        publicOrigin: parseOrigin(env),
-        trustProxy: parseBool(env, "COMPOSE_PANEL_TRUST_PROXY", false),
+        ...parseProxy(env, devMode),
         allowOpaqueOrigin: parseBool(env, "COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN", false),
         devMode,
         sessionTtlMs: parsePositiveInt(env, "COMPOSE_PANEL_SESSION_TTL_MS", 12 * 60 * 60 * 1000),

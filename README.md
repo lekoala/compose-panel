@@ -7,7 +7,7 @@
 
 A small, self-hosted web panel for the Docker Compose stacks of **one Linux server**. Your Compose files on disk stay the source of truth and Docker stays in charge of the containers: everything the panel does, you can still do with the `docker compose` CLI.
 
-> **Status: 0.1, for a single trusted administrator.** The panel listens on `127.0.0.1` only. Reach it remotely through an SSH tunnel (`ssh -L5081:127.0.0.1:5081 you@host`), never through a public port or a reverse proxy: that setup has not been reviewed yet.
+> **Status: 0.1, for a single trusted administrator.** The panel only ever listens on `127.0.0.1`, so a port mapping cannot expose it by mistake. Reach it through an SSH tunnel (`ssh -L5081:127.0.0.1:5081 you@host`) or over HTTPS with Caddy on the same host: one setting, `COMPOSE_PANEL_PUBLIC_ORIGIN`, see [docs/deployment.md](docs/deployment.md#behind-caddy-https).
 
 ## What it does
 
@@ -38,7 +38,16 @@ The stacks directory must be mounted at the same path inside and outside the con
 
 ## Develop
 
-Requirements: Bun 1.4.3+, a stacks directory, and optionally the Docker CLI with Compose v2. Without Docker, stacks are simply listed as `unknown`.
+To see the panel right away, without Docker or any setup:
+
+```sh
+bun install
+bun run preview          # http://127.0.0.1:5081, sign in as admin / preview
+```
+
+The preview runs the real panel on demo stacks (in `.preview/`, git-ignored) with a **simulated** Docker: listing, editing and validation, actions with live output, logs and the activity log all work, and no Docker command ever runs. `bun run preview --reset` recreates the demo stacks.
+
+To run it against your own stacks and the real Docker CLI, you need Bun 1.4.3+, a stacks directory, and optionally the Docker CLI with Compose v2. Without Docker, stacks are simply listed as `unknown`.
 
 ```sh
 bun install
@@ -65,6 +74,7 @@ Then open `http://127.0.0.1:5081`.
 bun run test       # unit and integration tests
 bun run typecheck
 bun run test:wsl   # on Windows: the same suite on Linux through WSL
+bun run test:proxy:wsl  # on Windows: end-to-end check behind a real Caddy (TLS)
 ```
 
 `test:wsl` needs Bun in the default WSL distribution. It copies the working tree into the Linux file system so that the signal, symlink and file-mode tests actually run. Contributors and coding agents: read [AGENTS.md](AGENTS.md) first.

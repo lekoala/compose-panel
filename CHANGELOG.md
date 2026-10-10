@@ -3,8 +3,19 @@
 ## 0.1.0 — to be released
 
 First minimal release. Single Linux host, single trusted administrator,
-loopback HTTP only (`127.0.0.1`, no proxy/TLS yet).
+always bound to `127.0.0.1`; remote access through an SSH tunnel or HTTPS with
+Caddy on the same host.
 
+- Reverse proxy mode (ADR 0010): `COMPOSE_PANEL_PUBLIC_ORIGIN=https://…` alone
+  turns on Secure cookies and the forwarded client address for a TLS proxy on
+  the same host; the bind stays hard-coded to loopback, so a port mapping cannot
+  expose the panel. Inconsistent settings are refused at startup (plain-http
+  public origin, Secure cookies or forwarded address switched off, forwarded
+  address trusted without a proxy). Caddy setup, caddy-docker-proxy labels and
+  a recommended second barrier are documented; `scripts/proxy-e2e/run.sh`
+  (`bun run test:proxy:wsl`) checks the contract against a real Caddy with TLS.
+- `bun run preview`: the real panel on demo stacks with a simulated Docker
+  (no command runs), to try every page, action and stream without any setup.
 - Activity audit and login backoff (P7, ADR 0009): an append-only NDJSON
   activity log (daily files under `.compose-panel/audit/`, retention, bounded
   reads, per-file size cap, per-minute cap on sign-in noise) records sign-ins,
@@ -108,8 +119,8 @@ loopback HTTP only (`127.0.0.1`, no proxy/TLS yet).
   bounded shutdown refusing new work, and live operation progress with
   drain-instead-of-cancel pipe handling.
 
-Known limitations: loopback only (reach remotely via SSH tunnel, never a
-public port); no guaranteed operation outcome after a crash; multi-file
+Known limitations: bound to loopback only (SSH tunnel, or Caddy on the same
+host with host networking; only Caddy is tested); no guaranteed operation outcome after a crash; multi-file
 Compose (override files) rejected; Docker Compose only, no Podman yet;
 sessions lost on restart (re-login required).
 

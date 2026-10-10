@@ -278,12 +278,25 @@
         });
     }
 
+    /* A select marked data-auto-submit submits its form on change; the
+     * fallback button is only needed without JavaScript. */
+    function wireAutoSubmit() {
+        each("select[data-auto-submit]", function (select) {
+            var form = select.form;
+            if (!form) return;
+            var fallback = form.querySelector("[data-auto-submit-fallback]");
+            if (fallback) fallback.hidden = true;
+            select.addEventListener("change", function () { form.submit(); });
+        });
+    }
+
     document.addEventListener("DOMContentLoaded", function () {
         var op = document.querySelector("[data-op-stream]");
         var logs = document.querySelector("[data-logs-stream]");
         var editor = document.querySelector("[data-edit-form]");
         localizeTimes();
         wireBusyButtons();
+        wireAutoSubmit();
         if (op) wireOperation(op);
         if (logs) wireLogs(logs);
         if (editor) wireEditor(editor);

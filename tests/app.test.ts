@@ -231,6 +231,9 @@ describe("auth gate", () => {
         expect(response.status).toBe(200);
         expect(response.headers.get("cache-control")).toBe("no-store");
         expect(response.headers.get("content-security-policy")).toContain("form-action 'self'");
+        // "no-referrer" makes browsers send `Origin: null` on the panel's own
+        // form posts, which the strict Origin check then refuses (sign-in blocked).
+        expect(response.headers.get("referrer-policy")).toBe("same-origin");
         expect(response.headers.get("content-security-policy")).toContain("img-src 'self'");
         expect(setCookies(response).some(cookie => cookie.startsWith("cp_csrf="))).toBe(true);
         const html = await response.text();

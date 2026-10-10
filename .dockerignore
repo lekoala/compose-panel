@@ -16,3 +16,4 @@ dist/
 Dockerfile
 .dockerignore
 scripts/
+.preview/

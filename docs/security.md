@@ -6,11 +6,11 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 ## Delivered entry protections (P1)
 - Local loopback `127.0.0.1` only, no exposed bind. A single administrator authenticates; the password is stored only as an Argon2id hash (`Bun.password`) supplied outside the repo.
 - Common/guessable administrator usernames (`admin`, `administrator`, `root`, `user`, `test`, `guest`) are refused at startup unless `COMPOSE_PANEL_DEV=true` (local development only). A unique `COMPOSE_PANEL_ADMIN_USER` is required.
-- Sessions are random server-side identifiers kept in memory (lost on restart). Cookies are `HttpOnly`, `SameSite=Lax`, `Secure` when `COMPOSE_PANEL_COOKIE_SECURE=true`; the session id rotates on login.
+- Sessions are random server-side identifiers kept in memory (lost on restart). Cookies are `HttpOnly`, `SameSite=Lax`, `Secure` in reverse proxy mode (or when `COMPOSE_PANEL_COOKIE_SECURE=true`); the session id rotates on login.
 - All mutating requests (login, logout) require a matching CSRF token and an exact Origin/Referer match. The login page uses a double-submit CSRF cookie; authenticated pages use a per-session token.
 - Login attempts are rate-limited per client; request bodies and login payloads are size-bounded; every application response is `Cache-Control: no-store`.
 - The attempt is reserved synchronously before any awaited password verification, so a burst of concurrent logins cannot all pass the limit before the first failure is recorded. Over-limit attempts are **not refused**: they are served with a bounded, exponentially growing delay. Each client key may have one attempt in progress (a parallel one is refused, so the delay cannot be bypassed), and the global in-flight verification cap is taken only after the delay. A single source therefore cannot lock the administrator out; many distinct sources can still cause transient refusals, which is a host-level concern (see [ADR 0009](adr/0009-audit-log-and-login-backoff.md)). Behind a trusted proxy the client key is the last `X-Forwarded-For` entry, the one the proxy appended.
-- Docker calls are reads by default; editing and the fixed operation allow-list are the only mutations, all authenticated and CSRF-protected. Compose files may still contain secrets: do NOT place the panel behind a public proxy yet.
+- Docker calls are reads by default; editing and the fixed operation allow-list are the only mutations, all authenticated and CSRF-protected. Compose files may still contain secrets: expose the panel only through the reverse proxy mode below, never through a published port.
 
 ## Safe editing (P3)
 - `compose.yaml` and `.env` are read and written as raw text: never parsed and re-serialized, so comments and formatting are preserved. Writes are atomic (temp file in the same directory, then rename) and keep the original file mode.
@@ -50,15 +50,15 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Writes are best-effort and never fail the request that produced the event. The log is the operator's trail and the input for a host-level ban (fail2ban/CrowdSec), not an in-panel firewall.
 
 ## Proxy and TLS contract
-- Default remains direct loopback HTTP with `COMPOSE_PANEL_COOKIE_SECURE=false`.
+- The bind is hard-coded to `127.0.0.1` and not configurable ([ADR 0010](adr/0010-reverse-proxy-mode.md)). Default access is direct loopback HTTP through an SSH tunnel.
 - The `Host` header is validated before routing: only the loopback authorities (on `PORT`) and, when set, the configured public origin are accepted (`400` otherwise). This protects against DNS rebinding and proxy misrouting. `/health/live` is exempt so infrastructure probes with a service-name Host still work.
 - A mutation whose `Origin`/`Referer` does not match is refused. A sandboxed/embedded context (`Origin: null`) is refused by default; login answers a `303` back to `/login` with an explanation rather than a bare `403`. The opt-in `COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN` (default false, local testing only) accepts an absent/opaque Origin when Fetch Metadata reports `same-origin`/`none`; a cross-site frame is still refused. CSP `frame-ancestors 'none'` backs this up in the browser.
-- Behind TLS, set `COMPOSE_PANEL_COOKIE_SECURE=true` and, for a proxy, `COMPOSE_PANEL_PUBLIC_ORIGIN=https://<host>` so Origin and Host checks compare against the public origin. Set `COMPOSE_PANEL_TRUST_PROXY=true` only when the proxy overwrites `X-Forwarded-Proto`/`X-Forwarded-For`.
-- Bind stays hard-coded to `127.0.0.1` until the reverse proxy, TLS termination and firewall are reviewed and documented.
+- Reverse proxy mode is a single setting, `COMPOSE_PANEL_PUBLIC_ORIGIN=https://<host>`, for a TLS proxy on the same host. Origin and Host checks then compare against it, cookies are Secure, and the client address is the last `X-Forwarded-For` entry (the one the proxy appended). Startup is refused for an `http` public origin (outside development mode), for Secure cookies or forwarded addresses switched off in this mode, and for trusting forwarded addresses without a public origin.
+- Supported and tested proxy: Caddy (`scripts/proxy-e2e/run.sh`, real Caddy with TLS). Recommended second barrier in front: VPN, IP allow-list or proxy authentication, plus a host-level ban on the activity log.
 
 ## Minimum before remote/production use
 - Auth mono-admin (secret provisioned outside repo, robust password derivation, cookies HttpOnly, Secure, SameSite, rotation de session après login, logout). *(implemented in P1)*
-- CSRF on all POSTs and strict Origin/Host checks, behind an explicitly configured proxy. *(CSRF, same-origin and Host allow-list checks implemented; proxy configuration still to be verified on a real deployment)*
+- CSRF on all POSTs and strict Origin/Host checks, behind an explicitly configured proxy. *(implemented; verified behind a real Caddy with TLS by `scripts/proxy-e2e/run.sh`, ADR 0010)*
 - TLS via proxy, bind on a private interface, firewall/administration network. Never expose the Docker socket over TCP.
 - Limit file sizes, execution time, log/SSE size, login attempts. *(login attempts, request body size, edit sizes, Docker/operation caps, SSE subscribers/heartbeat/timeout and log tail/buffer/timeout implemented in P1–P5; login is throttled by a bounded delay with no hard per-client lockout, and the activity log is bounded by retention and read caps in P7)*
 - Escape HTML, restrictive CSP, disable caching of sensitive pages, protect any response containing `.env`.

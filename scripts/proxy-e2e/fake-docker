@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Fake docker CLI for the proxy test: answers the panel's calls, touches nothing.
+args=" $* "
+STACK="${PROXY_E2E_STACK:?set by run.sh}"
+case "$args" in
+  *" version "*) echo "Docker Compose version v5.6.0" ;;
+  *" ls "*) printf '[{"Name":"demo","Status":"running(1)","ConfigFiles":"%s/compose.yaml"}]\n' "$STACK" ;;
+  *" ps "*) echo '{"Service":"app","State":"running","Health":"healthy","ExitCode":0}' ;;
+  *" config "*" --quiet"*) exit 0 ;;
+  *" config "*) echo '{"name":"demo"}' ;;
+  *" logs "*)
+    i=0
+    while true; do i=$((i+1)); echo "app-1  | log line $i é"; sleep 1; done ;;
+  *" up "*|*" restart "*|*" stop "*|*" down "*|*" pull "*)
+    for step in Recreate Recreated Starting Started; do echo " Container demo-app-1  $step"; sleep 1; done ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac

@@ -18,19 +18,18 @@ if (!capabilities.available) {
 }
 const app = createApp({ config, stacksRoot, provider });
 
-// IMPORTANT: hardcoded loopback bind. Do not expose the panel until the proxy,
-// TLS and cookie policy (COMPOSE_PANEL_COOKIE_SECURE, PUBLIC_ORIGIN) are reviewed.
+// IMPORTANT: hardcoded loopback bind, never configurable (ADR 0010). Remote
+// access goes through an SSH tunnel or a TLS reverse proxy on the same host
+// (COMPOSE_PANEL_PUBLIC_ORIGIN), never through a published port.
 const server = Bun.serve({
     hostname: "127.0.0.1",
     port: config.port,
     fetch: request => app.fetch(request),
 });
 
-if (!config.cookieSecure) {
-    console.warn("Session cookies are not Secure. Keep the panel on 127.0.0.1; set COMPOSE_PANEL_COOKIE_SECURE=true behind TLS.");
-}
-if (config.publicOrigin && !config.cookieSecure) {
-    console.warn("COMPOSE_PANEL_PUBLIC_ORIGIN is set but cookies are not Secure; set COMPOSE_PANEL_COOKIE_SECURE=true behind TLS.");
+if (config.publicOrigin) {
+    console.info(`Reverse proxy mode: public origin ${config.publicOrigin}, Secure cookies ${config.cookieSecure ? "on" : "OFF"}, client address from the last X-Forwarded-For entry.`);
+    if (!config.cookieSecure) console.warn("Plain-HTTP public origin (development mode only): the password and session cookie travel in clear.");
 }
 if (process.env.COMPOSE_PANEL_LOGIN_BLOCK_MS) {
     console.warn("COMPOSE_PANEL_LOGIN_BLOCK_MS is ignored: failed sign-ins are now delayed, never locked out (ADR 0009). Use COMPOSE_PANEL_LOGIN_BACKOFF_MAX_MS.");
@@ -41,7 +40,7 @@ if (config.devMode) {
 if (config.allowOpaqueOrigin) {
     console.warn("COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN=true: an absent/opaque Origin is accepted for same-origin requests. Local testing only.");
 }
-console.info(`Compose Panel on http://127.0.0.1:${server.port} (single admin: ${config.adminUser})`);
+console.info(`Compose Panel listening on http://127.0.0.1:${server.port} (loopback only; single admin: ${config.adminUser})`);
 
 let shuttingDown = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

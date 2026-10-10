@@ -28,7 +28,7 @@ import type { AppConfig } from "./config.ts";
 const BASE_HEADERS: Record<string, string> = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
+    "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
 };
 
@@ -131,7 +131,7 @@ const ERROR_TITLES: Record<number, string> = {
     503: "Temporarily unavailable",
 };
 
-const ORIGIN_BLOCKED_MESSAGE ="Sign-in was blocked because the request did not come from this panel's own page. Open the panel URL directly in a browser tab (embedding the panel is not allowed). For local testing only, an operator can set COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN=true.";
+const ORIGIN_BLOCKED_MESSAGE = "Sign-in was blocked because the request did not come from this panel's own page. Open the panel address directly in a browser tab: embedding the panel in another page or app is not allowed.";
 
 /** Strict same-origin check for state-changing requests. Fails closed. */
 function isAllowedOrigin(request: Request, config: AppConfig): boolean {
@@ -275,6 +275,12 @@ export function createApp(options: AppOptions): App {
         return audit.record(event, { noisy: true });
     }
 
+    // Shared page options: sign-out form and how the panel is reached.
+    const access = config.publicOrigin ? `${new URL(config.publicOrigin).host} (proxy)` : `127.0.0.1:${config.port} (loopback)`;
+    function pageChrome(csrf: string | undefined): { logoutCsrf?: string; access: string } {
+        return { logoutCsrf: csrf, access };
+    }
+
     async function readForm(request: Request, maxBytes = config.maxBodyBytes): Promise<URLSearchParams | null> {
         const text = await readTextLimited(request, maxBytes);
         if (text === null) return null;
@@ -290,7 +296,7 @@ export function createApp(options: AppOptions): App {
         const back = stack !== undefined && status !== 404
             ? { href: `/stacks/${encodeURIComponent(stack)}`, label: `← Back to ${stack}` }
             : { href: "/", label: "← Back to all stacks" };
-        return htmlResponse(messagePage(ERROR_TITLES[status] ?? "Something went wrong", message, back, { logoutCsrf: csrf, user: config.adminUser }), status);
+        return htmlResponse(messagePage(ERROR_TITLES[status] ?? "Something went wrong", message, back, { ...pageChrome(csrf) }), status);
     }
 
     /** A form post the panel refused before doing anything (stale page, foreign origin). */
@@ -299,7 +305,7 @@ export function createApp(options: AppOptions): App {
             "Nothing was done",
             "This page is out of date, for example because you signed in again in another tab. Go back, reload the page and try again.",
             { href: back, label: "← Go back" },
-            { logoutCsrf: csrf, user: config.adminUser },
+            { ...pageChrome(csrf) },
         ), 403);
     }
 
@@ -308,7 +314,7 @@ export function createApp(options: AppOptions): App {
             "Nothing was saved",
             `The submitted content is larger than the ${Math.floor(config.maxEditBytes / 1024)} KiB limit.`,
             { href: back, label: "← Go back" },
-            { logoutCsrf: csrf, user: config.adminUser },
+            { ...pageChrome(csrf) },
         ), 413);
     }
 
@@ -336,7 +342,10 @@ export function createApp(options: AppOptions): App {
         // sandboxed context) is refused, but as a soft POST→GET redirect to the
         // login page with an explanation instead of a bare 403.
         if (!isAllowedOrigin(request, config)) {
-            await recordLoginNoise({ event: "login", result: "refused", actor: clientKey(request, config), detail: "origin blocked" });
+            // Name both sides so a misconfigured origin is diagnosable from the log.
+            const received = request.headers.get("origin") ?? (request.headers.get("referer") ? "referer only" : "none");
+            const expected = config.publicOrigin ?? requestOrigin(request, config) ?? "unknown";
+            await recordLoginNoise({ event: "login", result: "refused", actor: clientKey(request, config), detail: `origin blocked: received ${received}, expected ${expected}` });
             return redirect("/login?e=blocked", 303);
         }
         const form = await readForm(request);
@@ -407,19 +416,21 @@ export function createApp(options: AppOptions): App {
 
     async function renderStackList(csrf: string): Promise<Response> {
         const { stacks, dockerNote } = await loadStackStates(stacksRoot, provider);
-        const intro = `<p class="lead">Each folder in <code>${escapeHtml(stacksRoot)}</code> that contains exactly one Compose file is a stack.</p>`;
+        const intro = `<p class="lead">Stacks in <code>${escapeHtml(stacksRoot)}</code></p>`;
         let content: string;
         if (stacks.length === 0) {
             content = `<section class="card empty"><h2>No stacks found</h2>`
                 + `<p>Create a folder in <code>${escapeHtml(stacksRoot)}</code> with a <code>compose.yaml</code> (or <code>compose.yml</code>, <code>docker-compose.yaml</code>, <code>docker-compose.yml</code>) and reload this page.</p>`
-                + `<p class="muted">Folder names may use lowercase letters, digits, <code>-</code> and <code>_</code>.</p></section>`;
+                + `<p class="muted">Folder names may use lowercase letters, digits, <code>-</code> and <code>_</code>.</p>`
+                + `<p class="muted">The panel never takes ownership of your stacks: the Compose files stay where they are, and every stack can still be managed with the <code>docker compose</code> CLI.</p></section>`;
         } else {
             const counts = new Map<string, number>();
             for (const stack of stacks) counts.set(stack.state, (counts.get(stack.state) ?? 0) + 1);
-            const summary = ([["running", "running"], ["stopped", "stopped"], ["not-created", "not deployed"], ["unknown", "unknown"]] as const)
+            // One tile per state present, in a fixed order; colors match the badges.
+            const tiles = ([["running", "Running"], ["stopped", "Stopped"], ["not-created", "Not deployed"], ["unknown", "Unknown"]] as const)
                 .filter(([state]) => counts.has(state))
-                .map(([state, label]) => `${counts.get(state)} ${label}`)
-                .join(" · ");
+                .map(([state, label]) => `<div class="stat stat-${state}"><span class="stat-value">${counts.get(state)}</span><span class="stat-label">${label}</span></div>`)
+                .join("");
             const rows = stacks.map(stack => {
                 const href = `/stacks/${encodeURIComponent(stack.name)}`;
                 // The Docker-wide note is shown once above the table, not on every row.
@@ -429,14 +440,14 @@ export function createApp(options: AppOptions): App {
                     + `<td class="col-optional">${stack.project ? escapeHtml(stack.project) : `<span class="muted">—</span>`}</td>`
                     + `<td class="col-optional"><code>${escapeHtml(stack.composeFile)}</code></td></tr>`;
             }).join("");
-            content = `<p class="summary muted">${escapeHtml(summary)}</p>`
+            content = `<div class="stats" aria-label="Stacks by status">${tiles}</div>`
                 + `<div class="table-wrap"><table class="table"><thead><tr><th>Stack</th><th>Status</th><th class="col-optional">Compose project</th><th class="col-optional">File</th></tr></thead><tbody>${rows}</tbody></table></div>`;
         }
         const warning = dockerNote ? note("warn", dockerNote) : "";
         return htmlResponse(documentHtml(
             "Stacks",
-            `<div class="page-head"><h1>Stacks</h1><a href="/audit" class="btn">Activity log</a></div>${intro}${warning}${content}`,
-            { logoutCsrf: csrf, user: config.adminUser },
+            `<h1>Stacks</h1>${intro}${warning}${content}`,
+            { ...pageChrome(csrf) },
         ));
     }
 
@@ -452,7 +463,7 @@ export function createApp(options: AppOptions): App {
                 throw error;
             }
         }
-        return htmlResponse(auditPage({ csrf, user: config.adminUser, periods, selected, entries }));
+        return htmlResponse(auditPage({ csrf, access, periods, selected, entries }));
     }
 
     async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200): Promise<Response> {
@@ -481,7 +492,7 @@ export function createApp(options: AppOptions): App {
             + servicesSection(status.services, status.state)
             + logsPanel(stack.name, config.logTailLines)
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
-            { logoutCsrf: csrf, user: config.adminUser, scripts: ["/app.js"] },
+            { ...pageChrome(csrf), scripts: ["/app.js"] },
         ), statusCode);
     }
 
@@ -505,7 +516,7 @@ export function createApp(options: AppOptions): App {
         return htmlResponse(editPage({
             name,
             csrf,
-            user: config.adminUser,
+            access,
             composeFilename: stack.composeFilename,
             // A kept draft keeps the versions it was based on, so a change made
             // on disk meanwhile is still detected as a conflict on the next save.
@@ -918,7 +929,7 @@ export function createApp(options: AppOptions): App {
                     : saved === "0" ? { kind: "info" as const, text: "No changes to save: the files on disk already match." } : undefined;
                 return await renderStackDetail(decodeName(detailMatch[1]!), session.csrf, notice);
             }
-            return htmlResponse(messagePage("Not found", "This page does not exist.", { href: "/", label: "← Back to all stacks" }, { logoutCsrf: session.csrf, user: config.adminUser }), 404);
+            return htmlResponse(messagePage("Not found", "This page does not exist.", { href: "/", label: "← Back to all stacks" }, pageChrome(session.csrf)), 404);
         } catch (error) {
             return routeError(error, session.csrf);
         }
