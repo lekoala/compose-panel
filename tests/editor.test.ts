@@ -285,7 +285,7 @@ describe("saveEditableStack", () => {
         }), asProvider(okRunner), MAX, { writer }).catch(error => error);
         expect(error).toBeInstanceOf(StackPartialError);
         expect((error as StackPartialError).backupPaths.length).toBe(2);
-        expect((error as Error).message).toContain("restored from backup");
+        expect((error as Error).message).toContain("put back to its previous version");
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe(ENV);
         // Compose was written, then written back by the restore.
@@ -309,7 +309,7 @@ describe("saveEditableStack", () => {
             envSource: "DB_PASSWORD=changedvalue\n",
         }), asProvider(okRunner), MAX, { writer }).catch(error => error);
         expect(error).toBeInstanceOf(StackPartialError);
-        expect((error as Error).message).toContain("could not be restored");
+        expect((error as Error).message).toContain("could not be put back");
         expect((error as StackPartialError).backupPaths.length).toBe(2);
         // Compose is left at the draft: the message must say so honestly.
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(draft);

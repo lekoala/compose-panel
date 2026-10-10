@@ -72,9 +72,9 @@ export class LogManager {
         listener: (chunk: string) => void,
         onEnd: (reason: "ended" | "timeout") => void,
     ): { replay: LogSnapshot; unsubscribe: () => void } {
-        if (this.refusing) throw new StackError("The server is shutting down; new log follows are refused.", 503);
+        if (this.refusing) throw new StackError("The panel is shutting down and no longer starts log streams.", 503);
         let stream = this.streams.get(stack);
-        if (stream?.ended) throw new StackError("The previous log follow has not confirmed termination yet. Try again later.", 409);
+        if (stream?.ended) throw new StackError("The previous log stream is still closing. Try again in a few seconds.", 409);
         if (!stream) {
             stream = this.start(stack, target);
             this.streams.set(stack, stream);

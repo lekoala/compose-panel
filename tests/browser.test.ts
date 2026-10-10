@@ -22,7 +22,7 @@ test("browser preserves operation and log fragments exactly", async () => {
         window: { matchMedia: () => ({ matches: false }), addEventListener() {} },
         document: {
             getElementById: (id: string) => elements.get(id) ?? null,
-            querySelector: (selector: string) => selector === "[data-op-stream]" ? operation : logs,
+            querySelector: (selector: string) => selector === "[data-op-stream]" ? operation : selector === "[data-logs-stream]" ? logs : null,
             addEventListener: (_name: string, handler: () => void) => { ready = handler; },
         },
     });

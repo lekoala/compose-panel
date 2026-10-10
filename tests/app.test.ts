@@ -464,7 +464,7 @@ describe("docker status rendering", () => {
         const session = await login(app);
         const html = await (await authed(app, "/", session)).text();
         expect(html).toContain("state-unknown");
-        expect(html).toContain("Docker state is unavailable.");
+        expect(html).toContain("Docker is not reachable");
         expect(html).not.toContain("secret-token-in-stderr");
     });
 
@@ -540,7 +540,7 @@ describe("editor routes", () => {
         const form = await editForm(app, session);
         const response = await postSave(app, session, { ...form, compose: "services:\n  app:\n    image: nginx:1.27\n" });
         expect(response.status).toBe(303);
-        expect(response.headers.get("location")).toBe("/stacks/demo");
+        expect(response.headers.get("location")).toBe("/stacks/demo?saved=1");
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toContain("nginx:1.27");
     });
 
@@ -562,6 +562,35 @@ describe("editor routes", () => {
         const response = await postSave(app, session, { ...form, compose: "services:\n  broken: true\n" });
         expect(response.status).toBe(400);
         expect(await response.text()).toContain("services:");
+    });
+
+    test("a kept draft keeps its original version tokens so a concurrent change still conflicts", async () => {
+        // The file changes on disk while the (failing) validation runs. The
+        // re-rendered form must not adopt the new hash, or the next save
+        // would silently overwrite that change.
+        const racing: DockerRunner = async () => {
+            await writeFile(join(root, "demo", "compose.yaml"), "services: {}\n# changed elsewhere\n");
+            return { code: 1, stdout: "", stderr: "bad config", timedOut: false, truncated: false };
+        };
+        const app = makeApp({}, racing);
+        const session = await login(app);
+        const form = await editForm(app, session);
+        const response = await postSave(app, session, { ...form, compose: "services:\n  broken: true\n" });
+        expect(response.status).toBe(400);
+        const html = await response.text();
+        expect(/name="composeHash" value="([^"]+)"/.exec(html)![1]).toBe(form.composeHash);
+        const retry = await postSave(app, session, { ...form, compose: "services:\n  app:\n    image: x\n" });
+        expect(retry.status).toBe(409);
+        expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toContain("# changed elsewhere");
+    });
+
+    test("shows a fixed confirmation after saving and never reflects the query", async () => {
+        const app = makeApp({}, okRunner);
+        const session = await login(app);
+        expect(await (await authed(app, "/stacks/demo?saved=1", session)).text()).toContain("Saved.");
+        const other = await (await authed(app, "/stacks/demo?saved=%3Cscript%3E", session)).text();
+        expect(other).not.toContain("<script>");
+        expect(other).not.toContain("Saved.");
     });
 });
 
@@ -600,6 +629,26 @@ describe("operations routes", () => {
             await new Promise(resolve => setTimeout(resolve, 1));
         }
     }
+
+    test("locks actions that need a deployment on an undeployed stack", async () => {
+        const app = makeApp({}, dispatch(async () => okResult));
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo", session)).text();
+        expect(html).toMatch(/value="down"><button type="submit" class="btn btn-danger" disabled/);
+        expect(html).toMatch(/value="up"><button type="submit" class="btn btn-primary" data-op-button/);
+    });
+
+    test("explains an expired session instead of a bare 401", async () => {
+        const app = makeApp({}, dispatch(async () => okResult));
+        const response = await app.fetch(new Request(`${ORIGIN}/stacks/demo/operations`, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ action: "up" }).toString(),
+        }));
+        expect(response.status).toBe(401);
+        expect(response.headers.get("content-type")).toContain("text/html");
+        expect(await response.text()).toContain("nothing was done");
+    });
 
     test("rejects an operation without a valid CSRF token", async () => {
         const app = makeApp({}, dispatch(async () => okResult));
@@ -912,7 +961,7 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         const session = await login(app);
         const response = await postOperation(app, session, await csrfOf(app, session), "down");
         expect(response.status).toBe(409);
-        expect(await response.text()).toContain("Refusing to guess");
+        expect(await response.text()).toContain("It will not guess");
         expect(spy.mutations).toEqual([]);
     });
 

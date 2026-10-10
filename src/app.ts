@@ -1,4 +1,4 @@
-import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage, logsPanel, operationControls, operationPanel } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, type NoteKind } from "./html.ts";
 import { dirname } from "node:path";
 import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
@@ -8,7 +8,6 @@ import { OperationManager, OperationsDisabledError, isOperationAction, type Oper
 import { LogManager } from "./logs.ts";
 import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
 import { createComposeProvider, type ComposeProvider } from "./compose-provider.ts";
-import type { ComposeService } from "./compose-state.ts";
 import type { DockerRunner } from "./docker.ts";
 import {
     CSRF_COOKIE,
@@ -43,25 +42,6 @@ const BRAND_FILES: Record<string, { file: string; type: string }> = {
     "/icon-boot-on-dark.svg": { file: "icon-boot-on-dark.svg", type: "image/svg+xml; charset=utf-8" },
 };
 
-const STATE_LABELS: Record<string, string> = {
-    running: "running",
-    stopped: "stopped",
-    "not-created": "not created",
-    unknown: "unknown",
-};
-
-function stateBadge(state: string): string {
-    return `<span class="state state-${escapeHtml(state)}">${escapeHtml(STATE_LABELS[state] ?? state)}</span>`;
-}
-
-function servicesTable(services: ComposeService[]): string {
-    if (services.length === 0) return "";
-    const rows = services
-        .map(service => `<tr><td>${escapeHtml(service.name)}</td><td>${escapeHtml(service.state)}${service.health ? ` (${escapeHtml(service.health)})` : ""}</td></tr>`)
-        .join("");
-    return `<table class="services"><thead><tr><th>Service</th><th>State</th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-
 const unavailableRunner: DockerRunner = async () => ({ code: -1, stdout: "", stderr: "", timedOut: false, truncated: false });
 
 export interface AppOptions {
@@ -82,6 +62,14 @@ export interface App {
     logs: LogManager;
     sseSubscriptions(): number;
     beginShutdown(graceMs: number): Promise<void>;
+}
+
+interface SaveDraft {
+    composeSource: string;
+    envSource: string;
+    baseComposeHash: string;
+    baseEnvHash: string;
+    baseEnvExists: boolean;
 }
 
 function plain(body: string, status: number): Response {
@@ -131,7 +119,16 @@ function requestOrigin(request: Request, config: AppConfig): string | null {
     return `${proto}://${host}`;
 }
 
-const ORIGIN_BLOCKED_MESSAGE = "Sign-in was blocked because the request did not come from this panel's own page. Open the panel URL directly in a browser tab (embedding the panel is not allowed). For local testing only, an operator can set COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN=true.";
+const ENV_NOT_REGULAR = "This stack's .env is a symbolic link or not a regular file. For safety, the panel will not run Docker with it.";
+
+const ERROR_TITLES: Record<number, string> = {
+    400: "Request refused",
+    404: "Not found",
+    409: "Nothing was done",
+    503: "Temporarily unavailable",
+};
+
+const ORIGIN_BLOCKED_MESSAGE ="Sign-in was blocked because the request did not come from this panel's own page. Open the panel URL directly in a browser tab (embedding the panel is not allowed). For local testing only, an operator can set COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN=true.";
 
 /** Strict same-origin check for state-changing requests. Fails closed. */
 function isAllowedOrigin(request: Request, config: AppConfig): boolean {
@@ -244,14 +241,35 @@ export function createApp(options: AppOptions): App {
         return new URLSearchParams(text);
     }
 
-    function routeError(error: unknown, csrf?: string): Response {
+    function routeError(error: unknown, csrf?: string, stack?: string): Response {
         const status = error instanceof StackError ? error.status : 500;
         if (!(error instanceof StackError)) console.error("Internal error", error);
-        const message = error instanceof StackError ? error.message : "Internal error.";
-        return htmlResponse(
-            documentHtml("Error", `<h1>Error</h1><p>${escapeHtml(message)}</p><p><a href="/">Back</a></p>`, { logoutCsrf: csrf }),
-            status,
-        );
+        const message = error instanceof StackError
+            ? error.message
+            : "An unexpected error occurred. Details were written to the server log.";
+        const back = stack !== undefined && status !== 404
+            ? { href: `/stacks/${encodeURIComponent(stack)}`, label: `← Back to ${stack}` }
+            : { href: "/", label: "← Back to all stacks" };
+        return htmlResponse(messagePage(ERROR_TITLES[status] ?? "Something went wrong", message, back, { logoutCsrf: csrf, user: config.adminUser }), status);
+    }
+
+    /** A form post the panel refused before doing anything (stale page, foreign origin). */
+    function staleForm(csrf: string, back = "/"): Response {
+        return htmlResponse(messagePage(
+            "Nothing was done",
+            "This page is out of date, for example because you signed in again in another tab. Go back, reload the page and try again.",
+            { href: back, label: "← Go back" },
+            { logoutCsrf: csrf, user: config.adminUser },
+        ), 403);
+    }
+
+    function tooLarge(csrf: string, back: string): Response {
+        return htmlResponse(messagePage(
+            "Nothing was saved",
+            `The submitted content is larger than the ${Math.floor(config.maxEditBytes / 1024)} KiB limit.`,
+            { href: back, label: "← Go back" },
+            { logoutCsrf: csrf, user: config.adminUser },
+        ), 413);
     }
 
     function loginFailure(message: string | null, status: number, retryAfterSec?: number): Response {
@@ -284,14 +302,19 @@ export function createApp(options: AppOptions): App {
         const cookies = parseCookies(request.headers.get("cookie"));
         const cookieToken = cookies[CSRF_COOKIE] ?? "";
         const formToken = form.get("csrf") ?? "";
-        if (!cookieToken || !formToken || !safeEqual(cookieToken, formToken)) return plain("Forbidden", 403);
+        if (!cookieToken || !formToken || !safeEqual(cookieToken, formToken)) {
+            return loginFailure("The sign-in form expired. Please sign in again.", 403);
+        }
 
         const key = clientKey(request, config);
         // Reserve the attempt synchronously, before any awaited password work,
         // so a burst of concurrent requests cannot all pass the limit before the
         // first failure is recorded. The reservation is settled below.
         const verdict = limiter.tryReserve(key);
-        if (!verdict.allowed) return loginFailure("Too many attempts. Try again later.", 429, verdict.retryAfterSec);
+        if (!verdict.allowed) {
+            const minutes = Math.max(1, Math.ceil(verdict.retryAfterSec / 60));
+            return loginFailure(`Too many failed attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`, 429, verdict.retryAfterSec);
+        }
 
         const user = form.get("user") ?? "";
         const password = form.get("password") ?? "";
@@ -300,7 +323,7 @@ export function createApp(options: AppOptions): App {
             // Verify unconditionally to keep the response time independent of the username.
             const passwordOk = await verifyPassword(config.adminPasswordHash, password);
             success = passwordOk && user === config.adminUser;
-            if (!success) return loginFailure("Invalid credentials.", 401);
+            if (!success) return loginFailure("Wrong username or password.", 401);
 
             const session = sessions.create(config.adminUser);
             const response = redirect("/", 303);
@@ -316,73 +339,108 @@ export function createApp(options: AppOptions): App {
 
     async function renderStackList(csrf: string): Promise<Response> {
         const { stacks, dockerNote } = await loadStackStates(stacksRoot, provider);
-        const rows = stacks.length
-            ? stacks.map(stack => {
-                const project = stack.project ? ` · project ${escapeHtml(stack.project)}` : "";
-                return `<li><a href="/stacks/${encodeURIComponent(stack.name)}">${escapeHtml(stack.name)}</a><small>${escapeHtml(stack.composeFile)} · ${stateBadge(stack.state)}${project}</small></li>`;
-            }).join("")
-            : `<li>No recognized Compose stack.</li>`;
-        const note = dockerNote ? `<p class="note">${escapeHtml(dockerNote)}</p>` : "";
+        const intro = `<p class="lead">Each folder in <code>${escapeHtml(stacksRoot)}</code> that contains exactly one Compose file is a stack.</p>`;
+        let content: string;
+        if (stacks.length === 0) {
+            content = `<section class="card empty"><h2>No stacks found</h2>`
+                + `<p>Create a folder in <code>${escapeHtml(stacksRoot)}</code> with a <code>compose.yaml</code> (or <code>compose.yml</code>, <code>docker-compose.yaml</code>, <code>docker-compose.yml</code>) and reload this page.</p>`
+                + `<p class="muted">Folder names may use lowercase letters, digits, <code>-</code> and <code>_</code>.</p></section>`;
+        } else {
+            const counts = new Map<string, number>();
+            for (const stack of stacks) counts.set(stack.state, (counts.get(stack.state) ?? 0) + 1);
+            const summary = ([["running", "running"], ["stopped", "stopped"], ["not-created", "not deployed"], ["unknown", "unknown"]] as const)
+                .filter(([state]) => counts.has(state))
+                .map(([state, label]) => `${counts.get(state)} ${label}`)
+                .join(" · ");
+            const rows = stacks.map(stack => {
+                const href = `/stacks/${encodeURIComponent(stack.name)}`;
+                // The Docker-wide note is shown once above the table, not on every row.
+                const rowNote = stack.note && stack.note !== dockerNote ? `<div class="hint">${escapeHtml(stack.note)}</div>` : "";
+                return `<tr><td><a href="${href}" class="stack-name">${escapeHtml(stack.name)}</a>${rowNote}</td>`
+                    + `<td>${stateBadge(stack.state)}</td>`
+                    + `<td class="col-optional">${stack.project ? escapeHtml(stack.project) : `<span class="muted">—</span>`}</td>`
+                    + `<td class="col-optional"><code>${escapeHtml(stack.composeFile)}</code></td></tr>`;
+            }).join("");
+            content = `<p class="summary muted">${escapeHtml(summary)}</p>`
+                + `<div class="table-wrap"><table class="table"><thead><tr><th>Stack</th><th>Status</th><th class="col-optional">Compose project</th><th class="col-optional">File</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        }
+        const warning = dockerNote ? note("warn", dockerNote) : "";
         return htmlResponse(documentHtml(
             "Stacks",
-            `<h1>Stacks</h1><p>Read-only — no mutating Docker command is executed.</p>${note}<ul class="stack-list">${rows}</ul>`,
-            { logoutCsrf: csrf },
+            `<h1>Stacks</h1>${intro}${warning}${content}`,
+            { logoutCsrf: csrf, user: config.adminUser },
         ));
     }
 
-    async function renderStackDetail(name: string, csrf: string, notice?: string, statusCode = 200): Promise<Response> {
+    async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200): Promise<Response> {
         const stack = await readStackCompose(stacksRoot, name);
         let status: StackDetailStatus;
         try {
             status = await loadStackDetail(stacksRoot, name, provider);
         } catch (error) {
             if (error instanceof StackError) throw error;
-            status = { project: null, state: "unknown", note: "Status unavailable.", services: [] };
+            status = { project: null, state: "unknown", note: "The status could not be read.", services: [] };
         }
-        const project = status.project ? ` · project ${escapeHtml(status.project)}` : "";
-        const note = status.note ? `<p class="note">${escapeHtml(status.note)}</p>` : "";
-        const noticeHtml = notice ? `<p class="note">${escapeHtml(notice)}</p>` : "";
+        const href = `/stacks/${encodeURIComponent(stack.name)}`;
+        const operation = operations.forStack(stack.name);
+        const project = status.project
+            ? `<span>Compose project <code>${escapeHtml(status.project)}</code></span>`
+            : "";
         return htmlResponse(documentHtml(
             stack.name,
-            `<p><a href="/">← All stacks</a> · <a href="/stacks/${encodeURIComponent(stack.name)}/edit">Edit files</a></p><h1>${escapeHtml(stack.name)}</h1>`
-            + `<p>${escapeHtml(stack.filename)} · ${stateBadge(status.state)}${project}</p>`
-            + `${noticeHtml}${note}${operationControls(stack.name, csrf)}${operationPanel(operations.forStack(stack.name), stack.name)}`
-            + `${logsPanel(stack.name)}`
-            + `${servicesTable(status.services)}<pre>${escapeHtml(stack.source)}</pre>`,
-            { logoutCsrf: csrf, scripts: ["/app.js"] },
+            `<p class="crumbs"><a href="/">← All stacks</a></p>`
+            + `<div class="page-head"><h1>${escapeHtml(stack.name)}</h1><a href="${href}/edit" class="btn">Edit files</a></div>`
+            + `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}</p>`
+            + (notice ? note(notice.kind, notice.text) : "")
+            + (status.note ? note("warn", status.note) : "")
+            + operationControls(stack.name, csrf, { busy: operation?.status === "running", deployed: status.state !== "not-created" })
+            + operationPanel(operation, stack.name)
+            + servicesSection(status.services, status.state)
+            + logsPanel(stack.name, config.logTailLines)
+            + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
+            { logoutCsrf: csrf, user: config.adminUser, scripts: ["/app.js"] },
         ), statusCode);
     }
 
     function decodeName(raw: string): string {
         try { return decodeURIComponent(raw); }
-        catch { throw new StackError("Invalid name encoding."); }
+        catch { throw new StackError("This stack name is not valid."); }
+    }
+
+    function safeName(raw: string): string | undefined {
+        try { return decodeURIComponent(raw); }
+        catch { return undefined; }
     }
 
     async function renderEdit(
         name: string,
         csrf: string,
-        options: { error?: string; draft?: { composeSource: string; envSource: string }; keepDraft?: boolean; status?: number } = {},
+        options: { error?: { title: string; message: string }; draft?: SaveDraft; keepDraft?: boolean; status?: number } = {},
     ): Promise<Response> {
         const stack = await readEditableStack(stacksRoot, name, config.maxEditBytes);
-        const keep = options.keepDraft === true && options.draft !== undefined;
+        const draft = options.keepDraft === true ? options.draft : undefined;
         return htmlResponse(editPage({
             name,
             csrf,
+            user: config.adminUser,
             composeFilename: stack.composeFilename,
-            composeSource: keep ? options.draft!.composeSource : stack.composeSource,
-            composeHash: stack.composeHash,
-            envSource: keep ? options.draft!.envSource : stack.envSource,
-            envHash: stack.envHash,
-            envExists: stack.envExists,
+            // A kept draft keeps the versions it was based on, so a change made
+            // on disk meanwhile is still detected as a conflict on the next save.
+            composeSource: draft ? draft.composeSource : stack.composeSource,
+            composeHash: draft ? draft.baseComposeHash : stack.composeHash,
+            envSource: draft ? draft.envSource : stack.envSource,
+            envHash: draft ? draft.baseEnvHash : stack.envHash,
+            envExists: draft ? draft.baseEnvExists : stack.envExists,
             error: options.error ?? null,
         }), options.status ?? 200);
     }
 
     async function handleSave(request: Request, name: string, csrf: string): Promise<Response> {
-        if (!isAllowedOrigin(request, config)) return plain("Forbidden", 403);
+        const back = `/stacks/${encodeURIComponent(name)}/edit`;
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
         const form = await readForm(request, config.maxEditBytes);
-        if (form === null) return plain("Payload too large", 413);
-        if (!safeEqual(form.get("csrf") ?? "", csrf)) return plain("Forbidden", 403);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
 
         const saveRequest = {
             composeSource: form.get("compose") ?? "",
@@ -398,34 +456,41 @@ export function createApp(options: AppOptions): App {
                 return saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes);
             });
             saves.add(task);
-            try { await task; }
+            let result: Awaited<typeof task>;
+            try { result = await task; }
             finally { saves.delete(task); }
-            return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
+            return redirect(`/stacks/${encodeURIComponent(name)}?saved=${result.changed ? "1" : "0"}`, 303);
         } catch (error) {
             if (error instanceof StackValidationError) {
-                return renderEdit(name, csrf, { error: error.message, draft: saveRequest, keepDraft: true, status: 400 });
+                return renderEdit(name, csrf, { error: { title: "Not saved: the Compose check failed.", message: error.message }, draft: saveRequest, keepDraft: true, status: 400 });
             }
             if (error instanceof StackConflictError) {
-                return renderEdit(name, csrf, { error: `${error.message} Reload to see the current content.`, keepDraft: false, status: 409 });
+                return renderEdit(name, csrf, {
+                    error: { title: "Not saved.", message: `${error.message} The editor now shows the current files: apply your changes again, then save.` },
+                    keepDraft: false,
+                    status: 409,
+                });
             }
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
-                return htmlResponse(documentHtml("Busy", `<h1>Busy</h1><p>${escapeHtml(error.message)}</p><p><a href="/stacks/${encodeURIComponent(name)}">Back</a></p>`), 409);
+                // Keep the draft: nothing was written, the user can retry.
+                return renderEdit(name, csrf, { error: { title: "Not saved.", message: error.message }, draft: saveRequest, keepDraft: true, status: 409 });
             }
             if (error instanceof StackPartialError) {
-                return renderEdit(name, csrf, { error: error.message, draft: saveRequest, keepDraft: true, status: 500 });
+                return renderEdit(name, csrf, { error: { title: "Save incomplete.", message: error.message }, draft: saveRequest, keepDraft: true, status: 500 });
             }
             throw error;
         }
     }
 
     async function handleOperation(request: Request, name: string, csrf: string): Promise<Response> {
-        if (!isAllowedOrigin(request, config)) return plain("Forbidden", 403);
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
         const form = await readForm(request);
-        if (form === null) return plain("Payload too large", 413);
-        if (!safeEqual(form.get("csrf") ?? "", csrf)) return plain("Forbidden", 403);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
 
         const action = form.get("action") ?? "";
-        if (!isOperationAction(action)) return renderStackDetail(name, csrf, "Unknown operation.", 400);
+        if (!isOperationAction(action)) return renderStackDetail(name, csrf, { kind: "error", text: "Unknown action. Nothing was run." }, 400);
 
         // Fail closed: ambiguous or unreachable project identity never runs
         // blind. An undeployed stack can only be created (up / pull-up);
@@ -435,16 +500,16 @@ export function createApp(options: AppOptions): App {
         const creates = action === "up" || action === "pull-up";
         const context = await resolveProjectContext(stacksRoot, name, provider, creates);
         if (context.kind === "invalid") {
-            throw new StackError("This stack's .env is not a regular file. Refusing to run Docker against it.", 409);
+            throw new StackError(ENV_NOT_REGULAR, 409);
         }
         if (context.kind === "ambiguous") {
-            throw new StackError("The Compose project is ambiguous or its name is already in use by another stack. Refusing to guess which one to control.", 409);
+            throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack: several projects match, or the project name is already used by another stack. It will not guess, so nothing was run.", 409);
         }
         if (context.kind === "unavailable") {
-            throw new StackError("Docker state is unavailable. Refusing to run without a verified project.", 503);
+            throw new StackError("Docker did not respond, so the panel could not check which project this stack belongs to. Nothing was run.", 503);
         }
         if (context.kind === "absent" && !creates) {
-            throw new StackError("This stack is not deployed yet. Only Up (or Pull + up) can create it.", 409);
+            throw new StackError("This stack is not deployed yet, so there is nothing to stop, restart or remove. Use Up or Pull + up to create it.", 409);
         }
         try {
             operations.start({
@@ -455,7 +520,7 @@ export function createApp(options: AppOptions): App {
             return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
         } catch (error) {
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
-                return renderStackDetail(name, csrf, error.message, 409);
+                return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
             }
             throw error;
         }
@@ -467,6 +532,8 @@ export function createApp(options: AppOptions): App {
             exitCode: operation.exitCode,
             timedOut: operation.timedOut,
             truncated: operation.truncated,
+            startedAt: operation.startedAt,
+            endedAt: operation.endedAt,
             output: operation.output,
         });
     }
@@ -477,6 +544,8 @@ export function createApp(options: AppOptions): App {
             exitCode: operation.exitCode,
             timedOut: operation.timedOut,
             truncated: operation.truncated,
+            startedAt: operation.startedAt,
+            endedAt: operation.endedAt,
         });
     }
 
@@ -605,22 +674,22 @@ export function createApp(options: AppOptions): App {
         // yields an empty/ended stream.
         const context = await resolveProjectContext(stacksRoot, name, provider);
         if (context.kind === "invalid") {
-            throw new StackError("This stack's .env is not a regular file. Refusing to run Docker against it.", 409);
+            throw new StackError(ENV_NOT_REGULAR, 409);
         }
         if (context.kind === "ambiguous") {
-            throw new StackError("Several Docker projects match this stack. Refusing to guess which logs to follow.", 409);
+            throw new StackError("Several Docker Compose projects match this stack. The panel will not guess which logs to follow.", 409);
         }
         if (context.kind === "unavailable") {
-            throw new StackError("Docker state is unavailable. Refusing to follow without a verified project.", 503);
+            throw new StackError("Docker did not respond, so the panel could not check which project's logs to follow.", 503);
         }
-        if (shuttingDown) throw new StackError("The server is shutting down; new log follows are refused.", 503);
+        if (shuttingDown) throw new StackError("The panel is shutting down and no longer starts log streams.", 503);
         // Re-check the session after the awaited discovery, before subscribing.
         if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
         const guard = { id: sessionId, isAlive: () => sessions.isActive(sessionId) };
         if (context.kind === "absent") {
             return sseResponse(request, (send, close) => {
                 send(formatSseEvent("replay", JSON.stringify({ text: "", truncated: false })));
-                send(formatSseEvent("end", "This stack is not deployed."));
+                send(formatSseEvent("end", "This stack is not deployed yet, so there are no logs."));
                 close();
                 return () => {};
             }, guard);
@@ -632,7 +701,9 @@ export function createApp(options: AppOptions): App {
                 target,
                 chunk => send(formatSseEvent("chunk", JSON.stringify({ text: chunk }))),
                 reason => {
-                    send(formatSseEvent("end", reason === "timeout" ? "Follow stopped: time limit reached." : "Follow ended."));
+                    send(formatSseEvent("end", reason === "timeout"
+                        ? `Stopped following after ${Math.round(config.logTimeoutMs / 60000)} minutes (time limit). Click Follow logs to continue.`
+                        : "The log stream ended, usually because the containers stopped."));
                     close();
                 },
             );
@@ -698,7 +769,11 @@ export function createApp(options: AppOptions): App {
         if (!session) {
             if (isEventStream) return plain("Unauthorized", 401);
             if (method === "GET" || method === "HEAD") return redirect("/login", 302);
-            return plain("Unauthorized", 401);
+            return htmlResponse(messagePage(
+                "Signed out",
+                "Your session has ended (signed out, timed out, or the panel restarted), so nothing was done. Sign in again, then retry.",
+                { href: "/login", label: "Sign in" },
+            ), 401);
         }
 
         if (isEventStream) {
@@ -716,7 +791,7 @@ export function createApp(options: AppOptions): App {
             const form = await readForm(request);
             if (form === null) return plain("Payload too large", 413);
             if (!isAllowedOrigin(request, config) || !safeEqual(form.get("csrf") ?? "", session.csrf)) {
-                return plain("Forbidden", 403);
+                return staleForm(session.csrf);
             }
             sessions.destroy(session.id);
             closeSessionStreams(session.id);
@@ -728,13 +803,13 @@ export function createApp(options: AppOptions): App {
         const editMatch = /^\/stacks\/([^/]+)\/edit$/.exec(url.pathname);
         if (editMatch && method === "POST") {
             try { return await handleSave(request, decodeName(editMatch[1]!), session.csrf); }
-            catch (error) { return routeError(error, session.csrf); }
+            catch (error) { return routeError(error, session.csrf, safeName(editMatch[1]!)); }
         }
         const operationsMatch = /^\/stacks\/([^/]+)\/operations$/.exec(url.pathname);
         if (operationsMatch) {
             if (method !== "POST") return methodNotAllowed("POST");
             try { return await handleOperation(request, decodeName(operationsMatch[1]!), session.csrf); }
-            catch (error) { return routeError(error, session.csrf); }
+            catch (error) { return routeError(error, session.csrf, safeName(operationsMatch[1]!)); }
         }
         if (method !== "GET" && method !== "HEAD") return methodNotAllowed("GET");
 
@@ -742,8 +817,15 @@ export function createApp(options: AppOptions): App {
             if (url.pathname === "/") return await renderStackList(session.csrf);
             if (editMatch) return await renderEdit(decodeName(editMatch[1]!), session.csrf);
             const detailMatch = /^\/stacks\/([^/]+)$/.exec(url.pathname);
-            if (detailMatch) return await renderStackDetail(decodeName(detailMatch[1]!), session.csrf);
-            return htmlResponse(documentHtml("Not found", "<h1>Page not found</h1>", { logoutCsrf: session.csrf }), 404);
+            if (detailMatch) {
+                // Fixed messages only: the query flag is never reflected.
+                const saved = url.searchParams.get("saved");
+                const notice = saved === "1"
+                    ? { kind: "success" as const, text: "Saved. The running containers are unchanged: use Up to apply the new configuration." }
+                    : saved === "0" ? { kind: "info" as const, text: "No changes to save: the files on disk already match." } : undefined;
+                return await renderStackDetail(decodeName(detailMatch[1]!), session.csrf, notice);
+            }
+            return htmlResponse(messagePage("Not found", "This page does not exist.", { href: "/", label: "← Back to all stacks" }, { logoutCsrf: session.csrf, user: config.adminUser }), 404);
         } catch (error) {
             return routeError(error, session.csrf);
         }

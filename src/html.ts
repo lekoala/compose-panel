@@ -1,4 +1,5 @@
-import type { OperationView } from "./operations.ts";
+import type { ComposeService } from "./compose-state.ts";
+import type { OperationAction, OperationView } from "./operations.ts";
 
 export function escapeHtml(value: string): string {
     return value.replace(/[&<>"']/g, char => {
@@ -13,20 +14,31 @@ export function escapeHtml(value: string): string {
     });
 }
 
+export type NoteKind = "info" | "success" | "warn" | "error";
+
+/** A message box. `text` is escaped; it is never interpreted as markup. */
+export function note(kind: NoteKind, text: string, options: { title?: string; id?: string } = {}): string {
+    const role = kind === "error" ? ` role="alert"` : "";
+    const id = options.id ? ` id="${escapeHtml(options.id)}"` : "";
+    const title = options.title ? `<strong>${escapeHtml(options.title)}</strong> ` : "";
+    return `<div class="note note-${kind}"${id}${role}>${title}${escapeHtml(text)}</div>`;
+}
+
 export interface DocumentOptions {
-    /** When set, the header renders an authenticated logout form using this CSRF token. */
+    /** When set, the header renders an authenticated sign-out form using this CSRF token. */
     logoutCsrf?: string;
-    mode?: string;
+    /** Signed-in user name shown next to the sign-out button. */
+    user?: string;
     /** Same-origin scripts to load with defer (e.g. "/app.js"). */
     scripts?: string[];
 }
 
 export function documentHtml(title: string, body: string, options: DocumentOptions = {}): string {
     // 'body' must contain ONLY trusted markup assembled with escapeHtml().
+    const user = options.user ? `<span class="user">${escapeHtml(options.user)}</span>` : "";
     const logout = options.logoutCsrf
-        ? `<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="${escapeHtml(options.logoutCsrf)}"><button type="submit">Log out</button></form>`
+        ? `<div class="session">${user}<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="${escapeHtml(options.logoutCsrf)}"><button type="submit" class="btn btn-quiet">Sign out</button></form></div>`
         : "";
-    const mode = options.mode ?? "Single admin · local";
     const scripts = (options.scripts ?? []).map(src => `<script src="${escapeHtml(src)}" defer></script>`).join("");
     return `<!doctype html>
 <html lang="en">
@@ -44,44 +56,57 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
 </head>
 <body>
   <div class="shell">
-    <header><a href="/" class="brand"><img src="/favicon.svg" alt="" width="20" height="20">Compose Panel</a><span class="mode">${escapeHtml(mode)}</span>${logout}</header>
+    <header><a href="/" class="brand"><img src="/favicon.svg" alt="" width="20" height="20">Compose Panel</a>${logout}</header>
     <main>${body}</main>
-    <footer>Docker and Compose files remain the sources of truth.</footer>
+    <footer>Your Compose files and Docker stay the source of truth: every stack shown here can still be managed with the <code>docker compose</code> CLI.</footer>
   </div>
 </body>
 </html>`;
 }
 
+/** A simple page with a heading, a message and a way back. */
+export function messagePage(title: string, message: string, back: { href: string; label: string }, options: DocumentOptions = {}): string {
+    return documentHtml(title, `<h1>${escapeHtml(title)}</h1><p class="lead">${escapeHtml(message)}</p><p><a href="${escapeHtml(back.href)}">${escapeHtml(back.label)}</a></p>`, options);
+}
+
 export function loginPage(options: { csrf: string; error?: string | null }): string {
-    const error = options.error ? `<p class="error" role="alert">${escapeHtml(options.error)}</p>` : "";
-    return documentHtml("Log in", `<picture><source media="(prefers-color-scheme: dark)" srcset="/icon-boot-on-dark.svg"><img src="/icon-boot-on-light.svg" alt="" width="80" height="80" class="login-mark"></picture><h1>Log in</h1>${error}
-<form method="post" action="/login" class="login-form">
+    const error = options.error ? note("error", options.error) : "";
+    return documentHtml("Sign in", `<div class="login">
+<picture><source media="(prefers-color-scheme: dark)" srcset="/icon-boot-on-dark.svg"><img src="/icon-boot-on-light.svg" alt="" width="80" height="80" class="login-mark"></picture>
+<h1>Sign in</h1>${error}
+<form method="post" action="/login" class="form">
   <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
-  <label>User <input name="user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+  <label>Username <input name="user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></label>
   <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
-  <button type="submit">Log in</button>
-</form>`, { mode: "Authentication required" });
+  <button type="submit" class="btn btn-primary">Sign in</button>
+</form>
+</div>`);
 }
 
 export interface EditPageOptions {
     name: string;
     csrf: string;
+    user?: string;
     composeFilename: string;
     composeSource: string;
     composeHash: string;
     envSource: string;
     envHash: string;
     envExists: boolean;
-    error?: string | null;
+    error?: { title: string; message: string } | null;
 }
 
 export function editPage(options: EditPageOptions): string {
-    const error = options.error ? `<p class="error" role="alert">${escapeHtml(options.error)}</p>` : "";
-    const action = `/stacks/${encodeURIComponent(options.name)}/edit`;
-    return documentHtml(`Edit ${options.name}`, `<p><a href="/stacks/${encodeURIComponent(options.name)}">← ${escapeHtml(options.name)}</a></p>
-<h1>Edit ${escapeHtml(options.name)}</h1>${error}
-<p class="note">Files are saved as raw text; comments and formatting are preserved. The draft is validated with the Compose CLI before writing. Every save keeps a backup.</p>
-<form method="post" action="${action}" class="edit-form">
+    const error = options.error ? note("error", options.error.message, { title: options.error.title }) : "";
+    const stackHref = `/stacks/${encodeURIComponent(options.name)}`;
+    const envHint = options.envExists
+        ? "Variables for this stack. Values are secret: they are never logged and are hidden from error messages."
+        : "This stack has no .env file. One is created only if you type something here.";
+    return documentHtml(`Edit ${options.name}`, `<p class="crumbs"><a href="${stackHref}">← ${escapeHtml(options.name)}</a></p>
+<h1>Edit files</h1>
+<p class="lead">Changes are checked with <code>docker compose config</code> before anything is written. If the check fails, nothing changes on disk. Each save keeps a backup of the previous version. Saving does <strong>not</strong> restart anything: use <em>Up</em> on the stack page to apply the changes.</p>
+${error}
+<form method="post" action="${stackHref}/edit" class="form edit-form" data-edit-form>
   <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
   <input type="hidden" name="composeHash" value="${escapeHtml(options.composeHash)}">
   <input type="hidden" name="envHash" value="${escapeHtml(options.envHash)}">
@@ -89,51 +114,145 @@ export function editPage(options: EditPageOptions): string {
   <label>${escapeHtml(options.composeFilename)}
     <textarea name="compose" rows="24" spellcheck="false" autocapitalize="none" required>${escapeHtml(options.composeSource)}</textarea>
   </label>
-  <label>.env <small>sensitive — never shown in logs</small>
+  <label>.env <span class="hint">${escapeHtml(envHint)}</span>
     <textarea name="env" rows="12" spellcheck="false" autocapitalize="none">${escapeHtml(options.envSource)}</textarea>
   </label>
-  <button type="submit">Save and validate</button>
-</form>`, { mode: "Editing" });
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary" data-busy-label="Checking and saving…">Check and save</button>
+    <a href="${stackHref}" class="btn">Cancel</a>
+  </div>
+</form>`, { logoutCsrf: options.csrf, user: options.user, scripts: ["/app.js"] });
 }
 
-const OPERATION_BUTTONS: [string, string][] = [
-    ["up", "Up"],
-    ["stop", "Stop"],
-    ["restart", "Restart"],
-    ["down", "Down"],
-    ["pull-up", "Pull + up"],
+const STATE_LABELS: Record<string, string> = {
+    running: "Running",
+    stopped: "Stopped",
+    "not-created": "Not deployed",
+    unknown: "Unknown",
+};
+
+export function stateBadge(state: string): string {
+    return `<span class="state state-${escapeHtml(state)}">${escapeHtml(STATE_LABELS[state] ?? state)}</span>`;
+}
+
+/** Badge for a single container as reported by `docker compose ps`. */
+function serviceBadge(service: ComposeService): string {
+    const state = service.state.toLowerCase();
+    if (state === "exited") {
+        // An init job that exited 0 is finished, not broken.
+        const done = service.exitCode === 0;
+        const label = service.exitCode === null ? "Exited" : `Exited (code ${service.exitCode})`;
+        return `<span class="state ${done ? "state-done" : "state-failed"}">${escapeHtml(label)}</span>`;
+    }
+    const cls = state === "running" ? "state-running" : state === "restarting" || state === "dead" ? "state-failed" : "state-stopped";
+    const label = state.charAt(0).toUpperCase() + state.slice(1);
+    return `<span class="state ${cls}">${escapeHtml(label)}</span>`;
+}
+
+function healthBadge(health: string | null): string {
+    if (!health) return `<span class="muted">—</span>`;
+    const cls = health === "healthy" ? "state-done" : health === "unhealthy" ? "state-failed" : "state-stopped";
+    return `<span class="state ${cls}">${escapeHtml(health)}</span>`;
+}
+
+export function servicesSection(services: ComposeService[], state: string): string {
+    let content: string;
+    if (services.length > 0) {
+        const rows = services
+            .map(service => `<tr><td>${escapeHtml(service.name)}</td><td>${serviceBadge(service)}</td><td>${healthBadge(service.health)}</td></tr>`)
+            .join("");
+        content = `<div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th>Container</th><th>Health check</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    } else if (state === "not-created") {
+        content = `<p class="muted">No containers yet. Use <em>Up</em> to create them.</p>`;
+    } else {
+        content = `<p class="muted">No container information available.</p>`;
+    }
+    return `<section class="card"><h2>Services</h2>${content}</section>`;
+}
+
+const OPERATIONS: { action: OperationAction; label: string; help: string; style: string; needsDeployment: boolean }[] = [
+    { action: "up", label: "Up", help: "Create or update the containers so they match the Compose file. Use this after editing.", style: "btn-primary", needsDeployment: false },
+    { action: "pull-up", label: "Pull + up", help: "Download newer versions of the images first, then run Up.", style: "", needsDeployment: false },
+    { action: "restart", label: "Restart", help: "Restart the existing containers. Does not apply file changes.", style: "", needsDeployment: true },
+    { action: "stop", label: "Stop", help: "Stop the containers without removing them. Up starts them again.", style: "", needsDeployment: true },
+    { action: "down", label: "Down", help: "Stop and remove the containers and networks. Volumes and images are kept.", style: "btn-danger", needsDeployment: true },
 ];
 
-export function operationControls(name: string, csrf: string): string {
+export const OPERATION_LABELS: Record<OperationAction, string> = Object.fromEntries(OPERATIONS.map(op => [op.action, op.label])) as Record<OperationAction, string>;
+
+export function operationControls(name: string, csrf: string, options: { busy: boolean; deployed: boolean }): string {
     const action = `/stacks/${encodeURIComponent(name)}/operations`;
-    const buttons = OPERATION_BUTTONS.map(([value, label]) =>
-        `<form method="post" action="${action}" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="action" value="${value}"><button type="submit">${label}</button></form>`,
-    ).join("");
-    return `<section class="operations"><h2>Operations</h2><p class="note">Actions run in the background and keep going if you close this page. One operation runs per stack at a time.</p><div class="op-buttons">${buttons}</div></section>`;
+    const rows = OPERATIONS.map(op => {
+        const blocked = options.busy || (op.needsDeployment && !options.deployed);
+        const disabled = blocked ? " disabled" : "";
+        // Only actions that need a deployment are locked by it; the busy lock
+        // is released by app.js when the running action finishes.
+        const lock = op.needsDeployment && !options.deployed ? ` data-needs-deployment` : "";
+        const form = `<form method="post" action="${action}" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="action" value="${op.action}"><button type="submit" class="btn ${op.style}"${disabled}${lock} data-op-button data-busy-label="Starting…">${op.label}</button></form>`;
+        return `<div class="op-row">${form}<p class="op-help">${escapeHtml(op.help)}</p></div>`;
+    }).join("");
+    const status = options.busy
+        ? note("info", "An action is running. The buttons unlock when it finishes.", { id: "op-busy-note" })
+        : !options.deployed
+            ? `<p class="muted">This stack is not deployed yet, so only <em>Up</em> and <em>Pull + up</em> are available.</p>`
+            : "";
+    return `<section class="card"><h2>Actions</h2>`
+        + `<p class="muted">Actions run on the server and keep going if you close this page. Only one action or save runs at a time per stack.</p>`
+        + `${status}<div class="op-list">${rows}</div></section>`;
+}
+
+const OPERATION_STATUS_LABELS: Record<string, string> = {
+    running: "Running",
+    succeeded: "Succeeded",
+    failed: "Failed",
+    unknown: "Outcome unknown",
+};
+
+export function operationStatusLabel(status: string): string {
+    return OPERATION_STATUS_LABELS[status] ?? status;
+}
+
+function formatDuration(ms: number): string {
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    if (seconds < 60) return `${seconds} s`;
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes} min ${seconds % 60} s`;
+}
+
+/** Plain-language details for an operation; shared by the server render and app.js. */
+export function operationDetails(operation: Pick<OperationView, "exitCode" | "timedOut" | "truncated" | "startedAt" | "endedAt">): string {
+    const parts: string[] = [];
+    if (operation.endedAt !== null) parts.push(`took ${formatDuration(operation.endedAt - operation.startedAt)}`);
+    if (operation.exitCode !== null) parts.push(`exit code ${operation.exitCode}`);
+    if (operation.timedOut) parts.push("stopped at the time limit — check the services to see what actually happened");
+    if (operation.truncated) parts.push("output shortened (only the most recent part is kept)");
+    return parts.join(" · ");
 }
 
 export function operationPanel(operation: OperationView | null, stack?: string): string {
     if (!operation) return "";
-    const timing = operation.endedAt ? ` · exit ${operation.exitCode ?? "-"}` : "";
-    const flags = [operation.timedOut ? "timed out (outcome unknown)" : "", operation.truncated ? "output truncated" : ""].filter(Boolean).join(" · ");
-    const stream = stack !== undefined
-        ? ` data-op-stream="/stacks/${encodeURIComponent(stack)}/operations/events"`
-        : "";
-    return `<section class="operation"${stream} data-op-status="${escapeHtml(operation.status)}">`
-        + `<h2>Last operation: ${escapeHtml(operation.action)}</h2>`
-        + `<p><span class="state state-${escapeHtml(operation.status)}" id="op-status">${escapeHtml(operation.status)}</span><span id="op-meta">${timing}${flags ? ` · ${escapeHtml(flags)}` : ""}</span></p>`
-        + (operation.output ? `<pre class="op-output" id="op-output">${escapeHtml(operation.output)}</pre>` : `<pre class="op-output" id="op-output"></pre>`)
-        + `<p class="note" id="op-live-note" hidden>Live output — closing this page does not stop the operation.</p>`
+    const stackHref = stack !== undefined ? `/stacks/${encodeURIComponent(stack)}` : "/";
+    const stream = stack !== undefined ? ` data-op-stream="${stackHref}/operations/events"` : "";
+    const started = new Date(operation.startedAt).toISOString();
+    const details = operationDetails(operation);
+    return `<section class="card operation"${stream} data-op-status="${escapeHtml(operation.status)}" data-op-started="${operation.startedAt}">`
+        + `<h2>Last action: ${escapeHtml(OPERATION_LABELS[operation.action] ?? operation.action)}</h2>`
+        + `<p class="op-summary"><span class="state state-${escapeHtml(operation.status)}" id="op-status" aria-live="polite">${escapeHtml(operationStatusLabel(operation.status))}</span>`
+        + ` <span class="muted">started <time datetime="${started}" data-local-time>${started.slice(11, 19)} UTC</time></span>`
+        + `<span class="muted" id="op-meta">${details ? ` · ${escapeHtml(details)}` : ""}</span></p>`
+        + `<pre class="output" id="op-output">${escapeHtml(operation.output)}</pre>`
+        + `<p class="muted" id="op-live-note" hidden>Live output. Closing this page does not stop the action.</p>`
+        + `<div class="note note-success" id="op-refresh" hidden>Finished. <a href="${stackHref}">Reload the page</a> to see the updated service status.</div>`
         + `</section>`;
 }
 
-export function logsPanel(name: string): string {
+export function logsPanel(name: string, tailLines: number): string {
     const stream = `/stacks/${encodeURIComponent(name)}/logs/events`;
-    return `<section class="logs" data-logs-stream="${stream}"><h2>Logs</h2>`
-        + `<p class="note">Follow mode reads <code>compose logs</code> live. Stopping the last reader stops the follow process on the server.</p>`
-        + `<div class="op-buttons"><button type="button" id="logs-follow">Follow logs</button><button type="button" id="logs-stop" disabled>Stop</button></div>`
-        + `<p id="logs-status" role="status"></p>`
-        + `<pre class="op-output" id="logs-output"></pre>`
+    return `<section class="card logs" data-logs-stream="${stream}"><h2>Logs</h2>`
+        + `<p class="muted">Shows the last ${tailLines} lines of every service, then new lines as they arrive. Following stops when you click <em>Stop following</em> or leave the page.</p>`
+        + `<div class="toolbar"><button type="button" class="btn" id="logs-follow">Follow logs</button><button type="button" class="btn" id="logs-stop" disabled>Stop following</button></div>`
+        + `<p id="logs-status" class="muted" role="status"></p>`
+        + `<pre class="output" id="logs-output"></pre>`
         + `</section>`;
 }
 

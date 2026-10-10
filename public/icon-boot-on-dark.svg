@@ -6,7 +6,7 @@
 
 @keyframes draw{from{stroke-dasharray:240;stroke-dashoffset:240}to{stroke-dasharray:240;stroke-dashoffset:0}}
 @keyframes pop{0%{transform:scale(0);opacity:0}70%{transform:scale(1.15);opacity:1}100%{transform:scale(1);opacity:1}}
-.fr{animation:draw .6s ease-out both}
+.fr{animation:draw .6s ease-out backwards}
 .b{transform-box:fill-box;transform-origin:center;animation:pop .35s ease-out both}
 .halo{animation:halo 2.4s cubic-bezier(0,0,.2,1) 1.9s infinite}.run{animation:pop .35s ease-out both,beat 2.4s ease-in-out 1.9s infinite}@media (prefers-reduced-motion:reduce){.fr,.b,.halo,.run{animation:none}}</style><g transform="translate(8,8)">
 <rect class="fr" x="2" y="2" width="60" height="60" fill="none" stroke="#F4F4F2" stroke-width="4"/>

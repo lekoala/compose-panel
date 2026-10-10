@@ -10,7 +10,7 @@ export { ENV_FILENAME } from "./stacks.ts";
 const ABSENT_HASH = hashContent("");
 
 export class StackConflictError extends Error {
-    constructor(message = "The file changed on disk since the form was loaded.") {
+    constructor(message = "The files changed on disk after you opened the editor.") {
         super(message);
         this.name = "StackConflictError";
     }
@@ -181,11 +181,11 @@ export async function validateDraft(
             envFile,
             projectName,
         });
-        if (result.timedOut) return { ok: false, message: "Compose validation timed out." };
+        if (result.timedOut) return { ok: false, message: "docker compose config did not answer in time. Check that Docker is responsive, then save again." };
         if (result.code !== 0) {
             // Redact BEFORE truncating: a secret crossing the line/char boundary
             // would otherwise survive as an unreplaceable prefix.
-            const raw = firstLines(redactSecrets(result.stderr, secrets)) || "Compose validation failed.";
+            const raw = firstLines(redactSecrets(result.stderr, secrets)) || "docker compose config rejected the file without giving a reason.";
             return { ok: false, message: raw };
         }
         return { ok: true, message: null };
@@ -250,9 +250,9 @@ export async function saveEditableStack(
         const currentEnvExists = currentEnv !== null;
         const currentEnvHash = currentEnv ? currentEnv.hash : ABSENT_HASH;
 
-        if (currentCompose.hash !== request.baseComposeHash) throw new StackConflictError("The Compose file changed on disk.");
+        if (currentCompose.hash !== request.baseComposeHash) throw new StackConflictError("The Compose file changed on disk after you opened the editor.");
         if (currentEnvExists !== request.baseEnvExists || currentEnvHash !== request.baseEnvHash) {
-            throw new StackConflictError("The .env file changed on disk.");
+            throw new StackConflictError("The .env file changed on disk after you opened the editor.");
         }
 
         const composeChanged = request.composeSource !== currentCompose.source;
@@ -279,7 +279,7 @@ export async function saveEditableStack(
             context?.kind === "resolved" ? context.project ?? undefined : undefined,
             currentEnvExists ? envPath : null,
         );
-        if (!validation.ok) throw new StackValidationError(validation.message ?? "Compose validation failed.");
+        if (!validation.ok) throw new StackValidationError(validation.message ?? "docker compose config rejected the file without giving a reason.");
 
         // Validation awaits a subprocess for seconds; an external writer may have
         // acted meanwhile. Re-locate (presence/identity) and re-read both files:
@@ -287,12 +287,12 @@ export async function saveEditableStack(
         // only serializes panel requests, not outside editors.
         const relocated = await locateComposeFile(root, name);
         if (relocated.path !== located.path) {
-            throw new StackConflictError("The stack directory changed on disk during validation.");
+            throw new StackConflictError("The stack folder changed on disk while the files were being checked.");
         }
         // The path can stay identical while the directory object is swapped.
         // dev/ino names the object on Linux; a mismatch is a conflict.
         if (!sameDirIdentity(await dirIdentity(directory), stackIdentity)) {
-            throw new StackConflictError("The stack directory was replaced on disk during validation.");
+            throw new StackConflictError("The stack folder was replaced on disk while the files were being checked.");
         }
         let freshCompose: SafeFile | null;
         let freshEnv: SafeFile | null;
@@ -300,14 +300,14 @@ export async function saveEditableStack(
             freshCompose = await readFileSafe(composePath, maxBytes);
             freshEnv = await readFileSafe(envPath, maxBytes);
         } catch {
-            throw new StackConflictError("The files changed on disk during validation.");
+            throw new StackConflictError("The files changed on disk while they were being checked.");
         }
         if (!freshCompose) throw new StackError("Compose file not found.", 404);
         if (freshCompose.hash !== currentCompose.hash) {
-            throw new StackConflictError("The Compose file changed on disk during validation.");
+            throw new StackConflictError("The Compose file changed on disk while it was being checked.");
         }
         if (freshEnv !== null ? freshEnv.hash !== currentEnvHash : currentEnvExists) {
-            throw new StackConflictError("The .env file changed on disk during validation.");
+            throw new StackConflictError("The .env file changed on disk while it was being checked.");
         }
 
         const backupDir = await ensureBackupDir(root, name);
@@ -334,12 +334,12 @@ export async function saveEditableStack(
                 await writer(composePath, freshCompose.source, freshCompose.mode);
             } catch {
                 throw new StackPartialError(
-                    `Save failed and the Compose file could not be restored. Recover it manually from: ${backupPaths.join(", ")}`,
+                    `Writing the files failed and the Compose file could not be put back. Restore it by hand from the backup: ${backupPaths.join(", ")}`,
                     backupPaths,
                 );
             }
             throw new StackPartialError(
-                `Save failed after writing the Compose file; it was restored from backup (${backupPaths.join(", ")}).`,
+                `Writing the files failed. The Compose file was put back to its previous version (backup: ${backupPaths.join(", ")}).`,
                 backupPaths,
             );
         }

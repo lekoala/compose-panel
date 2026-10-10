@@ -35,16 +35,16 @@ export async function readFileSafe(path: string, maxBytes: number): Promise<Safe
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
     }
-    if (info.isSymbolicLink()) throw new FileSafetyError("Symbolic file not allowed.");
-    if (!info.isFile()) throw new FileSafetyError("Not a regular file.");
+    if (info.isSymbolicLink()) throw new FileSafetyError("The file is a symbolic link. For safety, the panel only uses regular files.");
+    if (!info.isFile()) throw new FileSafetyError("This is not a regular file, so the panel will not use it.");
 
     // O_NOFOLLOW closes the symlink race between lstat and open on Linux.
     const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
         const stat = await handle.stat();
-        if (stat.size > maxBytes) throw new FileSafetyError("File too large.");
+        if (stat.size > maxBytes) throw new FileSafetyError("The file is too large for the panel.");
         const source = await handle.readFile({ encoding: "utf8" });
-        if (Buffer.byteLength(source, "utf8") > maxBytes) throw new FileSafetyError("File too large.");
+        if (Buffer.byteLength(source, "utf8") > maxBytes) throw new FileSafetyError("The file is too large for the panel.");
         return { path, source, mode: stat.mode & 0o777, hash: hashContent(source) };
     } finally {
         await handle.close();
@@ -87,7 +87,7 @@ export interface DirIdentity {
 /** lstat a directory and refuse symlinks. The dev/ino pair names the object. */
 export async function dirIdentity(path: string): Promise<DirIdentity> {
     const info = await lstat(path);
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new FileSafetyError("Directory not allowed.");
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new FileSafetyError("This folder is a symbolic link or not a folder, so the panel will not use it.");
     return { dev: info.dev, ino: info.ino };
 }
 
@@ -121,7 +121,7 @@ export async function ensureBackupDir(root: string, name: string): Promise<strin
             continue;
         }
         if (info.isSymbolicLink() || !info.isDirectory()) {
-            throw new FileSafetyError("Backup path is not a real directory.");
+            throw new FileSafetyError("The backup folder is a symbolic link or not a folder, so nothing was saved.");
         }
     }
     return current;

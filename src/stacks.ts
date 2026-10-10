@@ -24,7 +24,7 @@ export class StackError extends Error {
 }
 
 export function validateStackName(name: string): void {
-    if (!STACK_NAME.test(name)) throw new StackError("Invalid stack name.");
+    if (!STACK_NAME.test(name)) throw new StackError("This stack name is not valid.");
 }
 
 export async function resolveRoot(input: string): Promise<string> {
@@ -39,12 +39,12 @@ async function stackDir(root: string, name: string): Promise<string> {
     const candidate = join(root, name);
     let info: Stats;
     try { info = await lstat(candidate); }
-    catch { throw new StackError("Stack not found.", 404); }
-    if (!info.isDirectory() || info.isSymbolicLink()) throw new StackError("Directory not allowed.", 404);
+    catch { throw new StackError("There is no stack with this name.", 404); }
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new StackError("This stack cannot be managed: it is a symbolic link or not a folder.", 404);
     const canonical = await realpath(candidate);
     const delta = relative(root, canonical);
     if (!delta || delta === ".." || delta.startsWith(`..${sep}`) || isAbsolute(delta) || delta.includes(sep)) {
-        throw new StackError("Directory outside STACKS_DIR.");
+        throw new StackError("This folder is outside the stacks folder.");
     }
     return canonical;
 }
@@ -65,16 +65,16 @@ export async function locateComposeFile(root: string, name: string): Promise<{ p
             if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
             throw error;
         }
-        if (info.isSymbolicLink()) throw new StackError("Symbolic Compose file not allowed.");
+        if (info.isSymbolicLink()) throw new StackError("The Compose file is a symbolic link. For safety, the panel only manages regular files.");
         if (info.isFile()) {
             if ((OVERRIDE_FILES as readonly string[]).includes(filename)) {
-                throw new StackError("Compose override file detected: not supported.");
+                throw new StackError("This stack has a Compose override file. The panel does not support override files yet: manage this stack with the docker compose CLI.");
             }
             found.push(filename);
         }
     }
-    if (found.length === 0) throw new StackError("No recognized Compose file.", 404);
-    if (found.length !== 1) throw new StackError("Multiple Compose files: ambiguous selection.");
+    if (found.length === 0) throw new StackError("This folder has no Compose file (compose.yaml, compose.yml, docker-compose.yaml or docker-compose.yml).", 404);
+    if (found.length !== 1) throw new StackError("This folder has more than one Compose file. Keep only one so the panel knows which to use.");
     return { path: join(dir, found[0]!), filename: found[0]! };
 }
 
@@ -101,10 +101,10 @@ export async function readStackCompose(root: string, name: string): Promise<{ na
     try {
         const info = await handle.stat();
         if (!info.isFile() || info.size > MAX_COMPOSE_BYTES) {
-            throw new StackError("Compose file not allowed or too large.");
+            throw new StackError("The Compose file cannot be read: it is not a regular file or it is too large.");
         }
         const source = await handle.readFile({ encoding: "utf8" });
-        if (Buffer.byteLength(source, "utf8") > MAX_COMPOSE_BYTES) throw new StackError("Compose file too large.");
+        if (Buffer.byteLength(source, "utf8") > MAX_COMPOSE_BYTES) throw new StackError("The Compose file is too large for the panel.");
         return { name, filename: located.filename, source };
     } finally {
         await handle.close();

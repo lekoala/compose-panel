@@ -26,7 +26,7 @@ export interface OperationView {
 }
 
 export class OperationsDisabledError extends Error {
-    constructor(message = "The server is shutting down; new operations are refused.") {
+    constructor(message = "The panel is shutting down and no longer accepts new actions or saves.") {
         super(message);
         this.name = "OperationsDisabledError";
     }
@@ -101,7 +101,7 @@ export class OperationManager {
         if (!release) throw new StackBusyError();
         if (input.target.project && this.projects.has(input.target.project)) {
             release();
-            throw new StackBusyError("Another operation is already running for this Compose project.");
+            throw new StackBusyError("Another action is already running for the same Compose project. Wait for it to finish, then try again.");
         }
         if (input.target.project) this.projects.add(input.target.project);
 

@@ -13,7 +13,9 @@ import {
 } from "./compose-state.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
 
-const DOCKER_UNAVAILABLE = "Docker state is unavailable.";
+const DOCKER_UNAVAILABLE = "Docker is not reachable, so statuses are shown as unknown. Check that the Docker daemon is running and its socket is available to the panel.";
+const DOCKER_SLOW = "Docker did not respond in time, so statuses are shown as unknown. Reload the page to try again.";
+const SEVERAL_PROJECTS = "Several Docker Compose projects point to this folder, so the panel cannot tell which one is this stack. Its status is unknown and actions are refused until only one remains.";
 const MAX_ENV_BYTES = 1024 * 1024;
 
 export interface StackStatus {
@@ -39,7 +41,7 @@ export interface StackDetailStatus {
 async function loadProjects(provider: ComposeProvider): Promise<{ projects: ComposeProject[]; note: string | null }> {
     try {
         const result = await provider.listProjects();
-        if (result.timedOut) return { projects: [], note: "Docker did not answer in time." };
+        if (result.timedOut) return { projects: [], note: DOCKER_SLOW };
         if (result.code !== 0) return { projects: [], note: DOCKER_UNAVAILABLE };
         return { projects: parseComposeLs(result.stdout), note: null };
     } catch {
@@ -55,7 +57,7 @@ export async function loadStackStates(root: string, provider: ComposeProvider): 
         // A deleted or replaced STACKS_DIR at runtime is not an empty panel and
         // not a Docker problem: fail closed instead of a 500 with log spam.
         const code = (error as NodeJS.ErrnoException | undefined)?.code;
-        if (code === "ENOENT" || code === "ENOTDIR") throw new StackError("Stacks directory is unavailable.", 503);
+        if (code === "ENOENT" || code === "ENOTDIR") throw new StackError("The stacks folder is missing or cannot be read.", 503);
         throw error;
     }
     const { projects, note } = await loadProjects(provider);
@@ -67,7 +69,7 @@ export async function loadStackStates(root: string, provider: ComposeProvider): 
         try {
             location = await locateComposeFile(root, stack.name);
         } catch {
-            result.push({ ...base, project: null, state: "unknown", note: "Compose file could not be resolved." });
+            result.push({ ...base, project: null, state: "unknown", note: "The Compose file could not be read." });
             continue;
         }
         if (note) {
@@ -76,7 +78,7 @@ export async function loadStackStates(root: string, provider: ComposeProvider): 
         }
         const match = findProjectForStack(projects, location.path);
         if (match.ambiguous) {
-            result.push({ ...base, project: null, state: "unknown", note: "Several Docker projects match this stack." });
+            result.push({ ...base, project: null, state: "unknown", note: SEVERAL_PROJECTS });
             continue;
         }
         if (!match.project) {
@@ -162,7 +164,7 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
 
     const match = findProjectForStack(projects, location.path);
     if (match.ambiguous) {
-        return { project: null, state: "unknown", note: "Several Docker projects match this stack.", services: [] };
+        return { project: null, state: "unknown", note: SEVERAL_PROJECTS, services: [] };
     }
     if (!match.project) return { project: null, state: "not-created", note: null, services: [] };
 
@@ -173,7 +175,7 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
             composeFile: location.filename,
             cwd: dirname(location.path),
         });
-        if (result.timedOut) return { project: project.name, state: "unknown", note: "Docker did not answer in time.", services: [] };
+        if (result.timedOut) return { project: project.name, state: "unknown", note: DOCKER_SLOW, services: [] };
         if (result.code !== 0) return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
         const services = parseComposePs(result.stdout);
         return { project: project.name, state: summarizeServices(services), note: null, services };

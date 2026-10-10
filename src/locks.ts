@@ -1,5 +1,5 @@
 export class StackBusyError extends Error {
-    constructor(message = "Another operation is already running for this stack.") {
+    constructor(message = "Another action or save is already in progress for this stack. Wait for it to finish, then try again.") {
         super(message);
         this.name = "StackBusyError";
     }
