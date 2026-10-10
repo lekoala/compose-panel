@@ -10,9 +10,7 @@ test.skipIf(!enabled)("reads real compose projects with a read-only command", as
     const runner = createDockerRunner();
     const result = await runner(["compose", "ls", "--all", "--format", "json"]);
     expect(result.timedOut).toBe(false);
-    if (result.code !== 0) {
-        console.warn("Docker daemon not reachable; integration check not validated.");
-        return;
-    }
+    // Opted in means a daemon is expected: never pass silently without one.
+    expect(result.code).toBe(0);
     expect(() => parseComposeLs(result.stdout)).not.toThrow();
 });

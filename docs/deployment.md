@@ -43,7 +43,7 @@ Rules that must stay true:
 Two layers, both plain files:
 
 1. **Per-save backups** made by the panel itself under
-   `<stack>/.compose-panel/backups/<stack>/` (previous `compose.yaml`/`.env`
+   `<root>/.compose-panel/backups/<stack>/` (previous `compose.yaml`/`.env`
    before each write). To roll a stack back, copy the backup over the live
    file, then `docker compose up -d` from that directory.
 2. **Host-level stacks backup** before upgrades or risky edits:

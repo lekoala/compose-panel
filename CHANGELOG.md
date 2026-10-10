@@ -24,11 +24,17 @@ loopback HTTP only (`127.0.0.1`, no proxy/TLS yet).
   `compose logs --follow` (one subprocess per stack, killed when the last
   reader leaves); heartbeat, explicit timeouts, subscriber cap, slow-reader
   drops, ANSI stripped, `textContent`-only rendering.
-- Linux packaging: multi-stage Dockerfile (Bun + Docker CLI + Compose
-  plugin, verified in build), `deploy/compose.yaml` (host networking,
+- Linux packaging: multi-stage Dockerfile (Bun + pinned Docker CLI 29.9.0 +
+  Compose plugin 5.6.0, verified in build), `deploy/compose.yaml` (host networking,
   `stop_grace_period` past the drain window), backup/rollback and manual
   verification in `docs/deployment.md`; Linux CI (tests, image build,
   socket-less smoke test, Trivy scan) that never publishes.
+- Pre-release security audit (2026-10-10, report in `private/`): fail-closed
+  project context for mutations and follows (no blind `-p`-less control),
+  post-validation re-check with backups-first saves and explicit partial
+  failures, symlink-confined owner-only backups, instance-owned log streams,
+  bounded shutdown refusing new work, and live operation progress with
+  drain-instead-of-cancel pipe handling.
 
 Known limitations: loopback only (reach remotely via SSH tunnel, never a
 public port); no guaranteed operation outcome after a crash; multi-file
