@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 — to be released
+## 0.1.0 — 10-10-2026
 
 First minimal release. Single Linux host, single trusted administrator,
 always bound to `127.0.0.1`; remote access through an SSH tunnel or HTTPS with
