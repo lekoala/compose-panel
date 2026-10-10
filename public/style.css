@@ -32,6 +32,9 @@ pre{padding:1rem;overflow:auto;border:1px solid #8885;border-radius:.5rem;white-
 .op-form{margin:0}
 .op-form button{font:inherit;padding:.4rem .8rem;border:1px solid #8888;border-radius:.4rem;background:transparent;color:inherit;cursor:pointer}
 .operation{margin-block:1.5rem}
+.logs{margin-block:1.5rem}
+#logs-status:empty{display:none}
+#logs-status{font-size:.875rem;opacity:.8}
 .op-output{max-height:40vh;white-space:pre-wrap}
 .note{padding:.5rem .75rem;border:1px solid #b8860b;border-radius:.4rem;color:#b8860b}
 .services{border-collapse:collapse;max-width:45rem;width:100%}

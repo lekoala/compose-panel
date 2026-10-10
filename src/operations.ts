@@ -44,6 +44,7 @@ export interface OperationManagerOptions {
  */
 export class OperationManager {
     private readonly last = new Map<string, OperationView>();
+    private readonly listeners = new Map<string, Set<(operation: OperationView) => void>>();
     private readonly tasks = new Set<Promise<void>>();
     private shuttingDown = false;
 
@@ -55,6 +56,34 @@ export class OperationManager {
 
     forStack(stack: string): OperationView | null {
         return this.last.get(stack) ?? null;
+    }
+
+    /**
+     * Subscribe to live updates of a stack's last operation. The listener is
+     * observation-only: unsubscribing never cancels the running operation.
+     * Returns the current snapshot plus an unsubscribe function.
+     */
+    subscribe(stack: string, listener: (operation: OperationView) => void): { snapshot: OperationView | null; unsubscribe: () => void } {
+        let set = this.listeners.get(stack);
+        if (!set) {
+            set = new Set();
+            this.listeners.set(stack, set);
+        }
+        set.add(listener);
+        let done = false;
+        return {
+            snapshot: this.last.get(stack) ?? null,
+            unsubscribe: () => {
+                if (done) return;
+                done = true;
+                set.delete(listener);
+                if (set.size === 0) this.listeners.delete(stack);
+            },
+        };
+    }
+
+    subscriberCount(stack: string): number {
+        return this.listeners.get(stack)?.size ?? 0;
     }
 
     isRunning(stack: string): boolean {
@@ -128,8 +157,18 @@ export class OperationManager {
             operation.status = "unknown";
             operation.endedAt = Date.now();
             this.appendText(operation, error instanceof Error ? error.message : "operation failed");
+            this.emit(operation);
         } finally {
             release();
+        }
+    }
+
+    private emit(operation: OperationView): void {
+        const set = this.listeners.get(operation.stack);
+        if (!set || set.size === 0) return;
+        for (const listener of [...set]) {
+            try { listener(operation); }
+            catch { /* a slow/broken observer must not fail the operation */ }
         }
     }
 
@@ -141,6 +180,7 @@ export class OperationManager {
         if (result.timedOut) operation.status = "unknown";
         else if (result.code === 0) operation.status = "succeeded";
         else operation.status = "failed";
+        this.emit(operation);
     }
 
     private append(operation: OperationView, result: CommandResult): void {
@@ -158,6 +198,7 @@ export class OperationManager {
         } else {
             operation.output = combined;
         }
+        this.emit(operation);
     }
 }
 

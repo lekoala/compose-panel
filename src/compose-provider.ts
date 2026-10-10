@@ -11,6 +11,7 @@ export interface ComposeOperations {
     ls: boolean;
     ps: boolean;
     config: boolean;
+    logs: boolean;
 }
 
 export interface ComposeCapabilities {
@@ -49,6 +50,16 @@ export interface ComposeProvider {
     stop(target: ComposeTarget): Promise<CommandResult>;
     restart(target: ComposeTarget): Promise<CommandResult>;
     down(target: ComposeTarget): Promise<CommandResult>;
+    /**
+     * Follow `compose logs` until it exits or `signal` aborts. Chunks are
+     * forwarded to `onChunk` as they arrive; the caller caps and broadcasts.
+     * Aborting the signal kills the subprocess. Never uses a shell.
+     */
+    followLogs(
+        target: ComposeTarget & { tailLines?: number },
+        onChunk: (chunk: string) => void,
+        signal: AbortSignal,
+    ): Promise<{ code: number; timedOut: boolean }>;
 }
 
 class DockerComposeProvider implements ComposeProvider {
@@ -56,10 +67,13 @@ class DockerComposeProvider implements ComposeProvider {
     private caps: ComposeCapabilities = {
         engine: "docker",
         available: false,
-        operations: { ls: true, ps: true, config: true },
+        operations: { ls: true, ps: true, config: true, logs: true },
     };
 
-    constructor(private readonly runner: DockerRunner) {}
+    constructor(
+        private readonly runner: DockerRunner,
+        private readonly dockerPath: string = "docker",
+    ) {}
 
     capabilities(): ComposeCapabilities {
         return this.caps;
@@ -70,7 +84,7 @@ class DockerComposeProvider implements ComposeProvider {
         this.caps = {
             engine: this.engine,
             available: result.code === 0 && !result.timedOut,
-            operations: { ls: true, ps: true, config: true },
+            operations: { ls: true, ps: true, config: true, logs: true },
         };
         return this.caps;
     }
@@ -122,15 +136,70 @@ class DockerComposeProvider implements ComposeProvider {
     down(target: ComposeTarget): Promise<CommandResult> {
         return this.mutation(target, ["down"]);
     }
+
+    async followLogs(
+        target: ComposeTarget & { tailLines?: number },
+        onChunk: (chunk: string) => void,
+        signal: AbortSignal,
+    ): Promise<{ code: number; timedOut: boolean }> {
+        if (!this.caps.operations.logs) throw new ComposeUnsupportedError("logs");
+        const tail = target.tailLines ?? 200;
+        const args = ["compose"];
+        if (target.project) args.push("-p", target.project);
+        args.push(
+            "--project-directory", target.cwd,
+            "-f", target.composeFile,
+            "logs", "--follow", "--tail", String(tail), "--timestamps",
+        );
+        let proc: ReturnType<typeof Bun.spawn>;
+        try {
+            proc = Bun.spawn([this.dockerPath, ...args], {
+                cwd: target.cwd,
+                stdin: "ignore",
+                stdout: "pipe",
+                stderr: "pipe",
+            });
+        } catch {
+            return { code: -1, timedOut: false };
+        }
+        const abort = () => { try { proc.kill(); } catch { /* already exited */ } };
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+        try {
+            const forward = async (stream: unknown) => {
+                if (!(stream instanceof ReadableStream)) return;
+                const reader: ReadableStreamDefaultReader<Uint8Array> = stream.getReader();
+                try {
+                    for (;;) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        if (!value || value.byteLength === 0) continue;
+                        onChunk(Buffer.from(value).toString("utf8"));
+                    }
+                } catch {
+                    // The reader rejects once the process is killed; that is the stop path.
+                } finally {
+                    try { reader.releaseLock(); } catch { /* already released */ }
+                }
+            };
+            await Promise.all([forward(proc.stdout), forward(proc.stderr)]);
+            const code = await proc.exited;
+            return { code, timedOut: false };
+        } finally {
+            signal.removeEventListener("abort", abort);
+        }
+    }
 }
 
 export interface ComposeProviderOptions {
     runner: DockerRunner;
     engine?: string;
+    /** Fixed Docker executable for streaming spawns. Must match the runner's. */
+    dockerPath?: string;
 }
 
-export function createComposeProvider({ runner, engine = "docker" }: ComposeProviderOptions): ComposeProvider {
-    if (engine === "docker") return new DockerComposeProvider(runner);
+export function createComposeProvider({ runner, engine = "docker", dockerPath = "docker" }: ComposeProviderOptions): ComposeProvider {
+    if (engine === "docker") return new DockerComposeProvider(runner, dockerPath);
     if (engine === "podman") throw new Error("Podman support is not implemented yet; the V1 provider targets Docker Compose.");
     throw new Error(`Unknown Compose engine "${engine}".`);
 }

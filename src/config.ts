@@ -32,6 +32,18 @@ export interface AppConfig {
     operationTimeoutMs: number;
     /** Bounded drain window for running operations on shutdown. */
     shutdownGraceMs: number;
+    /** Heartbeat interval for SSE streams. */
+    sseHeartbeatMs: number;
+    /** Maximum lifetime of a single SSE subscription. */
+    sseTimeoutMs: number;
+    /** Maximum concurrent SSE subscriptions process-wide. */
+    sseMaxSubscribers: number;
+    /** Lines of history tailed when a log follow starts. */
+    logTailLines: number;
+    /** Cap on the retained per-stack log buffer. */
+    logMaxBytes: number;
+    /** Maximum lifetime of a `logs --follow` subprocess. */
+    logTimeoutMs: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -106,5 +118,11 @@ export function loadConfig(env: Env = process.env): AppConfig {
         dockerMaxBytes: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_MAX_BYTES", 1024 * 1024),
         operationTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_OPERATION_TIMEOUT_MS", 5 * 60 * 1000),
         shutdownGraceMs: parsePositiveInt(env, "COMPOSE_PANEL_SHUTDOWN_GRACE_MS", 30 * 1000),
+        sseHeartbeatMs: parsePositiveInt(env, "COMPOSE_PANEL_SSE_HEARTBEAT_MS", 15 * 1000),
+        sseTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_SSE_TIMEOUT_MS", 30 * 60 * 1000),
+        sseMaxSubscribers: parsePositiveInt(env, "COMPOSE_PANEL_SSE_MAX_SUBSCRIBERS", 100),
+        logTailLines: parsePositiveInt(env, "COMPOSE_PANEL_LOG_TAIL_LINES", 200),
+        logMaxBytes: parsePositiveInt(env, "COMPOSE_PANEL_LOG_MAX_BYTES", 256 * 1024),
+        logTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_LOG_TIMEOUT_MS", 30 * 60 * 1000),
     };
 }

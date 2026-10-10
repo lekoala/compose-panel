@@ -11,7 +11,7 @@ const runner = createDockerRunner({
     timeoutMs: config.dockerTimeoutMs,
     maxBytes: config.dockerMaxBytes,
 });
-const provider = createComposeProvider({ runner, engine: config.composeEngine });
+const provider = createComposeProvider({ runner, engine: config.composeEngine, dockerPath: config.dockerPath });
 const capabilities = await provider.detect();
 if (!capabilities.available) {
     console.warn(`Compose provider "${capabilities.engine}" did not answer; stack status will be reported as unknown.`);

@@ -33,9 +33,9 @@ Each step creates a functional, verifiable slice. Do not carry out mutations in 
 - [x] After a crash: the UI re-reads Docker and does not announce an unconfirmed success.
 
 ## P5 — Logs and SSE (agent 05)
-- [ ] SSE subscription to existing operation output, disconnect ≠ cancellation.
-- [ ] Compose follow logs separated, killed when the last reader leaves.
-- [ ] Backpressure, buffer limit, heartbeat, explicit timeout.
+- [x] SSE subscription to existing operation output, disconnect ≠ cancellation.
+- [x] Compose follow logs separated, killed when the last reader leaves.
+- [x] Backpressure, buffer limit, heartbeat, explicit timeout.
 
 ## P6 — Linux production (agent 06)
 - [ ] Multi-stage image with Bun, Docker CLI and Compose plugin installed and verified.

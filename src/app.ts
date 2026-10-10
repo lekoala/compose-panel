@@ -1,10 +1,12 @@
-import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage, operationControls, operationPanel } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage, logsPanel, operationControls, operationPanel } from "./html.ts";
 import { dirname } from "node:path";
 import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadStackDetail, loadStackStates, resolveProject, type StackDetailStatus } from "./status.ts";
 import { StackConflictError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
-import { OperationManager, OperationsDisabledError, isOperationAction } from "./operations.ts";
+import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
+import { LogManager } from "./logs.ts";
+import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
 import { createComposeProvider, type ComposeProvider } from "./compose-provider.ts";
 import type { ComposeService } from "./compose-state.ts";
 import type { DockerRunner } from "./docker.ts";
@@ -66,6 +68,8 @@ export interface AppOptions {
 export interface App {
     fetch(request: Request): Promise<Response>;
     operations: OperationManager;
+    logs: LogManager;
+    sseSubscriptions(): number;
     beginShutdown(graceMs: number): Promise<void>;
 }
 
@@ -147,6 +151,12 @@ export function createApp(options: AppOptions): App {
         timeoutMs: config.operationTimeoutMs,
         maxBytes: config.dockerMaxBytes,
     });
+    const logs = new LogManager(provider, {
+        tailLines: config.logTailLines,
+        maxBytes: config.logMaxBytes,
+        timeoutMs: config.logTimeoutMs,
+    });
+    let activeSse = 0;
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
     const limiter = new LoginRateLimiter(
         config.loginRateLimit.maxAttempts,
@@ -253,9 +263,10 @@ export function createApp(options: AppOptions): App {
             stack.name,
             `<p><a href="/">← All stacks</a> · <a href="/stacks/${encodeURIComponent(stack.name)}/edit">Edit files</a></p><h1>${escapeHtml(stack.name)}</h1>`
             + `<p>${escapeHtml(stack.filename)} · ${stateBadge(status.state)}${project}</p>`
-            + `${noticeHtml}${note}${operationControls(stack.name, csrf)}${operationPanel(operations.forStack(stack.name))}`
+            + `${noticeHtml}${note}${operationControls(stack.name, csrf)}${operationPanel(operations.forStack(stack.name), stack.name)}`
+            + `${logsPanel(stack.name)}`
             + `${servicesTable(status.services)}<pre>${escapeHtml(stack.source)}</pre>`,
-            { logoutCsrf: csrf },
+            { logoutCsrf: csrf, scripts: ["/app.js"] },
         ), statusCode);
     }
 
@@ -341,6 +352,146 @@ export function createApp(options: AppOptions): App {
         }
     }
 
+    function operationSnapshot(operation: OperationView): string {
+        return JSON.stringify({
+            status: operation.status,
+            exitCode: operation.exitCode,
+            timedOut: operation.timedOut,
+            truncated: operation.truncated,
+            output: operation.output,
+        });
+    }
+
+    function operationDone(operation: OperationView): string {
+        return JSON.stringify({
+            status: operation.status,
+            exitCode: operation.exitCode,
+            timedOut: operation.timedOut,
+            truncated: operation.truncated,
+        });
+    }
+
+    /**
+     * Build an SSE response around a subscription. The subscriber limit bounds
+     * concurrent streams; heartbeat keeps idle streams alive through proxies;
+     * the timeout bounds stream lifetime; a full buffer drops slow readers so
+     * one stuck client cannot grow server memory without bound.
+     */
+    function sseResponse(request: Request, wire: (send: (frame: string) => void, close: () => void) => () => void): Response {
+        if (activeSse >= config.sseMaxSubscribers) return plain("Too many subscriptions", 503);
+        activeSse += 1;
+        let released = false;
+        const release = () => {
+            if (released) return;
+            released = true;
+            activeSse -= 1;
+        };
+        let cleanup = () => {};
+        let doClose = () => {};
+        const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+                const encoder = new TextEncoder();
+                let closed = false;
+                const close = () => {
+                    if (closed) return;
+                    closed = true;
+                    try { cleanup(); } catch { /* ignore */ }
+                    clearInterval(heartbeat);
+                    clearTimeout(timeout);
+                    release();
+                    try { controller.close(); } catch { /* already closed */ }
+                };
+                doClose = close;
+                const send = (frame: string) => {
+                    if (closed) return;
+                    // Backpressure: drop a reader that stopped consuming instead of
+                    // buffering large log volumes for it indefinitely.
+                    if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+                        close();
+                        return;
+                    }
+                    try {
+                        controller.enqueue(encoder.encode(frame));
+                    } catch {
+                        close();
+                    }
+                };
+                const heartbeat = setInterval(() => send(formatSseHeartbeat()), config.sseHeartbeatMs);
+                const timeout = setTimeout(close, config.sseTimeoutMs);
+                const onAbort = () => close();
+                if (request.signal.aborted) {
+                    close();
+                    return;
+                }
+                request.signal.addEventListener("abort", onAbort, { once: true });
+                try {
+                    cleanup = wire(send, close);
+                } catch {
+                    close();
+                }
+            },
+            cancel() {
+                doClose();
+            },
+        }, { highWaterMark: 64 });
+        return new Response(stream, { headers: sseHeaders() });
+    }
+
+    async function handleOperationEvents(name: string, request: Request): Promise<Response> {
+        // Validates the name and rejects unknown stacks before a slot is taken.
+        await locateComposeFile(stacksRoot, name);
+        return sseResponse(request, (send, close) => {
+            let sentOutput = "";
+            let sentTerminal = false;
+            const sub = operations.subscribe(name, operation => {
+                const full = operation.output;
+                if (full.length >= sentOutput.length && full.startsWith(sentOutput)) {
+                    const delta = full.slice(sentOutput.length);
+                    sentOutput = full;
+                    if (delta) send(formatSseEvent("output", delta));
+                } else {
+                    sentOutput = full;
+                    send(formatSseEvent("snapshot", operationSnapshot(operation)));
+                    return;
+                }
+                if (operation.status !== "running" && !sentTerminal) {
+                    sentTerminal = true;
+                    send(formatSseEvent("done", operationDone(operation)));
+                    close();
+                }
+            });
+            sentOutput = sub.snapshot?.output ?? "";
+            if (sub.snapshot) send(formatSseEvent("snapshot", operationSnapshot(sub.snapshot)));
+            else send(formatSseEvent("snapshot", JSON.stringify({ status: "none" })));
+            return sub.unsubscribe;
+        });
+    }
+
+    async function handleLogsEvents(name: string, request: Request): Promise<Response> {
+        const located = await locateComposeFile(stacksRoot, name);
+        const project = await resolveProject(stacksRoot, name, provider);
+        const target = { project: project ?? undefined, composeFile: located.path, cwd: dirname(located.path) };
+        return sseResponse(request, (send, close) => {
+            const sub = logs.subscribe(
+                name,
+                target,
+                chunk => send(formatSseEvent("chunk", chunk)),
+                reason => {
+                    send(formatSseEvent("end", reason === "timeout" ? "Follow stopped: time limit reached." : "Follow ended."));
+                    close();
+                },
+            );
+            send(formatSseEvent("replay", JSON.stringify({ text: sub.replay.text, truncated: sub.replay.truncated })));
+            return sub.unsubscribe;
+        });
+    }
+
+    function sseError(error: unknown): Response {
+        if (error instanceof StackError) return plain(error.message, error.status);
+        console.error("Internal error", error);
+        return plain("Internal error.", 500);
+    }
+
     async function fetch(request: Request): Promise<Response> {
         const url = new URL(request.url);
         const method = request.method.toUpperCase();
@@ -355,19 +506,41 @@ export function createApp(options: AppOptions): App {
                 headers: { "Content-Type": "text/css; charset=utf-8", ...BASE_HEADERS },
             });
         }
+        if (url.pathname === "/app.js") {
+            if (method !== "GET") return methodNotAllowed("GET");
+            return new Response(Bun.file(new URL("../public/app.js", import.meta.url)), {
+                headers: { "Content-Type": "text/javascript; charset=utf-8", ...BASE_HEADERS },
+            });
+        }
         if (url.pathname === "/login") {
             if (method === "GET") return handleLoginGet(request);
             if (method === "POST") return handleLoginPost(request);
             return methodNotAllowed("GET, POST");
         }
 
-        // Everything below requires an authenticated session.
+        const opEventsMatch = /^\/stacks\/([^/]+)\/operations\/events$/.exec(url.pathname);
+        const logEventsMatch = /^\/stacks\/([^/]+)\/logs\/events$/.exec(url.pathname);
+        const isEventStream = opEventsMatch !== null || logEventsMatch !== null;
+
+        // Everything below requires an authenticated session. Event streams
+        // answer 401 instead of a login redirect so clients do not parse HTML.
         const cookies = parseCookies(request.headers.get("cookie"));
         const id = cookies[SESSION_COOKIE];
         const session = id ? sessions.get(id) : null;
         if (!session) {
+            if (isEventStream) return plain("Unauthorized", 401);
             if (method === "GET" || method === "HEAD") return redirect("/login", 302);
             return plain("Unauthorized", 401);
+        }
+
+        if (isEventStream) {
+            if (method !== "GET") return methodNotAllowed("GET");
+            try {
+                if (opEventsMatch) return await handleOperationEvents(decodeName(opEventsMatch[1]!), request);
+                return await handleLogsEvents(decodeName(logEventsMatch![1]!), request);
+            } catch (error) {
+                return sseError(error);
+            }
         }
 
         if (url.pathname === "/logout") {
@@ -410,6 +583,11 @@ export function createApp(options: AppOptions): App {
     return {
         fetch,
         operations,
-        beginShutdown: (graceMs: number) => operations.shutdown(graceMs),
+        logs,
+        sseSubscriptions: () => activeSse,
+        beginShutdown: async (graceMs: number) => {
+            await logs.shutdown();
+            await operations.shutdown(graceMs);
+        },
     };
 }

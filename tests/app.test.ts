@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { createApp, type App } from "../src/app.ts";
 import type { AppConfig } from "../src/config.ts";
 import type { CommandResult, DockerRunner } from "../src/docker.ts";
+import type { ComposeCapabilities, ComposeProvider, ComposeTarget } from "../src/compose-provider.ts";
 import { resolveRoot } from "../src/stacks.ts";
 
 const PASSWORD = "correct horse battery staple";
@@ -23,7 +24,7 @@ afterAll(async () => {
     await rm(root, { recursive: true, force: true });
 });
 
-function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner): App {
+function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, provider?: ComposeProvider): App {
     const config: AppConfig = {
         stacksDir: root,
         port: 5081,
@@ -43,9 +44,62 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner): App
         dockerMaxBytes: 1024 * 1024,
         operationTimeoutMs: 60_000,
         shutdownGraceMs: 5_000,
+        sseHeartbeatMs: 15_000,
+        sseTimeoutMs: 1_800_000,
+        sseMaxSubscribers: 100,
+        logTailLines: 200,
+        logMaxBytes: 262_144,
+        logTimeoutMs: 1_800_000,
         ...overrides,
     };
-    return createApp({ config, stacksRoot: root, runner });
+    return createApp({ config, stacksRoot: root, runner, provider });
+}
+
+interface FollowCall {
+    target: ComposeTarget & { tailLines?: number };
+    onChunk: (chunk: string) => void;
+    signal: AbortSignal;
+}
+
+/** Provider with a controllable `logs --follow` for SSE tests. No subprocess. */
+function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[] } {
+    const calls: FollowCall[] = [];
+    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
+    const empty: CommandResult = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+    const provider: ComposeProvider = {
+        engine: "fake",
+        capabilities: () => caps,
+        detect: async () => caps,
+        listProjects: async () => empty,
+        projectServices: async () => empty,
+        validateConfig: async () => empty,
+        pull: async () => empty,
+        up: async () => empty,
+        stop: async () => empty,
+        restart: async () => empty,
+        down: async () => empty,
+        followLogs: (followTarget, onChunk, signal) => new Promise(resolve => {
+            calls.push({ target: followTarget, onChunk, signal });
+            signal.addEventListener("abort", () => resolve({ code: 137, timedOut: false }), { once: true });
+        }),
+    };
+    return { provider, calls };
+}
+
+async function readSseUntil(reader: ReadableStreamDefaultReader<Uint8Array>, marker: string, maxMs = 5000): Promise<string> {
+    const decoder = new TextDecoder();
+    let text = "";
+    const deadline = Date.now() + maxMs;
+    while (!text.includes(marker) && Date.now() < deadline) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+    }
+    return text;
+}
+
+function sseReader(response: Response): ReadableStreamDefaultReader<Uint8Array> {
+    return response.body!.getReader();
 }
 
 function setCookies(response: Response): string[] {
@@ -441,5 +495,168 @@ describe("operations routes", () => {
 
         release(okResult);
         await waitIdle(app);
+    });
+});
+
+describe("event streams", () => {
+    const okResult: CommandResult = { code: 0, stdout: "upped", stderr: "", timedOut: false, truncated: false };
+
+    beforeEach(async () => {
+        await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+        await rm(join(root, "demo", ".env"), { force: true });
+    });
+
+    async function csrfOf(app: App, session: string): Promise<string> {
+        const html = await (await authed(app, "/", session)).text();
+        return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+    }
+
+    test("rejects unauthenticated event streams without a login redirect", async () => {
+        const app = makeApp();
+        for (const path of ["/stacks/demo/operations/events", "/stacks/demo/logs/events"]) {
+            const response = await app.fetch(new Request(`${ORIGIN}${path}`));
+            expect(response.status).toBe(401);
+        }
+    });
+
+    test("rejects invalid and unknown stack names", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        expect((await authed(app, "/stacks/..%2Fsecret/operations/events", session)).status).toBe(400);
+        expect((await authed(app, "/stacks/nope/operations/events", session)).status).toBe(404);
+        expect((await authed(app, "/stacks/nope/logs/events", session)).status).toBe(404);
+    });
+
+    test("rejects non-GET methods on event streams", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        const response = await authed(app, "/stacks/demo/operations/events", session, { method: "POST" });
+        expect(response.status).toBe(405);
+    });
+
+    test("streams a snapshot of the finished operation", async () => {
+        const runner: DockerRunner = async args => {
+            if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+            if (args.includes("up")) return okResult;
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+        const app = makeApp();
+        const appWithRunner = makeApp({}, runner);
+        const session = await login(appWithRunner);
+        const csrf = await csrfOf(appWithRunner, session);
+        await authed(appWithRunner, "/stacks/demo/operations", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, action: "up" }).toString(),
+        });
+        for (let i = 0; i < 200 && appWithRunner.operations.activeCount() > 0; i += 1) {
+            await new Promise(resolve => setTimeout(resolve, 1));
+        }
+        const stream = await authed(appWithRunner, "/stacks/demo/operations/events", session);
+        expect(stream.status).toBe(200);
+        expect(stream.headers.get("content-type")).toContain("text/event-stream");
+        expect(stream.headers.get("cache-control")).toBe("no-store");
+        const reader = sseReader(stream);
+        try {
+            const text = await readSseUntil(reader, "event: snapshot");
+            expect(text).toContain("event: snapshot");
+            expect(text).toContain("succeeded");
+            expect(text).toContain("upped");
+        } finally {
+            await reader.cancel();
+        }
+        expect(app).toBeDefined();
+    });
+
+    test("streams live output and a done event without cancelling on disconnect", async () => {
+        let release!: (result: CommandResult) => void;
+        const gate = new Promise<CommandResult>(resolve => { release = resolve; });
+        const runner: DockerRunner = async args => {
+            if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+            if (args.includes("up")) return gate;
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+        const app = makeApp({}, runner);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await authed(app, "/stacks/demo/operations", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, action: "up" }).toString(),
+        })).status).toBe(303);
+
+        const stream = await authed(app, "/stacks/demo/operations/events", session);
+        expect(stream.status).toBe(200);
+        const reader = sseReader(stream);
+        try {
+            const first = await readSseUntil(reader, "event: snapshot");
+            expect(first).toContain("running");
+            release(okResult);
+            const rest = await readSseUntil(reader, "event: done");
+            expect(rest).toContain("event: done");
+            expect(rest).toContain("succeeded");
+        } finally {
+            await reader.cancel();
+        }
+        // Disconnecting the reader did not cancel the operation: it succeeded.
+        for (let i = 0; i < 200 && app.operations.activeCount() > 0; i += 1) {
+            await new Promise(resolve => setTimeout(resolve, 1));
+        }
+        expect(app.operations.forStack("demo")!.status).toBe("succeeded");
+    });
+
+    test("refuses streams past the subscriber limit", async () => {
+        const app = makeApp({ sseMaxSubscribers: 1 });
+        const session = await login(app);
+        const first = await authed(app, "/stacks/demo/operations/events", session);
+        expect(first.status).toBe(200);
+        expect(app.sseSubscriptions()).toBe(1);
+        expect((await authed(app, "/stacks/demo/logs/events", session)).status).toBe(503);
+        await first.body!.cancel();
+        for (let i = 0; i < 200 && app.sseSubscriptions() > 0; i += 1) {
+            await new Promise(resolve => setTimeout(resolve, 1));
+        }
+        expect(app.sseSubscriptions()).toBe(0);
+    });
+
+    test("follows logs with replay, live chunks, and stops the follow on disconnect", async () => {
+        const { provider, calls } = controllableProvider();
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const stream = await authed(app, "/stacks/demo/logs/events", session);
+        expect(stream.status).toBe(200);
+        expect(stream.headers.get("content-type")).toContain("text/event-stream");
+        expect(calls.length).toBe(1);
+        const reader = sseReader(stream);
+        try {
+            const replay = await readSseUntil(reader, "event: replay");
+            expect(replay).toContain("event: replay");
+            calls[0]!.onChunk("web-1 | hello\n");
+            const chunk = await readSseUntil(reader, "event: chunk");
+            expect(chunk).toContain("event: chunk");
+            expect(chunk).toContain("hello");
+        } finally {
+            await reader.cancel();
+        }
+        // The last reader left, so the follow subprocess is aborted.
+        await new Promise(resolve => setTimeout(resolve, 10));
+        expect(calls[0]!.signal.aborted).toBe(true);
+        expect(app.logs.isActive("demo")).toBe(false);
+    });
+
+    test("detail page wires live streams and CSP allows same-origin scripts", async () => {
+        const { provider } = controllableProvider();
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const detail = await authed(app, "/stacks/demo", session);
+        expect(detail.status).toBe(200);
+        const html = await detail.text();
+        expect(html).toContain('data-logs-stream="/stacks/demo/logs/events"');
+        expect(html).toContain('<script src="/app.js" defer></script>');
+        expect(detail.headers.get("content-security-policy")).toContain("script-src 'self'");
+        expect(detail.headers.get("content-security-policy")).toContain("connect-src 'self'");
+        const script = await app.fetch(new Request(`${ORIGIN}/app.js`));
+        expect(script.status).toBe(200);
+        expect(await script.text()).toContain("EventSource");
     });
 });

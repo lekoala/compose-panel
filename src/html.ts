@@ -17,6 +17,8 @@ export interface DocumentOptions {
     /** When set, the header renders an authenticated logout form using this CSRF token. */
     logoutCsrf?: string;
     mode?: string;
+    /** Same-origin scripts to load with defer (e.g. "/app.js"). */
+    scripts?: string[];
 }
 
 export function documentHtml(title: string, body: string, options: DocumentOptions = {}): string {
@@ -25,6 +27,7 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
         ? `<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="${escapeHtml(options.logoutCsrf)}"><button type="submit">Log out</button></form>`
         : "";
     const mode = options.mode ?? "Local prototype · read-only";
+    const scripts = (options.scripts ?? []).map(src => `<script src="${escapeHtml(src)}" defer></script>`).join("");
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -32,6 +35,7 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)} · Compose Panel</title>
   <link rel="stylesheet" href="/styles.css">
+  ${scripts}
 </head>
 <body>
   <div class="shell">
@@ -103,13 +107,28 @@ export function operationControls(name: string, csrf: string): string {
     return `<section class="operations"><h2>Operations</h2><p class="note">Actions run in the background and keep going if you close this page. One operation runs per stack at a time.</p><div class="op-buttons">${buttons}</div></section>`;
 }
 
-export function operationPanel(operation: OperationView | null): string {
+export function operationPanel(operation: OperationView | null, stack?: string): string {
     if (!operation) return "";
     const timing = operation.endedAt ? ` · exit ${operation.exitCode ?? "-"}` : "";
     const flags = [operation.timedOut ? "timed out (outcome unknown)" : "", operation.truncated ? "output truncated" : ""].filter(Boolean).join(" · ");
-    return `<section class="operation"><h2>Last operation: ${escapeHtml(operation.action)}</h2>`
-        + `<p><span class="state state-${escapeHtml(operation.status)}">${escapeHtml(operation.status)}</span>${timing}${flags ? ` · ${escapeHtml(flags)}` : ""}</p>`
-        + (operation.output ? `<pre class="op-output">${escapeHtml(operation.output)}</pre>` : "")
+    const stream = stack !== undefined
+        ? ` data-op-stream="/stacks/${encodeURIComponent(stack)}/operations/events"`
+        : "";
+    return `<section class="operation"${stream} data-op-status="${escapeHtml(operation.status)}">`
+        + `<h2>Last operation: ${escapeHtml(operation.action)}</h2>`
+        + `<p><span class="state state-${escapeHtml(operation.status)}" id="op-status">${escapeHtml(operation.status)}</span><span id="op-meta">${timing}${flags ? ` · ${escapeHtml(flags)}` : ""}</span></p>`
+        + (operation.output ? `<pre class="op-output" id="op-output">${escapeHtml(operation.output)}</pre>` : `<pre class="op-output" id="op-output"></pre>`)
+        + `<p class="note" id="op-live-note" hidden>Live output — closing this page does not stop the operation.</p>`
+        + `</section>`;
+}
+
+export function logsPanel(name: string): string {
+    const stream = `/stacks/${encodeURIComponent(name)}/logs/events`;
+    return `<section class="logs" data-logs-stream="${stream}"><h2>Logs</h2>`
+        + `<p class="note">Follow mode reads <code>compose logs</code> live. Stopping the last reader stops the follow process on the server.</p>`
+        + `<div class="op-buttons"><button type="button" id="logs-follow">Follow logs</button><button type="button" id="logs-stop" disabled>Stop</button></div>`
+        + `<p id="logs-status" role="status"></p>`
+        + `<pre class="op-output" id="logs-output"></pre>`
         + `</section>`;
 }
 
@@ -123,7 +142,7 @@ export function htmlResponse(body: string, status = 200): Response {
             "Referrer-Policy": "no-referrer",
             "X-Frame-Options": "DENY",
             "Vary": "Cookie",
-            "Content-Security-Policy": "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+            "Content-Security-Policy": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
         },
     });
 }

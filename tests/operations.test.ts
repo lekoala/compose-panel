@@ -8,7 +8,7 @@ const ok: CommandResult = { code: 0, stdout: "done", stderr: "", timedOut: false
 const target: ComposeTarget = { composeFile: "/stacks/demo/compose.yaml", cwd: "/stacks/demo" };
 
 function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "restart" | "down", () => Promise<CommandResult>>> = {}): ComposeProvider {
-    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true } };
+    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
     return {
         engine: "fake",
         capabilities: () => caps,
@@ -21,6 +21,7 @@ function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "restart
         stop: handlers.stop ?? (async () => ok),
         restart: handlers.restart ?? (async () => ok),
         down: handlers.down ?? (async () => ok),
+        followLogs: async () => ({ code: 0, timedOut: false }),
     };
 }
 
@@ -122,4 +123,33 @@ test("refuses new operations once shutdown started", async () => {
     const manager = new OperationManager(new StackLocks(), fakeProvider(), { timeoutMs: 1000, maxBytes: 10_000 });
     await manager.shutdown(10);
     expect(() => manager.start({ stack: "demo", action: "up", target })).toThrow(OperationsDisabledError);
+});
+
+test("subscribers receive live updates and unsubscribe without cancelling", async () => {
+    let release!: () => void;
+    const gate = new Promise<CommandResult>(resolve => { release = () => resolve(ok); });
+    const manager = new OperationManager(new StackLocks(), fakeProvider({ up: () => gate }), { timeoutMs: 1000, maxBytes: 10_000 });
+    const seen: string[] = [];
+    const sub = manager.subscribe("demo", operation => seen.push(operation.status));
+    expect(sub.snapshot).toBeNull();
+    expect(manager.subscriberCount("demo")).toBe(1);
+    manager.start({ stack: "demo", action: "up", target });
+    release();
+    await settle(manager);
+    expect(seen).toContain("running");
+    expect(seen).toContain("succeeded");
+    // The operation finished on its own; unsubscribing only drops the observer.
+    sub.unsubscribe();
+    expect(manager.subscriberCount("demo")).toBe(0);
+    expect(manager.forStack("demo")!.status).toBe("succeeded");
+});
+
+test("subscribe returns the current snapshot for late observers", async () => {
+    const manager = new OperationManager(new StackLocks(), fakeProvider(), { timeoutMs: 1000, maxBytes: 10_000 });
+    manager.start({ stack: "demo", action: "up", target });
+    await settle(manager);
+    const sub = manager.subscribe("demo", () => {});
+    expect(sub.snapshot?.status).toBe("succeeded");
+    expect(sub.snapshot?.output).toContain("done");
+    sub.unsubscribe();
 });

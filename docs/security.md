@@ -25,6 +25,13 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - On `SIGTERM`/`SIGINT`, new operations are refused and running ones are drained for a bounded window. There is no persistence and no automatic replay: after a crash the outcome may be unknown and the UI re-reads Docker.
 - Operation output is captured from both streams and bounded; it is HTML-escaped before display and never written to application logs.
 
+## Streaming (P5)
+- Both event streams require an authenticated session and answer `401` (never a login redirect) without one. Stack names are validated exactly like reads; unknown stacks are `404`.
+- Operation SSE is observation-only: subscribing never starts or cancels work, and disconnecting never stops a running operation. The `done` frame is sent only after a terminal state; the stream also ends on heartbeat timeout.
+- Log follow spawns `compose logs --follow --tail N --timestamps` through the provider with an explicit argument array (no shell), one subprocess per stack at most. The subprocess is killed when the last reader leaves, when the explicit timeout fires, or on server shutdown. Readers share the process; they never pass options.
+- Bounds: process-wide subscriber cap (`503` past it), per-stack retained log buffer (tail-kept, flagged), heartbeat, explicit stream/follow timeouts, and slow readers are dropped instead of buffering unbounded output for them. ANSI color escapes are stripped before broadcast.
+- The browser inserts stream text via `textContent` only. CSP allows same-origin scripts (`/app.js`) and same-origin EventSource connections; Docker logs may contain secrets and are therefore behind auth with `no-store`, like the Compose file.
+
 ## Proxy and TLS contract
 - Default remains direct loopback HTTP with `COMPOSE_PANEL_COOKIE_SECURE=false`.
 - Behind TLS, set `COMPOSE_PANEL_COOKIE_SECURE=true` and, for a proxy, `COMPOSE_PANEL_PUBLIC_ORIGIN=https://<host>` so Origin checks compare against the public origin. Set `COMPOSE_PANEL_TRUST_PROXY=true` only when the proxy overwrites `X-Forwarded-Proto`/`X-Forwarded-For`.
@@ -34,7 +41,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Auth mono-admin (secret provisioned outside repo, robust password derivation, cookies HttpOnly, Secure, SameSite, rotation de session après login, logout). *(implemented in P1)*
 - CSRF on all POSTs and strict Origin/Host checks, behind an explicitly configured proxy. *(CSRF and same-origin checks implemented in P1; proxy configuration still to be verified on a real deployment)*
 - TLS via proxy, bind on a private interface, firewall/administration network. Never expose the Docker socket over TCP.
-- Limit file sizes, execution time, log/SSE size, login attempts. *(login attempts and request body size implemented in P1; file/log/SSE limits arrive with the corresponding features)*
+- Limit file sizes, execution time, log/SSE size, login attempts. *(login attempts, request body size, edit sizes, Docker/operation caps, SSE subscribers/heartbeat/timeout and log tail/buffer/timeout implemented in P1–P5)*
 - Escape HTML, restrictive CSP, disable caching of sensitive pages, protect any response containing `.env`.
 - Ensure safe resolution of names and files: name allow-list, reject symlinks, protect the root path, no absolute paths supplied by the user.
 - Subprocesses via argument arrays, no shell. No freely user-supplied options. No generic Docker command. *(read-only `compose ls`/`ps` implemented in P2 with a fixed executable, timeouts and output caps; mutations arrive in P4)*
@@ -42,7 +49,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Docker logs may themselves contain secrets. Never include them in unprotected application logs.
 
 ## Mandatory security checks
-Tests for `../` paths, encoded URLs, non-conforming names, symlinks, double Compose, `.env` symlink, write conflicts, secrets in errors, CSRF, XSS, concurrent operations, malformed Docker CLI output, timeout/output-cap handling, Linux shutdown/restart and stuck processes.
+Tests for `../` paths, encoded URLs, non-conforming names, symlinks, double Compose, `.env` symlink, write conflicts, secrets in errors, CSRF, XSS, concurrent operations, malformed Docker CLI output, timeout/output-cap handling, SSE auth/subscriber limits/slow readers, log follow kill-on-last-reader/timeout, Linux shutdown/restart and stuck processes.
 
 ## CI
 Subprocess tests only in a disposable/isolated Docker daemon. Never mount the CI host's production engine socket in automated tests.

@@ -2,7 +2,7 @@
 
 A **single-server** panel to administer Docker Compose stacks, without a SPA, without an ORM and without a parallel orchestrator. The goal is a small, self-hosted tool that keeps Compose files as the source of truth.
 
-> **Current state: authenticated, read-only + editing + operations, NOT production-ready.** A single administrator logs in; the raw `compose.yaml` and `.env` can be edited with validation and backups, and predefined operations (`up`, `stop`, `restart`, `down`, `pull + up`) run in the background. It still listens on **`127.0.0.1` only** and has no log streaming yet. Do not expose it through a reverse proxy until the proxy/TLS contract is reviewed.
+> **Current state: authenticated, read-only + editing + operations + live logs, NOT production-ready.** A single administrator logs in; the raw `compose.yaml` and `.env` can be edited with validation and backups, predefined operations (`up`, `stop`, `restart`, `down`, `pull + up`) run in the background, and operation output plus `compose logs --follow` stream over authenticated SSE. It still listens on **`127.0.0.1` only**. Do not expose it through a reverse proxy until the proxy/TLS contract is reviewed.
 
 ## Getting started
 
@@ -43,8 +43,9 @@ bun run check
 - Safe raw editing of `compose.yaml` and `.env`: no YAML round-trip, optimistic concurrency via content hashes, validation with `docker compose config --quiet` in the real project context, per-save backups with rollback, one operation per stack, and `.env` values redacted from errors.
 - Predefined operations (`up`, `stop`, `restart`, `down`, `pull + up`) behind a fixed allow-list, one per stack, running in memory independently of the browser; success only on exit 0, timeout reported as unknown, bounded output, and a graceful drain on shutdown.
 - Discovery of stacks whose directory contains **exactly one** of the supported Compose names.
+- Live streams over authenticated SSE with heartbeat, explicit timeout, subscriber cap and slow-reader drops: operation output (observing only — disconnect never cancels) and `compose logs --follow` (one subprocess per stack, killed when the last reader leaves). A minimal vanilla `app.js` inserts server text via `textContent` only.
 - Name validation and rejection of symbolic links for reads and writes.
-- Unit tests for path safety, HTML escaping, the auth/CSRF flows, Compose output parsing, the editor and the operation manager.
+- Unit tests for path safety, HTML escaping, the auth/CSRF flows, Compose output parsing, the editor, the operation manager, SSE framing and the log manager.
 - `AGENTS.md`, ADRs, roadmap and agent missions ready to delegate.
 
 ## Implementation order
@@ -53,8 +54,7 @@ bun run check
 2. **Reading the real Docker state** (without blindly inferring the project from the folder name). *(done, P2)*
 3. **Editing** Compose and `.env` with optimistic versioning, validation in the real context, backup and controlled rollback. *(done, P3)*
 4. **Predefined operations** with a per-stack lock and in-memory status (no automatic recovery). *(done, P4)*
-5. **Logs** and SSE streaming independent of the operation's execution.
-5. **Logs** and SSE streaming independent of the operation's execution.
+5. **Logs** and SSE streaming independent of the operation's execution. *(done, P5)*
 6. **Reproducible Linux Dockerfile**, CI pipeline, restart test and deployment.
 
 See [docs/roadmap.md](docs/roadmap.md), [AGENTS.md](AGENTS.md), [agents/](agents/) and [docs/security.md](docs/security.md).
