@@ -14,12 +14,20 @@ describe("loadStackStates without a stacks directory", () => {
         const provider = createComposeProvider({
             runner: async () => { dockerCalls += 1; return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false }; },
         });
-        const error = await loadStackStates(gone, provider).then(
-            () => null,
-            (failure: unknown) => failure,
-        );
-        expect(error).toBeInstanceOf(StackError);
-        expect((error as StackError).status).toBe(503);
+        const logged: unknown[][] = [];
+        const origError = console.error;
+        console.error = (...args: unknown[]) => { logged.push(args); };
+        try {
+            const error = await loadStackStates(gone, provider).then(
+                () => null,
+                (failure: unknown) => failure,
+            );
+            expect(error).toBeInstanceOf(StackError);
+            expect((error as StackError).status).toBe(503);
+        } finally {
+            console.error = origError;
+        }
         expect(dockerCalls).toBe(0);
+        expect(logged).toEqual([]);
     });
 });

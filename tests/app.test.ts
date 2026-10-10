@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp, type App } from "../src/app.ts";
@@ -292,6 +292,17 @@ describe("login hardening", () => {
         const blocked = await postLogin(app, cookie, csrf, "admin", PASSWORD);
         expect(blocked.status).toBe(429);
         expect(blocked.headers.get("retry-after")).toBeTruthy();
+    });
+
+    test("a concurrent login burst cannot exceed the attempt limit", async () => {
+        const app = makeApp();
+        const { cookie, csrf } = await loginCsrf(app);
+        const responses = await Promise.all(
+            Array.from({ length: 12 }, () => postLogin(app, cookie, csrf, "admin", "wrong")),
+        );
+        const codes = responses.map(response => response.status);
+        expect(codes.filter(code => code === 401).length).toBeLessThanOrEqual(5);
+        expect(codes.filter(code => code === 429).length).toBeGreaterThanOrEqual(7);
     });
 
     test("marks cookies Secure when configured", async () => {
@@ -692,6 +703,32 @@ describe("event streams", () => {
         expect(app.logs.isActive("demo")).toBe(false);
     });
 
+    test("logout closes streams opened with that session", async () => {
+        const { provider } = controllableProvider();
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const stream = await authed(app, "/stacks/demo/logs/events", session);
+        expect(stream.status).toBe(200);
+        const reader = sseReader(stream);
+        await readSseUntil(reader, "event: replay");
+        expect(app.sseSubscriptions()).toBe(1);
+
+        const csrf = await csrfOf(app, session);
+        const out = await authed(app, "/logout", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf }).toString(),
+        });
+        expect(out.status).toBe(303);
+
+        const finished = await Promise.race([
+            reader.read().then(result => (result.done ? "closed" : "data")),
+            new Promise<string>(resolve => setTimeout(() => resolve("timeout"), 1000)),
+        ]);
+        expect(finished).toBe("closed");
+        expect(app.logs.isActive("demo")).toBe(false);
+    });
+
     test("detail page wires live streams and CSP allows same-origin scripts", async () => {
         const { provider } = controllableProvider();
         const app = makeApp({}, undefined, provider);
@@ -829,6 +866,44 @@ describe("verified project context", () => {    const okResult: CommandResult = 
             expect((await postOperation(app, session, csrf, action)).status).toBe(409);
         }
         expect(spy.mutations).toEqual([]);
+    });
+
+    test("passes the verified .env explicitly and omits it when absent", async () => {
+        const file = join(root, "demo", "compose.yaml");
+        const envPath = join(root, "demo", ".env");
+        const spy: Spy = { mutations: [], validates: [] };
+        const app = makeApp({}, spyRunner(lsOf([projectEntry("demo-proj", file)]), spy));
+        const session = await login(app);
+
+        expect((await postOperation(app, session, await csrfOf(app, session), "down")).status).toBe(303);
+        expect(spy.mutations[0]!.includes("--env-file")).toBe(false);
+
+        await writeFile(envPath, "FOO=bar\n");
+        expect((await postOperation(app, session, await csrfOf(app, session), "down")).status).toBe(303);
+        const args = spy.mutations[1]!;
+        const position = args.indexOf("--env-file");
+        expect(position).toBeGreaterThan(-1);
+        expect(args[position + 1]).toBe(envPath);
+        await rm(envPath, { force: true });
+    });
+
+    test.skipIf(process.platform === "win32")("refuses a symlinked .env for mutations and log follows", async () => {
+        const file = join(root, "demo", "compose.yaml");
+        const secret = join(root, "demo", "outside.env");
+        await writeFile(secret, "TOKEN=secret\n");
+        await symlink(secret, join(root, "demo", ".env"));
+        const spy: Spy = { mutations: [], validates: [] };
+        const app = makeApp({}, spyRunner(lsOf([projectEntry("demo-proj", file)]), spy));
+        const session = await login(app);
+
+        expect((await postOperation(app, session, await csrfOf(app, session), "down")).status).toBe(409);
+        expect(spy.mutations).toEqual([]);
+        const stream = await authed(app, "/stacks/demo/logs/events", session);
+        expect(stream.status).toBe(409);
+        await stream.body!.cancel();
+
+        await rm(join(root, "demo", ".env"), { force: true });
+        await rm(secret, { force: true });
     });
 
     test("rechecks name collisions after effective identity resolution", async () => {

@@ -102,6 +102,18 @@ export class SessionStore {
         return session;
     }
 
+    /**
+     * Whether a session is currently valid WITHOUT refreshing idle activity.
+     * Used by open SSE streams so their heartbeat cannot keep a session alive
+     * past its configured idle/absolute expiry.
+     */
+    isActive(id: string): boolean {
+        const session = this.sessions.get(id);
+        if (!session) return false;
+        const now = this.now();
+        return !(now - session.createdAt > this.ttlMs || now - session.lastSeenAt > this.idleMs);
+    }
+
     destroy(id: string): void {
         this.sessions.delete(id);
     }
@@ -127,12 +139,15 @@ export interface RateLimitVerdict {
 
 export class LoginRateLimiter {
     private readonly attempts = new Map<string, { count: number; windowStart: number; blockedUntil: number }>();
+    private inFlight = 0;
 
     constructor(
         private readonly maxAttempts: number,
         private readonly windowMs: number,
         private readonly blockMs: number,
         private readonly now: () => number = Date.now,
+        /** Global ceiling on concurrent password verifications. */
+        private readonly maxInFlight: number = 8,
     ) {}
 
     check(key: string): RateLimitVerdict {
@@ -146,6 +161,57 @@ export class LoginRateLimiter {
             this.attempts.delete(key);
         }
         return { allowed: true, retryAfterSec: 0 };
+    }
+
+    /**
+     * Check-and-reserve in one synchronous step. The attempt is counted before
+     * any awaited password work, so N concurrent requests cannot all pass the
+     * limit before the first failure is recorded. Call `settle` exactly once
+     * afterwards. Returns a 429-style verdict when the per-key limit, the
+     * current block, or the global in-flight cap is reached.
+     */
+    tryReserve(key: string): RateLimitVerdict {
+        const now = this.now();
+        let entry = this.attempts.get(key);
+        if (entry && entry.blockedUntil > now) {
+            return { allowed: false, retryAfterSec: Math.ceil((entry.blockedUntil - now) / 1000) };
+        }
+        if (entry && now - entry.windowStart > this.windowMs) {
+            this.attempts.delete(key);
+            entry = undefined;
+        }
+        if (this.inFlight >= this.maxInFlight) {
+            return { allowed: false, retryAfterSec: 1 };
+        }
+        if (!entry) {
+            entry = { count: 0, windowStart: now, blockedUntil: 0 };
+            this.attempts.set(key, entry);
+        }
+        if (entry.count >= this.maxAttempts) {
+            entry.blockedUntil = now + this.blockMs;
+            return { allowed: false, retryAfterSec: Math.ceil(this.blockMs / 1000) };
+        }
+        entry.count += 1;
+        this.inFlight += 1;
+        return { allowed: true, retryAfterSec: 0 };
+    }
+
+    /**
+     * Release a reservation made by `tryReserve`. On success the reservation is
+     * removed without erasing other outstanding failures; on failure it stays
+     * counted and blocks the key once the limit is reached.
+     */
+    settle(key: string, success: boolean): void {
+        if (this.inFlight > 0) this.inFlight -= 1;
+        const entry = this.attempts.get(key);
+        if (!entry) return;
+        if (success) {
+            entry.count -= 1;
+            if (entry.count <= 0) this.attempts.delete(key);
+            return;
+        }
+        const now = this.now();
+        if (entry.count >= this.maxAttempts) entry.blockedUntil = now + this.blockMs;
     }
 
     recordFailure(key: string): void {

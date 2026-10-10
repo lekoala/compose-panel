@@ -1,5 +1,6 @@
-import { dirname } from "node:path";
-import { listStacks, locateComposeFile, StackError } from "./stacks.ts";
+import { dirname, join } from "node:path";
+import { listStacks, locateComposeFile, StackError, ENV_FILENAME } from "./stacks.ts";
+import { readFileSafe } from "./fs-safe.ts";
 import {
     ComposeProject,
     ComposeService,
@@ -13,6 +14,7 @@ import {
 import type { ComposeProvider } from "./compose-provider.ts";
 
 const DOCKER_UNAVAILABLE = "Docker state is unavailable.";
+const MAX_ENV_BYTES = 1024 * 1024;
 
 export interface StackStatus {
     name: string;
@@ -87,7 +89,7 @@ export async function loadStackStates(root: string, provider: ComposeProvider): 
     return { stacks: result, dockerNote: note };
 }
 
-export type ProjectContextKind = "resolved" | "absent" | "ambiguous" | "unavailable";
+export type ProjectContextKind = "resolved" | "absent" | "ambiguous" | "unavailable" | "invalid";
 
 export interface ProjectContext {
     kind: ProjectContextKind;
@@ -97,6 +99,12 @@ export interface ProjectContext {
     composeFile: string;
     filename: string;
     cwd: string;
+    /**
+     * Verified `.env` path when a safe regular file exists, else null. Passed
+     * explicitly to Compose so an unsafe `.env` (symlink, non-regular, oversized)
+     * cannot be read implicitly by a mutation or follow.
+     */
+    envFile: string | null;
 }
 
 /**
@@ -107,34 +115,44 @@ export interface ProjectContext {
 export async function resolveProjectContext(root: string, name: string, provider: ComposeProvider, verifyCreation = false): Promise<ProjectContext> {
     const location = await locateComposeFile(root, name);
     const base = { composeFile: location.path, filename: location.filename, cwd: dirname(location.path) };
+    // Apply the editor's `.env` safety rules here too: mutation, follow and
+    // project-name resolution must not read an `.env` the editor would reject.
+    // When a safe file exists it is passed explicitly with --env-file.
+    let envFile: string | null = null;
+    try {
+        const env = await readFileSafe(join(base.cwd, ENV_FILENAME), MAX_ENV_BYTES);
+        if (env) envFile = env.path;
+    } catch {
+        return { kind: "invalid", project: null, ...base, envFile: null };
+    }
     let projects: ComposeProject[];
     try {
         const result = await provider.listProjects();
-        if (result.timedOut || result.truncated || result.code !== 0) return { kind: "unavailable", project: null, ...base };
+        if (result.timedOut || result.truncated || result.code !== 0) return { kind: "unavailable", project: null, ...base, envFile };
         projects = parseComposeLs(result.stdout);
     } catch {
-        return { kind: "unavailable", project: null, ...base };
+        return { kind: "unavailable", project: null, ...base, envFile };
     }
     const match = findProjectForStack(projects, location.path);
-    if (match.ambiguous) return { kind: "ambiguous", project: null, ...base };
+    if (match.ambiguous) return { kind: "ambiguous", project: null, ...base, envFile };
     if (!match.project) {
-        if (!verifyCreation) return { kind: "absent", project: null, ...base };
+        if (!verifyCreation) return { kind: "absent", project: null, ...base, envFile };
         try {
-            const project = await provider.projectName({ composeFile: base.composeFile, cwd: base.cwd });
-            if (!project) return { kind: "unavailable", project: null, ...base };
+            const project = await provider.projectName({ composeFile: base.composeFile, cwd: base.cwd, envFile: envFile ?? undefined });
+            if (!project) return { kind: "unavailable", project: null, ...base, envFile };
             // Refresh after config resolution; another CLI may have created a
             // project while the effective name was being evaluated.
             const refreshed = await provider.listProjects();
-            if (refreshed.code !== 0 || refreshed.timedOut || refreshed.truncated) return { kind: "unavailable", project: null, ...base };
+            if (refreshed.code !== 0 || refreshed.timedOut || refreshed.truncated) return { kind: "unavailable", project: null, ...base, envFile };
             if (parseComposeLs(refreshed.stdout).some(entry => entry.name === project)) {
-                return { kind: "ambiguous", project: null, ...base };
+                return { kind: "ambiguous", project: null, ...base, envFile };
             }
-            return { kind: "absent", project, ...base };
+            return { kind: "absent", project, ...base, envFile };
         } catch {
-            return { kind: "unavailable", project: null, ...base };
+            return { kind: "unavailable", project: null, ...base, envFile };
         }
     }
-    return { kind: "resolved", project: match.project.name, ...base };
+    return { kind: "resolved", project: match.project.name, ...base, envFile };
 }
 
 export async function loadStackDetail(root: string, name: string, provider: ComposeProvider): Promise<StackDetailStatus> {

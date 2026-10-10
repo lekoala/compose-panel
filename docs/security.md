@@ -8,6 +8,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Sessions are random server-side identifiers kept in memory (lost on restart). Cookies are `HttpOnly`, `SameSite=Lax`, `Secure` when `COMPOSE_PANEL_COOKIE_SECURE=true`; the session id rotates on login.
 - All mutating requests (login, logout) require a matching CSRF token and an exact Origin/Referer match. The login page uses a double-submit CSRF cookie; authenticated pages use a per-session token.
 - Login attempts are rate-limited per client; request bodies and login payloads are size-bounded; every application response is `Cache-Control: no-store`.
+- The attempt is reserved synchronously before any awaited password verification, so a burst of concurrent logins cannot all pass the limit before the first failure is recorded; a global in-flight cap bounds concurrent verifications. A successful login releases only its own reservation and never erases outstanding failures.
 - Docker calls are reads by default; editing and the fixed operation allow-list are the only mutations, all authenticated and CSRF-protected. Compose files may still contain secrets: do NOT place the panel behind a public proxy yet.
 
 ## Safe editing (P3)
@@ -15,7 +16,8 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Optimistic concurrency: the form carries a content hash for each file; if either changed on disk the save is refused (409) instead of overwriting an external change.
 - Drafts are validated with `docker compose config --quiet` only, in the real project directory with explicit `--project-directory`, `-f` and, when the env is edited, `--env-file`. The interpolated config is never printed or logged.
 - Values from `.env` are redacted from any validation error before it reaches the page. Symlinked files are refused, and a missing `.env` is not created unless it has content.
-- Backup directories (`<root>/.compose-panel/backups/<stack>/`) are lstat-checked component by component: symlinks and non-directories are refused and created directories are owner-only. The stack directory identity (dev/ino) is revalidated after the validation window, so a swapped directory is a conflict even with identical content. These checks are point-in-time: they close the window to the commit instant but are not a transaction against a privileged local writer racing `rename` itself.
+- Mutations and log follows resolve the project context through the same `.env` safety rules as the editor: a symlinked, non-regular or oversized `.env` is refused (`409`) before any Docker call, and a verified `.env` is passed explicitly with `--env-file` so Compose cannot read one implicitly.
+- Backup directories (`<root>/.compose-panel/backups/<stack>/`) are lstat-checked component by component: symlinks and non-directories are refused and created directories are owner-only. The stack directory identity (dev/ino) is revalidated after the validation window, so a swapped directory is a conflict even with identical content. These checks are point-in-time: they close the window to the commit instant but are not a transaction against a privileged local writer racing `rename` itself. The backup directory is likewise not re-validated between `ensureBackupDir` and the copy, so the same privileged-writer assumption covers that `ensure→copy` window.
 - Every save first copies the previous file to `<root>/.compose-panel/backups/<stack>/`; if writing the second file of the pair fails, the first is restored and the failure is reported as partial with backup references, never as success. Files are re-read after validation, so an external change during the validation window is a conflict, not a silent overwrite. A save is a modifying operation and holds the per-stack lock.
 
 ## Operations (P4)
@@ -31,6 +33,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 
 ## Streaming (P5)
 - Both event streams require an authenticated session and answer `401` (never a login redirect) without one. Stack names are validated exactly like reads; unknown stacks are `404`.
+- Open streams are bound to their session id: logout closes them immediately, and each heartbeat closes a stream whose session has expired (the check does not refresh idle activity). An operation observer disconnect still leaves the operation running; closing the last log reader still triggers the follow cleanup.
 - Operation SSE is observation-only: subscribing never starts or cancels work, and disconnecting never stops a running operation. The `done` frame is sent only after a terminal state; the stream also ends on heartbeat timeout.
 - Log follow spawns `compose logs --follow --tail N --timestamps` through the provider with an explicit argument array (no shell), one subprocess per stack at most. The subprocess is killed when the last reader leaves, when the explicit timeout fires, or on server shutdown. Readers share the process; they never pass options.
 - Bounds: process-wide subscriber cap (`503` past it), per-stack retained log buffer (tail-kept, flagged), heartbeat, explicit stream/follow timeouts, and slow readers are dropped instead of buffering unbounded output for them. ANSI color escapes are stripped before broadcast.
@@ -54,7 +57,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Docker logs may themselves contain secrets. Never include them in unprotected application logs.
 
 ## Mandatory security checks
-Tests for `../` paths, encoded URLs, trailing-newline/NUL/double-encoded names, missing STACKS_DIR (fail-closed 503, no Docker call), non-conforming names, symlinks, double Compose, `.env` symlink, write conflicts, secrets in errors, CSRF, XSS, concurrent operations, malformed Docker CLI output, timeout/output-cap handling, SSE auth/subscriber limits/slow readers, log follow kill-on-last-reader/timeout, Linux shutdown/restart and stuck processes.
+Tests for `../` paths, encoded URLs, trailing-newline/NUL/double-encoded names, missing STACKS_DIR (fail-closed 503, no Docker call), non-conforming names, symlinks, double Compose, `.env` symlink (editor, mutation and follow), write conflicts, concurrent login burst and in-flight cap, session-revocation stream close, secrets in errors, CSRF, XSS, concurrent operations, malformed Docker CLI output, timeout/output-cap handling, SSE auth/subscriber limits/slow readers, log follow kill-on-last-reader/timeout, Linux shutdown/restart and stuck processes, dependency audit (`bun audit` on every CI build plus the Trivy image scan).
 
 ## CI
 Subprocess tests only in a disposable/isolated Docker daemon. Never mount the CI host's production engine socket in automated tests.

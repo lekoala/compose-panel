@@ -11,6 +11,16 @@
   log ownership when child exit cannot be confirmed.
 - Preserve streamed text fragments, CRLF and split UTF-8 through the runner,
   SSE frames and browser. Add isolated Linux process and browser regressions.
+- Security audit follow-up (A1–A3 of `docs/security-audit-2026-10-10.md`):
+  reserve a login attempt synchronously before password verification with a
+  global in-flight cap (a burst can no longer exceed the limit); bind SSE
+  streams to their session so logout closes them and expiry stops them at the
+  next heartbeat; apply the editor's `.env` safety rules to mutations and log
+  follows and pass a verified `.env` explicitly with `--env-file`. A4, H1 and
+  H2 remain open.
+- Toolchain: Bun 1.4.3 with the built-in `bun check` type checker (`typescript`
+  removed), `bun audit` and a production-only boot check in CI, trapped-name and
+  missing-STACKS_DIR regression tests, and `docs/security-audit-2026-10-10.md`.
 
 ## 0.1.0 — 2026-10-10
 

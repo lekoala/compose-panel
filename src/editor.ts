@@ -1,12 +1,12 @@
 import { dirname, join } from "node:path";
 import { open, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { locateComposeFile, StackError } from "./stacks.ts";
+import { locateComposeFile, StackError, ENV_FILENAME } from "./stacks.ts";
 import { resolveProjectContext } from "./status.ts";
 import { backupFile, dirIdentity, ensureBackupDir, hashContent, randomSuffix, readFileSafe, sameDirIdentity, writeFileAtomic, type SafeFile } from "./fs-safe.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
 
-export const ENV_FILENAME = ".env";
+export { ENV_FILENAME } from "./stacks.ts";
 const ABSENT_HASH = hashContent("");
 
 export class StackConflictError extends Error {

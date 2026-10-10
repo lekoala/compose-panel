@@ -171,6 +171,31 @@ export function createApp(options: AppOptions): App {
     let shuttingDown = false;
     const saves = new Set<Promise<unknown>>();
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
+    // Open streams are bound to their session id so logout or expiry can close
+    // them; otherwise a revoked session would keep receiving streamed output.
+    const sessionStreams = new Map<string, Set<() => void>>();
+    function registerStream(id: string, close: () => void): void {
+        let set = sessionStreams.get(id);
+        if (!set) {
+            set = new Set();
+            sessionStreams.set(id, set);
+        }
+        set.add(close);
+    }
+    function unregisterStream(id: string, close: () => void): void {
+        const set = sessionStreams.get(id);
+        if (!set) return;
+        set.delete(close);
+        if (set.size === 0) sessionStreams.delete(id);
+    }
+    function closeSessionStreams(id: string): void {
+        const set = sessionStreams.get(id);
+        if (!set) return;
+        sessionStreams.delete(id);
+        for (const close of [...set]) {
+            try { close(); } catch { /* a broken stream must not block logout */ }
+        }
+    }
     const limiter = new LoginRateLimiter(
         config.loginRateLimit.maxAttempts,
         config.loginRateLimit.windowMs,
@@ -222,26 +247,31 @@ export function createApp(options: AppOptions): App {
         if (!cookieToken || !formToken || !safeEqual(cookieToken, formToken)) return plain("Forbidden", 403);
 
         const key = clientKey(request, config);
-        const verdict = limiter.check(key);
+        // Reserve the attempt synchronously, before any awaited password work,
+        // so a burst of concurrent requests cannot all pass the limit before the
+        // first failure is recorded. The reservation is settled below.
+        const verdict = limiter.tryReserve(key);
         if (!verdict.allowed) return loginFailure("Too many attempts. Try again later.", 429, verdict.retryAfterSec);
 
         const user = form.get("user") ?? "";
         const password = form.get("password") ?? "";
-        // Verify unconditionally to keep the response time independent of the username.
-        const passwordOk = await verifyPassword(config.adminPasswordHash, password);
-        if (!passwordOk || user !== config.adminUser) {
-            limiter.recordFailure(key);
-            return loginFailure("Invalid credentials.", 401);
-        }
+        let success = false;
+        try {
+            // Verify unconditionally to keep the response time independent of the username.
+            const passwordOk = await verifyPassword(config.adminPasswordHash, password);
+            success = passwordOk && user === config.adminUser;
+            if (!success) return loginFailure("Invalid credentials.", 401);
 
-        limiter.reset(key);
-        const session = sessions.create(config.adminUser);
-        const response = redirect("/", 303);
-        response.headers.append(
-            "Set-Cookie",
-            sessionCookie(session.id, { secure: config.cookieSecure, maxAgeSec: Math.floor(config.sessionTtlMs / 1000) }),
-        );
-        return response;
+            const session = sessions.create(config.adminUser);
+            const response = redirect("/", 303);
+            response.headers.append(
+                "Set-Cookie",
+                sessionCookie(session.id, { secure: config.cookieSecure, maxAgeSec: Math.floor(config.sessionTtlMs / 1000) }),
+            );
+            return response;
+        } finally {
+            limiter.settle(key, success);
+        }
     }
 
     async function renderStackList(csrf: string): Promise<Response> {
@@ -364,6 +394,9 @@ export function createApp(options: AppOptions): App {
         // collisions, then pin that identity explicitly before creation.
         const creates = action === "up" || action === "pull-up";
         const context = await resolveProjectContext(stacksRoot, name, provider, creates);
+        if (context.kind === "invalid") {
+            throw new StackError("This stack's .env is not a regular file. Refusing to run Docker against it.", 409);
+        }
         if (context.kind === "ambiguous") {
             throw new StackError("The Compose project is ambiguous or its name is already in use by another stack. Refusing to guess which one to control.", 409);
         }
@@ -377,7 +410,7 @@ export function createApp(options: AppOptions): App {
             operations.start({
                 stack: name,
                 action,
-                target: { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd },
+                target: { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
             });
             return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
         } catch (error) {
@@ -413,7 +446,7 @@ export function createApp(options: AppOptions): App {
      * the timeout bounds stream lifetime; a full buffer drops slow readers so
      * one stuck client cannot grow server memory without bound.
      */
-    function sseResponse(request: Request, wire: (send: (frame: string) => void, close: () => void) => () => void): Response {
+    function sseResponse(request: Request, wire: (send: (frame: string) => void, close: () => void) => () => void, guard?: { id: string; isAlive: () => boolean }): Response {
         if (activeSse >= config.sseMaxSubscribers) return plain("Too many subscriptions", 503);
         activeSse += 1;
         let released = false;
@@ -433,6 +466,7 @@ export function createApp(options: AppOptions): App {
                 const close = () => {
                     if (closed) return;
                     closed = true;
+                    if (guard) unregisterStream(guard.id, close);
                     try { cleanup(); } catch { /* ignore */ }
                     clearInterval(heartbeat);
                     clearTimeout(timeout);
@@ -454,7 +488,15 @@ export function createApp(options: AppOptions): App {
                         close();
                     }
                 };
-                const heartbeat = setInterval(() => send(formatSseHeartbeat()), config.sseHeartbeatMs);
+                const heartbeat = setInterval(() => {
+                    // Expiry check must not itself refresh idle activity, so a
+                    // stream cannot keep a session alive past its limits.
+                    if (guard && !guard.isAlive()) {
+                        close();
+                        return;
+                    }
+                    send(formatSseHeartbeat());
+                }, config.sseHeartbeatMs);
                 const timeout = setTimeout(close, config.sseTimeoutMs);
                 const onAbort = () => close();
                 if (request.signal.aborted) {
@@ -463,6 +505,7 @@ export function createApp(options: AppOptions): App {
                 }
                 request.signal.addEventListener("abort", onAbort, { once: true });
                 try {
+                    if (guard) registerStream(guard.id, close);
                     cleanup = wire(send, close);
                 } catch (error) {
                     // A synchronous subscription refusal (e.g. server shutting
@@ -481,9 +524,10 @@ export function createApp(options: AppOptions): App {
         return new Response(stream, { headers: sseHeaders() });
     }
 
-    async function handleOperationEvents(name: string, request: Request): Promise<Response> {
+    async function handleOperationEvents(name: string, request: Request, sessionId: string): Promise<Response> {
         // Validates the name and rejects unknown stacks before a slot is taken.
         await locateComposeFile(stacksRoot, name);
+        const guard = { id: sessionId, isAlive: () => sessions.isActive(sessionId) };
         return sseResponse(request, (send, close) => {
             let sentOutput = "";
             let sentTerminal = false;
@@ -508,14 +552,17 @@ export function createApp(options: AppOptions): App {
             if (sub.snapshot) send(formatSseEvent("snapshot", operationSnapshot(sub.snapshot)));
             else send(formatSseEvent("snapshot", JSON.stringify({ status: "none" })));
             return sub.unsubscribe;
-        });
+        }, guard);
     }
 
-    async function handleLogsEvents(name: string, request: Request): Promise<Response> {
+    async function handleLogsEvents(name: string, request: Request, sessionId: string): Promise<Response> {
         // Same fail-closed context as mutations: a follow without a verified
         // project could attach to the wrong one. An undeployed stack simply
         // yields an empty/ended stream.
         const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind === "invalid") {
+            throw new StackError("This stack's .env is not a regular file. Refusing to run Docker against it.", 409);
+        }
         if (context.kind === "ambiguous") {
             throw new StackError("Several Docker projects match this stack. Refusing to guess which logs to follow.", 409);
         }
@@ -523,15 +570,16 @@ export function createApp(options: AppOptions): App {
             throw new StackError("Docker state is unavailable. Refusing to follow without a verified project.", 503);
         }
         if (shuttingDown) throw new StackError("The server is shutting down; new log follows are refused.", 503);
+        const guard = { id: sessionId, isAlive: () => sessions.isActive(sessionId) };
         if (context.kind === "absent") {
             return sseResponse(request, (send, close) => {
                 send(formatSseEvent("replay", JSON.stringify({ text: "", truncated: false })));
                 send(formatSseEvent("end", "This stack is not deployed."));
                 close();
                 return () => {};
-            });
+            }, guard);
         }
-        const target = { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd };
+        const target = { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined };
         return sseResponse(request, (send, close) => {
             const sub = logs.subscribe(
                 name,
@@ -544,7 +592,7 @@ export function createApp(options: AppOptions): App {
             );
             send(formatSseEvent("replay", JSON.stringify({ text: sub.replay.text, truncated: sub.replay.truncated })));
             return sub.unsubscribe;
-        });
+        }, guard);
     }
 
     function sseError(error: unknown): Response {
@@ -604,8 +652,8 @@ export function createApp(options: AppOptions): App {
         if (isEventStream) {
             if (method !== "GET") return methodNotAllowed("GET");
             try {
-                if (opEventsMatch) return await handleOperationEvents(decodeName(opEventsMatch[1]!), request);
-                return await handleLogsEvents(decodeName(logEventsMatch![1]!), request);
+                if (opEventsMatch) return await handleOperationEvents(decodeName(opEventsMatch[1]!), request, session.id);
+                return await handleLogsEvents(decodeName(logEventsMatch![1]!), request, session.id);
             } catch (error) {
                 return sseError(error);
             }
@@ -619,6 +667,7 @@ export function createApp(options: AppOptions): App {
                 return plain("Forbidden", 403);
             }
             sessions.destroy(session.id);
+            closeSessionStreams(session.id);
             const response = redirect("/login", 303);
             response.headers.append("Set-Cookie", clearedSessionCookie(config.cookieSecure));
             return response;

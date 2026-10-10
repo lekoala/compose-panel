@@ -11,6 +11,7 @@ const OVERRIDE_FILES = [
     "docker-compose.override.yaml", "docker-compose.override.yml",
 ] as const;
 const MAX_COMPOSE_BYTES = 1024 * 1024;
+export const ENV_FILENAME = ".env";
 const STACK_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 
 export class StackError extends Error {

@@ -18,10 +18,26 @@ jobs:
         with:
           bun-version: 1.4.3
       - run: bun install --frozen-lockfile
+      - run: bun audit
       - run: bun run typecheck
       - run: bun run test
       - name: Compose config integration (no daemon access)
         run: COMPOSE_PANEL_TEST_DOCKER=0 COMPOSE_PANEL_TEST_COMPOSE_CONFIG=1 bun test tests/compose-config-linux.test.ts
+      - name: Production-only boot (no devDependencies)
+        run: |
+          set -e
+          rm -rf /tmp/prod-only && mkdir -p /tmp/prod-only/stacks/demo
+          cp package.json bun.lock /tmp/prod-only/
+          cp -r src public /tmp/prod-only/
+          printf 'services:\n  app:\n    image: hello-world\n' > /tmp/prod-only/stacks/demo/compose.yaml
+          cd /tmp/prod-only
+          bun install --production --frozen-lockfile
+          test ! -e node_modules/@types
+          HASH=$(COMPOSE_PANEL_PASSWORD=ci-prod-only bun src/scripts/hash-password.ts | tail -1)
+          STACKS_DIR=/tmp/prod-only/stacks COMPOSE_PANEL_ADMIN_PASSWORD_HASH="$HASH" bun src/server.ts &
+          PANEL_PID=$!
+          trap "kill $PANEL_PID" EXIT
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:5081/health/live && break || sleep 1; done
 
   image:
     runs-on: ubuntu-latest

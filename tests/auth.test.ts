@@ -70,6 +70,17 @@ describe("SessionStore", () => {
         const store = new SessionStore(1000, 1000, () => 0);
         expect(store.create("admin").id).not.toBe(store.create("admin").id);
     });
+
+    test("isActive reports validity without refreshing idle activity", () => {
+        let now = 0;
+        const store = new SessionStore(10_000, 1000, () => now);
+        const session = store.create("admin");
+        now = 900;
+        expect(store.isActive(session.id)).toBe(true);
+        // The stream heartbeat relies on this not counting as activity.
+        now = 1001;
+        expect(store.isActive(session.id)).toBe(false);
+    });
 });
 
 describe("LoginRateLimiter", () => {
@@ -97,5 +108,32 @@ describe("LoginRateLimiter", () => {
         limiter.recordFailure("k");
         limiter.reset("k");
         expect(limiter.check("k").allowed).toBe(true);
+    });
+});
+
+describe("LoginRateLimiter reservations", () => {
+    test("a synchronous burst cannot pass the limit before any failure settles", () => {
+        const limiter = new LoginRateLimiter(5, 60_000, 60_000, () => 0, 100);
+        const verdicts = Array.from({ length: 12 }, () => limiter.tryReserve("k"));
+        expect(verdicts.filter(v => v.allowed).length).toBe(5);
+        expect(verdicts.filter(v => !v.allowed).length).toBe(7);
+    });
+
+    test("the global in-flight cap bounds concurrent verifications", () => {
+        const limiter = new LoginRateLimiter(100, 60_000, 60_000, () => 0, 3);
+        expect(limiter.tryReserve("a").allowed).toBe(true);
+        expect(limiter.tryReserve("b").allowed).toBe(true);
+        expect(limiter.tryReserve("c").allowed).toBe(true);
+        expect(limiter.tryReserve("d").allowed).toBe(false);
+    });
+
+    test("success releases its reservation without erasing outstanding failures", () => {
+        const limiter = new LoginRateLimiter(3, 60_000, 60_000, () => 0, 100);
+        limiter.tryReserve("k"); limiter.settle("k", false);
+        limiter.tryReserve("k"); limiter.settle("k", false);
+        // A successful login must not clear the two prior failures.
+        limiter.tryReserve("k"); limiter.settle("k", true);
+        limiter.tryReserve("k"); limiter.settle("k", false);
+        expect(limiter.tryReserve("k").allowed).toBe(false);
     });
 });

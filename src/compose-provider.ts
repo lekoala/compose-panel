@@ -26,6 +26,8 @@ export interface ComposeTarget {
     project?: string;
     composeFile: string;
     cwd: string;
+    /** Verified `.env` path; passed explicitly so Compose cannot read one implicitly. */
+    envFile?: string;
     timeoutMs?: number;
     maxBytes?: number;
     /** Live pipe chunks while a mutation runs. Retention stays capped. */
@@ -46,7 +48,7 @@ export interface ComposeProvider {
     detect(): Promise<ComposeCapabilities>;
     listProjects(): Promise<CommandResult>;
     /** Resolve only the effective name; never return or publish interpolated config. */
-    projectName(input: { composeFile: string; cwd: string }): Promise<string | null>;
+    projectName(input: { composeFile: string; cwd: string; envFile?: string }): Promise<string | null>;
     projectServices(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult>;
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult>;
     pull(target: ComposeTarget): Promise<CommandResult>;
@@ -98,11 +100,11 @@ class DockerComposeProvider implements ComposeProvider {
         return this.runner(["compose", "ls", "--all", "--format", "json"]);
     }
 
-    async projectName(input: { composeFile: string; cwd: string }): Promise<string | null> {
-        const result = await this.runner([
-            "compose", "--project-directory", input.cwd, "-f", input.composeFile,
-            "config", "--format", "json",
-        ], { cwd: input.cwd });
+    async projectName(input: { composeFile: string; cwd: string; envFile?: string }): Promise<string | null> {
+        const args = ["compose"];
+        if (input.envFile) args.push("--env-file", input.envFile);
+        args.push("--project-directory", input.cwd, "-f", input.composeFile, "config", "--format", "json");
+        const result = await this.runner(args, { cwd: input.cwd });
         if (result.code !== 0 || result.timedOut || result.truncated) return null;
         try {
             const value: unknown = JSON.parse(result.stdout);
@@ -134,6 +136,7 @@ class DockerComposeProvider implements ComposeProvider {
     private mutation(target: ComposeTarget, command: string[]): Promise<CommandResult> {
         const args = ["compose"];
         if (target.project) args.push("-p", target.project);
+        if (target.envFile) args.push("--env-file", target.envFile);
         args.push("--project-directory", target.cwd, "-f", target.composeFile, ...command);
         return this.runner(args, { cwd: target.cwd, timeoutMs: target.timeoutMs, maxBytes: target.maxBytes, onChunk: target.onOutput });
     }
@@ -167,6 +170,7 @@ class DockerComposeProvider implements ComposeProvider {
         const tail = target.tailLines ?? 200;
         const args = ["compose"];
         if (target.project) args.push("-p", target.project);
+        if (target.envFile) args.push("--env-file", target.envFile);
         args.push(
             "--project-directory", target.cwd,
             "-f", target.composeFile,
