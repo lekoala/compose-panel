@@ -11,6 +11,23 @@
         pre.scrollTop = pre.scrollHeight;
     }
 
+    var FAVICON_IDLE = "/favicon.svg";
+
+    function activeIcon() {
+        var dark = false;
+        try {
+            dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        } catch { /* keep the light variant */ }
+        return dark ? "/icon-active-on-dark.svg" : "/icon-active-on-light.svg";
+    }
+
+    /* Swap the tab icon while an operation runs. Firefox animates the SVG;
+     * other browsers show its first frame — still a distinct busy signal. */
+    function setFavicon(href) {
+        var link = document.getElementById("favicon-svg");
+        if (link) link.setAttribute("href", href);
+    }
+
     function wireOperation(section) {
         var url = section.getAttribute("data-op-stream");
         var status = document.getElementById("op-status");
@@ -24,6 +41,7 @@
         if (!status || !output) return;
         if (initialStatus !== "running") return; // Historical output is already rendered.
         if (note) note.hidden = false;
+        setFavicon(activeIcon());
         source = new EventSource(url);
         source.addEventListener("snapshot", function (e) {
             var snap = null;
@@ -59,6 +77,7 @@
             if (!open) return;
             open = false;
             try { source.close(); } catch { /* ignore */ }
+            setFavicon(FAVICON_IDLE);
             if (note) note.hidden = true;
         }
     }

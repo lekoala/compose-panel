@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80" role="img" aria-label="Compose Panel — démarrage"><style>
+.halo{transform-box:fill-box;transform-origin:center;opacity:0}
+.run{transform-box:fill-box;transform-origin:center}
+@keyframes halo{0%{transform:scale(1);opacity:.7}70%{transform:scale(1.8);opacity:0}100%{transform:scale(1.8);opacity:0}}
+@keyframes beat{0%{transform:scale(1)}12%{transform:scale(1.14)}35%{transform:scale(1)}100%{transform:scale(1)}}
+
+@keyframes draw{from{stroke-dasharray:240;stroke-dashoffset:240}to{stroke-dasharray:240;stroke-dashoffset:0}}
+@keyframes pop{0%{transform:scale(0);opacity:0}70%{transform:scale(1.15);opacity:1}100%{transform:scale(1);opacity:1}}
+.fr{animation:draw .6s ease-out both}
+.b{transform-box:fill-box;transform-origin:center;animation:pop .35s ease-out both}
+.halo{animation:halo 2.4s cubic-bezier(0,0,.2,1) 1.9s infinite}.run{animation:pop .35s ease-out both,beat 2.4s ease-in-out 1.9s infinite}@media (prefers-reduced-motion:reduce){.fr,.b,.halo,.run{animation:none}}</style><g transform="translate(8,8)">
+<rect class="fr" x="2" y="2" width="60" height="60" fill="none" stroke="#111111" stroke-width="4"/>
+<rect class="halo" x="26" y="10" width="12" height="12" fill="none" stroke="#2F5BFF" stroke-width="2"/>
+<rect class="run b" style="animation-delay:1.5s" x="26" y="10" width="12" height="12" fill="#2F5BFF"/>
+<rect class=" b" style="animation-delay:0.9s" x="10" y="26" width="12" height="12" fill="#111111"/>
+<rect class=" b" style="animation-delay:1.0s" x="26" y="26" width="12" height="12" fill="#111111"/>
+<rect class=" b" style="animation-delay:1.1s" x="42" y="26" width="12" height="12" fill="#111111"/>
+<rect class=" b" style="animation-delay:0.6s" x="10" y="42" width="12" height="12" fill="#111111"/>
+<rect class=" b" style="animation-delay:0.7s" x="26" y="42" width="12" height="12" fill="#111111"/>
+<rect class="b" style="animation-delay:0.8s" x="43" y="43" width="10" height="10" fill="none" stroke="#111111" stroke-width="2"/>
+</g></svg>

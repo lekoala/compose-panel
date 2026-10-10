@@ -32,6 +32,17 @@ const BASE_HEADERS: Record<string, string> = {
     "X-Frame-Options": "DENY",
 };
 
+/** Brand assets served unauthenticated (login page included). Fixed map, no user input. */
+const BRAND_FILES: Record<string, { file: string; type: string }> = {
+    "/favicon.svg": { file: "favicon.svg", type: "image/svg+xml; charset=utf-8" },
+    "/favicon.ico": { file: "favicon.ico", type: "image/x-icon" },
+    "/apple-touch-icon.png": { file: "apple-touch-icon.png", type: "image/png" },
+    "/icon-active-on-light.svg": { file: "icon-active-on-light.svg", type: "image/svg+xml; charset=utf-8" },
+    "/icon-active-on-dark.svg": { file: "icon-active-on-dark.svg", type: "image/svg+xml; charset=utf-8" },
+    "/icon-boot-on-light.svg": { file: "icon-boot-on-light.svg", type: "image/svg+xml; charset=utf-8" },
+    "/icon-boot-on-dark.svg": { file: "icon-boot-on-dark.svg", type: "image/svg+xml; charset=utf-8" },
+};
+
 const STATE_LABELS: Record<string, string> = {
     running: "running",
     stopped: "stopped",
@@ -510,6 +521,13 @@ export function createApp(options: AppOptions): App {
             if (method !== "GET") return methodNotAllowed("GET");
             return new Response(Bun.file(new URL("../public/app.js", import.meta.url)), {
                 headers: { "Content-Type": "text/javascript; charset=utf-8", ...BASE_HEADERS },
+            });
+        }
+        const brandFile = BRAND_FILES[url.pathname];
+        if (brandFile) {
+            if (method !== "GET") return methodNotAllowed("GET");
+            return new Response(Bun.file(new URL(`../public/${brandFile.file}`, import.meta.url)), {
+                headers: { "Content-Type": brandFile.type, ...BASE_HEADERS },
             });
         }
         if (url.pathname === "/login") {

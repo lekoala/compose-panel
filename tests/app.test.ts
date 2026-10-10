@@ -150,6 +150,33 @@ describe("public routes", () => {
         expect((await app.fetch(new Request(`${ORIGIN}/health/live`))).status).toBe(200);
         expect((await app.fetch(new Request(`${ORIGIN}/styles.css`))).status).toBe(200);
     });
+
+    test("serves brand assets without a session", async () => {
+        const app = makeApp();
+        const cases: [string, string][] = [
+            ["/favicon.svg", "image/svg+xml"],
+            ["/favicon.ico", "image/x-icon"],
+            ["/apple-touch-icon.png", "image/png"],
+            ["/icon-active-on-light.svg", "image/svg+xml"],
+            ["/icon-active-on-dark.svg", "image/svg+xml"],
+            ["/icon-boot-on-light.svg", "image/svg+xml"],
+            ["/icon-boot-on-dark.svg", "image/svg+xml"],
+        ];
+        for (const [path, type] of cases) {
+            const response = await app.fetch(new Request(`${ORIGIN}${path}`));
+            expect(response.status).toBe(200);
+            expect(response.headers.get("content-type")).toContain(type);
+            expect(response.headers.get("cache-control")).toBe("no-store");
+            expect((await response.text()).length).toBeGreaterThan(0);
+        }
+    });
+
+    test("rejects unknown asset paths and non-GET brand requests", async () => {
+        const app = makeApp();
+        expect((await app.fetch(new Request(`${ORIGIN}/icon-evil.svg`))).status).toBe(302);
+        const session = await login(app);
+        expect((await authed(app, "/favicon.svg", session, { method: "POST" })).status).toBe(405);
+    });
 });
 
 describe("auth gate", () => {
@@ -174,8 +201,23 @@ describe("auth gate", () => {
         expect(response.status).toBe(200);
         expect(response.headers.get("cache-control")).toBe("no-store");
         expect(response.headers.get("content-security-policy")).toContain("form-action 'self'");
+        expect(response.headers.get("content-security-policy")).toContain("img-src 'self'");
         expect(setCookies(response).some(cookie => cookie.startsWith("cp_csrf="))).toBe(true);
-        expect(await response.text()).toContain('name="csrf"');
+        const html = await response.text();
+        expect(html).toContain('name="csrf"');
+        expect(html).toContain('id="favicon-svg"');
+        expect(html).toContain('href="/favicon.ico"');
+        expect(html).toContain('href="/apple-touch-icon.png"');
+        expect(html).toContain('srcset="/icon-boot-on-dark.svg"');
+        expect(html).toContain('src="/icon-boot-on-light.svg"');
+    });
+
+    test("pages brand the header with the symbol and text", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        const html = await (await authed(app, "/", session)).text();
+        expect(html).toContain('<img src="/favicon.svg" alt="" width="20" height="20">Compose Panel');
+        expect(html).toContain('name="theme-color"');
     });
 
     test("a valid session unlocks the stack list and compose file", async () => {

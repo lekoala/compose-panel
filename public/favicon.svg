@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><style>
+.i{fill:#111111;stroke:#111111} .a{fill:#2F5BFF} .f{fill:none;stroke:#111111;stroke-width:4} .o{fill:none;stroke:#111111;stroke-width:2} .k{fill:#111111}
+@media (prefers-color-scheme: dark){ .a{fill:#6C8CFF} .f,.o{stroke:#F4F4F2} .k{fill:#F4F4F2} }
+</style>
+<rect class="f" x="2" y="2" width="60" height="60"/>
+<rect class="a" x="26" y="10" width="12" height="12"/>
+<rect class="k" x="10" y="26" width="12" height="12"/><rect class="k" x="26" y="26" width="12" height="12"/><rect class="k" x="42" y="26" width="12" height="12"/>
+<rect class="k" x="10" y="42" width="12" height="12"/><rect class="k" x="26" y="42" width="12" height="12"/>
+<rect class="o" x="43" y="43" width="10" height="10"/></svg>

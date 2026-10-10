@@ -1,5 +1,10 @@
 # Compose Panel
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-on-dark.svg">
+  <img src="docs/assets/logo-on-light.svg" alt="Compose Panel" width="640">
+</picture>
+
 A **single-server** panel to administer Docker Compose stacks, without a SPA, without an ORM and without a parallel orchestrator. The goal is a small, self-hosted tool that keeps Compose files as the source of truth.
 
 > **Current state: authenticated, read-only + editing + operations + live logs, NOT production-ready.** A single administrator logs in; the raw `compose.yaml` and `.env` can be edited with validation and backups, predefined operations (`up`, `stop`, `restart`, `down`, `pull + up`) run in the background, and operation output plus `compose logs --follow` stream over authenticated SSE. It still listens on **`127.0.0.1` only**. Do not expose it through a reverse proxy until the proxy/TLS contract is reviewed.

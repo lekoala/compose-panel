@@ -33,13 +33,18 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F4F4F2">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0E0E10">
   <title>${escapeHtml(title)} · Compose Panel</title>
   <link rel="stylesheet" href="/styles.css">
+  <link id="favicon-svg" rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon.ico" sizes="48x48">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   ${scripts}
 </head>
 <body>
   <div class="shell">
-    <header><a href="/" class="brand">Compose Panel</a><span class="mode">${escapeHtml(mode)}</span>${logout}</header>
+    <header><a href="/" class="brand"><img src="/favicon.svg" alt="" width="20" height="20">Compose Panel</a><span class="mode">${escapeHtml(mode)}</span>${logout}</header>
     <main>${body}</main>
     <footer>Docker and Compose files remain the sources of truth.</footer>
   </div>
@@ -49,7 +54,7 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
 
 export function loginPage(options: { csrf: string; error?: string | null }): string {
     const error = options.error ? `<p class="error" role="alert">${escapeHtml(options.error)}</p>` : "";
-    return documentHtml("Log in", `<h1>Log in</h1>${error}
+    return documentHtml("Log in", `<picture><source media="(prefers-color-scheme: dark)" srcset="/icon-boot-on-dark.svg"><img src="/icon-boot-on-light.svg" alt="" width="80" height="80" class="login-mark"></picture><h1>Log in</h1>${error}
 <form method="post" action="/login" class="login-form">
   <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
   <label>User <input name="user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
@@ -142,7 +147,7 @@ export function htmlResponse(body: string, status = 200): Response {
             "Referrer-Policy": "no-referrer",
             "X-Frame-Options": "DENY",
             "Vary": "Cookie",
-            "Content-Security-Policy": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+            "Content-Security-Policy": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
         },
     });
 }

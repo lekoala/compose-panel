@@ -1,11 +1,16 @@
 /* Minimal provisional stylesheet. Replace with pinned static Actual CSS later. */
-:root{font-family:ui-sans-serif,system-ui,sans-serif;color-scheme:light dark;line-height:1.5}
+/* Brand accents: running blue, #2F5BFF on light, #6C8CFF on dark. */
+:root{font-family:ui-sans-serif,system-ui,sans-serif;color-scheme:light dark;line-height:1.5;--accent:#2F5BFF;--ink:#111111}
+@media (prefers-color-scheme:dark){:root{--accent:#6C8CFF;--ink:#F4F4F2}}
 *{box-sizing:border-box}
 body{margin:0}
-a{color:inherit;text-underline-offset:.18em}
+a{color:var(--accent);text-underline-offset:.18em}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .shell{max-width:72rem;margin:auto;padding:1.5rem}
 header{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding-bottom:1rem;border-bottom:1px solid #8885}
-.brand{text-decoration:none;font-size:1.25rem;font-weight:700}
+.brand{text-decoration:none;font-size:1.25rem;font-weight:700;color:inherit}
+.brand img{vertical-align:-4px;margin-right:.45rem}
+.login-mark{display:block;margin-bottom:1rem}
 .mode,small,footer{opacity:.7;font-size:.875rem}
 main{padding-block:2rem;min-height:65vh}
 footer{border-top:1px solid #8885;padding-block:1rem}
@@ -21,7 +26,7 @@ pre{padding:1rem;overflow:auto;border:1px solid #8885;border-radius:.5rem;white-
 .login-form button{font:inherit;padding:.5rem .75rem;border:1px solid #8888;border-radius:.4rem;background:transparent;color:inherit;cursor:pointer}
 .error{color:#c0392b}
 .state{display:inline-block;padding:.1rem .45rem;border-radius:.75rem;font-size:.75rem;border:1px solid #8888;text-transform:lowercase}
-.state-running{border-color:#2e8b57;color:#2e8b57}
+.state-running{border-color:var(--accent);color:var(--accent)}
 .state-stopped{border-color:#b8860b;color:#b8860b}
 .state-not-created{opacity:.7}
 .state-unknown{border-color:#c0392b;color:#c0392b}
