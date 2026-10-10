@@ -153,6 +153,12 @@ Useful variables: `COMPOSE_PANEL_AUDIT_ENABLED` (default `true`),
 `COMPOSE_PANEL_AUDIT_ROTATION` (`day` or `month`),
 `COMPOSE_PANEL_AUDIT_RETAIN_FILES`, `COMPOSE_PANEL_AUDIT_MAX_READ_LINES`.
 
+The activity log, the start time of an action and container logs are all shown
+in one display time zone. Set `COMPOSE_PANEL_TIMEZONE` to an IANA name (e.g.
+`Europe/Brussels`) to fix it for every reader; leave it unset to use each
+reader's browser zone. Timestamps are always stored and emitted in UTC: this
+only changes presentation, and an invalid zone is refused at startup.
+
 Every failed login is a line like:
 
 ```json

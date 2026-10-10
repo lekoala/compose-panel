@@ -6,6 +6,11 @@ First minimal release. Single Linux host, single trusted administrator,
 always bound to `127.0.0.1`; remote access through an SSH tunnel or HTTPS with
 Caddy on the same host.
 
+- Display time zone: container logs (`compose logs --timestamps`), the activity
+  log and action start times are shown in one zone. `COMPOSE_PANEL_TIMEZONE`
+  (an IANA name such as `Europe/Brussels`) fixes it for every reader; unset uses
+  each reader's browser zone. Stored and emitted timestamps stay UTC; an invalid
+  zone is refused at startup.
 - Reverse proxy mode (ADR 0010): `COMPOSE_PANEL_PUBLIC_ORIGIN=https://…` alone
   turns on Secure cookies and the forwarded client address for a TLS proxy on
   the same host; the bind stays hard-coded to loopback, so a port mapping cannot

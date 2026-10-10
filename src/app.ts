@@ -277,8 +277,8 @@ export function createApp(options: AppOptions): App {
 
     // Shared page options: sign-out form and how the panel is reached.
     const access = config.publicOrigin ? `${new URL(config.publicOrigin).host} (proxy)` : `127.0.0.1:${config.port} (loopback)`;
-    function pageChrome(csrf: string | undefined): { logoutCsrf?: string; access: string } {
-        return { logoutCsrf: csrf, access };
+    function pageChrome(csrf: string | undefined): { logoutCsrf?: string; access: string; timezone?: string } {
+        return { logoutCsrf: csrf, access, timezone: config.timeZone || undefined };
     }
 
     async function readForm(request: Request, maxBytes = config.maxBodyBytes): Promise<URLSearchParams | null> {
@@ -463,7 +463,7 @@ export function createApp(options: AppOptions): App {
                 throw error;
             }
         }
-        return htmlResponse(auditPage({ csrf, access, periods, selected, entries }));
+        return htmlResponse(auditPage({ csrf, access, timezone: config.timeZone || undefined, periods, selected, entries }));
     }
 
     async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200): Promise<Response> {
@@ -490,7 +490,7 @@ export function createApp(options: AppOptions): App {
             + operationControls(stack.name, csrf, { busy: operation?.status === "running", deployed: status.state !== "not-created", updatesReady: Object.keys(status.updates ?? {}) })
             + operationPanel(operation, stack.name)
             + servicesSection(status.services, status.state, status.updates)
-            + logsPanel(stack.name, config.logTailLines)
+            + logsPanel(stack.name, config.logTailLines, config.timeZone)
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
             { ...pageChrome(csrf), scripts: ["/app.js"] },
         ), statusCode);
@@ -517,6 +517,7 @@ export function createApp(options: AppOptions): App {
             name,
             csrf,
             access,
+            timezone: config.timeZone || undefined,
             composeFilename: stack.composeFilename,
             // A kept draft keeps the versions it was based on, so a change made
             // on disk meanwhile is still detected as a conflict on the next save.

@@ -30,6 +30,12 @@ export interface AppConfig {
     cookieSecure: boolean;
     /** Explicit public origin used for Origin/Host checks behind a reverse proxy. */
     publicOrigin: string | null;
+    /**
+     * IANA display time zone for every rendered time (activity log, action
+     * start, container logs). Empty means each reader's browser zone. Stored
+     * timestamps are always UTC; this only affects presentation.
+     */
+    timeZone: string;
     /** Trust X-Forwarded-Proto / X-Forwarded-For from a configured proxy. */
     trustProxy: boolean;
     /**
@@ -124,6 +130,17 @@ function parseOrigin(env: Env): string | null {
     return url.origin;
 }
 
+function parseTimeZone(env: Env): string {
+    const raw = env.COMPOSE_PANEL_TIMEZONE?.trim();
+    if (raw === undefined || raw === "") return "";
+    try {
+        new Intl.DateTimeFormat("en-US", { timeZone: raw });
+    } catch {
+        throw new Error(`COMPOSE_PANEL_TIMEZONE must be a valid IANA time zone (e.g. "Europe/Brussels"), got "${raw}".`);
+    }
+    return raw;
+}
+
 interface ProxySettings {
     publicOrigin: string | null;
     cookieSecure: boolean;
@@ -206,6 +223,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         maxEditBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_EDIT_BYTES", 1024 * 1024),
         dockerPath: env.COMPOSE_PANEL_DOCKER_PATH?.trim() || "docker",
         composeEngine: env.COMPOSE_PANEL_COMPOSE_ENGINE?.trim() || "docker",
+        timeZone: parseTimeZone(env),
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),
         dockerMaxBytes: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_MAX_BYTES", 1024 * 1024),
         operationTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_OPERATION_TIMEOUT_MS", 5 * 60 * 1000),

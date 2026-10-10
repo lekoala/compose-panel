@@ -44,6 +44,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         maxEditBytes: 1024 * 1024,
         dockerPath: "docker",
         composeEngine: "docker",
+        timeZone: "",
         dockerTimeoutMs: 5000,
         dockerMaxBytes: 1024 * 1024,
         operationTimeoutMs: 60_000,

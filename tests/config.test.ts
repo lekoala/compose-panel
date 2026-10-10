@@ -64,6 +64,22 @@ describe("loadConfig audit and login backoff", () => {
     });
 });
 
+describe("loadConfig timezone", () => {
+    const user = { ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala" };
+
+    test("defaults to the reader's browser zone", () => {
+        expect(loadConfig(user).timeZone).toBe("");
+    });
+
+    test("accepts a valid IANA time zone", () => {
+        expect(loadConfig({ ...user, COMPOSE_PANEL_TIMEZONE: "Europe/Brussels" }).timeZone).toBe("Europe/Brussels");
+    });
+
+    test("rejects an invalid time zone", () => {
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_TIMEZONE: "Mars/Olympus" })).toThrow(/TIMEZONE/);
+    });
+});
+
 describe("loadConfig reverse proxy mode", () => {
     const user = { ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala" };
 

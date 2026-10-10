@@ -26,6 +26,37 @@
     var FAVICON_IDLE = "/favicon.svg";
     var BASE_TITLE = document.title;
 
+    /* Fixed display zone from COMPOSE_PANEL_TIMEZONE (data-timezone on <html>).
+     * Empty means the reader's own browser zone. Stored times stay UTC; this is
+     * presentation only. */
+    var ZONE = (document.documentElement && document.documentElement.getAttribute("data-timezone")) || "";
+    var zoneFormatters = null;
+
+    function formatters() {
+        var dateOpts, timeOpts;
+        if (!zoneFormatters) {
+            dateOpts = { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
+            timeOpts = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
+            if (ZONE) { dateOpts.timeZone = ZONE; timeOpts.timeZone = ZONE; }
+            zoneFormatters = {
+                dateTime: new Intl.DateTimeFormat("sv-SE", dateOpts),
+                time: new Intl.DateTimeFormat("sv-SE", timeOpts),
+            };
+        }
+        return zoneFormatters;
+    }
+
+    /* Docker emits RFC3339 UTC timestamps in every log line; rewrite each to the
+     * display zone. Unknown patterns are left untouched. */
+    var LOG_TIMESTAMP = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g;
+    function localizeLogText(text) {
+        var dateTime = formatters().dateTime;
+        return text.replace(LOG_TIMESTAMP, function (stamp) {
+            var date = new Date(stamp);
+            return isNaN(date.getTime()) ? stamp : dateTime.format(date);
+        });
+    }
+
     function activeIcon() {
         var dark = false;
         try {
@@ -128,6 +159,7 @@
         var status = document.getElementById("logs-status");
         var output = document.getElementById("logs-output");
         var source = null;
+        var carry = "";
         if (!url || typeof EventSource === "undefined") return;
         if (!follow || !stop || !output) return;
         follow.addEventListener("click", function () {
@@ -144,14 +176,26 @@
                 try {
                     payload = JSON.parse(e.data);
                 } catch { payload = null; }
-                output.textContent = payload && typeof payload.text === "string" ? payload.text : "";
+                carry = "";
+                output.textContent = payload && typeof payload.text === "string" ? localizeLogText(payload.text) : "";
                 output.scrollTop = output.scrollHeight;
                 setStatus(payload && payload.truncated
                     ? "Following live. Older lines were dropped to stay within the size limit."
                     : "Following live.");
             });
             source.addEventListener("chunk", function (e) {
-                try { appendText(output, JSON.parse(e.data).text, MAX_OUTPUT_CHARS); } catch { /* invalid frame */ }
+                // Buffer partial lines so a timestamp split across SSE frames is
+                // reassembled and localized only once.
+                var incoming;
+                var newline;
+                try { incoming = JSON.parse(e.data).text; } catch { return; }
+                if (typeof incoming !== "string") return;
+                carry += incoming;
+                newline = carry.lastIndexOf("\n");
+                if (newline >= 0) {
+                    appendText(output, localizeLogText(carry.slice(0, newline + 1)), MAX_OUTPUT_CHARS);
+                    carry = carry.slice(newline + 1);
+                }
             });
             source.addEventListener("end", function (e) {
                 setStatus(e.data || "The log stream ended.");
@@ -178,6 +222,10 @@
             if (status) status.textContent = text;
         }
         function shutdown() {
+            if (carry) {
+                appendText(output, localizeLogText(carry), MAX_OUTPUT_CHARS);
+                carry = "";
+            }
             if (source) {
                 try { source.close(); } catch { /* ignore */ }
                 source = null;
@@ -187,12 +235,13 @@
         }
     }
 
-    /* Show times in the reader's own time zone instead of UTC. */
+    /* Show times in the panel's display zone (or the reader's own) instead of UTC. */
     function localizeTimes() {
         each("time[data-local-time]", function (el) {
             var date = new Date(el.getAttribute("datetime"));
             if (isNaN(date.getTime())) return;
-            el.textContent = el.getAttribute("data-local-time") === "full" ? date.toLocaleString() : date.toLocaleTimeString();
+            var format = formatters();
+            el.textContent = el.getAttribute("data-local-time") === "full" ? format.dateTime.format(date) : format.time.format(date);
         });
     }
 
@@ -215,6 +264,7 @@
     function wireEditor(form) {
         var dirty = false;
         var submitting = false;
+        var hint;
         form.addEventListener("input", function () { dirty = true; });
         form.addEventListener("submit", function () { submitting = true; });
         window.addEventListener("beforeunload", function (e) {
@@ -233,7 +283,7 @@
         Array.prototype.forEach.call(form.querySelectorAll("textarea[data-sensitive]"), maskSensitive);
         var actions = form.querySelector(".form-actions");
         if (actions) {
-            var hint = document.createElement("p");
+            hint = document.createElement("p");
             hint.className = "muted keys";
             hint.textContent = "Tab indents. Press Esc, then Tab, to leave a field. Ctrl+S (⌘S) saves.";
             actions.parentNode.insertBefore(hint, actions.nextSibling);

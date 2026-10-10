@@ -12,3 +12,9 @@ test("disables caching and active scripts", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
 });
+
+test("exposes the display time zone on the document, escaped", () => {
+    expect(documentHtml("Test", "<h1>OK</h1>")).not.toContain("data-timezone");
+    const html = documentHtml("Test", "<h1>OK</h1>", { timezone: "Europe/Brussels" });
+    expect(html).toContain('<html lang="en" data-timezone="Europe/Brussels">');
+});

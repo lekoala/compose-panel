@@ -36,6 +36,11 @@ export interface DocumentOptions {
     access?: string;
     /** Same-origin scripts to load with defer (e.g. "/app.js"). */
     scripts?: string[];
+    /**
+     * IANA display time zone (e.g. "Europe/Brussels"). When absent, the client
+     * uses the reader's browser zone. Never user input; escaped before output.
+     */
+    timezone?: string;
     /** Standalone centered page without header and footer (sign-in, signed out). */
     bare?: boolean;
 }
@@ -46,8 +51,9 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
         ? `<div class="session"><form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="${escapeHtml(options.logoutCsrf)}"><button type="submit" class="btn btn-quiet">Sign out</button></form></div>`
         : "";
     const scripts = (options.scripts ?? []).map(src => `<script src="${escapeHtml(src)}" defer></script>`).join("");
+    const timezone = options.timezone ? ` data-timezone="${escapeHtml(options.timezone)}"` : "";
     return `<!doctype html>
-<html lang="en">
+<html lang="en"${timezone}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -95,6 +101,7 @@ export interface EditPageOptions {
     name: string;
     csrf: string;
     access?: string;
+    timezone?: string;
     composeFilename: string;
     composeSource: string;
     composeHash: string;
@@ -129,7 +136,7 @@ ${error}
     <button type="submit" class="btn btn-primary" data-busy-label="Checking and saving…">Check and save</button>
     <a href="${stackHref}" class="btn">Cancel</a>
   </div>
-</form>`, { logoutCsrf: options.csrf, access: options.access, scripts: ["/app.js"] });
+</form>`, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
 }
 
 const STATE_LABELS: Record<string, string> = {
@@ -292,10 +299,13 @@ export function operationPanel(operation: OperationView | null, stack?: string):
         + `</section>`;
 }
 
-export function logsPanel(name: string, tailLines: number): string {
+export function logsPanel(name: string, tailLines: number, timezone = ""): string {
     const stream = `/stacks/${encodeURIComponent(name)}/logs/events`;
+    const zoneHint = timezone
+        ? ` Times are shown in <strong>${escapeHtml(timezone)}</strong>.`
+        : ` Times are shown in your browser's time zone.`;
     return `<section class="card logs" data-logs-stream="${stream}"><h2>Logs</h2>`
-        + `<p class="muted">Shows the last ${tailLines} lines of every service, then new lines as they arrive. Following stops when you click <em>Stop following</em> or leave the page.</p>`
+        + `<p class="muted">Shows the last ${tailLines} lines of every service, then new lines as they arrive. Following stops when you click <em>Stop following</em> or leave the page.${zoneHint}</p>`
         + `<div class="toolbar"><button type="button" class="btn" id="logs-follow">Follow logs</button><button type="button" class="btn" id="logs-stop" disabled>Stop following</button></div>`
         + `<p id="logs-status" class="muted" role="status"></p>`
         + `<pre class="output" id="logs-output"></pre>`
@@ -305,6 +315,7 @@ export function logsPanel(name: string, tailLines: number): string {
 export interface AuditPageOptions {
     csrf: string;
     access?: string;
+    timezone?: string;
     periods: string[];
     selected: string | null;
     entries: AuditEntry[];
@@ -361,7 +372,7 @@ export function auditPage(options: AuditPageOptions): string {
         + selector
         + (options.selected ? `<p class="muted">Showing <code>${escapeHtml(options.selected)}.log</code> (${options.entries.length} entries, most recent last).</p>` : "")
         + table,
-        { logoutCsrf: options.csrf, access: options.access, scripts: ["/app.js"] },
+        { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] },
     );
 }
 
