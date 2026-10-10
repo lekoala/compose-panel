@@ -17,7 +17,8 @@ Requirements: Bun 1.4.3+ (pin the version in CI), an existing stacks directory, 
 bun install
 # Generate the admin password hash, then copy it into COMPOSE_PANEL_ADMIN_PASSWORD_HASH:
 COMPOSE_PANEL_PASSWORD='change-me-please' bun run hash-password
-STACKS_DIR=/opt/stacks COMPOSE_PANEL_ADMIN_PASSWORD_HASH='$argon2id$...' bun run dev
+# Local development: COMPOSE_PANEL_DEV=true allows the default "admin" username.
+STACKS_DIR=/opt/stacks COMPOSE_PANEL_ADMIN_PASSWORD_HASH='$argon2id$...' COMPOSE_PANEL_DEV=true bun run dev
 ```
 
 On PowerShell:
@@ -29,10 +30,11 @@ bun run hash-password
 # Put the printed hash in COMPOSE_PANEL_ADMIN_PASSWORD_HASH
 $env:STACKS_DIR = 'D:\stacks'
 $env:COMPOSE_PANEL_ADMIN_PASSWORD_HASH = '$argon2id$...'
+$env:COMPOSE_PANEL_DEV = 'true'
 bun run dev
 ```
 
-Open `http://127.0.0.1:5081` and log in. Stacks are listed with their real Docker state; the `compose.yaml` and `.env` can be edited raw (comments preserved) with validation, backups and conflict detection. Projects that require an explicit override file or several primary Compose files are rejected rather than guessed. See [.env.example](.env.example) for every setting.
+Open `http://127.0.0.1:5081` and log in. Outside development mode, set a unique `COMPOSE_PANEL_ADMIN_USER`: common names (`admin`, `root`, …) are refused at startup. Stacks are listed with their real Docker state; the `compose.yaml` and `.env` can be edited raw (comments preserved) with validation, backups and conflict detection. Projects that require an explicit override file or several primary Compose files are rejected rather than guessed. See [.env.example](.env.example) for every setting.
 
 ```sh
 bun run test

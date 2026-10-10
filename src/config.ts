@@ -16,6 +16,17 @@ export interface AppConfig {
     publicOrigin: string | null;
     /** Trust X-Forwarded-Proto / X-Forwarded-For from a configured proxy. */
     trustProxy: boolean;
+    /**
+     * Opt-in local-testing relaxation: accept an absent or opaque (`null`)
+     * Origin when Fetch Metadata says the request is same-origin/none. Default
+     * false — the panel must not be driven from an embedded/sandboxed context.
+     */
+    allowOpaqueOrigin: boolean;
+    /**
+     * Development/debug mode. Default false. When true, weak conveniences are
+     * allowed (e.g. the `admin` username). Never enable in production.
+     */
+    devMode: boolean;
     sessionTtlMs: number;
     sessionIdleMs: number;
     loginRateLimit: LoginRateLimitConfig;
@@ -47,6 +58,9 @@ export interface AppConfig {
 }
 
 type Env = Record<string, string | undefined>;
+
+/** Common/guessable usernames refused unless COMPOSE_PANEL_DEV=true. */
+const WEAK_ADMIN_USERS = new Set(["admin", "administrator", "root", "user", "test", "guest"]);
 
 function parseBool(env: Env, name: string, fallback: boolean): boolean {
     const raw = env[name];
@@ -95,14 +109,22 @@ export function loadConfig(env: Env = process.env): AppConfig {
         throw new Error("COMPOSE_PANEL_ADMIN_PASSWORD_HASH is required. Generate one with `bun run hash-password`.");
     }
 
+    const devMode = parseBool(env, "COMPOSE_PANEL_DEV", false);
+    const adminUser = env.COMPOSE_PANEL_ADMIN_USER?.trim() || "admin";
+    if (!devMode && WEAK_ADMIN_USERS.has(adminUser.toLowerCase())) {
+        throw new Error(`COMPOSE_PANEL_ADMIN_USER must not be a common name like "${adminUser}". Choose a unique name, or set COMPOSE_PANEL_DEV=true for local development.`);
+    }
+
     return {
         stacksDir,
         port: parsePort(env),
-        adminUser: env.COMPOSE_PANEL_ADMIN_USER?.trim() || "admin",
+        adminUser,
         adminPasswordHash,
         cookieSecure: parseBool(env, "COMPOSE_PANEL_COOKIE_SECURE", false),
         publicOrigin: parseOrigin(env),
         trustProxy: parseBool(env, "COMPOSE_PANEL_TRUST_PROXY", false),
+        allowOpaqueOrigin: parseBool(env, "COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN", false),
+        devMode,
         sessionTtlMs: parsePositiveInt(env, "COMPOSE_PANEL_SESSION_TTL_MS", 12 * 60 * 60 * 1000),
         sessionIdleMs: parsePositiveInt(env, "COMPOSE_PANEL_SESSION_IDLE_MS", 60 * 60 * 1000),
         loginRateLimit: {

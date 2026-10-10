@@ -33,6 +33,8 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         cookieSecure: false,
         publicOrigin: null,
         trustProxy: false,
+        allowOpaqueOrigin: false,
+        devMode: false,
         sessionTtlMs: 3_600_000,
         sessionIdleMs: 3_600_000,
         loginRateLimit: { windowMs: 60_000, maxAttempts: 5, blockMs: 60_000 },
@@ -275,11 +277,12 @@ describe("auth gate", () => {
 });
 
 describe("login hardening", () => {
-    test("rejects a POST with a mismatched Origin", async () => {
+    test("redirects a mismatched Origin to the login page instead of a bare 403", async () => {
         const app = makeApp();
         const { cookie, csrf } = await loginCsrf(app);
         const response = await postLogin(app, cookie, csrf, "admin", PASSWORD, "http://evil.example");
-        expect(response.status).toBe(403);
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/login?e=blocked");
     });
 
     test("rejects a POST without the CSRF cookie", async () => {
@@ -290,6 +293,67 @@ describe("login hardening", () => {
             body: new URLSearchParams({ csrf: "x", user: "admin", password: PASSWORD }).toString(),
         }));
         expect(response.status).toBe(403);
+    });
+
+    test("refuses a sandboxed/embedded context by default (Origin: null)", async () => {
+        const app = makeApp();
+        const { cookie, csrf } = await loginCsrf(app);
+        const response = await app.fetch(new Request(`${ORIGIN}/login`, {
+            method: "POST",
+            headers: {
+                "content-type": "application/x-www-form-urlencoded",
+                origin: "null",
+                "sec-fetch-site": "same-origin",
+                cookie: `cp_csrf=${cookie}`,
+            },
+            body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
+        }));
+        // A sandboxed frame must not drive the panel even though the request
+        // reaches the loopback host; refused as a redirect, not a bare 403.
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/login?e=blocked");
+    });
+
+    test("opt-in COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN permits a same-origin opaque context", async () => {
+        const app = makeApp({ allowOpaqueOrigin: true });
+        const { cookie, csrf } = await loginCsrf(app);
+        const response = await app.fetch(new Request(`${ORIGIN}/login`, {
+            method: "POST",
+            headers: {
+                "content-type": "application/x-www-form-urlencoded",
+                origin: "null",
+                "sec-fetch-site": "same-origin",
+                cookie: `cp_csrf=${cookie}`,
+            },
+            body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
+        }));
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/");
+        expect(cookieValue(setCookies(response), "cp_session")).toBeTruthy();
+    });
+
+    test("the opt-in still refuses a cross-site opaque context", async () => {
+        const app = makeApp({ allowOpaqueOrigin: true });
+        const { cookie, csrf } = await loginCsrf(app);
+        const response = await app.fetch(new Request(`${ORIGIN}/login`, {
+            method: "POST",
+            headers: {
+                "content-type": "application/x-www-form-urlencoded",
+                origin: "null",
+                "sec-fetch-site": "cross-site",
+                cookie: `cp_csrf=${cookie}`,
+            },
+            body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
+        }));
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/login?e=blocked");
+    });
+
+    test("the login page explains a blocked request", async () => {
+        const app = makeApp();
+        const response = await app.fetch(new Request(`${ORIGIN}/login?e=blocked`));
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("was blocked");
     });
 
     test("rejects wrong credentials without issuing a session", async () => {

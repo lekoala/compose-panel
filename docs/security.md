@@ -5,6 +5,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 
 ## Delivered entry protections (P1)
 - Local loopback `127.0.0.1` only, no exposed bind. A single administrator authenticates; the password is stored only as an Argon2id hash (`Bun.password`) supplied outside the repo.
+- Common/guessable administrator usernames (`admin`, `administrator`, `root`, `user`, `test`, `guest`) are refused at startup unless `COMPOSE_PANEL_DEV=true` (local development only). A unique `COMPOSE_PANEL_ADMIN_USER` is required.
 - Sessions are random server-side identifiers kept in memory (lost on restart). Cookies are `HttpOnly`, `SameSite=Lax`, `Secure` when `COMPOSE_PANEL_COOKIE_SECURE=true`; the session id rotates on login.
 - All mutating requests (login, logout) require a matching CSRF token and an exact Origin/Referer match. The login page uses a double-submit CSRF cookie; authenticated pages use a per-session token.
 - Login attempts are rate-limited per client; request bodies and login payloads are size-bounded; every application response is `Cache-Control: no-store`.
@@ -46,6 +47,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 ## Proxy and TLS contract
 - Default remains direct loopback HTTP with `COMPOSE_PANEL_COOKIE_SECURE=false`.
 - The `Host` header is validated before routing: only the loopback authorities (on `PORT`) and, when set, the configured public origin are accepted (`400` otherwise). This protects against DNS rebinding and proxy misrouting. `/health/live` is exempt so infrastructure probes with a service-name Host still work.
+- A mutation whose `Origin`/`Referer` does not match is refused. A sandboxed/embedded context (`Origin: null`) is refused by default; login answers a `303` back to `/login` with an explanation rather than a bare `403`. The opt-in `COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN` (default false, local testing only) accepts an absent/opaque Origin when Fetch Metadata reports `same-origin`/`none`; a cross-site frame is still refused. CSP `frame-ancestors 'none'` backs this up in the browser.
 - Behind TLS, set `COMPOSE_PANEL_COOKIE_SECURE=true` and, for a proxy, `COMPOSE_PANEL_PUBLIC_ORIGIN=https://<host>` so Origin and Host checks compare against the public origin. Set `COMPOSE_PANEL_TRUST_PROXY=true` only when the proxy overwrites `X-Forwarded-Proto`/`X-Forwarded-For`.
 - Bind stays hard-coded to `127.0.0.1` until the reverse proxy, TLS termination and firewall are reviewed and documented.
 

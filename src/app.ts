@@ -131,6 +131,8 @@ function requestOrigin(request: Request, config: AppConfig): string | null {
     return `${proto}://${host}`;
 }
 
+const ORIGIN_BLOCKED_MESSAGE = "Sign-in was blocked because the request did not come from this panel's own page. Open the panel URL directly in a browser tab (embedding the panel is not allowed). For local testing only, an operator can set COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN=true.";
+
 /** Strict same-origin check for state-changing requests. Fails closed. */
 function isAllowedOrigin(request: Request, config: AppConfig): boolean {
     const expected = config.publicOrigin ?? requestOrigin(request, config);
@@ -143,7 +145,17 @@ function isAllowedOrigin(request: Request, config: AppConfig): boolean {
             catch { candidate = null; }
         }
     }
-    return candidate === expected;
+    if (candidate === expected) return true;
+    // A sandboxed frame / opaque context sends the literal `Origin: null` (or no
+    // Origin at all). Rejected by default: the panel must not be driven from an
+    // embedded context. The opt-in COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN relaxes this
+    // for local testing only, and only when Fetch Metadata confirms the request
+    // is same-origin/none (a cross-site frame is still refused).
+    if (config.allowOpaqueOrigin && (candidate === "null" || candidate === null)) {
+        const site = request.headers.get("sec-fetch-site");
+        return site === "same-origin" || site === "none" || site === null;
+    }
+    return false;
 }
 
 const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"] as const;
@@ -255,13 +267,17 @@ export function createApp(options: AppOptions): App {
         const id = cookies[SESSION_COOKIE];
         if (id && sessions.get(id)) return redirect("/", 302);
         const nonce = randomToken();
-        const response = htmlResponse(loginPage({ csrf: nonce }));
+        const blocked = new URL(request.url).searchParams.get("e") === "blocked";
+        const response = htmlResponse(loginPage({ csrf: nonce, error: blocked ? ORIGIN_BLOCKED_MESSAGE : null }));
         response.headers.append("Set-Cookie", csrfCookie(nonce, config.cookieSecure));
         return response;
     }
 
     async function handleLoginPost(request: Request): Promise<Response> {
-        if (!isAllowedOrigin(request, config)) return plain("Forbidden", 403);
+        // A blocked Origin (mismatch, or the opaque `null` of an embedded/
+        // sandboxed context) is refused, but as a soft POST→GET redirect to the
+        // login page with an explanation instead of a bare 403.
+        if (!isAllowedOrigin(request, config)) return redirect("/login?e=blocked", 303);
         const form = await readForm(request);
         if (form === null) return plain("Payload too large", 413);
 

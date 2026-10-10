@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 — to be released
+
+First minimal release. Single Linux host, single trusted administrator,
+loopback HTTP only (`127.0.0.1`, no proxy/TLS yet).
 
 - Verify effective names and collisions before creating Compose projects, pin
   creation identity, reserve project names during panel operations, and end log
@@ -28,6 +31,16 @@
   escaped quotes inside single-quoted `.env` values are handled by the secret
   collector; the CI production-boot step fails explicitly if the server never
   becomes ready.
+- Login UX: a blocked Origin (mismatch or the opaque `null` of an embedded
+  context) now answers a `303` back to `/login` with an explanation instead of a
+  bare `403`. The check stays strict by default; the opt-in
+  `COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN` (local testing only) accepts an absent or
+  opaque Origin when Fetch Metadata says same-origin/none, never a cross-site
+  frame.
+- Common/guessable admin usernames (`admin`, `administrator`, `root`, `user`,
+  `test`, `guest`) are refused at startup unless `COMPOSE_PANEL_DEV=true`
+  (development only). First-party examples, the deployment env sample and the CI
+  smoke test now use a unique username.
 - Supply-chain hardening: base image pinned by version and multi-arch digest,
   every GitHub Action pinned to a commit SHA, and Trivy failing on
   `CRITICAL,HIGH` for both the repository (dependencies + secrets) and the
@@ -37,12 +50,6 @@
 - Toolchain: Bun 1.4.3 with the built-in `bun check` type checker (`typescript`
   removed), `bun audit` and a production-only boot check in CI, and trapped-name
   and missing-STACKS_DIR regression tests.
-
-## 0.1.0 — 2026-10-10
-
-First minimal release. Single Linux host, single trusted administrator,
-loopback HTTP only (`127.0.0.1`, no proxy/TLS yet).
-
 - Single-admin auth: Argon2id password hash, in-memory sessions (idle +
   absolute timeouts, rotation on login), per-session CSRF + strict
   Origin/Referer checks, login rate limiting, bounded bodies, `no-store`.

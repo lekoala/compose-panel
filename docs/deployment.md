@@ -11,6 +11,8 @@ truth, so removing the panel never stops your services.
 - Bun 1.4.3+ on the build machine (pinned in CI and the Dockerfile).
 - An admin password hash generated **outside** the image:
   `COMPOSE_PANEL_PASSWORD='...' bun run hash-password`.
+- A unique admin username (`COMPOSE_PANEL_ADMIN_USER`): common names
+  (`admin`, `root`, …) are refused at startup unless `COMPOSE_PANEL_DEV=true`.
 
 ## Deploy
 

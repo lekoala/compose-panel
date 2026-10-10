@@ -64,10 +64,10 @@ jobs:
           mkdir -p /tmp/ci-stacks/demo
           printf 'services:\n  app:\n    image: hello-world\n' > /tmp/ci-stacks/demo/compose.yaml
           HASH=$(docker run --rm --entrypoint bun -e COMPOSE_PANEL_PASSWORD=ci-smoke-password compose-panel:ci src/scripts/hash-password.ts | tail -1)
-          docker run -d --name ci-panel -e STACKS_DIR=/stacks -e COMPOSE_PANEL_ADMIN_PASSWORD_HASH="$HASH" -v /tmp/ci-stacks:/stacks compose-panel:ci
+          docker run -d --name ci-panel -e STACKS_DIR=/stacks -e COMPOSE_PANEL_ADMIN_USER=cioperator -e COMPOSE_PANEL_ADMIN_PASSWORD_HASH="$HASH" -v /tmp/ci-stacks:/stacks compose-panel:ci
           sleep 5
           docker exec ci-panel curl -fsS http://127.0.0.1:5081/health/live
-          docker exec ci-panel sh -c 'O=http://127.0.0.1:5081; curl -fsS -c /tmp/j -o /tmp/l.html $O/login && grep -q "name=\"csrf\"" /tmp/l.html && C=$(grep -o "name=\"csrf\" value=\"[^\"]*\"" /tmp/l.html | head -1 | cut -d"\"" -f4) && [ "$(curl -sS -o /dev/null -w "%{http_code}" -b /tmp/j -c /tmp/j -H "Origin: $O" --data-urlencode "csrf=$C" --data-urlencode "user=admin" --data-urlencode "password=ci-smoke-password" $O/login)" = "303" ] && curl -fsS -b /tmp/j $O/ | grep -q demo'
+          docker exec ci-panel sh -c 'O=http://127.0.0.1:5081; curl -fsS -c /tmp/j -o /tmp/l.html $O/login && grep -q "name=\"csrf\"" /tmp/l.html && C=$(grep -o "name=\"csrf\" value=\"[^\"]*\"" /tmp/l.html | head -1 | cut -d"\"" -f4) && [ "$(curl -sS -o /dev/null -w "%{http_code}" -b /tmp/j -c /tmp/j -H "Origin: $O" --data-urlencode "csrf=$C" --data-urlencode "user=cioperator" --data-urlencode "password=ci-smoke-password" $O/login)" = "303" ] && curl -fsS -b /tmp/j $O/ | grep -q demo'
           docker exec ci-panel sh -c 'docker compose version && bun --version'
           docker rm -f ci-panel
       - name: Scan image

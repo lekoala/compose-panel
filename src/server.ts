@@ -32,6 +32,12 @@ if (!config.cookieSecure) {
 if (config.publicOrigin && !config.cookieSecure) {
     console.warn("COMPOSE_PANEL_PUBLIC_ORIGIN is set but cookies are not Secure; set COMPOSE_PANEL_COOKIE_SECURE=true behind TLS.");
 }
+if (config.devMode) {
+    console.warn("COMPOSE_PANEL_DEV=true: development mode. Weak usernames are allowed; never use this in production.");
+}
+if (config.allowOpaqueOrigin) {
+    console.warn("COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN=true: an absent/opaque Origin is accepted for same-origin requests. Local testing only.");
+}
 console.info(`Compose Panel on http://127.0.0.1:${server.port} (single admin: ${config.adminUser})`);
 
 let shuttingDown = false;
