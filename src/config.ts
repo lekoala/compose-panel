@@ -1,7 +1,21 @@
 export interface LoginRateLimitConfig {
     windowMs: number;
     maxAttempts: number;
-    blockMs: number;
+    /** Cap for the per-key delay applied once over the limit (no hard lockout). */
+    backoffMaxMs: number;
+}
+
+export type AuditRotation = "day" | "month";
+
+export interface AuditConfig {
+    enabled: boolean;
+    /** Absolute audit directory; null means derive `<stacksRoot>/.compose-panel/audit`. */
+    dir: string | null;
+    rotation: AuditRotation;
+    /** Number of period files kept; the oldest are pruned on rollover. */
+    retainFiles: number;
+    /** Maximum entries rendered for one period. */
+    maxReadLines: number;
 }
 
 export interface AppConfig {
@@ -30,6 +44,7 @@ export interface AppConfig {
     sessionTtlMs: number;
     sessionIdleMs: number;
     loginRateLimit: LoginRateLimitConfig;
+    audit: AuditConfig;
     maxBodyBytes: number;
     /** Maximum size of an edited Compose or .env draft. */
     maxEditBytes: number;
@@ -85,6 +100,13 @@ function parsePort(env: Env): number {
     return value;
 }
 
+function parseRotation(env: Env): AuditRotation {
+    const raw = env.COMPOSE_PANEL_AUDIT_ROTATION?.trim().toLowerCase();
+    if (raw === undefined || raw === "" || raw === "day") return "day";
+    if (raw === "month") return "month";
+    throw new Error("COMPOSE_PANEL_AUDIT_ROTATION must be \"day\" or \"month\".");
+}
+
 function parseOrigin(env: Env): string | null {
     const raw = env.COMPOSE_PANEL_PUBLIC_ORIGIN;
     if (raw === undefined || raw === "") return null;
@@ -130,7 +152,14 @@ export function loadConfig(env: Env = process.env): AppConfig {
         loginRateLimit: {
             windowMs: parsePositiveInt(env, "COMPOSE_PANEL_LOGIN_WINDOW_MS", 15 * 60 * 1000),
             maxAttempts: parsePositiveInt(env, "COMPOSE_PANEL_LOGIN_MAX_ATTEMPTS", 5),
-            blockMs: parsePositiveInt(env, "COMPOSE_PANEL_LOGIN_BLOCK_MS", 15 * 60 * 1000),
+            backoffMaxMs: parsePositiveInt(env, "COMPOSE_PANEL_LOGIN_BACKOFF_MAX_MS", 2000),
+        },
+        audit: {
+            enabled: parseBool(env, "COMPOSE_PANEL_AUDIT_ENABLED", true),
+            dir: env.COMPOSE_PANEL_AUDIT_DIR?.trim() || null,
+            rotation: parseRotation(env),
+            retainFiles: parsePositiveInt(env, "COMPOSE_PANEL_AUDIT_RETAIN_FILES", 31),
+            maxReadLines: parsePositiveInt(env, "COMPOSE_PANEL_AUDIT_MAX_READ_LINES", 2000),
         },
         maxBodyBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_BODY_BYTES", 8 * 1024),
         maxEditBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_EDIT_BYTES", 1024 * 1024),

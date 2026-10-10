@@ -31,3 +31,35 @@ describe("loadConfig admin username", () => {
         expect(config.devMode).toBe(false);
     });
 });
+
+describe("loadConfig audit and login backoff", () => {
+    test("defaults the audit log on, daily, with a derived directory", () => {
+        const config = loadConfig({ ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala" });
+        expect(config.audit.enabled).toBe(true);
+        expect(config.audit.dir).toBeNull();
+        expect(config.audit.rotation).toBe("day");
+        expect(config.audit.retainFiles).toBe(31);
+        expect(config.loginRateLimit.backoffMaxMs).toBe(2000);
+    });
+
+    test("parses audit overrides", () => {
+        const config = loadConfig({
+            ...base,
+            COMPOSE_PANEL_ADMIN_USER: "lekoala",
+            COMPOSE_PANEL_AUDIT_ENABLED: "false",
+            COMPOSE_PANEL_AUDIT_DIR: "/var/log/compose-panel",
+            COMPOSE_PANEL_AUDIT_ROTATION: "month",
+            COMPOSE_PANEL_AUDIT_RETAIN_FILES: "12",
+            COMPOSE_PANEL_LOGIN_BACKOFF_MAX_MS: "5000",
+        });
+        expect(config.audit.enabled).toBe(false);
+        expect(config.audit.dir).toBe("/var/log/compose-panel");
+        expect(config.audit.rotation).toBe("month");
+        expect(config.audit.retainFiles).toBe(12);
+        expect(config.loginRateLimit.backoffMaxMs).toBe(5000);
+    });
+
+    test("rejects an unknown rotation", () => {
+        expect(() => loadConfig({ ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala", COMPOSE_PANEL_AUDIT_ROTATION: "hourly" })).toThrow(/ROTATION/);
+    });
+});

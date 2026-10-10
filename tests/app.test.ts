@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp, type App } from "../src/app.ts";
+import { AuditLog } from "../src/audit.ts";
 import type { AppConfig } from "../src/config.ts";
 import type { CommandResult, DockerRunner } from "../src/docker.ts";
 import type { ComposeCapabilities, ComposeProvider, ComposeTarget } from "../src/compose-provider.ts";
@@ -24,7 +25,7 @@ afterAll(async () => {
     await rm(root, { recursive: true, force: true });
 });
 
-function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, provider?: ComposeProvider): App {
+function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, provider?: ComposeProvider, audit?: AuditLog): App {
     const config: AppConfig = {
         stacksDir: root,
         port: 5081,
@@ -37,7 +38,8 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         devMode: false,
         sessionTtlMs: 3_600_000,
         sessionIdleMs: 3_600_000,
-        loginRateLimit: { windowMs: 60_000, maxAttempts: 5, blockMs: 60_000 },
+        loginRateLimit: { windowMs: 60_000, maxAttempts: 5, backoffMaxMs: 1 },
+        audit: { enabled: true, dir: null, rotation: "day", retainFiles: 31, maxReadLines: 2000 },
         maxBodyBytes: 8192,
         maxEditBytes: 1024 * 1024,
         dockerPath: "docker",
@@ -54,7 +56,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         logTimeoutMs: 1_800_000,
         ...overrides,
     };
-    return createApp({ config, stacksRoot: root, runner, provider });
+    return createApp({ config, stacksRoot: root, runner, provider, audit });
 }
 
 interface FollowCall {
@@ -371,27 +373,30 @@ describe("login hardening", () => {
         expect(response.status).toBe(413);
     });
 
-    test("locks out after repeated failures", async () => {
+    test("repeated failures never block the correct password", async () => {
         const app = makeApp();
-        for (let attempt = 0; attempt < 5; attempt += 1) {
+        for (let attempt = 0; attempt < 6; attempt += 1) {
             const { cookie, csrf } = await loginCsrf(app);
             expect((await postLogin(app, cookie, csrf, "admin", "wrong")).status).toBe(401);
         }
         const { cookie, csrf } = await loginCsrf(app);
-        const blocked = await postLogin(app, cookie, csrf, "admin", PASSWORD);
-        expect(blocked.status).toBe(429);
-        expect(blocked.headers.get("retry-after")).toBeTruthy();
+        const accepted = await postLogin(app, cookie, csrf, "admin", PASSWORD);
+        expect(accepted.status).toBe(303);
+        expect(cookieValue(setCookies(accepted), "cp_session")).toBeTruthy();
     });
 
-    test("a concurrent login burst cannot exceed the attempt limit", async () => {
+    test("a concurrent failure burst does not lock out the real admin", async () => {
         const app = makeApp();
         const { cookie, csrf } = await loginCsrf(app);
         const responses = await Promise.all(
             Array.from({ length: 12 }, () => postLogin(app, cookie, csrf, "admin", "wrong")),
         );
-        const codes = responses.map(response => response.status);
-        expect(codes.filter(code => code === 401).length).toBeLessThanOrEqual(5);
-        expect(codes.filter(code => code === 429).length).toBeGreaterThanOrEqual(7);
+        // Failures are delayed, not refused by count; only the global in-flight
+        // cap may answer 429, and only transiently.
+        expect(responses.every(response => response.status === 401 || response.status === 429)).toBe(true);
+        const good = await loginCsrf(app);
+        const accepted = await postLogin(app, good.cookie, good.csrf, "admin", PASSWORD);
+        expect(accepted.status).toBe(303);
     });
 
     test("marks cookies Secure when configured", async () => {
@@ -428,6 +433,56 @@ describe("logout", () => {
         expect(done.headers.get("location")).toBe("/login");
 
         expect((await authed(app, "/", session)).status).toBe(302);
+    });
+});
+
+describe("activity log", () => {
+    test("requires a session", async () => {
+        const app = makeApp();
+        const response = await app.fetch(new Request(`${ORIGIN}/audit`));
+        expect(response.status).toBe(302);
+        expect(response.headers.get("location")).toBe("/login");
+    });
+
+    test("records sign-ins and renders them for the signed-in admin", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-app-"));
+        try {
+            const audit = new AuditLog({ dir });
+            const app = makeApp({}, undefined, undefined, audit);
+            const session = await login(app);
+            const response = await authed(app, "/audit", session);
+            expect(response.status).toBe(200);
+            const html = await response.text();
+            expect(html).toContain("Activity log");
+            expect(html).toContain("login");
+            expect(html).toContain("success");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("escapes entry fields and ignores an unknown period", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-esc-"));
+        try {
+            await writeFile(
+                join(dir, "2024-01-01.log"),
+                `${JSON.stringify({ ts: "2024-01-01T00:00:00.000Z", event: "login", result: "failure", detail: "<script>alert(1)</script>" })}\n`,
+            );
+            const audit = new AuditLog({ dir });
+            const app = makeApp({}, undefined, undefined, audit);
+            const session = await login(app);
+            const response = await authed(app, "/audit?period=2024-01-01", session);
+            expect(response.status).toBe(200);
+            const html = await response.text();
+            expect(html).toContain("&lt;script&gt;");
+            expect(html).not.toContain("<script>alert(1)</script>");
+
+            const unknown = await authed(app, "/audit?period=../etc/passwd", session);
+            expect(unknown.status).toBe(200);
+            expect(await unknown.text()).not.toContain("root:");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
     });
 });
 

@@ -1,0 +1,158 @@
+import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { AuditError, AuditLog } from "../src/audit.ts";
+
+async function tempDir(): Promise<string> {
+    return mkdtemp(join(tmpdir(), "compose-panel-audit-"));
+}
+
+const DAY = 24 * 60 * 60 * 1000;
+
+describe("AuditLog", () => {
+    test("appends NDJSON and reads it back in order", async () => {
+        const dir = await tempDir();
+        try {
+            let now = Date.parse("2024-03-01T10:00:00.000Z");
+            const audit = new AuditLog({ dir, now: () => now });
+            await audit.record({ event: "login", result: "failure", actor: "direct", username: "bob" });
+            now += 1000;
+            await audit.record({ event: "login", result: "success", actor: "direct" });
+
+            const entries = await audit.readPeriod("2024-03-01");
+            expect(entries.length).toBe(2);
+            expect(entries[0]!.event).toBe("login");
+            expect(entries[0]!.result).toBe("failure");
+            expect(entries[0]!.username).toBe("bob");
+            expect(entries[1]!.result).toBe("success");
+            expect(entries[0]!.ts).toBe("2024-03-01T10:00:00.000Z");
+
+            const raw = await readFile(join(dir, "2024-03-01.log"), "utf8");
+            expect(raw.endsWith("\n")).toBe(true);
+            expect(raw.trim().split("\n").length).toBe(2);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("rotates by day and prunes to retainFiles", async () => {
+        const dir = await tempDir();
+        try {
+            let now = Date.parse("2024-03-01T00:00:00.000Z");
+            const audit = new AuditLog({ dir, retainFiles: 2, now: () => now });
+            await audit.record({ event: "login", result: "success" });
+            now += DAY;
+            await audit.record({ event: "login", result: "success" });
+            now += DAY;
+            await audit.record({ event: "login", result: "success" });
+
+            const periods = await audit.listPeriods();
+            expect(periods).toEqual(["2024-03-03", "2024-03-02"]);
+            expect(existsSync(join(dir, "2024-03-01.log"))).toBe(false);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("supports monthly rotation", async () => {
+        const dir = await tempDir();
+        try {
+            let now = Date.parse("2024-01-15T00:00:00.000Z");
+            const audit = new AuditLog({ dir, rotation: "month", now: () => now });
+            await audit.record({ event: "login", result: "success" });
+            now = Date.parse("2024-02-15T00:00:00.000Z");
+            await audit.record({ event: "login", result: "success" });
+            expect(await audit.listPeriods()).toEqual(["2024-02", "2024-01"]);
+            expect((await audit.readPeriod("2024-02")).length).toBe(1);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("bounds the read to the most recent lines", async () => {
+        const dir = await tempDir();
+        try {
+            const audit = new AuditLog({ dir, maxReadLines: 3, now: () => Date.parse("2024-03-01T00:00:00.000Z") });
+            for (let i = 0; i < 10; i += 1) await audit.record({ event: "s", result: "r", detail: `n${i}` });
+            const entries = await audit.readPeriod("2024-03-01");
+            expect(entries.map(entry => entry.detail)).toEqual(["n7", "n8", "n9"]);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("skips malformed lines instead of failing", async () => {
+        const dir = await tempDir();
+        try {
+            await writeFile(join(dir, "2024-03-01.log"), `${JSON.stringify({ ts: "2024-03-01T00:00:00.000Z", event: "ok", result: "success" })}\nnot json\n`);
+            const audit = new AuditLog({ dir });
+            const entries = await audit.readPeriod("2024-03-01");
+            expect(entries.length).toBe(1);
+            expect(entries[0]!.event).toBe("ok");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("strips newlines and truncates oversized fields", async () => {
+        const dir = await tempDir();
+        try {
+            const audit = new AuditLog({ dir, now: () => Date.parse("2024-03-01T00:00:00.000Z") });
+            await audit.record({ event: "login", result: "failure", detail: "a\nb\r\nc", stack: "x".repeat(1000) });
+            const entries = await audit.readPeriod("2024-03-01");
+            expect(entries[0]!.detail).toBe("a b c");
+            expect(entries[0]!.stack!.length).toBeLessThan(1000);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses to write through a symlinked log file", async () => {
+        const dir = await tempDir();
+        try {
+            const target = join(dir, "target.txt");
+            await writeFile(target, "original");
+            try {
+                await symlink(target, join(dir, "2024-03-01.log"));
+            } catch (error) {
+                // Windows without developer mode cannot create symlinks.
+                if ((error as NodeJS.ErrnoException).code === "EPERM") return;
+                throw error;
+            }
+            const errors: unknown[] = [];
+            const audit = new AuditLog({ dir, now: () => Date.parse("2024-03-01T00:00:00.000Z"), onError: error => errors.push(error) });
+            await audit.record({ event: "login", result: "success" });
+            expect(errors.length).toBe(1);
+            expect(errors[0]).toBeInstanceOf(AuditError);
+            expect(await readFile(target, "utf8")).toBe("original");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses an invalid period and missing periods are empty", async () => {
+        const dir = await tempDir();
+        try {
+            const audit = new AuditLog({ dir });
+            await expect(audit.readPeriod("2024-3-1")).rejects.toBeInstanceOf(AuditError);
+            await expect(audit.readPeriod("../../etc/passwd")).rejects.toBeInstanceOf(AuditError);
+            expect(await audit.readPeriod("2024-03-01")).toEqual([]);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("disabled log is a no-op", async () => {
+        const dir = await tempDir();
+        try {
+            const audit = new AuditLog({ dir, enabled: false });
+            await audit.record({ event: "login", result: "success" });
+            expect(await audit.listPeriods()).toEqual([]);
+            expect(await audit.readPeriod("2024-03-01")).toEqual([]);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+});

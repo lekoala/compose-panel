@@ -9,7 +9,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Sessions are random server-side identifiers kept in memory (lost on restart). Cookies are `HttpOnly`, `SameSite=Lax`, `Secure` when `COMPOSE_PANEL_COOKIE_SECURE=true`; the session id rotates on login.
 - All mutating requests (login, logout) require a matching CSRF token and an exact Origin/Referer match. The login page uses a double-submit CSRF cookie; authenticated pages use a per-session token.
 - Login attempts are rate-limited per client; request bodies and login payloads are size-bounded; every application response is `Cache-Control: no-store`.
-- The attempt is reserved synchronously before any awaited password verification, so a burst of concurrent logins cannot all pass the limit before the first failure is recorded; a global in-flight cap bounds concurrent verifications. A successful login releases only its own reservation and never erases outstanding failures.
+- The attempt is reserved synchronously before any awaited password verification, so a burst of concurrent logins cannot all pass the limit before the first failure is recorded. Over-limit attempts are **not refused**: they are served with a bounded, exponentially growing delay, and a correct password always goes through. The only hard refusal is the global in-flight verification cap, which is transient and bounds CPU/memory. There is therefore no per-client lockout an attacker could use to deny the administrator (see [ADR 0009](adr/0009-audit-log-and-login-backoff.md)).
 - Docker calls are reads by default; editing and the fixed operation allow-list are the only mutations, all authenticated and CSRF-protected. Compose files may still contain secrets: do NOT place the panel behind a public proxy yet.
 
 ## Safe editing (P3)
@@ -44,6 +44,11 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - The browser inserts stream text via `textContent` only. CSP allows same-origin scripts (`/app.js`) and same-origin EventSource connections; Docker logs may contain secrets and are therefore behind auth with `no-store`, like the Compose file.
 - Pipe decoders preserve UTF-8 across reads. SSE output/chunk payloads carry JSON text fragments so carriage returns, newlines and partial lines survive framing and browser insertion exactly. Following an absent project returns an empty ended stream without spawning Compose.
 
+## Audit trail (P7)
+- An append-only activity log records sign-ins (success/failure/refusal), sign-outs, file-save outcomes and operation starts/refusals as NDJSON, one file per day under `<stacksRoot>/.compose-panel/audit/` (override `COMPOSE_PANEL_AUDIT_DIR`), keeping the most recent `COMPOSE_PANEL_AUDIT_RETAIN_FILES` files. Lines never contain passwords, hashes, `.env` values or Compose output; fields are single-line and length-capped.
+- It is read-only in the UI (`/audit`) behind auth, `no-store` and HTML escaping. Reads are bounded to the tail of a single period; filenames are derived from a validated period, never from user input. The directory is created owner-only and a symlinked directory or log file is refused.
+- Writes are best-effort and never fail the request that produced the event. The log is the operator's trail and the input for a host-level ban (fail2ban/CrowdSec), not an in-panel firewall.
+
 ## Proxy and TLS contract
 - Default remains direct loopback HTTP with `COMPOSE_PANEL_COOKIE_SECURE=false`.
 - The `Host` header is validated before routing: only the loopback authorities (on `PORT`) and, when set, the configured public origin are accepted (`400` otherwise). This protects against DNS rebinding and proxy misrouting. `/health/live` is exempt so infrastructure probes with a service-name Host still work.
@@ -55,7 +60,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Auth mono-admin (secret provisioned outside repo, robust password derivation, cookies HttpOnly, Secure, SameSite, rotation de session après login, logout). *(implemented in P1)*
 - CSRF on all POSTs and strict Origin/Host checks, behind an explicitly configured proxy. *(CSRF, same-origin and Host allow-list checks implemented; proxy configuration still to be verified on a real deployment)*
 - TLS via proxy, bind on a private interface, firewall/administration network. Never expose the Docker socket over TCP.
-- Limit file sizes, execution time, log/SSE size, login attempts. *(login attempts, request body size, edit sizes, Docker/operation caps, SSE subscribers/heartbeat/timeout and log tail/buffer/timeout implemented in P1–P5)*
+- Limit file sizes, execution time, log/SSE size, login attempts. *(login attempts, request body size, edit sizes, Docker/operation caps, SSE subscribers/heartbeat/timeout and log tail/buffer/timeout implemented in P1–P5; login is throttled by a bounded delay with no hard per-client lockout, and the activity log is bounded by retention and read caps in P7)*
 - Escape HTML, restrictive CSP, disable caching of sensitive pages, protect any response containing `.env`.
 - Ensure safe resolution of names and files: name allow-list, reject symlinks, protect the root path, no absolute paths supplied by the user.
 - Subprocesses via argument arrays, no shell. No freely user-supplied options. No generic Docker command. *(read-only `compose ls`/`ps` implemented in P2 with a fixed executable, timeouts and output caps; mutations arrive in P4)*
@@ -63,7 +68,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Docker logs may themselves contain secrets. Never include them in unprotected application logs.
 
 ## Mandatory security checks
-Tests for `../` paths, encoded URLs, trailing-newline/NUL/double-encoded names, missing STACKS_DIR (fail-closed 503, no Docker call), non-conforming names, symlinks, double Compose, `.env` symlink (editor, mutation and follow), write conflicts, concurrent login burst and in-flight cap, session-revocation stream close, unexpected Host rejection, `.env` redaction with comments/quotes and boundary truncation, secrets in errors, CSRF, XSS, concurrent operations, malformed Docker CLI output, timeout/output-cap handling, SSE auth/subscriber limits/slow readers, log follow kill-on-last-reader/timeout, Linux shutdown/restart and stuck processes, dependency audit (`bun audit` on every CI build plus the Trivy image scan).
+Tests for `../` paths, encoded URLs, trailing-newline/NUL/double-encoded names, missing STACKS_DIR (fail-closed 503, no Docker call), non-conforming names, symlinks, double Compose, `.env` symlink (editor, mutation and follow), write conflicts, login burst, delay growth and the no-lockout guarantee, session-revocation stream close, unexpected Host rejection, `.env` redaction with comments/quotes and boundary truncation, secrets in errors, CSRF, XSS, concurrent operations, malformed Docker CLI output, timeout/output-cap handling, SSE auth/subscriber limits/slow readers, log follow kill-on-last-reader/timeout, audit rotation/retention/read-cap/symlink refusal and no-secret logging, Linux shutdown/restart and stuck processes, dependency audit (`bun audit` on every CI build plus the Trivy image scan).
 
 ## CI
 Subprocess tests only in a disposable/isolated Docker daemon. Never mount the CI host's production engine socket in automated tests.

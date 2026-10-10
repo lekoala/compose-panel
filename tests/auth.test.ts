@@ -84,56 +84,64 @@ describe("SessionStore", () => {
 });
 
 describe("LoginRateLimiter", () => {
-    test("blocks after the maximum number of failures", () => {
+    test("grows a bounded delay instead of blocking once over the limit", () => {
         let now = 0;
-        const limiter = new LoginRateLimiter(3, 1000, 5000, () => now);
-        expect(limiter.check("k").allowed).toBe(true);
+        const limiter = new LoginRateLimiter(3, 1000, 8000, () => now);
+        expect(limiter.check("k").delayMs).toBe(0);
         limiter.recordFailure("k");
         limiter.recordFailure("k");
-        expect(limiter.check("k").allowed).toBe(true);
+        expect(limiter.check("k").delayMs).toBe(0);
+        limiter.recordFailure("k"); // count === max: the next attempt is delayed
+        const first = limiter.check("k");
+        expect(first.allowed).toBe(true);
+        expect(first.delayMs).toBe(250);
         limiter.recordFailure("k");
-        const verdict = limiter.check("k");
-        expect(verdict.allowed).toBe(false);
-        expect(verdict.retryAfterSec).toBe(5);
+        expect(limiter.check("k").delayMs).toBe(500);
     });
 
-    test("unblocks after the block window and resets on success", () => {
+    test("caps the delay and clears it on reset or after the window", () => {
         let now = 0;
-        const limiter = new LoginRateLimiter(2, 1000, 5000, () => now);
-        limiter.recordFailure("k");
-        limiter.recordFailure("k");
-        expect(limiter.check("k").allowed).toBe(false);
-        now = 5001;
-        expect(limiter.check("k").allowed).toBe(true);
-        limiter.recordFailure("k");
+        const limiter = new LoginRateLimiter(2, 1000, 500, () => now);
+        for (let i = 0; i < 8; i += 1) limiter.recordFailure("k");
+        expect(limiter.check("k").delayMs).toBe(500);
         limiter.reset("k");
-        expect(limiter.check("k").allowed).toBe(true);
+        expect(limiter.check("k").delayMs).toBe(0);
+        limiter.recordFailure("k");
+        limiter.recordFailure("k");
+        expect(limiter.check("k").delayMs).toBeGreaterThan(0);
+        now = 1001;
+        expect(limiter.check("k").delayMs).toBe(0);
     });
 });
 
 describe("LoginRateLimiter reservations", () => {
-    test("a synchronous burst cannot pass the limit before any failure settles", () => {
+    test("over-limit attempts are allowed with a delay, never refused", () => {
         const limiter = new LoginRateLimiter(5, 60_000, 60_000, () => 0, 100);
         const verdicts = Array.from({ length: 12 }, () => limiter.tryReserve("k"));
-        expect(verdicts.filter(v => v.allowed).length).toBe(5);
-        expect(verdicts.filter(v => !v.allowed).length).toBe(7);
+        expect(verdicts.every(v => v.allowed)).toBe(true);
+        expect(verdicts.slice(0, 5).every(v => v.delayMs === 0)).toBe(true);
+        expect(verdicts.slice(5).every(v => v.delayMs > 0)).toBe(true);
     });
 
-    test("the global in-flight cap bounds concurrent verifications", () => {
+    test("the global in-flight cap still refuses transiently", () => {
         const limiter = new LoginRateLimiter(100, 60_000, 60_000, () => 0, 3);
         expect(limiter.tryReserve("a").allowed).toBe(true);
         expect(limiter.tryReserve("b").allowed).toBe(true);
         expect(limiter.tryReserve("c").allowed).toBe(true);
-        expect(limiter.tryReserve("d").allowed).toBe(false);
+        const refused = limiter.tryReserve("d");
+        expect(refused.allowed).toBe(false);
+        expect(refused.retryAfterSec).toBe(1);
     });
 
-    test("success releases its reservation without erasing outstanding failures", () => {
+    test("a correct credential releases only its own reservation", () => {
         const limiter = new LoginRateLimiter(3, 60_000, 60_000, () => 0, 100);
-        limiter.tryReserve("k"); limiter.settle("k", false);
-        limiter.tryReserve("k"); limiter.settle("k", false);
-        // A successful login must not clear the two prior failures.
-        limiter.tryReserve("k"); limiter.settle("k", true);
-        limiter.tryReserve("k"); limiter.settle("k", false);
-        expect(limiter.tryReserve("k").allowed).toBe(false);
+        limiter.tryReserve("k"); limiter.settle("k", false); // count 1
+        limiter.tryReserve("k"); limiter.settle("k", false); // count 2
+        limiter.tryReserve("k"); limiter.settle("k", true);  // count 1, not 0
+        limiter.tryReserve("k"); limiter.settle("k", false); // count 2
+        limiter.tryReserve("k"); limiter.settle("k", false); // count 3
+        // Prior failures carried over: the next attempt is delayed. A full reset
+        // on success would have left it at 0 and undelayed.
+        expect(limiter.tryReserve("k").delayMs).toBeGreaterThan(0);
     });
 });

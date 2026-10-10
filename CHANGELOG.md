@@ -5,6 +5,14 @@
 First minimal release. Single Linux host, single trusted administrator,
 loopback HTTP only (`127.0.0.1`, no proxy/TLS yet).
 
+- Activity audit and login backoff (P7, ADR 0009): an append-only NDJSON
+  activity log (daily files under `.compose-panel/audit/`, retention, bounded
+  reads) records sign-ins, saves and operation starts without passwords, hashes
+  or `.env` values, exposed through a read-only `/audit` page behind auth.
+  Per-client login lockout is replaced by a bounded progressive delay so a valid
+  administrator is never refused; only a transient global in-flight cap answers
+  `429`.
+
 - Verify effective names and collisions before creating Compose projects, pin
   creation identity, reserve project names during panel operations, and end log
   follows for undeployed stacks without a subprocess.

@@ -1,11 +1,12 @@
-import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, type NoteKind } from "./html.ts";
-import { dirname } from "node:path";
+import { escapeHtml, documentHtml, editPage, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, type NoteKind } from "./html.ts";
+import { dirname, join } from "node:path";
 import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
 import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
 import { LogManager } from "./logs.ts";
+import { AuditLog, AuditError } from "./audit.ts";
 import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
 import { createComposeProvider, type ComposeProvider } from "./compose-provider.ts";
 import type { DockerRunner } from "./docker.ts";
@@ -54,6 +55,8 @@ export interface AppOptions {
     provider?: ComposeProvider;
     /** Per-stack modifying-operation lock. */
     locks?: StackLocks;
+    /** Activity log. Built from `config` and `stacksRoot` when omitted. */
+    audit?: AuditLog;
 }
 
 export interface App {
@@ -200,6 +203,13 @@ export function createApp(options: AppOptions): App {
         maxBytes: config.logMaxBytes,
         timeoutMs: config.logTimeoutMs,
     });
+    const audit = options.audit ?? new AuditLog({
+        dir: config.audit.dir ?? join(stacksRoot, ".compose-panel", "audit"),
+        enabled: config.audit.enabled,
+        rotation: config.audit.rotation,
+        retainFiles: config.audit.retainFiles,
+        maxReadLines: config.audit.maxReadLines,
+    });
     let activeSse = 0;
     let shuttingDown = false;
     const saves = new Set<Promise<unknown>>();
@@ -232,8 +242,17 @@ export function createApp(options: AppOptions): App {
     const limiter = new LoginRateLimiter(
         config.loginRateLimit.maxAttempts,
         config.loginRateLimit.windowMs,
-        config.loginRateLimit.blockMs,
+        config.loginRateLimit.backoffMaxMs,
     );
+
+    function sleep(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    /** Best-effort activity record. `record` never throws, so awaiting is safe. */
+    function recordAudit(event: Parameters<AuditLog["record"]>[0]): Promise<void> {
+        return audit.record(event);
+    }
 
     async function readForm(request: Request, maxBytes = config.maxBodyBytes): Promise<URLSearchParams | null> {
         const text = await readTextLimited(request, maxBytes);
@@ -295,7 +314,10 @@ export function createApp(options: AppOptions): App {
         // A blocked Origin (mismatch, or the opaque `null` of an embedded/
         // sandboxed context) is refused, but as a soft POST→GET redirect to the
         // login page with an explanation instead of a bare 403.
-        if (!isAllowedOrigin(request, config)) return redirect("/login?e=blocked", 303);
+        if (!isAllowedOrigin(request, config)) {
+            await recordAudit({ event: "login", result: "refused", actor: clientKey(request, config), detail: "origin blocked" });
+            return redirect("/login?e=blocked", 303);
+        }
         const form = await readForm(request);
         if (form === null) return plain("Payload too large", 413);
 
@@ -303,18 +325,23 @@ export function createApp(options: AppOptions): App {
         const cookieToken = cookies[CSRF_COOKIE] ?? "";
         const formToken = form.get("csrf") ?? "";
         if (!cookieToken || !formToken || !safeEqual(cookieToken, formToken)) {
+            await recordAudit({ event: "login", result: "refused", actor: clientKey(request, config), detail: "stale form" });
             return loginFailure("The sign-in form expired. Please sign in again.", 403);
         }
 
         const key = clientKey(request, config);
         // Reserve the attempt synchronously, before any awaited password work,
         // so a burst of concurrent requests cannot all pass the limit before the
-        // first failure is recorded. The reservation is settled below.
+        // first failure is recorded. A per-key over-limit attempt is not refused
+        // (that would let an attacker lock out the real admin); it is delayed.
+        // The reservation is settled below.
         const verdict = limiter.tryReserve(key);
         if (!verdict.allowed) {
-            const minutes = Math.max(1, Math.ceil(verdict.retryAfterSec / 60));
-            return loginFailure(`Too many failed attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`, 429, verdict.retryAfterSec);
+            // Only the global in-flight cap refuses, and only transiently.
+            await recordAudit({ event: "login", result: "refused", actor: key, detail: "verification capacity reached" });
+            return loginFailure("The panel is busy with other sign-in attempts. Try again in a moment.", 429, verdict.retryAfterSec);
         }
+        if (verdict.delayMs > 0) await sleep(verdict.delayMs);
 
         const user = form.get("user") ?? "";
         const password = form.get("password") ?? "";
@@ -323,7 +350,11 @@ export function createApp(options: AppOptions): App {
             // Verify unconditionally to keep the response time independent of the username.
             const passwordOk = await verifyPassword(config.adminPasswordHash, password);
             success = passwordOk && user === config.adminUser;
-            if (!success) return loginFailure("Wrong username or password.", 401);
+            if (!success) {
+                await recordAudit({ event: "login", result: "failure", actor: key, username: user, detail: verdict.delayMs > 0 ? "over limit, delayed" : undefined });
+                return loginFailure("Wrong username or password.", 401);
+            }
+            await recordAudit({ event: "login", result: "success", actor: key });
 
             const session = sessions.create(config.adminUser);
             const response = redirect("/", 303);
@@ -367,9 +398,24 @@ export function createApp(options: AppOptions): App {
         const warning = dockerNote ? note("warn", dockerNote) : "";
         return htmlResponse(documentHtml(
             "Stacks",
-            `<h1>Stacks</h1>${intro}${warning}${content}`,
+            `<div class="page-head"><h1>Stacks</h1><a href="/audit" class="btn">Activity log</a></div>${intro}${warning}${content}`,
             { logoutCsrf: csrf, user: config.adminUser },
         ));
+    }
+
+    async function renderAudit(csrf: string, requested: string | null): Promise<Response> {
+        const periods = await audit.listPeriods();
+        const selected = requested !== null && periods.includes(requested) ? requested : periods[0] ?? null;
+        let entries: Awaited<ReturnType<typeof audit.readPeriod>> = [];
+        if (selected) {
+            try {
+                entries = await audit.readPeriod(selected, config.audit.maxReadLines);
+            } catch (error) {
+                if (error instanceof AuditError) throw new StackError(error.message, 404);
+                throw error;
+            }
+        }
+        return htmlResponse(auditPage({ csrf, user: config.adminUser, periods, selected, entries }));
     }
 
     async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200): Promise<Response> {
@@ -459,12 +505,15 @@ export function createApp(options: AppOptions): App {
             let result: Awaited<typeof task>;
             try { result = await task; }
             finally { saves.delete(task); }
+            await recordAudit({ event: "save", result: result.changed ? "success" : "no-change", actor: clientKey(request, config), stack: name });
             return redirect(`/stacks/${encodeURIComponent(name)}?saved=${result.changed ? "1" : "0"}`, 303);
         } catch (error) {
             if (error instanceof StackValidationError) {
+                await recordAudit({ event: "save", result: "failure", actor: clientKey(request, config), stack: name, detail: "validation failed" });
                 return renderEdit(name, csrf, { error: { title: "Not saved: the Compose check failed.", message: error.message }, draft: saveRequest, keepDraft: true, status: 400 });
             }
             if (error instanceof StackConflictError) {
+                await recordAudit({ event: "save", result: "conflict", actor: clientKey(request, config), stack: name });
                 return renderEdit(name, csrf, {
                     error: { title: "Not saved.", message: `${error.message} The editor now shows the current files: apply your changes again, then save.` },
                     keepDraft: false,
@@ -473,9 +522,11 @@ export function createApp(options: AppOptions): App {
             }
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
                 // Keep the draft: nothing was written, the user can retry.
+                await recordAudit({ event: "save", result: "refused", actor: clientKey(request, config), stack: name, detail: error.message });
                 return renderEdit(name, csrf, { error: { title: "Not saved.", message: error.message }, draft: saveRequest, keepDraft: true, status: 409 });
             }
             if (error instanceof StackPartialError) {
+                await recordAudit({ event: "save", result: "partial", actor: clientKey(request, config), stack: name });
                 return renderEdit(name, csrf, { error: { title: "Save incomplete.", message: error.message }, draft: saveRequest, keepDraft: true, status: 500 });
             }
             throw error;
@@ -517,9 +568,11 @@ export function createApp(options: AppOptions): App {
                 action,
                 target: { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
             });
+            await recordAudit({ event: "operation", result: "started", actor: clientKey(request, config), stack: name, action });
             return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
         } catch (error) {
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({ event: "operation", result: "refused", actor: clientKey(request, config), stack: name, action, detail: error.message });
                 return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
             }
             throw error;
@@ -796,6 +849,7 @@ export function createApp(options: AppOptions): App {
             }
             sessions.destroy(session.id);
             closeSessionStreams(session.id);
+            await recordAudit({ event: "logout", result: "success", actor: clientKey(request, config) });
             const response = redirect("/login", 303);
             response.headers.append("Set-Cookie", clearedSessionCookie(config.cookieSecure));
             return response;
@@ -816,6 +870,7 @@ export function createApp(options: AppOptions): App {
 
         try {
             if (url.pathname === "/") return await renderStackList(session.csrf);
+            if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
             if (editMatch) return await renderEdit(decodeName(editMatch[1]!), session.csrf);
             const detailMatch = /^\/stacks\/([^/]+)$/.exec(url.pathname);
             if (detailMatch) {

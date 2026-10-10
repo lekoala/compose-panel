@@ -135,71 +135,73 @@ export class SessionStore {
 export interface RateLimitVerdict {
     allowed: boolean;
     retryAfterSec: number;
+    /** Bounded delay to apply before verifying, once a key is over its limit. */
+    delayMs: number;
 }
 
+/**
+ * Per-client attempt throttle that never refuses a valid credential.
+ *
+ * The panel is a single-admin, loopback-first tool. A hard lockout keyed by
+ * client would let anyone deny the real admin access simply by failing logins.
+ * So once a key is over its limit we no longer return a refusal: we return a
+ * bounded, exponentially growing delay instead. A correct password therefore
+ * always goes through (after a short wait under attack), while an attacker's
+ * verification rate collapses against Argon2id. The only hard refusal is the
+ * global in-flight cap, which bounds CPU/memory and is transient.
+ */
 export class LoginRateLimiter {
-    private readonly attempts = new Map<string, { count: number; windowStart: number; blockedUntil: number }>();
+    private readonly attempts = new Map<string, { count: number; windowStart: number }>();
     private inFlight = 0;
 
     constructor(
         private readonly maxAttempts: number,
         private readonly windowMs: number,
-        private readonly blockMs: number,
+        /** Cap for the delay applied once a key is over its limit. */
+        private readonly backoffMaxMs: number,
         private readonly now: () => number = Date.now,
         /** Global ceiling on concurrent password verifications. */
         private readonly maxInFlight: number = 8,
     ) {}
 
     check(key: string): RateLimitVerdict {
-        const entry = this.attempts.get(key);
-        if (!entry) return { allowed: true, retryAfterSec: 0 };
         const now = this.now();
-        if (entry.blockedUntil > now) {
-            return { allowed: false, retryAfterSec: Math.ceil((entry.blockedUntil - now) / 1000) };
-        }
-        if (now - entry.windowStart > this.windowMs) {
-            this.attempts.delete(key);
-        }
-        return { allowed: true, retryAfterSec: 0 };
+        const entry = this.attempts.get(key);
+        if (!entry || now - entry.windowStart > this.windowMs) return { allowed: true, retryAfterSec: 0, delayMs: 0 };
+        return { allowed: true, retryAfterSec: 0, delayMs: this.delayFor(entry.count) };
     }
 
     /**
      * Check-and-reserve in one synchronous step. The attempt is counted before
      * any awaited password work, so N concurrent requests cannot all pass the
      * limit before the first failure is recorded. Call `settle` exactly once
-     * afterwards. Returns a 429-style verdict when the per-key limit, the
-     * current block, or the global in-flight cap is reached.
+     * afterwards. Returns a refusal only when the global in-flight cap is hit;
+     * a per-key over-limit attempt is allowed with a `delayMs` to wait first.
      */
     tryReserve(key: string): RateLimitVerdict {
         const now = this.now();
         let entry = this.attempts.get(key);
-        if (entry && entry.blockedUntil > now) {
-            return { allowed: false, retryAfterSec: Math.ceil((entry.blockedUntil - now) / 1000) };
-        }
         if (entry && now - entry.windowStart > this.windowMs) {
             this.attempts.delete(key);
             entry = undefined;
         }
         if (this.inFlight >= this.maxInFlight) {
-            return { allowed: false, retryAfterSec: 1 };
+            return { allowed: false, retryAfterSec: 1, delayMs: 0 };
         }
         if (!entry) {
-            entry = { count: 0, windowStart: now, blockedUntil: 0 };
+            entry = { count: 0, windowStart: now };
             this.attempts.set(key, entry);
         }
-        if (entry.count >= this.maxAttempts) {
-            entry.blockedUntil = now + this.blockMs;
-            return { allowed: false, retryAfterSec: Math.ceil(this.blockMs / 1000) };
-        }
+        const delayMs = this.delayFor(entry.count);
         entry.count += 1;
         this.inFlight += 1;
-        return { allowed: true, retryAfterSec: 0 };
+        return { allowed: true, retryAfterSec: 0, delayMs };
     }
 
     /**
      * Release a reservation made by `tryReserve`. On success the reservation is
      * removed without erasing other outstanding failures; on failure it stays
-     * counted and blocks the key once the limit is reached.
+     * counted, so the next attempt on this key is delayed further.
      */
     settle(key: string, success: boolean): void {
         if (this.inFlight > 0) this.inFlight -= 1;
@@ -208,26 +210,27 @@ export class LoginRateLimiter {
         if (success) {
             entry.count -= 1;
             if (entry.count <= 0) this.attempts.delete(key);
-            return;
         }
-        const now = this.now();
-        if (entry.count >= this.maxAttempts) entry.blockedUntil = now + this.blockMs;
     }
 
     recordFailure(key: string): void {
         const now = this.now();
         const entry = this.attempts.get(key);
         if (!entry || now - entry.windowStart > this.windowMs) {
-            this.attempts.set(key, { count: 1, windowStart: now, blockedUntil: 0 });
+            this.attempts.set(key, { count: 1, windowStart: now });
             return;
         }
         entry.count += 1;
-        if (entry.count >= this.maxAttempts) {
-            entry.blockedUntil = now + this.blockMs;
-        }
     }
 
     reset(key: string): void {
         this.attempts.delete(key);
+    }
+
+    /** 0 below the limit, then doubling from 250 ms up to `backoffMaxMs`. */
+    private delayFor(count: number): number {
+        const over = count - this.maxAttempts;
+        if (over < 0) return 0;
+        return Math.min(this.backoffMaxMs, 250 * 2 ** over);
     }
 }

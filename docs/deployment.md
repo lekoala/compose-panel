@@ -67,6 +67,57 @@ removes only the panel container. Running services, networks and volumes are
 untouched — verify with `docker ps` afterwards. Stacks remain fully manageable
 by the `docker compose` CLI.
 
+## Activity log
+
+The panel writes an append-only audit log of sign-ins, saves and operation
+starts as NDJSON, one file per day under
+`<root>/.compose-panel/audit/` (inside the already-mounted stacks directory, so
+no new volume is needed). The most recent `COMPOSE_PANEL_AUDIT_RETAIN_FILES`
+files (default 31) are kept. A read-only view is available at `/audit` once
+signed in. The log never contains passwords, hashes or `.env` values.
+
+Useful variables: `COMPOSE_PANEL_AUDIT_ENABLED` (default `true`),
+`COMPOSE_PANEL_AUDIT_DIR` (default the stacks path above),
+`COMPOSE_PANEL_AUDIT_ROTATION` (`day` or `month`),
+`COMPOSE_PANEL_AUDIT_RETAIN_FILES`, `COMPOSE_PANEL_AUDIT_MAX_READ_LINES`.
+
+Every failed login is a line like:
+
+```json
+{"ts":"2026-10-10T09:00:00.000Z","event":"login","result":"failure","actor":"203.0.113.7","username":"operator","detail":"over limit, delayed"}
+```
+
+### Host-level ban (fail2ban / CrowdSec)
+
+The panel throttles logins itself (a bounded delay, never a lockout), so a real
+source ban belongs at the host, on the SSH daemon and on this audit file. This
+is only meaningful once the panel is reachable from other hosts **and**
+`COMPOSE_PANEL_TRUST_PROXY=true` with a proxy that overwrites
+`X-Forwarded-For` — otherwise `actor` stays `direct` and every request shares
+one key. A minimal fail2ban jail (NDJSON parsed with a regex filter):
+
+```ini
+# /etc/fail2ban/filter.d/compose-panel.conf
+[Definition]
+failregex = "result":"failure".*"actor":"<HOST>"
+```
+
+```ini
+# /etc/fail2ban/jail.d/compose-panel.conf
+[compose-panel]
+enabled  = true
+port     = 5081
+filter   = compose-panel
+logpath  = /opt/stacks/.compose-panel/audit/*.log
+maxretry = 10
+findtime = 600
+bantime  = 3600
+```
+
+Do **not** set `COMPOSE_PANEL_TRUST_PROXY=true` without a proxy in front: the
+`X-Forwarded-For` header would otherwise be client-controlled and the audit
+`actor` (and the login key) spoofable.
+
 ## Manual verification (release gate)
 
 Automated CI builds the image, scans it and runs unit tests, but the

@@ -1,5 +1,6 @@
 import type { ComposeService } from "./compose-state.ts";
 import type { OperationAction, OperationView } from "./operations.ts";
+import type { AuditEntry } from "./audit.ts";
 
 export function escapeHtml(value: string): string {
     return value.replace(/[&<>"']/g, char => {
@@ -265,6 +266,66 @@ export function logsPanel(name: string, tailLines: number): string {
         + `<p id="logs-status" class="muted" role="status"></p>`
         + `<pre class="output" id="logs-output"></pre>`
         + `</section>`;
+}
+
+export interface AuditPageOptions {
+    csrf: string;
+    user?: string;
+    periods: string[];
+    selected: string | null;
+    entries: AuditEntry[];
+}
+
+const AUDIT_RESULT_CLASS: Record<string, string> = {
+    success: "state-done",
+    failure: "state-failed",
+    partial: "state-failed",
+    conflict: "state-stopped",
+    refused: "state-stopped",
+};
+
+/** Read-only activity log: a period selector and the parsed entries of one file. */
+export function auditPage(options: AuditPageOptions): string {
+    const periodOptions = options.periods
+        .map(period => `<option value="${escapeHtml(period)}"${period === options.selected ? " selected" : ""}>${escapeHtml(period)}</option>`)
+        .join("");
+    const selector = options.periods.length > 0
+        ? `<form method="get" action="/audit" class="toolbar"><label class="muted">Period <select name="period">${periodOptions}</select></label><button type="submit" class="btn">Show</button></form>`
+        : "";
+    let table: string;
+    if (options.periods.length === 0) {
+        table = note("info", "No activity recorded yet. Sign-ins, edits and actions appear here.");
+    } else if (options.entries.length === 0) {
+        table = note("info", "No entries in this period.");
+    } else {
+        const rows = options.entries.map(entry => {
+            const when = entry.ts ? `${entry.ts.slice(0, 19).replace("T", " ")}Z` : "";
+            const resultClass = AUDIT_RESULT_CLASS[entry.result] ?? "state-stopped";
+            const stack = entry.stack ? `<code>${escapeHtml(entry.stack)}</code>` : `<span class="muted">—</span>`;
+            const action = entry.action ? escapeHtml(entry.action) : `<span class="muted">—</span>`;
+            const actor = entry.username
+                ? `${escapeHtml(entry.actor ?? "—")} <span class="muted">(${escapeHtml(entry.username)})</span>`
+                : escapeHtml(entry.actor ?? "—");
+            const detail = entry.detail ? escapeHtml(entry.detail) : "";
+            return `<tr><td><time datetime="${escapeHtml(entry.ts ?? "")}">${escapeHtml(when)}</time></td>`
+                + `<td>${escapeHtml(entry.event)}</td>`
+                + `<td><span class="state ${resultClass}">${escapeHtml(entry.result)}</span></td>`
+                + `<td>${actor}</td><td>${stack}</td><td>${action}</td><td class="col-optional">${detail}</td></tr>`;
+        }).join("");
+        table = `<div class="table-wrap"><table class="table"><thead><tr>`
+            + `<th>Time</th><th>Event</th><th>Result</th><th>Actor</th><th>Stack</th><th>Action</th><th class="col-optional">Detail</th>`
+            + `</tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+    return documentHtml(
+        "Activity log",
+        `<p class="crumbs"><a href="/">← All stacks</a></p>`
+        + `<div class="page-head"><h1>Activity log</h1></div>`
+        + `<p class="lead">Read-only record of sign-ins, file saves and actions, kept in <code>.compose-panel/audit</code> on the host. It never contains passwords, hashes or <code>.env</code> values.</p>`
+        + selector
+        + (options.selected ? `<p class="muted">Showing <code>${escapeHtml(options.selected)}.log</code> (${options.entries.length} entries, most recent last).</p>` : "")
+        + table,
+        { logoutCsrf: options.csrf, user: options.user },
+    );
 }
 
 export function htmlResponse(body: string, status = 200): Response {
