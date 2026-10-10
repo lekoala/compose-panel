@@ -9,6 +9,7 @@
     "start": "bun src/server.ts",
     "test": "bun test",
     "check": "tsc --noEmit",
+    "docker:build": "docker build -t compose-panel:local .",
     "verify": "bun test && tsc --noEmit",
     "hash-password": "bun src/scripts/hash-password.ts"
   },

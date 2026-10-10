@@ -44,6 +44,7 @@ bun run check
 - Predefined operations (`up`, `stop`, `restart`, `down`, `pull + up`) behind a fixed allow-list, one per stack, running in memory independently of the browser; success only on exit 0, timeout reported as unknown, bounded output, and a graceful drain on shutdown.
 - Discovery of stacks whose directory contains **exactly one** of the supported Compose names.
 - Live streams over authenticated SSE with heartbeat, explicit timeout, subscriber cap and slow-reader drops: operation output (observing only — disconnect never cancels) and `compose logs --follow` (one subprocess per stack, killed when the last reader leaves). A minimal vanilla `app.js` inserts server text via `textContent` only.
+- Reproducible Linux image (`bun run docker:build`, Bun + Docker CLI + Compose plugin verified inside), `deploy/compose.yaml` with host networking, `stop_grace_period` past the drain window, and backup/rollback plus manual verification in `docs/deployment.md`. Linux CI runs tests, typecheck, image build, socket-less smoke test and a Trivy scan, and never publishes.
 - Name validation and rejection of symbolic links for reads and writes.
 - Unit tests for path safety, HTML escaping, the auth/CSRF flows, Compose output parsing, the editor, the operation manager, SSE framing and the log manager.
 - `AGENTS.md`, ADRs, roadmap and agent missions ready to delegate.
@@ -55,7 +56,7 @@ bun run check
 3. **Editing** Compose and `.env` with optimistic versioning, validation in the real context, backup and controlled rollback. *(done, P3)*
 4. **Predefined operations** with a per-stack lock and in-memory status (no automatic recovery). *(done, P4)*
 5. **Logs** and SSE streaming independent of the operation's execution. *(done, P5)*
-6. **Reproducible Linux Dockerfile**, CI pipeline, restart test and deployment.
+6. **Reproducible Linux Dockerfile**, CI pipeline, restart test and deployment. *(done, P6 — loopback only; see `docs/deployment.md`)*
 
 See [docs/roadmap.md](docs/roadmap.md), [AGENTS.md](AGENTS.md), [agents/](agents/) and [docs/security.md](docs/security.md).
 

@@ -1,0 +1,2 @@
+# The real secret file. It is read by deploy/compose.yaml and must never be committed.
+compose-panel.env

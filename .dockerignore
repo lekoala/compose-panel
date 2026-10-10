@@ -1,0 +1,17 @@
+.git
+.gitignore
+node_modules
+private/
+tests/
+docs/
+deploy/
+.github/
+.env
+.env.example
+*.md
+*.log
+.data/
+dist/
+.DS_Store
+Dockerfile
+.dockerignore

@@ -1,0 +1,36 @@
+# Compose Panel deployment. Single instance, single host.
+#
+# The panel binds 127.0.0.1 ONLY (hard-coded in src/server.ts), so with host
+# networking it is reachable on the host loopback and nowhere else. Reach it
+# remotely with an SSH tunnel, never by publishing a port:
+#   ssh -L5081:127.0.0.1:5081 you@host
+#
+# Host path == container path is REQUIRED for stacks and the Docker socket:
+# the panel matches `docker compose ls` ConfigFiles against its own paths.
+name: compose-panel
+
+services:
+  panel:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: compose-panel:local
+    container_name: compose-panel
+    # Share the host network namespace so the loopback bind IS the host
+    # loopback. Do not add ports: there is nothing to publish.
+    network_mode: host
+    # Must exceed COMPOSE_PANEL_SHUTDOWN_GRACE_MS (default 30s) so running
+    # operations drain before the container is killed.
+    stop_grace_period: 35s
+    restart: unless-stopped
+    volumes:
+      # Full control over the host Docker daemon. Trusted admin only.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Same path on both sides, or project matching breaks. Adjust both the
+      # mount AND STACKS_DIR together if your stacks live elsewhere.
+      - /opt/stacks:/opt/stacks
+    env_file:
+      - compose-panel.env
+    environment:
+      STACKS_DIR: /opt/stacks
+      PORT: 5081

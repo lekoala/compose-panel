@@ -38,10 +38,10 @@ Each step creates a functional, verifiable slice. Do not carry out mutations in 
 - [x] Backpressure, buffer limit, heartbeat, explicit timeout.
 
 ## P6 — Linux production (agent 06)
-- [ ] Multi-stage image with Bun, Docker CLI and Compose plugin installed and verified.
-- [ ] Isolated CI, linux/amd64 build at minimum, real smoke tests.
-- [ ] `stop_grace_period`, restart, mount, backups, rollback procedure documented.
-- [ ] Release candidate after file, security and interruption tests.
+- [x] Multi-stage image with Bun, Docker CLI and Compose plugin installed and verified.
+- [x] Isolated CI, linux/amd64 build at minimum, real smoke tests.
+- [x] `stop_grace_period`, restart, mount, backups, rollback procedure documented.
+- [x] Release candidate after file, security and interruption tests.
 
 **V1 completion criterion**: the admin can edit a stack and request `up`, disconnect the browser, find the real status again, stop the panel without affecting containers already running. No dishonest guarantees after a hard crash.
 
