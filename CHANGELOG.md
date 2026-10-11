@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — unreleased
+## 0.2.0
 
 - Backup retention and purge (ADR 0017): after each save the panel keeps the
   `COMPOSE_PANEL_BACKUP_RETAIN` (default 10) most recent backups of each file of

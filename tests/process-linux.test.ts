@@ -79,11 +79,23 @@ test.skipIf(process.platform !== "linux")("escalation reaches an orphaned plugin
         expect(helperPid).toBeGreaterThan(0);
         // Orphan zombies may briefly await the WSL init reaper. They have
         // exited and cannot execute mutations; a running/sleeping child fails.
-        const stat = await readFile(`/proc/${helperPid}/stat`, "utf8").catch(error => {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-            throw error;
-        });
-        if (stat) expect(stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3)).toBe("Z");
+        // The pipes close while the killed helper is still exiting (files are
+        // released before it turns zombie), so allow that short window. A
+        // helper reaped between open and read gives ESRCH instead of ENOENT.
+        const state = async () => {
+            const stat = await readFile(`/proc/${helperPid}/stat`, "utf8").catch(error => {
+                const code = (error as NodeJS.ErrnoException).code;
+                if (code === "ENOENT" || code === "ESRCH") return null;
+                throw error;
+            });
+            return stat === null ? "gone" : stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+        };
+        let current = await state();
+        for (const until = Date.now() + 2000; current !== "gone" && current !== "Z" && Date.now() < until;) {
+            await Bun.sleep(20);
+            current = await state();
+        }
+        expect(["gone", "Z"]).toContain(current);
     } finally {
         if (helperPid > 0) { try { process.kill(helperPid, "SIGKILL"); } catch { /* already reaped */ } }
     }
