@@ -68,7 +68,7 @@ Rules that must stay true:
 
 ## Upgrading from 0.1.0
 
-0.1.1 replaces the single `COMPOSE_PANEL_PUBLIC_ORIGIN` with the list
+0.2.0 replaces the single `COMPOSE_PANEL_PUBLIC_ORIGIN` with the list
 `COMPOSE_PANEL_PROXY_ORIGINS`, and removes `COMPOSE_PANEL_TRUST_PROXY` (the
 forwarded address is now trusted per matched origin automatically). Both old
 settings are refused at startup with a migration message — the panel never
@@ -79,9 +79,9 @@ reinterprets security configuration silently ([ADR 0012](adr/0012-multiple-acces
 COMPOSE_PANEL_PUBLIC_ORIGIN=https://panel.example.com
 COMPOSE_PANEL_TRUST_PROXY=true
 
-# 0.1.1 — reverse proxy only
+# 0.2.0 — reverse proxy only
 COMPOSE_PANEL_PROXY_ORIGINS=https://panel.example.com
-# 0.1.1 — HTTPS and the SSH tunnel together
+# 0.2.0 — HTTPS and the SSH tunnel together
 COMPOSE_PANEL_PROXY_ORIGINS=https://panel.example.com
 COMPOSE_PANEL_ALLOW_LOOPBACK=true
 ```
@@ -97,7 +97,7 @@ bound to `127.0.0.1`, so Caddy must reach the host loopback: run it on the host
 itself, or in a container with `network_mode: host`.
 
 > **Version note.** The list setting below (`COMPOSE_PANEL_PROXY_ORIGINS`) is the
-> 0.1.1 contract ([ADR 0012](adr/0012-multiple-access-origins.md)). On 0.1.0 the
+> 0.2.0 contract ([ADR 0012](adr/0012-multiple-access-origins.md)). On 0.1.0 the
 > equivalent is the single `COMPOSE_PANEL_PUBLIC_ORIGIN=https://…`; see
 > [Upgrading from 0.1.0](#upgrading-from-010).
 
@@ -218,7 +218,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:5081
 tailscale serve status   # prints https://<host>.<tailnet>.ts.net
 ```
 
-Then list that `ts.net` origin and keep the SSH tunnel as a fallback (0.1.1):
+Then list that `ts.net` origin and keep the SSH tunnel as a fallback (0.2.0):
 
 ```sh
 COMPOSE_PANEL_PROXY_ORIGINS=https://oracle-ampere.example-tailnet.ts.net
@@ -293,7 +293,12 @@ Two layers, both plain files:
 1. **Per-save backups** made by the panel itself under
    `<root>/.compose-panel/backups/<stack>/` (previous `compose.yaml`/`.env`
    before each write). To roll a stack back, copy the backup over the live
-   file, then `docker compose up -d` from that directory.
+   file, then `docker compose up -d` from that directory. The panel keeps the
+   `COMPOSE_PANEL_BACKUP_RETAIN` (default 10) most recent backups of each file
+   and deletes older ones after a save. "Delete all backups" on a stack's edit
+   page removes them at once, for example after rotating a secret in `.env`
+   (backups of `.env` contain its secrets). Only files the panel created are
+   counted or deleted (ADR 0017).
 2. **Host-level stacks backup** before upgrades or risky edits:
    `tar -czf /root/stacks-backup-$(date +%F).tar.gz -C /opt stacks`.
    Restore with `tar -xzf`, then re-read state in the panel.

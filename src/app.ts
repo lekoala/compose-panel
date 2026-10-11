@@ -8,6 +8,8 @@ import { createContainerInspector, isContainerId, sanitizeTailLines, type Contai
 import { createDiskUsageCache, loadInsights } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
+import { listBackups, pruneBackups } from "./backups.ts";
+import { FileSafetyError } from "./fs-safe.ts";
 import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
 import { LogManager, stripAnsi } from "./logs.ts";
 import { AuditLog, AuditError } from "./audit.ts";
@@ -746,10 +748,12 @@ export function createApp(options: AppOptions): App {
     async function renderEdit(
         name: string,
         csrf: string,
-        options: { error?: { title: string; message: string }; draft?: SaveDraft; keepDraft?: boolean; status?: number } = {},
+        options: { error?: { title: string; message: string }; notice?: { kind: NoteKind; text: string }; draft?: SaveDraft; keepDraft?: boolean; status?: number } = {},
     ): Promise<Response> {
         const stack = await readEditableStack(stacksRoot, name, config.maxEditBytes);
         const draft = options.keepDraft === true ? options.draft : undefined;
+        // A broken backup folder must not lock the user out of the editor.
+        const backups = await listBackups(stacksRoot, name).catch(() => null);
         return htmlResponse(editPage({
             name,
             csrf,
@@ -764,8 +768,54 @@ export function createApp(options: AppOptions): App {
             envHash: draft ? draft.baseEnvHash : stack.envHash,
             envExists: draft ? draft.baseEnvExists : stack.envExists,
             error: options.error ?? null,
+            notice: options.notice,
+            backups: backups && { count: backups.length, bytes: backups.reduce((total, entry) => total + entry.size, 0), retain: config.backupRetain },
             nav: await sidebarNav("stacks", name),
         }), options.status ?? 200);
+    }
+
+    /** Best effort: a save that succeeded stays a success even if pruning fails. */
+    async function pruneAfterSave(name: string): Promise<void> {
+        try {
+            await pruneBackups(stacksRoot, name, config.backupRetain);
+        } catch (error) {
+            console.error(`Could not prune old backups of ${name}:`, error instanceof Error ? error.message : error);
+        }
+    }
+
+    async function handleBackupPurge(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}/edit`;
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+        // The folder must still be a stack: validates the name before any path use.
+        await locateComposeFile(stacksRoot, name);
+
+        try {
+            const task = locks.run(name, async () => {
+                if (shuttingDown) throw new OperationsDisabledError();
+                return pruneBackups(stacksRoot, name, 0);
+            });
+            saves.add(task);
+            let removed: number;
+            try { removed = await task; }
+            finally { saves.delete(task); }
+            await recordAudit({ event: "backup-purge", result: "success", actor: clientKey(request, config), stack: name, detail: `${removed} removed` });
+            return redirect(`${back}?purged=1`, 303);
+        } catch (error) {
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({ event: "backup-purge", result: "refused", actor: clientKey(request, config), stack: name, detail: error.message });
+                return renderEdit(name, csrf, { error: { title: "Backups not deleted.", message: error.message }, status: 409 });
+            }
+            if (error instanceof FileSafetyError) {
+                await recordAudit({ event: "backup-purge", result: "failure", actor: clientKey(request, config), stack: name, detail: error.message });
+                return renderEdit(name, csrf, { error: { title: "Backups not deleted.", message: error.message }, status: 500 });
+            }
+            throw error;
+        }
     }
 
     async function handleSave(request: Request, name: string, session: Session): Promise<Response> {
@@ -787,12 +837,15 @@ export function createApp(options: AppOptions): App {
         };
 
         try {
-            const task = locks.run(name, () => {
+            const task = locks.run(name, async () => {
                 if (shuttingDown) throw new OperationsDisabledError();
-                return saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes, {
+                const saved = await saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes, {
                     // Validation awaits a subprocess: re-check right before writing.
                     beforeCommit: () => { if (!sessions.isActive(session.id)) throw new SessionEndedError(); },
                 });
+                // Still under the stack lock, so no other save adds a backup meanwhile.
+                if (saved.changed) await pruneAfterSave(name);
+                return saved;
             });
             saves.add(task);
             let result: Awaited<typeof task>;
@@ -1210,6 +1263,12 @@ export function createApp(options: AppOptions): App {
             try { return await handleSave(request, decodeName(editMatch[1]!), session); }
             catch (error) { return routeError(error, session.csrf, safeName(editMatch[1]!)); }
         }
+        const backupsMatch = /^\/stacks\/([^/]+)\/backups\/purge$/.exec(url.pathname);
+        if (backupsMatch) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try { return await handleBackupPurge(request, decodeName(backupsMatch[1]!), session); }
+            catch (error) { return routeError(error, session.csrf, safeName(backupsMatch[1]!)); }
+        }
         const operationsMatch = /^\/stacks\/([^/]+)\/operations$/.exec(url.pathname);
         if (operationsMatch) {
             if (method !== "POST") return methodNotAllowed("POST");
@@ -1235,7 +1294,11 @@ export function createApp(options: AppOptions): App {
             }
             const containerDetailMatch = /^\/containers\/([^/]+)$/.exec(url.pathname);
             if (containerDetailMatch) return await renderContainerDetail(decodeName(containerDetailMatch[1]!), session.csrf);
-            if (editMatch) return await renderEdit(decodeName(editMatch[1]!), session.csrf);
+            if (editMatch) {
+                // Fixed message only: the query flag is never reflected.
+                const notice = url.searchParams.get("purged") === "1" ? { kind: "success" as const, text: "Backups deleted." } : undefined;
+                return await renderEdit(decodeName(editMatch[1]!), session.csrf, { notice });
+            }
             const logSnapshotMatch = /^\/stacks\/([^/]+)\/logs$/.exec(url.pathname);
             if (logSnapshotMatch) {
                 const response = await handleLogsSnapshot(decodeName(logSnapshotMatch[1]!), session.id);

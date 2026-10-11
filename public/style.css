@@ -201,6 +201,12 @@ details[open] > summary{margin-bottom:.75rem}
 .form textarea[hidden]{display:none}
 .keys{margin:0;font-size:.85rem}
 @media (max-width:36rem){.op-confirm-panel{padding-left:0}}
+.confirm > summary{list-style:none;cursor:pointer;display:inline-block}
+.confirm > summary::-webkit-details-marker{display:none}
+.confirm[open] > summary .btn{background:var(--danger-bg)}
+.confirm-panel{margin-top:.5rem}
+.confirm-panel .note{margin-top:0}
+.confirm-panel .btn-danger{background:var(--danger);color:var(--bg);font-weight:600}
 
 /* Period selector on the activity log */
 select{font:inherit;font-weight:400;padding:.5rem 2.25rem .5rem .75rem;border:1px solid var(--border);border-radius:.45rem;color:var(--ink);min-height:2.5rem;cursor:pointer;appearance:none;-webkit-appearance:none;

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chown, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { FileSafetyError, hashContent, writeFileAtomic } from "../src/fs-safe.ts";
+import { FileSafetyError, hashContent, writeFileAtomic, type FileAttributes } from "../src/fs-safe.ts";
 import {
     StackConflictError,
     StackPartialError,
@@ -18,6 +18,7 @@ import {
 import { StackError } from "../src/stacks.ts";
 import type { CommandResult, DockerRunner } from "../src/docker.ts";
 import { createComposeProvider } from "../src/compose-provider.ts";
+import { foreignOwner } from "./helpers/ownership.ts";
 
 const MAX = 1024 * 1024;
 const COMPOSE = "services:\n  app:\n    image: nginx:alpine\n# keep this comment\n";
@@ -276,10 +277,10 @@ describe("saveEditableStack", () => {
     test("restores compose and reports partial when the env write fails", async () => {
         const stack = await current();
         const written: string[] = [];
-        const writer = async (path: string, content: string, mode: number) => {
+        const writer = async (path: string, content: string, attributes: FileAttributes) => {
             written.push(path);
             if (path.endsWith(".env")) throw new Error("disk full");
-            await writeFileAtomic(path, content, mode);
+            await writeFileAtomic(path, content, attributes);
         };
         const error = await saveEditableStack(root, "demo", req(stack, {
             composeSource: "services:\n  app:\n    image: x\n",
@@ -298,10 +299,10 @@ describe("saveEditableStack", () => {
         const stack = await current();
         const draft = "services:\n  app:\n    image: x\n";
         let calls = 0;
-        const writer = async (path: string, content: string, mode: number) => {
+        const writer = async (path: string, content: string, attributes: FileAttributes) => {
             calls += 1;
             if (calls === 1) {
-                await writeFileAtomic(path, content, mode);
+                await writeFileAtomic(path, content, attributes);
                 return;
             }
             throw new Error("disk full");
@@ -360,6 +361,23 @@ describe("saveEditableStack", () => {
         expect(result.changed).toBe(true);
         expect(result.envExists).toBe(true);
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe("TOKEN=abcdefgh\n");
+    });
+
+    // Regression: saves used to hand edited files to the panel's user (root in the image).
+    test.skipIf(foreignOwner === null)("keeps the owner of saved files and gives a new .env the Compose file's owner", async () => {
+        const owner = foreignOwner!;
+        await rm(join(root, "demo", ".env"));
+        await chown(join(root, "demo", "compose.yaml"), owner.uid, owner.gid);
+        const stack = await current();
+        await saveEditableStack(root, "demo", req(stack, {
+            composeSource: "services:\n  app:\n    image: x\n",
+            envSource: "TOKEN=abcdefgh\n",
+        }), asProvider(okRunner), MAX);
+        for (const file of ["compose.yaml", ".env"]) {
+            const info = await stat(join(root, "demo", file));
+            expect({ uid: info.uid, gid: info.gid }).toEqual(owner);
+        }
+        expect((await stat(join(root, "demo", ".env"))).mode & 0o777).toBe(0o600);
     });
 
     test.skipIf(process.platform === "win32")("refuses a symlinked .env", async () => {

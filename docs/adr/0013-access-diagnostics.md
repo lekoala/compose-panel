@@ -26,7 +26,7 @@ cannot even read would be a false assurance.
 - **No extra privileges.** The page is computed from the panel's own
   configuration and the resolved access point. It runs no host command, reads no
   Tailscale or systemd socket, and mounts nothing new. Detecting `caddy` or
-  `tailscale` is out of scope for 0.1.1.
+  `tailscale` is out of scope for 0.2.0.
 - **An invariant for the product:** the panel never displays an access as secure
   or verified on the basis of declared configuration alone. It distinguishes
   what it knows, what it has checked, and what it cannot know.

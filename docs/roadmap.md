@@ -7,14 +7,14 @@ Nothing below is scheduled or promised. Each item changes a documented guarantee
 After V1 the direction is to understand the host the stacks run on, not only the stacks themselves: observe resource use and service health, and carry out targeted server maintenance — without becoming a general-purpose Linux administration panel. Working tagline: *Manage your stacks. Understand your server.*
 
 ## Access
-- **Use HTTPS and the SSH tunnel at the same time.** Done in 0.1.1 ([ADR 0012](adr/0012-multiple-access-origins.md)): `COMPOSE_PANEL_PROXY_ORIGINS` (a list) plus `COMPOSE_PANEL_ALLOW_LOOPBACK`. Host and Origin are validated per access point, and the cookie attribute is chosen per path.
+- **Use HTTPS and the SSH tunnel at the same time.** Done in 0.2.0 ([ADR 0012](adr/0012-multiple-access-origins.md)): `COMPOSE_PANEL_PROXY_ORIGINS` (a list) plus `COMPOSE_PANEL_ALLOW_LOOPBACK`. Host and Origin are validated per access point, and the cookie attribute is chosen per path.
 - **Login CSRF across tabs and access modes.** Make the token robust when several tabs are open or the access path changes.
-- **Access diagnostics (0.1.1).** A read-only `/access` page done in 0.1.1 ([ADR 0013](adr/0013-access-diagnostics.md)): it lists the configured paths with an honest status (verified by the panel / configured but unverifiable / verify externally) and never shows an access as secure from its configuration alone. No extra privileges.
+- **Access diagnostics (0.2.0).** A read-only `/access` page done in 0.2.0 ([ADR 0013](adr/0013-access-diagnostics.md)): it lists the configured paths with an honest status (verified by the panel / configured but unverifiable / verify externally) and never shows an access as secure from its configuration alone. No extra privileges.
 - **Optional host diagnostics (later).** Detect Caddy/Tailscale from a bounded, read-only JSON status file produced by an optional local collector with strictly limited permissions (`systemctl is-active caddy`, `tailscale status|serve|funnel --json`), disabled by default, served to the panel through a read-only mount — never a Tailscale or systemd socket, no keys or raw config. Own ADR first. Provider-agnostic: no Caddy/Tailscale detection hard-coded beyond the collected file.
 - **Server health page (later).** Fold the access diagnostics into a broader host view: external containers, systemd services and exposed ports, still read-only and without becoming a general Linux administration panel.
 
 ## Usability
-- **Move between stacks without returning to the list.** Done in 0.1.1 ([ADR 0016](adr/0016-navigation-sidebar.md)): a persistent sidebar carries the section links, the stack list with the current stack highlighted, a local search filter, and a native mobile disclosure. Names only: no status, counter, badge or Docker call in the navigation.
+- **Move between stacks without returning to the list.** Done in 0.2.0 ([ADR 0016](adr/0016-navigation-sidebar.md)): a persistent sidebar carries the section links, the stack list with the current stack highlighted, a local search filter, and a native mobile disclosure. Names only: no status, counter, badge or Docker call in the navigation.
 - **Per-stack network options** from a fixed allow-list, instead of editing raw YAML for common cases (see Dockge's edit screen).
 
 ## Engine support

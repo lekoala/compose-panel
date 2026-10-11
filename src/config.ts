@@ -72,6 +72,8 @@ export interface AppConfig {
     maxBodyBytes: number;
     /** Maximum size of an edited Compose or .env draft. */
     maxEditBytes: number;
+    /** Backups kept per file of a stack; older ones are deleted after each save. */
+    backupRetain: number;
     /** Fixed Docker executable. Never taken from user input. */
     dockerPath: string;
     /** Compose engine/provider identifier. V1 supports "docker". */
@@ -332,6 +334,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         },
         maxBodyBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_BODY_BYTES", 8 * 1024),
         maxEditBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_EDIT_BYTES", 1024 * 1024),
+        backupRetain: parsePositiveInt(env, "COMPOSE_PANEL_BACKUP_RETAIN", 10),
         dockerPath: env.COMPOSE_PANEL_DOCKER_PATH?.trim() || "docker",
         composeEngine: parseComposeEngine(env),
         hostStacksPathAliases: parsePathAliases(env),

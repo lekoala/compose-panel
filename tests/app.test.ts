@@ -43,6 +43,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         audit: { enabled: true, dir: null, rotation: "day", retainFiles: 31, maxReadLines: 2000, maxFileBytes: 10 * 1024 * 1024 },
         maxBodyBytes: 8192,
         maxEditBytes: 1024 * 1024,
+        backupRetain: 10,
         dockerPath: "docker",
         composeEngine: "docker",
         hostStacksPathAliases: [],
@@ -997,6 +998,128 @@ describe("editor routes", () => {
         const other = await (await authed(app, "/stacks/demo?saved=%3Cscript%3E", session)).text();
         expect(other).not.toContain("<script>");
         expect(other).not.toContain("note-success");
+    });
+});
+
+describe("stack backups", () => {
+    const okRunner: DockerRunner = async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false });
+    const backupDir = () => join(root, ".compose-panel", "backups", "demo");
+    const PLANTED = "compose.yaml.2026-10-11T08-00-00-000Z.aaaaaaaaaaaaaaaaaa";
+
+    beforeEach(async () => {
+        await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+        await rm(join(root, "demo", ".env"), { force: true });
+        await rm(backupDir(), { recursive: true, force: true });
+    });
+
+    async function save(app: App, session: string, compose: string): Promise<Response> {
+        const html = await (await authed(app, "/stacks/demo/edit", session)).text();
+        const field = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(html)![1]!;
+        return authed(app, "/stacks/demo/edit", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf: field("csrf"), composeHash: field("composeHash"), envHash: field("envHash"), envExists: field("envExists"), compose, env: "" }).toString(),
+        });
+    }
+
+    async function purge(app: App, session: string, csrf?: string): Promise<Response> {
+        const token = csrf ?? /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/stacks/demo/edit", session)).text())![1]!;
+        return authed(app, "/stacks/demo/backups/purge", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf: token }).toString(),
+        });
+    }
+
+    async function plantBackup(): Promise<void> {
+        await mkdir(backupDir(), { recursive: true });
+        await writeFile(join(backupDir(), PLANTED), "old\n");
+    }
+
+    test("a save deletes backups beyond the retention count", async () => {
+        const app = makeApp({ backupRetain: 2 }, okRunner);
+        const session = await login(app);
+        for (const tag of ["1", "2", "3"]) expect((await save(app, session, `services:\n  app:\n    image: nginx:${tag}\n`)).status).toBe(303);
+        const left = await readdir(backupDir());
+        expect(left).toHaveLength(2);
+        // The oldest backup held the original file; the two newest are kept.
+        const contents = await Promise.all(left.map(name => readFile(join(backupDir(), name), "utf8")));
+        expect(contents.sort()).toEqual(["services:\n  app:\n    image: nginx:1\n", "services:\n  app:\n    image: nginx:2\n"]);
+    });
+
+    test("purges every backup of the stack and records it", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-purge-"));
+        try {
+            const app = makeApp({}, okRunner, undefined, new AuditLog({ dir }));
+            const session = await login(app);
+            await plantBackup();
+            await writeFile(join(backupDir(), "notes.txt"), "kept by hand");
+            const response = await purge(app, session);
+            expect(response.status).toBe(303);
+            expect(response.headers.get("location")).toBe("/stacks/demo/edit?purged=1");
+            expect(await readdir(backupDir())).toEqual(["notes.txt"]);
+            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).toContain('"event":"backup-purge"');
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses a purge without a valid CSRF token or from a foreign origin", async () => {
+        const app = makeApp({}, okRunner);
+        const session = await login(app);
+        await plantBackup();
+        expect((await purge(app, session, "wrong")).status).toBe(403);
+        const foreign = await authed(app, "/stacks/demo/backups/purge", session, {
+            method: "POST",
+            headers: { origin: "http://evil.example", "content-type": "application/x-www-form-urlencoded" },
+            body: "csrf=x",
+        });
+        expect(foreign.status).toBe(403);
+        expect(await readdir(backupDir())).toEqual([PLANTED]);
+    });
+
+    test("only accepts POST and an existing stack", async () => {
+        const app = makeApp({}, okRunner);
+        const session = await login(app);
+        expect((await authed(app, "/stacks/demo/backups/purge", session)).status).toBe(405);
+        const csrf = /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/stacks/demo/edit", session)).text())![1]!;
+        const missing = await authed(app, "/stacks/nope/backups/purge", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf }).toString(),
+        });
+        expect(missing.status).toBe(404);
+    });
+
+    test("refuses a purge while a save holds the stack lock", async () => {
+        let entered!: () => void;
+        const inside = new Promise<void>(resolve => { entered = resolve; });
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const gated: DockerRunner = async () => {
+            entered();
+            await gate;
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+        const app = makeApp({}, gated);
+        const session = await login(app);
+        await plantBackup();
+        const csrf = /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/stacks/demo/edit", session)).text())![1]!;
+        const pending = save(app, session, "services:\n  app:\n    image: nginx:9\n");
+        await inside;
+        expect((await purge(app, session, csrf)).status).toBe(409);
+        expect(await readdir(backupDir())).toContain(PLANTED);
+        release();
+        expect((await pending).status).toBe(303);
+    });
+
+    test("shows a purge control only when backups exist", async () => {
+        const app = makeApp({}, okRunner);
+        const session = await login(app);
+        expect(await (await authed(app, "/stacks/demo/edit", session)).text()).not.toContain("/stacks/demo/backups/purge");
+        await plantBackup();
+        expect(await (await authed(app, "/stacks/demo/edit", session)).text()).toContain('action="/stacks/demo/backups/purge"');
     });
 });
 

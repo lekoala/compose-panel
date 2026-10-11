@@ -3,7 +3,7 @@ import { open, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { locateComposeFile, StackError, ENV_FILENAME } from "./stacks.ts";
 import { resolveProjectContext } from "./status.ts";
-import { backupFile, dirIdentity, ensureBackupDir, hashContent, randomSuffix, readFileSafe, sameDirIdentity, writeFileAtomic, type SafeFile } from "./fs-safe.ts";
+import { backupFile, dirIdentity, ensureBackupDir, hashContent, randomSuffix, readFileSafe, sameDirIdentity, writeFileAtomic, type FileAttributes, type SafeFile } from "./fs-safe.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
 
 export { ENV_FILENAME } from "./stacks.ts";
@@ -266,7 +266,7 @@ export interface SaveResult {
  */
 export interface SaveOptions {
     /** Override for the atomic file writer. Test seam for commit-phase failures. */
-    writer?: (path: string, content: string, mode: number) => Promise<void>;
+    writer?: (path: string, content: string, attributes: FileAttributes) => Promise<void>;
     /** Called after validation, before any backup or write; throwing aborts the save untouched. */
     beforeCommit?: () => void;
 }
@@ -373,14 +373,15 @@ export async function saveEditableStack(
         // inconsistent state is "first write done, second failed".
         try {
             if (composeChanged) {
-                await writer(composePath, request.composeSource, freshCompose.mode);
+                await writer(composePath, request.composeSource, freshCompose);
                 composeWritten = true;
             }
-            if (envChanged) await writer(envPath, request.envSource, freshEnv?.mode ?? 0o600);
+            // A new .env is private and belongs to whoever owns the Compose file.
+            if (envChanged) await writer(envPath, request.envSource, freshEnv ?? { mode: 0o600, uid: freshCompose.uid, gid: freshCompose.gid });
         } catch (error) {
             if (!composeWritten) throw error;
             try {
-                await writer(composePath, freshCompose.source, freshCompose.mode);
+                await writer(composePath, freshCompose.source, freshCompose);
             } catch {
                 throw new StackPartialError(
                     `Writing the files failed and the Compose file could not be put back. Restore it by hand from the backup: ${backupPaths.join(", ")}`,

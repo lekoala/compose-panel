@@ -18,5 +18,5 @@ Status: accepted.
 ## Consequences
 - A user editing files directly on disk, or a second panel, will cause a conflict rather than a silent overwrite.
 - Detailed Compose error text is shown but first passed through `.env`-value redaction; this is best effort, not a proof of secret removal.
-- Backups accumulate under `.compose-panel/backups` with no retention policy yet; pruning can be added later without changing the save contract.
+- Backups accumulate under `.compose-panel/backups`; retention and a manual purge were added later without changing the save contract (ADR 0017).
 - Multi-file/override editing needs a new ADR before it is supported.

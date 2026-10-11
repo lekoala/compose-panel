@@ -42,7 +42,7 @@ Dockge switch-over, [migrating-from-dockge.md](migrating-from-dockge.md).
   `http://127.0.0.1:5081` are refused on purpose. This is not a broken tunnel.
 - **Diagnose:** the activity log shows a refused sign-in with `expected
   https://…`.
-- **Fix:** use one access path at a time on 0.1.0. From 0.1.1 you can keep both:
+- **Fix:** use one access path at a time on 0.1.0. From 0.2.0 you can keep both:
   set `COMPOSE_PANEL_PROXY_ORIGINS` **and** `COMPOSE_PANEL_ALLOW_LOOPBACK=true`
   ([ADR 0012](adr/0012-multiple-access-origins.md), [deployment.md](deployment.md)).
 

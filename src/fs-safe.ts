@@ -19,10 +19,16 @@ export class FileSafetyError extends Error {
     }
 }
 
-export interface SafeFile {
+/** Permission bits and ownership a rewritten file must keep. */
+export interface FileAttributes {
+    mode: number;
+    uid: number;
+    gid: number;
+}
+
+export interface SafeFile extends FileAttributes {
     path: string;
     source: string;
-    mode: number;
     hash: string;
 }
 
@@ -45,19 +51,33 @@ export async function readFileSafe(path: string, maxBytes: number): Promise<Safe
         if (stat.size > maxBytes) throw new FileSafetyError("The file is too large for the panel.");
         const source = await handle.readFile({ encoding: "utf8" });
         if (Buffer.byteLength(source, "utf8") > maxBytes) throw new FileSafetyError("The file is too large for the panel.");
-        return { path, source, mode: stat.mode & 0o777, hash: hashContent(source) };
+        return { path, source, mode: stat.mode & 0o777, uid: stat.uid, gid: stat.gid, hash: hashContent(source) };
     } finally {
         await handle.close();
     }
 }
 
-/** Write via a temp file in the same directory then rename, preserving the mode. */
-export async function writeFileAtomic(path: string, content: string, mode: number): Promise<void> {
+/**
+ * Write via a temp file in the same directory then rename, preserving the mode
+ * and ownership. The rename replaces the inode, so without a chown a panel
+ * running as root would hand the user's compose.yaml/.env over to root.
+ */
+export async function writeFileAtomic(path: string, content: string, attributes: FileAttributes): Promise<void> {
+    const { mode, uid, gid } = attributes;
     const dir = dirname(path);
     const tmp = join(dir, `.cp-tmp-${randomSuffix()}`);
     const handle = await open(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
     try {
         await handle.writeFile(content, { encoding: "utf8" });
+        const created = await handle.stat();
+        if (created.uid !== uid || created.gid !== gid) {
+            try {
+                await handle.chown(uid, gid);
+            } catch {
+                // Best effort: without root, only the owner's own groups are
+                // allowed; the write itself must not fail over ownership.
+            }
+        }
         await handle.sync();
     } finally {
         await handle.close();

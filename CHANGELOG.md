@@ -1,6 +1,19 @@
 # Changelog
 
-## 0.1.1 — unreleased
+## 0.2.0 — unreleased
+
+- Backup retention and purge (ADR 0017): after each save the panel keeps the
+  `COMPOSE_PANEL_BACKUP_RETAIN` (default 10) most recent backups of each file of
+  the stack and deletes older ones. The edit page shows the backup count and
+  size, with a confirmed "Delete all backups" action
+  (`POST /stacks/<name>/backups/purge`: CSRF, per-stack lock, activity log
+  event `backup-purge`). Only files the panel created are counted or deleted.
+
+- Fix: saving a stack keeps the owner and group of `compose.yaml` and `.env`.
+  The atomic write (temp file + rename) used to leave both files owned by the
+  panel process, so in the root image a user's `.env` became `root:root 0600`
+  after an edit and unreadable outside the panel. A new `.env` is now owned
+  like the Compose file. Best effort when the panel does not run as root.
 
 - Navigation sidebar (ADR 0016): primary navigation (Stacks, Containers, Server,
   Activity log, Access) moves from the footer into a persistent sidebar shown on

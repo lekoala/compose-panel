@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chown, mkdtemp, mkdir, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { FileSafetyError, backupFile, dirIdentity, ensureBackupDir, sameDirIdentity } from "../src/fs-safe.ts";
+import { FileSafetyError, backupFile, dirIdentity, ensureBackupDir, readFileSafe, sameDirIdentity, writeFileAtomic } from "../src/fs-safe.ts";
+import { foreignOwner } from "./helpers/ownership.ts";
 
 let root: string;
 
@@ -95,3 +96,29 @@ describe("dirIdentity", () => {
         }
     });
 });
+
+describe("writeFileAtomic", () => {
+    test.skipIf(process.platform === "win32")("keeps the mode of the replaced file", async () => {
+        const path = join(root, ".env");
+        await writeFile(path, "A=1\n", { mode: 0o640 });
+        const original = (await readFileSafe(path, 1024))!;
+        await writeFileAtomic(path, "A=2\n", original);
+        expect((await stat(path)).mode & 0o777).toBe(0o640);
+        expect(await readFile(path, "utf8")).toBe("A=2\n");
+    });
+
+    // Regression: the temp file + rename used to leave the file owned by the
+    // panel process (root in the image), locking the user out of their .env.
+    test.skipIf(foreignOwner === null)("keeps the owner and group of the replaced file", async () => {
+        const owner = foreignOwner!;
+        const path = join(root, ".env");
+        await writeFile(path, "A=1\n", { mode: 0o600 });
+        await chown(path, owner.uid, owner.gid);
+        const original = (await readFileSafe(path, 1024))!;
+        await writeFileAtomic(path, "A=2\n", original);
+        const after = await stat(path);
+        expect({ uid: after.uid, gid: after.gid }).toEqual(owner);
+        expect(after.mode & 0o777).toBe(0o600);
+    });
+});
+

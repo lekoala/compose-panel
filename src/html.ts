@@ -175,10 +175,27 @@ export interface EditPageOptions {
     envHash: string;
     envExists: boolean;
     error?: { title: string; message: string } | null;
+    notice?: { kind: NoteKind; text: string };
+    /** null when the backup folder could not be read. */
+    backups: { count: number; bytes: number; retain: number } | null;
+}
+
+function backupsSection(name: string, csrf: string, backups: EditPageOptions["backups"]): string {
+    const head = `<section class="card"><h2>Backups</h2>`;
+    if (backups === null) return `${head}${note("warn", "The backup folder could not be read, so backups are not listed. Saving still makes a backup or reports why it cannot.")}</section>`;
+    const policy = `The panel keeps the ${backups.retain} most recent backups of each file and deletes older ones after a save.`;
+    if (backups.count === 0) return `${head}<p class="muted">No backups yet. ${escapeHtml(policy)}</p></section>`;
+    const files = backups.count === 1 ? "1 backup" : `${backups.count} backups`;
+    return `${head}<p class="muted">${files} (${escapeHtml(formatBytes(backups.bytes))}) in <code>.compose-panel/backups/${escapeHtml(name)}/</code>. ${escapeHtml(policy)}</p>`
+        + `<details class="confirm"><summary><span class="btn btn-danger">Delete all backups…</span></summary>`
+        + `<div class="confirm-panel">${note("warn", "Previous versions of the Compose file and .env of this stack are deleted for good. The current files are not affected. Click the button above again to cancel.")}`
+        + `<form method="post" action="/stacks/${encodeURIComponent(name)}/backups/purge"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">`
+        + `<button type="submit" class="btn btn-danger" data-busy-label="Deleting…">Yes, delete ${files}</button></form></div></details></section>`;
 }
 
 export function editPage(options: EditPageOptions): string {
     const error = options.error ? note("error", options.error.message, { title: options.error.title }) : "";
+    const notice = options.notice ? note(options.notice.kind, options.notice.text) : "";
     const stackHref = `/stacks/${encodeURIComponent(options.name)}`;
     const envHint = options.envExists
         ? "Variables for this stack. Values are secret: they are never logged and are hidden from error messages."
@@ -186,7 +203,7 @@ export function editPage(options: EditPageOptions): string {
     return documentHtml(`Edit ${options.name}`, `<p class="crumbs"><a href="${stackHref}">← ${escapeHtml(options.name)}</a></p>
 <h1>Edit files</h1>
 <p class="lead">Changes are checked with <code>docker compose config</code> before anything is written. If the check fails, nothing changes on disk. Each save keeps a backup of the previous version. Saving does <strong>not</strong> restart anything: use <em>Up</em> on the stack page to apply the changes.</p>
-${error}
+${error}${notice}
 <form method="post" action="${stackHref}/edit" class="form edit-form" data-edit-form>
   <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
   <input type="hidden" name="composeHash" value="${escapeHtml(options.composeHash)}">
@@ -202,7 +219,8 @@ ${error}
     <button type="submit" class="btn btn-primary" data-busy-label="Checking and saving…">Check and save</button>
     <a href="${stackHref}" class="btn">Cancel</a>
   </div>
-    </form>`, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"], nav: options.nav });
+    </form>
+${backupsSection(options.name, options.csrf, options.backups)}`, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"], nav: options.nav });
 }
 
 const STATE_LABELS: Record<string, string> = {
