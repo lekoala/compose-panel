@@ -1,7 +1,10 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, type NoteKind } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, otherContainersSection, containersPage, type NoteKind } from "./html.ts";
 import { dirname, join } from "node:path";
 import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
-import { loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
+import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
+import { loadContainers } from "./container-status.ts";
+import { parseContainerFilter, type ContainerFilter } from "./container-state.ts";
+import { createContainerInspector, type ContainerInspector } from "./containers.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
 import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
@@ -55,6 +58,8 @@ export interface AppOptions {
     runner?: DockerRunner;
     /** Pre-built Compose provider. Built from `runner` when omitted. */
     provider?: ComposeProvider;
+    /** Read-only Docker container inspector. Built from `runner` when omitted. */
+    inspector?: ContainerInspector;
     /** Per-stack modifying-operation lock. */
     locks?: StackLocks;
     /** Activity log. Built from `config` and `stacksRoot` when omitted. */
@@ -246,6 +251,8 @@ export function createApp(options: AppOptions): App {
     const { config, stacksRoot, locks = new StackLocks() } = options;
     const provider = options.provider
         ?? createComposeProvider({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
+    const inspector = options.inspector
+        ?? createContainerInspector({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
     const audit = options.audit ?? new AuditLog({
         dir: config.audit.dir ?? join(stacksRoot, ".compose-panel", "audit"),
         // The default layout is checked from the stacks root down, so a
@@ -484,7 +491,10 @@ export function createApp(options: AppOptions): App {
     }
 
     async function renderStackList(csrf: string): Promise<Response> {
-        const { stacks, dockerNote } = await loadStackStates(stacksRoot, provider);
+        // One `compose ls` shared by the stacks table and the container
+        // classification, so the home page makes a single discovery call.
+        const discovery = await loadProjects(provider);
+        const { stacks, dockerNote } = await loadStackStates(stacksRoot, provider, discovery);
         const intro = `<p class="lead">Stacks in <code>${escapeHtml(stacksRoot)}</code></p>`;
         let content: string;
         if (stacks.length === 0) {
@@ -513,9 +523,10 @@ export function createApp(options: AppOptions): App {
                 + `<div class="table-wrap"><table class="table"><thead><tr><th>Stack</th><th>Status</th><th class="col-optional">Compose project</th><th class="col-optional">File</th></tr></thead><tbody>${rows}</tbody></table></div>`;
         }
         const warning = dockerNote ? note("warn", dockerNote) : "";
+        const { containers, note: containerNote } = await loadContainers(stacksRoot, provider, inspector, config.hostStacksPathAliases, discovery);
         return htmlResponse(documentHtml(
             "Stacks",
-            `<h1>Stacks</h1>${intro}${warning}${content}`,
+            `<h1>Stacks</h1>${intro}${warning}${content}${otherContainersSection(containers, "running", containerNote)}`,
             { ...pageChrome(csrf) },
         ));
     }
@@ -546,6 +557,18 @@ export function createApp(options: AppOptions): App {
             currentAccess: accessOf(request, config),
         });
         return htmlResponse(accessPage({ csrf, access, timezone: config.timeZone || undefined, report }));
+    }
+
+    async function renderContainers(csrf: string, filter: ContainerFilter): Promise<Response> {
+        const { containers, note: containerNote } = await loadContainers(stacksRoot, provider, inspector, config.hostStacksPathAliases);
+        return htmlResponse(containersPage({
+            csrf,
+            access,
+            timezone: config.timeZone || undefined,
+            filter,
+            containers,
+            note: containerNote,
+        }));
     }
 
     async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200): Promise<Response> {
@@ -1056,6 +1079,7 @@ export function createApp(options: AppOptions): App {
             if (url.pathname === "/") return await renderStackList(session.csrf);
             if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
             if (url.pathname === "/access") return renderAccess(session.csrf, request);
+            if (url.pathname === "/containers") return await renderContainers(session.csrf, parseContainerFilter(url.searchParams.get("state")));
             if (editMatch) return await renderEdit(decodeName(editMatch[1]!), session.csrf);
             const logSnapshotMatch = /^\/stacks\/([^/]+)\/logs$/.exec(url.pathname);
             if (logSnapshotMatch) return await handleLogsSnapshot(decodeName(logSnapshotMatch[1]!), session.id);

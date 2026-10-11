@@ -9,11 +9,24 @@ Bun.serve (1 process, single instance)
     |-- Operation manager (in-memory Map, per-stack lock)
     |-- SSE observers / logs (bounded streams)
     |-- Audit log (append-only NDJSON files, bounded)
-    `-- ComposeProvider (listProjects · projectServices · validateConfig)
-          `-- Bun.spawn([docker, "compose", ...], explicit cwd, no shell)
+    |-- ComposeProvider (listProjects · projectServices · validateConfig)
+    |     `-- Bun.spawn([docker, "compose", ...], explicit cwd, no shell)
+    `-- ContainerInspector (list · inspect · logs, read-only)
+          `-- Bun.spawn([docker, "container", ...], explicit args, no shell)
                 |-- directories /opt/stacks/<name>/compose.yaml + .env
                 `-- Container Engine (source of truth for state)
 ```
+
+## Container inspection (read-only)
+Lower-level Docker calls that are not Compose operations live behind a second
+boundary, `src/containers.ts`, built on the same fixed runner (`src/docker.ts`).
+It exposes `list` (`docker container ls`, one structured line per container),
+`inspect` and `logs`, all with fixed argument arrays and no shell. Container
+listing and classification are pure and unit-tested in `src/container-state.ts`
+(the `src/container-status.ts` loader joins discovery and the inspector). The
+panel exposes no start/stop/remove/exec: the read-only guarantee is
+application-level, not enforced by the socket mount. See
+[ADR 0014](adr/0014-docker-container-inspection.md).
 
 ## Audit log
 Auth and action events are written by `src/audit.ts` as append-only NDJSON files, one per day under `<stacksRoot>/.compose-panel/audit/` (overridable), with a bounded number of retained files, a per-file size cap and bounded tail reads. It is not a database and holds no in-memory history: the files on disk are the record (see [ADR 0009](adr/0009-audit-log-and-login-backoff.md)). The same module backs the read-only `/audit` page and the change that replaces per-client login lockout with a bounded delay and one attempt in progress per client, so a single source cannot lock the administrator out.

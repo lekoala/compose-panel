@@ -7,6 +7,7 @@ import { AuditLog } from "../src/audit.ts";
 import type { AppConfig } from "../src/config.ts";
 import type { CommandResult, DockerRunner } from "../src/docker.ts";
 import type { ComposeCapabilities, ComposeProvider, ComposeTarget } from "../src/compose-provider.ts";
+import type { ContainerInspector } from "../src/containers.ts";
 import { resolveRoot } from "../src/stacks.ts";
 
 const PASSWORD = "correct horse battery staple";
@@ -25,7 +26,7 @@ afterAll(async () => {
     await rm(root, { recursive: true, force: true });
 });
 
-function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, provider?: ComposeProvider, audit?: AuditLog, stacksRoot: string = root): App {
+function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, provider?: ComposeProvider, audit?: AuditLog, stacksRoot: string = root, inspector?: ContainerInspector): App {
     const config: AppConfig = {
         stacksDir: stacksRoot,
         port: 5081,
@@ -44,6 +45,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         maxEditBytes: 1024 * 1024,
         dockerPath: "docker",
         composeEngine: "docker",
+        hostStacksPathAliases: [],
         timeZone: "",
         dockerTimeoutMs: 5000,
         dockerMaxBytes: 1024 * 1024,
@@ -57,7 +59,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         logTimeoutMs: 1_800_000,
         ...overrides,
     };
-    return createApp({ config, stacksRoot, runner, provider, audit });
+    return createApp({ config, stacksRoot, runner, provider, audit, inspector });
 }
 
 interface FollowCall {
@@ -1861,5 +1863,129 @@ describe("default activity log layout", () => {
             await rm(stacks, { recursive: true, force: true });
             await rm(outside, { recursive: true, force: true });
         }
+    });
+});
+
+type ContainerFields = {
+    id: string;
+    name: string;
+    image: string;
+    state: string;
+    status: string;
+    health: string;
+    project: string | null;
+    service: string | null;
+    configFiles: string | null;
+    workingDir: string | null;
+};
+
+function containerLine(fields: ContainerFields): string {
+    return [
+        JSON.stringify(fields.id), JSON.stringify(fields.name), JSON.stringify(fields.image),
+        JSON.stringify(fields.state), JSON.stringify(fields.status), JSON.stringify(fields.health),
+        JSON.stringify("2026-10-05 08:31:11 +0200 CEST"), JSON.stringify("5 days ago"),
+        JSON.stringify("0.0.0.0:8080->80/tcp"), JSON.stringify(fields.project ?? ""),
+        JSON.stringify(fields.service ?? ""), JSON.stringify(fields.configFiles ?? ""),
+        JSON.stringify(fields.workingDir ?? ""),
+    ].join("\t");
+}
+
+function fakeInspector(stdout: string, result: Partial<CommandResult> = {}): ContainerInspector {
+    const value: CommandResult = { code: 0, stdout, stderr: "", timedOut: false, truncated: false, ...result };
+    return { engine: "docker", list: async () => value, inspect: async () => value, logs: async () => value };
+}
+
+/**
+ * One managed stack (demo) plus a running standalone, a running external Compose
+ * container, an external container mid-restart, and an exited external job.
+ */
+function containerFixture(): string {
+    const managedFile = join(root, "demo", "compose.yaml");
+    return [
+        containerLine({ id: "aaaaaaaaaaaa", name: "demo-app-1", image: "nginx:1.27", state: "running", status: "Up 2 hours (healthy)", health: "healthy", project: "demo", service: "app", configFiles: managedFile, workingDir: join(root, "demo") }),
+        containerLine({ id: "bbbbbbbbbbbb", name: "watchtower", image: "containrrr/watchtower", state: "running", status: "Up 3 days", health: "none", project: "watchtower", service: "watchtower", configFiles: null, workingDir: null }),
+        containerLine({ id: "cccccccccccc", name: "legacy", image: "redis:7", state: "running", status: "Up 5 minutes", health: "none", project: null, service: null, configFiles: null, workingDir: null }),
+        containerLine({ id: "dddddddddddd", name: "edge", image: "traefik:v3", state: "restarting", status: "Restarting (1) 4 seconds ago", health: "starting", project: "edge", service: "proxy", configFiles: null, workingDir: null }),
+        containerLine({ id: "eeeeeeeeeeee", name: "old-job", image: "alpine:3", state: "exited", status: "Exited (0) 2 days ago", health: "none", project: "ci", service: "job", configFiles: null, workingDir: null }),
+    ].join("\n");
+}
+
+describe("containers page", () => {
+    test("requires a session", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, fakeInspector(containerFixture()));
+        const response = await app.fetch(new Request(`${ORIGIN}/containers`));
+        expect(response.status).toBe(302);
+        expect(response.headers.get("location")).toBe("/login");
+    });
+
+    test("lists all categories and filters by state", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, fakeInspector(containerFixture()));
+        const session = await login(app);
+        const running = await (await authed(app, "/containers", session)).text();
+        expect(running).toContain("Managed");
+        expect(running).toContain("External Compose");
+        expect(running).toContain("Standalone");
+        expect(running).toContain("demo-app-1");
+        expect(running).toContain("watchtower");
+        expect(running).toContain("legacy");
+        // A restarting container is still "running".
+        expect(running).toContain("edge");
+        // The exited job is not in the default view.
+        expect(running).not.toContain("old-job");
+        // A managed container links back to its stack.
+        expect(running).toContain("/stacks/demo");
+
+        const all = await (await authed(app, "/containers?state=all", session)).text();
+        expect(all).toContain("old-job");
+
+        const stopped = await (await authed(app, "/containers?state=stopped", session)).text();
+        expect(stopped).toContain("old-job");
+        expect(stopped).not.toContain("watchtower");
+
+        // An unknown filter falls back to the running view.
+        const bogus = await (await authed(app, "/containers?state=bogus", session)).text();
+        expect(bogus).not.toContain("old-job");
+    });
+
+    test("shows docker trouble as a note, not an empty list", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, fakeInspector("", { code: 1 }));
+        const session = await login(app);
+        const html = await (await authed(app, "/containers", session)).text();
+        expect(html).toContain("Docker is not reachable");
+    });
+});
+
+describe("home other-containers section", () => {
+    test("shares one compose discovery between the stacks table and the containers", async () => {
+        let listCalls = 0;
+        const empty: CommandResult = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+        const provider = {
+            engine: "fake",
+            listProjects: async () => { listCalls += 1; return empty; },
+        } as unknown as ComposeProvider;
+        const app = makeApp({}, undefined, provider, undefined, root, fakeInspector(containerFixture()));
+        const session = await login(app);
+        await authed(app, "/", session);
+        expect(listCalls).toBe(1);
+    });
+
+    test("shows non-managed containers only and links to the full list", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, fakeInspector(containerFixture()));
+        const session = await login(app);
+        const html = await (await authed(app, "/", session)).text();
+        expect(html).toContain("Other containers");
+        expect(html).toContain("watchtower");
+        expect(html).toContain("legacy");
+        // Managed containers stay on the stacks view, not here.
+        expect(html).not.toContain("demo-app-1");
+        expect(html).toContain("/containers");
+    });
+
+    test("reports Docker trouble without a misleading empty list", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, fakeInspector("", { code: 1 }));
+        const session = await login(app);
+        const html = await (await authed(app, "/", session)).text();
+        expect(html).toContain("Other containers");
+        expect(html).toContain("Docker is not reachable");
     });
 });

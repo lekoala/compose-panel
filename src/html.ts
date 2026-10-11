@@ -3,6 +3,7 @@ import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
 import type { ImageVersion, ServiceUpdate } from "./updates.ts";
 import type { AccessReport, AccessStatus } from "./access.ts";
+import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerFilter } from "./container-state.ts";
 import packageJson from "../package.json";
 
 const VERSION = packageJson.version;
@@ -71,7 +72,7 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
   ${options.bare ? `<main class="bare">${body}</main>` : `<div class="shell">
     <header><a href="/" class="brand"><img src="/favicon.svg" alt="" width="20" height="20">Compose Panel</a>${logout}</header>
     <main>${body}</main>
-    <footer>Compose Panel ${escapeHtml(VERSION)}${options.logoutCsrf ? ` · <a href="/audit">Activity log</a> · <a href="/access">Access &amp; security</a>` : ""}${options.access ? ` · ${escapeHtml(options.access)}` : ""}</footer>
+    <footer>Compose Panel ${escapeHtml(VERSION)}${options.logoutCsrf ? ` · <a href="/containers">Containers</a> · <a href="/audit">Activity log</a> · <a href="/access">Access &amp; security</a>` : ""}${options.access ? ` · ${escapeHtml(options.access)}` : ""}</footer>
   </div>`}
 </body>
 </html>`;
@@ -440,6 +441,118 @@ ${summary}
 ${warnings}
 <section class="card"><h2>Access</h2><div class="table-wrap"><table class="table"><thead><tr><th>Area</th><th>Status</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
     return documentHtml("Access & security", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
+}
+
+const CONTAINER_CATEGORY_LABELS: Record<ContainerCategory, string> = {
+    managed: "Managed",
+    external: "External Compose",
+    standalone: "Standalone",
+};
+
+const CONTAINER_STATE_CLASS: Record<string, string> = {
+    running: "state-running",
+    restarting: "state-running",
+    paused: "state-stopped",
+    exited: "state-stopped",
+    created: "state-stopped",
+    dead: "state-failed",
+};
+
+/** Badge for a single Docker container state (`docker ps` vocabulary). */
+export function containerStateBadge(state: string): string {
+    const key = state.toLowerCase();
+    const label = key ? key.charAt(0).toUpperCase() + key.slice(1) : "Unknown";
+    return `<span class="state ${CONTAINER_STATE_CLASS[key] ?? "state-stopped"}">${escapeHtml(label)}</span>`;
+}
+
+/** The `docker ps` port summary, escaped; an empty value is a dash. */
+function portsCell(ports: string): string {
+    const value = ports.trim();
+    return value ? `<code>${escapeHtml(value)}</code>` : `<span class="muted">—</span>`;
+}
+
+function containerNameCell(container: ClassifiedContainer): string {
+    const name = container.name || container.id.slice(0, 12);
+    // A managed container already has a page: link it to its stack. External
+    // containers are plain text until the detail page exists (PR 3).
+    if (container.category === "managed" && container.stack) {
+        return `<a href="/stacks/${encodeURIComponent(container.stack)}">${escapeHtml(name)}</a>`;
+    }
+    return escapeHtml(name);
+}
+
+function containerRows(containers: ClassifiedContainer[], columns: "full" | "compact"): string {
+    return containers.map(container => {
+        const detail = columns === "full"
+            ? `<td class="col-optional">${container.status ? escapeHtml(container.status) : `<span class="muted">—</span>`}</td>`
+            : "";
+        const category = columns === "compact"
+            ? `<td>${escapeHtml(CONTAINER_CATEGORY_LABELS[container.category])}</td>`
+            : "";
+        const image = columns === "full" ? `<td>${escapeHtml(container.image)}</td>` : "";
+        return `<tr><td>${containerNameCell(container)}</td><td>${containerStateBadge(container.state)}</td>${category}${detail}${image}<td>${portsCell(container.ports)}</td></tr>`;
+    }).join("");
+}
+
+/**
+ * Home-page section: the containers the panel does not manage, so the stacks
+ * table stays the management view and this stays observation. Managed containers
+ * are omitted here (they already appear under their stack).
+ */
+export function otherContainersSection(containers: ClassifiedContainer[], filter: ContainerFilter = "running", unavailable: string | null = null): string {
+    if (unavailable) return `<section class="card"><h2>Other containers</h2>${note("warn", unavailable)}</section>`;
+    const others = containers.filter(container => container.category !== "managed" && matchesContainerFilter(container.state, filter));
+    const link = `<p><a href="/containers">View all containers →</a></p>`;
+    const head = `<th>Name</th><th>State</th><th>Category</th><th>Image</th><th>Ports</th>`;
+    const content = others.length > 0
+        ? `<p class="muted">Docker containers outside managed stacks. Read only: Compose Panel never starts, stops or removes them.</p>`
+            + `<div class="table-wrap"><table class="table"><thead><tr>${head}</tr></thead><tbody>${containerRows(others, "compact")}</tbody></table></div>`
+            + link
+        : `<p class="muted">No other containers running. <a href="/containers?state=all">See all containers</a>.</p>`;
+    return `<section class="card"><h2>Other containers</h2>${content}</section>`;
+}
+
+export interface ContainersPageOptions {
+    csrf: string;
+    access?: string;
+    timezone?: string;
+    filter: ContainerFilter;
+    containers: ClassifiedContainer[];
+    note?: string | null;
+}
+
+const CONTAINER_FILTERS: readonly [ContainerFilter, string][] = [
+    ["running", "Running"],
+    ["stopped", "Stopped"],
+    ["all", "All"],
+];
+
+/**
+ * Full read-only container list. Shows all three categories (including Managed,
+ * so a container can be traced back to its stack), filtered by state. Filters
+ * are plain links: no JavaScript. Managed containers are observation only here;
+ * their lifecycle is on the stack page.
+ */
+export function containersPage(options: ContainersPageOptions): string {
+    const visible = options.containers.filter(container => matchesContainerFilter(container.state, options.filter));
+    const filters = CONTAINER_FILTERS.map(([value, label]) => {
+        const active = value === options.filter;
+        return `<a href="/containers?state=${value}" class="btn${active ? " btn-primary" : ""}"${active ? ` aria-current="page"` : ""}>${label}</a>`;
+    }).join("");
+    const order: ContainerCategory[] = ["managed", "external", "standalone"];
+    const sections = order.map(category => {
+        const list = visible.filter(container => container.category === category);
+        if (list.length === 0) return "";
+        const content = `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>State</th><th class="col-optional">Detail</th><th>Image</th><th>Ports</th></tr></thead><tbody>${containerRows(list, "full")}</tbody></table></div>`;
+        return `<section class="card"><h2>${escapeHtml(CONTAINER_CATEGORY_LABELS[category])} <span class="muted">(${list.length})</span></h2>${content}</section>`;
+    }).join("");
+    const body = `<p class="crumbs"><a href="/">← All stacks</a></p>`
+        + `<div class="page-head"><h1>Containers</h1></div>`
+        + `<p class="lead">Every container Docker reports. <strong>Managed</strong> containers belong to a stack and are driven from its page; <strong>External Compose</strong> and <strong>Standalone</strong> containers are observed only. Read only: no start, stop, restart or remove.</p>`
+        + (options.note ? note("warn", options.note) : "")
+        + `<div class="toolbar">${filters}</div>`
+        + (sections || (options.note ? "" : note("info", "No containers match this view.")));
+    return documentHtml("Containers", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
 }
 
 export function htmlResponse(body: string, status = 200): Response {

@@ -1,3 +1,5 @@
+import type { PathAlias } from "./container-state.ts";
+
 export interface LoginRateLimitConfig {
     windowMs: number;
     maxAttempts: number;
@@ -73,6 +75,12 @@ export interface AppConfig {
     dockerPath: string;
     /** Compose engine/provider identifier. V1 supports "docker". */
     composeEngine: string;
+    /**
+     * Host-to-panel path prefixes used to classify external containers as
+     * managed after a migration where the Docker-side Compose path differs from
+     * the panel's mount (`hostPrefix=panelPrefix` entries). Empty by default.
+     */
+    hostStacksPathAliases: PathAlias[];
     dockerTimeoutMs: number;
     dockerMaxBytes: number;
     /** Maximum duration of a mutating Compose operation. */
@@ -157,6 +165,29 @@ function parseTimeZone(env: Env): string {
         throw new Error(`COMPOSE_PANEL_TIMEZONE must be a valid IANA time zone (e.g. "Europe/Brussels"), got "${raw}".`);
     }
     return raw;
+}
+
+/**
+ * Host-to-panel path prefix remapping for container classification, as a
+ * comma-separated list of `hostPrefix=panelPrefix`. Used after a migration where
+ * the Docker-side Compose path (a container label) differs from the panel's
+ * mount. Empty means no remapping.
+ */
+function parsePathAliases(env: Env): PathAlias[] {
+    const raw = env.COMPOSE_PANEL_STACKS_PATH_ALIASES?.trim();
+    if (raw === undefined || raw === "") return [];
+    const aliases: PathAlias[] = [];
+    for (const entry of raw.split(",").map(value => value.trim())) {
+        if (entry === "") throw new Error("COMPOSE_PANEL_STACKS_PATH_ALIASES contains an empty entry. Remove the stray comma.");
+        const index = entry.indexOf("=");
+        const from = index > 0 ? entry.slice(0, index).trim() : "";
+        const to = index > 0 ? entry.slice(index + 1).trim() : "";
+        if (!from || !to) {
+            throw new Error(`COMPOSE_PANEL_STACKS_PATH_ALIASES entry "${entry}" must be hostPrefix=panelPrefix.`);
+        }
+        aliases.push({ from, to });
+    }
+    return aliases;
 }
 
 interface ProxySettings {
@@ -267,6 +298,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         maxEditBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_EDIT_BYTES", 1024 * 1024),
         dockerPath: env.COMPOSE_PANEL_DOCKER_PATH?.trim() || "docker",
         composeEngine: env.COMPOSE_PANEL_COMPOSE_ENGINE?.trim() || "docker",
+        hostStacksPathAliases: parsePathAliases(env),
         timeZone: parseTimeZone(env),
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),
         dockerMaxBytes: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_MAX_BYTES", 1024 * 1024),

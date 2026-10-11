@@ -125,3 +125,26 @@ describe("loadConfig proxy origins", () => {
         expect(() => loadConfig({ ...user, COMPOSE_PANEL_TRUST_PROXY: "true" })).toThrow(/no longer supported/);
     });
 });
+
+describe("loadConfig stacks path aliases", () => {
+    const user = { ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala" };
+
+    test("defaults to no aliases", () => {
+        expect(loadConfig(user).hostStacksPathAliases).toEqual([]);
+    });
+
+    test("parses hostPrefix=panelPrefix entries", () => {
+        const config = loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "/opt/stacks=/app/stacks, /srv=/data" });
+        expect(config.hostStacksPathAliases).toEqual([
+            { from: "/opt/stacks", to: "/app/stacks" },
+            { from: "/srv", to: "/data" },
+        ]);
+    });
+
+    test("refuses malformed entries", () => {
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "/opt/stacks" })).toThrow(/hostPrefix=panelPrefix/);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "=/app" })).toThrow(/hostPrefix=panelPrefix/);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "/opt/stacks=" })).toThrow(/hostPrefix=panelPrefix/);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "/a=/b," })).toThrow(/empty entry/);
+    });
+});

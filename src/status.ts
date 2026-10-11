@@ -14,8 +14,8 @@ import {
 import type { ComposeProvider } from "./compose-provider.ts";
 import { loadImageUpdates, type ServiceUpdate } from "./updates.ts";
 
-const DOCKER_UNAVAILABLE = "Docker is not reachable, so statuses are shown as unknown. Check that the Docker daemon is running and its socket is available to the panel.";
-const DOCKER_SLOW = "Docker did not respond in time, so statuses are shown as unknown. Reload the page to try again.";
+export const DOCKER_UNAVAILABLE = "Docker is not reachable, so statuses are shown as unknown. Check that the Docker daemon is running and its socket is available to the panel.";
+export const DOCKER_SLOW = "Docker did not respond in time, so statuses are shown as unknown. Reload the page to try again.";
 const SEVERAL_PROJECTS = "Several Docker Compose projects point to this folder, so the panel cannot tell which one is this stack. Its status is unknown and actions are refused until only one remains.";
 const MAX_ENV_BYTES = 1024 * 1024;
 
@@ -41,7 +41,12 @@ export interface StackDetailStatus {
     updates?: Record<string, ServiceUpdate>;
 }
 
-async function loadProjects(provider: ComposeProvider): Promise<{ projects: ComposeProject[]; note: string | null }> {
+export interface ProjectDiscovery {
+    projects: ComposeProject[];
+    note: string | null;
+}
+
+export async function loadProjects(provider: ComposeProvider): Promise<ProjectDiscovery> {
     try {
         const result = await provider.listProjects();
         if (result.timedOut) return { projects: [], note: DOCKER_SLOW };
@@ -52,7 +57,7 @@ async function loadProjects(provider: ComposeProvider): Promise<{ projects: Comp
     }
 }
 
-export async function loadStackStates(root: string, provider: ComposeProvider): Promise<StackListStatus> {
+export async function loadStackStates(root: string, provider: ComposeProvider, discovery?: ProjectDiscovery): Promise<StackListStatus> {
     let stacks: Awaited<ReturnType<typeof listStacks>>;
     try {
         stacks = await listStacks(root);
@@ -63,7 +68,7 @@ export async function loadStackStates(root: string, provider: ComposeProvider): 
         if (code === "ENOENT" || code === "ENOTDIR") throw new StackError("The stacks folder is missing or cannot be read.", 503);
         throw error;
     }
-    const { projects, note } = await loadProjects(provider);
+    const { projects, note } = discovery ?? await loadProjects(provider);
     const result: StackStatus[] = [];
 
     for (const stack of stacks) {
