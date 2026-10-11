@@ -148,6 +148,61 @@ working tree, with a fake `docker` that never touches a daemon). Other proxies
 need explicit SSE flushing and correct `X-Forwarded-For` handling, and are not
 covered.
 
+## Behind Cloudflare Access + Tunnel (identity proxy)
+
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+publishes the panel without opening an inbound port, and
+[Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)
+checks an identity before the request reaches it. The panel is not modified and
+does not know Cloudflare: `cloudflared` is just another reverse proxy on the
+same host, reaching the loopback listener, so the rules above apply unchanged.
+
+1. Install `cloudflared` on the host and point the tunnel's origin at the panel.
+   With a locally-managed tunnel:
+
+   ```yaml
+   # ~/.cloudflared/config.yml
+   tunnel: <tunnel-id>
+   ingress:
+     - hostname: panel-cf.example.com
+       service: http://127.0.0.1:5081
+     - service: http_status:404
+   ```
+
+2. List the tunnel hostname as a proxy origin, exactly as for Caddy. If it sits
+   next to an existing Caddy site and the SSH tunnel:
+
+   ```sh
+   COMPOSE_PANEL_PROXY_ORIGINS=https://dockge.example.com,https://panel-cf.example.com
+   COMPOSE_PANEL_ALLOW_LOOPBACK=true
+   ```
+
+   The panel keeps its own sign-in, sessions and CSRF; facing the same origin
+   with two proxies (for example Caddy and the tunnel) needs no extra setting.
+
+3. **Create and verify the Access policy before publishing the route.** A
+   Cloudflare Tunnel route with no protecting Access application is reachable
+   publicly, and protecting the hostname does nothing if another network path
+   to the panel bypasses Access. Enable *Protect with Access* on the tunnel so
+   `cloudflared` validates the access token itself, restrict the policy to the
+   identities that may use the panel, and keep the SSH tunnel as a fallback for
+   when Cloudflare is unreachable.
+
+Notes on the trust chain:
+
+- The panel authorizes on its own password and CSRF token only. It never treats
+  a request as authorized because it carries a Cloudflare or identity header.
+- Only the **last** `X-Forwarded-For` entry is read — the one the local proxy
+  (`cloudflared`) appended. Vendor identity headers such as `CF-Connecting-IP`
+  are ignored. Do not read them in the panel's name elsewhere.
+- Placing Cloudflare **in front of Caddy** (instead of tunnelling straight to
+  the panel) makes the last `X-Forwarded-For` entry Caddy's connecting address,
+  i.e. a Cloudflare edge address, not the visitor. If you need the real client
+  address in the audit log, terminate at the panel with one trusted proxy.
+
+This path is documented, not covered by the end-to-end test (only Caddy is
+tested). Verify it on your own host before relying on it.
+
 ## Backups and rollback
 
 Two layers, both plain files:

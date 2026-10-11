@@ -595,6 +595,35 @@ describe("activity log", () => {
         }
     });
 
+    test("a vendor identity header (CF-Connecting-IP) is ignored", async () => {
+        // The panel never authorizes on an identity-proxy header, and it reads
+        // the client address from X-Forwarded-For only (ADR 0012).
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-cf-"));
+        const PROXY = "https://panel.example";
+        try {
+            const audit = new AuditLog({ dir });
+            const app = makeApp({ proxyOrigins: [PROXY] }, undefined, undefined, audit);
+            const { cookie, csrf } = await loginCsrfAt(app, PROXY);
+            const response = await app.fetch(new Request(`${PROXY}/login`, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/x-www-form-urlencoded",
+                    origin: PROXY,
+                    cookie: `cp_csrf=${cookie}`,
+                    "x-forwarded-for": "198.51.100.7",
+                    "cf-connecting-ip": "9.9.9.9",
+                },
+                body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
+            }));
+            expect(response.status).toBe(401);
+            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).toContain('"actor":"198.51.100.7"');
+            expect(raw).not.toContain("9.9.9.9");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
     test("on the loopback path, X-Forwarded-For is ignored (actor is direct)", async () => {
         const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-loopback-xff-"));
         const PROXY = "https://panel.example";

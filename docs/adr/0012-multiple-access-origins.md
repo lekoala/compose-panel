@@ -53,6 +53,14 @@ that is accepted and documented rather than solved; isolating proxy trust would
 need separate listening sockets or an authenticated proxy, which is out of scope.
 `app.test.ts` pins this known limitation.
 
+Only the **last** `X-Forwarded-For` entry is read: the one the local proxy
+appended. Vendor identity headers such as Cloudflare's `CF-Connecting-IP` are
+ignored, and the panel never authorizes a request because it carries an
+identity-proxy header — authentication stays its own. With several intermediaries
+(for example Cloudflare edge → Caddy → panel) the last entry is the last proxy,
+not necessarily the visitor; deploying the panel with one trusted proxy keeps
+the client address meaningful (see the Cloudflare case in `docs/deployment.md`).
+
 ## Consequences
 - HTTPS and the SSH tunnel can be used at the same time; two HTTPS origins (for
   example a public domain and a private overlay name) can both be allowed, with

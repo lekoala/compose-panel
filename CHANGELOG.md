@@ -8,10 +8,15 @@
   Tailscale or SSH. `COMPOSE_PANEL_PROXY_ORIGINS=https://a,https://b` lists the
   allowed origins; each request is resolved to an access point from its Host and
   its Origin/Host, cookie `Secure` attribute and X-Forwarded-* trust follow that
-  point. `COMPOSE_PANEL_ALLOW_LOOPBACK=true` keeps the loopback path alongside
+  point.   `COMPOSE_PANEL_ALLOW_LOOPBACK=true` keeps the loopback path alongside
   the origins (implicit when none are configured). Entries are validated at
   startup: https only (outside `COMPOSE_PANEL_DEV`), no credentials, path,
-  query, fragment, empty entry or duplicate. **Breaking config change:**
+  query, fragment, empty entry or duplicate. The documented trust boundary is
+  pinned by tests: Host does not authenticate the proxy, only the last
+  `X-Forwarded-For` entry is read (vendor headers such as `CF-Connecting-IP` are
+  ignored), and the panel never delegates its authentication to an identity
+  proxy. A Cloudflare Access + Tunnel case is documented (not code). **Breaking
+  config change:**
   `COMPOSE_PANEL_PUBLIC_ORIGIN` and `COMPOSE_PANEL_TRUST_PROXY` are refused at
   startup with a migration message (never silently reinterpreted). The
   `scripts/proxy-e2e/run.sh` check now covers two origins plus the coexisting

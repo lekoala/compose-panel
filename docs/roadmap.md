@@ -9,6 +9,7 @@ After V1 the direction is to understand the host the stacks run on, not only the
 ## Access
 - **Use HTTPS and the SSH tunnel at the same time.** Done in 0.1.1 ([ADR 0012](adr/0012-multiple-access-origins.md)): `COMPOSE_PANEL_PROXY_ORIGINS` (a list) plus `COMPOSE_PANEL_ALLOW_LOOPBACK`. Host and Origin are validated per access point, and the cookie attribute is chosen per path.
 - **Login CSRF across tabs and access modes.** Make the token robust when several tabs are open or the access path changes.
+- **Access diagnostics (later).** Show the configured origins and a security level or warning per entry — provider-agnostic, with no Caddy/Tailscale/Cloudflare detection in the code.
 
 ## Usability
 - **Move between stacks without returning to the list**: a sidebar and a search/filter.
