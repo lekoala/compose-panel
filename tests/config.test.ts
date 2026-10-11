@@ -147,4 +147,24 @@ describe("loadConfig stacks path aliases", () => {
         expect(() => loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "/opt/stacks=" })).toThrow(/hostPrefix=panelPrefix/);
         expect(() => loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "/a=/b," })).toThrow(/empty entry/);
     });
+
+    test("refuses relative prefixes and dot-dot segments", () => {
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "opt/stacks=/app/stacks" })).toThrow(/absolute prefixes/);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "/opt/stacks=app/stacks" })).toThrow(/absolute prefixes/);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "/opt/../stacks=/app/stacks" })).toThrow(/\.\./);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_STACKS_PATH_ALIASES: "/opt/stacks=/app/../stacks" })).toThrow(/\.\./);
+    });
+});
+
+describe("loadConfig compose engine", () => {
+    const user = { ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala" };
+
+    test("defaults to docker", () => {
+        expect(loadConfig(user).composeEngine).toBe("docker");
+    });
+
+    test("refuses podman and unknown engines at startup", () => {
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_COMPOSE_ENGINE: "podman" })).toThrow(/not implemented yet/);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_COMPOSE_ENGINE: "containerd" })).toThrow(/not supported/);
+    });
 });

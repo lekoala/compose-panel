@@ -66,9 +66,9 @@ export function buildAccessReport(input: AccessReportInput): AccessReport {
 
     for (const origin of input.proxyOrigins) {
         findings.push({
-            area: `HTTPS origin ${origin}`,
+            area: `Proxy origin ${origin}`,
             status: "configured",
-            detail: "TLS is validated at startup. Whether this origin is restricted to a VPN, IP allow-list, firewall or identity proxy cannot be verified from the panel.",
+            detail: "Only the https scheme is checked at startup. Whether this origin is restricted to a VPN, IP allow-list, firewall or identity proxy cannot be verified from the panel.",
         });
     }
 
@@ -118,7 +118,7 @@ export function buildAccessReport(input: AccessReportInput): AccessReport {
         ? "unknown"
         : input.currentAccess.kind === "loopback"
             ? `loopback (127.0.0.1:${input.port})`
-            : `HTTPS origin ${input.currentAccess.origin}`;
+            : `proxy origin ${input.currentAccess.origin}`;
 
     return {
         request,

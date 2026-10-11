@@ -12,7 +12,7 @@ import {
 } from "./container-state.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
 import { ContainerRefError, isContainerId, type ContainerInspector } from "./containers.ts";
-import { DOCKER_SLOW, DOCKER_UNAVAILABLE, type ProjectDiscovery } from "./status.ts";
+import { DOCKER_SLOW, DOCKER_TRUNCATED, DOCKER_UNAVAILABLE, type ProjectDiscovery } from "./status.ts";
 
 const UNEXPECTED = "Docker returned an unexpected container list. Statuses are shown as unknown. Reload the page to try again.";
 const DETAILS_UNAVAILABLE = "The container may have been removed, so its details could not be read. Reload the page to try again.";
@@ -85,6 +85,9 @@ export async function loadContainers(
         return { containers: [], note: DOCKER_UNAVAILABLE };
     }
     if (result.timedOut) return { containers: [], note: DOCKER_SLOW };
+    // A truncated list may omit containers, so it is never classified as if
+    // complete: report it as unavailable with a note instead.
+    if (result.truncated) return { containers: [], note: DOCKER_TRUNCATED };
     if (result.code !== 0) return { containers: [], note: DOCKER_UNAVAILABLE };
     try {
         return { containers: classifyContainers(parseContainerLs(result.stdout), managed, aliases), note: null };
@@ -102,10 +105,21 @@ export interface ContainerDetailStatus {
 }
 
 /**
+ * Outcome of resolving one container for its detail page. `unavailable` means
+ * the container list itself could not be read, so "not found" must not be
+ * reported: the container may exist but Docker is unreachable.
+ */
+export type ContainerDetailResult =
+    | { kind: "found"; detail: ContainerDetailStatus }
+    | { kind: "not-found" }
+    | { kind: "unavailable"; note: string };
+
+/**
  * Resolve one container for its detail page: find it in the classified list
  * (for category and stack) then read a single `docker container inspect`.
- * Returns null when no container matches the reference (a 404), and throws
- * `ContainerRefError` for a malformed reference (a 400).
+ * Returns `not-found` when the list was read but no container matches the
+ * reference (a 404), and `unavailable` when the list could not be read (a
+ * 503); throws `ContainerRefError` for a malformed reference (a 400).
  */
 export async function loadContainerDetail(
     root: string,
@@ -113,23 +127,24 @@ export async function loadContainerDetail(
     provider: ComposeProvider,
     inspector: ContainerInspector,
     aliases: PathAlias[] = [],
-): Promise<ContainerDetailStatus | null> {
+): Promise<ContainerDetailResult> {
     if (!isContainerId(id)) throw new ContainerRefError();
-    const { containers } = await loadContainers(root, provider, inspector, aliases);
+    const { containers, note } = await loadContainers(root, provider, inspector, aliases);
+    if (note) return { kind: "unavailable", note };
     const container = containers.find(entry => entry.id === id || entry.id.startsWith(id));
-    if (!container) return null;
+    if (!container) return { kind: "not-found" };
     let result: Awaited<ReturnType<ContainerInspector["inspect"]>>;
     try {
         result = await inspector.inspect(container.id);
     } catch {
-        return { container, details: null, note: DETAILS_UNAVAILABLE };
+        return { kind: "found", detail: { container, details: null, note: DETAILS_UNAVAILABLE } };
     }
-    if (result.timedOut) return { container, details: null, note: DETAILS_SLOW };
-    if (result.code !== 0) return { container, details: null, note: DETAILS_UNAVAILABLE };
+    if (result.timedOut) return { kind: "found", detail: { container, details: null, note: DETAILS_SLOW } };
+    if (result.code !== 0) return { kind: "found", detail: { container, details: null, note: DETAILS_UNAVAILABLE } };
     try {
-        return { container, details: parseContainerInspect(result.stdout), note: null };
+        return { kind: "found", detail: { container, details: parseContainerInspect(result.stdout), note: null } };
     } catch (error) {
-        if (error instanceof ContainerStateError) return { container, details: null, note: DETAILS_UNAVAILABLE };
+        if (error instanceof ContainerStateError) return { kind: "found", detail: { container, details: null, note: DETAILS_UNAVAILABLE } };
         throw error;
     }
 }

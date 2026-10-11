@@ -91,6 +91,14 @@ function methodNotAllowed(allow: string): Response {
     return new Response("Method Not Allowed", { status: 405, headers: { Allow: allow, ...BASE_HEADERS } });
 }
 
+/**
+ * A HEAD answer carries the GET status and headers, without a body. Used for
+ * the plain-text/JSON data endpoints so a HEAD probe never receives a payload.
+ */
+function withoutBody(response: Response): Response {
+    return new Response(null, { status: response.status, headers: response.headers });
+}
+
 function redirect(location: string, status: number): Response {
     return new Response(null, { status, headers: { Location: location, ...BASE_HEADERS } });
 }
@@ -128,6 +136,12 @@ const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"] as const;
  * proxy-origin Host. See ADR 0012 for the trusted-local assumption behind it.
  */
 function requestHost(request: Request): string | null {
+    // In production Bun always supplies the Host header (HTTP/1.1, or the
+    // :authority pseudo-header for HTTP/2, from which `request.url` is built),
+    // so the URL fallback only matters for synthetic requests and resolves to
+    // the server's own authority. On the hard-coded loopback listener that is
+    // the loopback path: the correct classification for a direct connection.
+    // A missing Host therefore cannot be smuggled into a proxy access point.
     const raw = request.headers.get("host") ?? new URL(request.url).host;
     return raw ? raw.toLowerCase() : null;
 }
@@ -137,6 +151,9 @@ function resolveAccess(request: Request, config: AppConfig): Access | null {
     if (!host) return null;
     // The loopback path is implicit when no proxy origin is configured;
     // otherwise it must be opted in, so unexpected Hosts stay refused.
+    // A bare loopback name without `:PORT` is tolerated (some clients send
+    // `Host: localhost`): on the hard-coded loopback listener it can only be
+    // a direct connection, never a proxy access point.
     if (config.proxyOrigins.length === 0 || config.allowLoopback) {
         for (const name of LOOPBACK_HOSTS) {
             if (host === name || host === `${name}:${config.port}`) return { kind: "loopback" };
@@ -646,8 +663,12 @@ export function createApp(options: AppOptions): App {
 
     async function renderContainerDetail(rawId: string, csrf: string): Promise<Response> {
         if (!isContainerId(rawId)) throw new StackError("This container reference is not valid.", 400);
-        const detail = await loadContainerDetail(stacksRoot, rawId, provider, inspector, config.hostStacksPathAliases);
-        if (!detail) throw new StackError("No container with this reference was found. It may have been removed.", 404);
+        const outcome = await loadContainerDetail(stacksRoot, rawId, provider, inspector, config.hostStacksPathAliases);
+        // An unreadable list is not a missing container: Docker may be down
+        // while the container still exists, so answer 503, never 404.
+        if (outcome.kind === "unavailable") throw new StackError(outcome.note, 503);
+        if (outcome.kind === "not-found") throw new StackError("No container with this reference was found. It may have been removed.", 404);
+        const detail = outcome.detail;
         return htmlResponse(containerDetailPage({
             csrf,
             access,
@@ -1058,7 +1079,15 @@ export function createApp(options: AppOptions): App {
      * failures get a fixed message.
      */
     async function handleLogsSnapshot(name: string, sessionId: string): Promise<Response> {
-        const context = await resolveProjectContext(stacksRoot, name, provider);
+        // An unknown or invalid stack name is a plain-text refusal, not an
+        // HTML error page: this endpoint always answers `text/plain`.
+        let context: Awaited<ReturnType<typeof resolveProjectContext>>;
+        try {
+            context = await resolveProjectContext(stacksRoot, name, provider);
+        } catch (error) {
+            if (error instanceof StackError) return plain(error.message, error.status);
+            throw error;
+        }
         if (context.kind === "invalid") return plain(ENV_NOT_REGULAR, 409);
         if (context.kind === "ambiguous") {
             return plain("Several Docker Compose projects match this stack. The panel will not guess which logs to read.", 409);
@@ -1075,6 +1104,8 @@ export function createApp(options: AppOptions): App {
             cwd: context.cwd,
             envFile: context.envFile ?? undefined,
             tailLines: config.logTailLines,
+            timeoutMs: config.dockerTimeoutMs,
+            maxBytes: config.logMaxBytes,
         };
         let result: Awaited<ReturnType<ComposeProvider["readLogs"]>>;
         try {
@@ -1189,18 +1220,27 @@ export function createApp(options: AppOptions): App {
 
         try {
             if (url.pathname === "/") return await renderStackList(session.csrf);
-            if (url.pathname === "/server/stats") return await handleServerStats();
+            if (url.pathname === "/server/stats") {
+                const response = await handleServerStats();
+                return method === "HEAD" ? withoutBody(response) : response;
+            }
             if (url.pathname === "/server") return await renderServer(session.csrf, request);
             if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
             if (url.pathname === "/access") return await renderAccess(session.csrf, request);
             if (url.pathname === "/containers") return await renderContainers(session.csrf, parseContainerFilter(url.searchParams.get("state")));
             const containerLogsMatch = /^\/containers\/([^/]+)\/logs$/.exec(url.pathname);
-            if (containerLogsMatch) return await handleContainerLogs(decodeName(containerLogsMatch[1]!), url.searchParams.get("tail"));
+            if (containerLogsMatch) {
+                const response = await handleContainerLogs(decodeName(containerLogsMatch[1]!), url.searchParams.get("tail"));
+                return method === "HEAD" ? withoutBody(response) : response;
+            }
             const containerDetailMatch = /^\/containers\/([^/]+)$/.exec(url.pathname);
             if (containerDetailMatch) return await renderContainerDetail(decodeName(containerDetailMatch[1]!), session.csrf);
             if (editMatch) return await renderEdit(decodeName(editMatch[1]!), session.csrf);
             const logSnapshotMatch = /^\/stacks\/([^/]+)\/logs$/.exec(url.pathname);
-            if (logSnapshotMatch) return await handleLogsSnapshot(decodeName(logSnapshotMatch[1]!), session.id);
+            if (logSnapshotMatch) {
+                const response = await handleLogsSnapshot(decodeName(logSnapshotMatch[1]!), session.id);
+                return method === "HEAD" ? withoutBody(response) : response;
+            }
             const detailMatch = /^\/stacks\/([^/]+)$/.exec(url.pathname);
             if (detailMatch) {
                 // Fixed messages only: the query flag is never reflected.

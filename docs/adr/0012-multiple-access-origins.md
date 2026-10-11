@@ -32,8 +32,14 @@ SSH: it only knows which origins are allowed to reach it.
   - cookies are `Secure` on an https proxy origin and follow
     `COMPOSE_PANEL_COOKIE_SECURE` (default false) on loopback, so an SSH tunnel
     over plain HTTP still signs in;
-  - `X-Forwarded-Proto`/`-For` are read only on a proxy access; on loopback they
-    are ignored and the client key is `direct`.
+  - `X-Forwarded-For` (last entry only) is read only on a proxy access; on loopback it
+    is ignored and the client key is `direct`. `X-Forwarded-Proto` and vendor
+    identity headers are ignored everywhere.
+  - A bare loopback Host without `:PORT` (e.g. `Host: localhost`) is tolerated
+    as loopback: on the hard-coded loopback listener it can only be a direct
+    connection, never a proxy access point. An absent Host header cannot select
+    a proxy origin either: the URL fallback resolves to the server's own
+    authority (Bun builds `request.url` from the Host it received).
 - **The bind stays hard-coded to `127.0.0.1`.** No configuration can publish the
   panel.
 - **Legacy settings fail fast, they are not reinterpreted.**

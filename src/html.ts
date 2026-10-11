@@ -266,8 +266,14 @@ function updateSides(update: ServiceUpdate): [string, string] {
     return [`${from} (${update.from.digest ?? "?"})`, `${to} (${update.to.digest ?? "?"})`];
 }
 
+/**
+ * "1.27.1 → 1.27.2"; when both sides read the same, the digests tell them
+ * apart. Version strings come from untrusted image labels, so both sides are
+ * HTML-escaped: the result is safe to interpolate into markup.
+ */
 export function updateText(update: ServiceUpdate): string {
-    return updateSides(update).join(" → ");
+    const [from, to] = updateSides(update);
+    return `${escapeHtml(from)} → ${escapeHtml(to)}`;
 }
 
 function imageCell(service: ComposeService, update: ServiceUpdate | undefined): string {

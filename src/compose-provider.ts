@@ -192,7 +192,7 @@ class DockerComposeProvider implements ComposeProvider {
 
     readLogs(target: ComposeTarget & { tailLines?: number }): Promise<CommandResult> {
         if (!this.caps.operations.logs) return Promise.reject(new ComposeUnsupportedError("logs"));
-        const tail = target.tailLines ?? 200;
+        const tail = sanitizeComposeTailLines(target.tailLines);
         const args = ["compose"];
         if (target.project) args.push("-p", target.project);
         if (target.envFile) args.push("--env-file", target.envFile);
@@ -211,7 +211,7 @@ class DockerComposeProvider implements ComposeProvider {
         signal: AbortSignal,
     ): Promise<{ code: number; timedOut: boolean; terminationUnconfirmed?: boolean }> {
         if (!this.caps.operations.logs) throw new ComposeUnsupportedError("logs");
-        const tail = target.tailLines ?? 200;
+        const tail = sanitizeComposeTailLines(target.tailLines);
         const args = ["compose"];
         if (target.project) args.push("-p", target.project);
         if (target.envFile) args.push("--env-file", target.envFile);
@@ -231,6 +231,19 @@ class DockerComposeProvider implements ComposeProvider {
 
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
 const IMAGE_REFERENCE = /^[a-z0-9][a-z0-9._/:@-]{0,254}$/i;
+
+const COMPOSE_LOG_TAIL_DEFAULT = 200;
+/**
+ * Upper bound for `compose logs --tail`. The value comes from operator
+ * configuration, but the provider never passes an absurd line count to Docker:
+ * history reads stay bounded even with a misconfigured value.
+ */
+const COMPOSE_LOG_TAIL_MAX = 5000;
+
+function sanitizeComposeTailLines(value: number | undefined): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return COMPOSE_LOG_TAIL_DEFAULT;
+    return Math.min(Math.max(Math.floor(value), 1), COMPOSE_LOG_TAIL_MAX);
+}
 
 /** An image ID, or a reference like `registry:5000/ns/name:tag@sha256:…`. */
 export function isImageReference(value: string): boolean {

@@ -93,6 +93,14 @@ describe("loadContainers", () => {
         expect((await loadContainers(root, provider, fakeInspector("garbage"))).note).toContain("unexpected container list");
     });
 
+    test("a truncated list is never classified as complete", async () => {
+        const provider = fakeProvider([{ Name: "blog", Status: "running(1)", ConfigFiles: managedFile() }]);
+        const stdout = line(["aaaaaaaaaaaa", "blog-web-1", "nginx:1.27", "running", "Up 1 hour", "none", "", "", "80/tcp", "blog", "web", managedFile(), root]);
+        const result = await loadContainers(root, provider, fakeInspector(stdout, { truncated: true }));
+        expect(result.containers).toEqual([]);
+        expect(result.note).toContain("may be incomplete");
+    });
+
     test("a missing stacks directory still lists containers", async () => {
         const gone = join(root, "does-not-exist");
         const result = await loadContainers(gone, fakeProvider(), fakeInspector(line(["cccccccccccc", "legacy", "redis:7", "running", "Up", "none", "", "", "", "", "", "", ""])));
@@ -115,16 +123,38 @@ describe("loadContainerDetail", () => {
     }]);
 
     test("finds the container and reads a single inspect", async () => {
-        const detail = await loadContainerDetail(root, "cccccccccccc", fakeProvider(), detailedInspector({ list, inspect: { ...ok, stdout: inspect } }));
-        expect(detail).not.toBeNull();
-        expect(detail!.container.name).toBe("legacy");
-        expect(detail!.details!.restartPolicy).toBe("always");
-        expect(detail!.note).toBeNull();
+        const outcome = await loadContainerDetail(root, "cccccccccccc", fakeProvider(), detailedInspector({ list, inspect: { ...ok, stdout: inspect } }));
+        expect(outcome.kind).toBe("found");
+        if (outcome.kind !== "found") return;
+        expect(outcome.detail.container.name).toBe("legacy");
+        expect(outcome.detail.details!.restartPolicy).toBe("always");
+        expect(outcome.detail.note).toBeNull();
     });
 
-    test("returns null when no container matches", async () => {
-        const detail = await loadContainerDetail(root, "ffffffffffff", fakeProvider(), detailedInspector({ list }));
-        expect(detail).toBeNull();
+    test("reports not-found when the list was read but nothing matches", async () => {
+        const outcome = await loadContainerDetail(root, "ffffffffffff", fakeProvider(), detailedInspector({ list }));
+        expect(outcome).toEqual({ kind: "not-found" });
+    });
+
+    test("reports unavailable instead of not-found when Docker is down", async () => {
+        const down = detailedInspector({ list: "" });
+        down.list = async () => ({ ...ok, stdout: "", code: 1 });
+        const outcome = await loadContainerDetail(root, "cccccccccccc", fakeProvider(), down);
+        expect(outcome.kind).toBe("unavailable");
+        if (outcome.kind !== "unavailable") return;
+        expect(outcome.note).toContain("not reachable");
+    });
+
+    test("reports unavailable when the list times out or is truncated", async () => {
+        const slow = detailedInspector({ list: "" });
+        slow.list = async () => ({ ...ok, stdout: "", timedOut: true });
+        expect((await loadContainerDetail(root, "cccccccccccc", fakeProvider(), slow)).kind).toBe("unavailable");
+        const cut = detailedInspector({ list: "" });
+        cut.list = async () => ({ ...ok, stdout: "", truncated: true });
+        const outcome = await loadContainerDetail(root, "cccccccccccc", fakeProvider(), cut);
+        expect(outcome.kind).toBe("unavailable");
+        if (outcome.kind !== "unavailable") return;
+        expect(outcome.note).toContain("may be incomplete");
     });
 
     test("rejects a malformed reference", async () => {
@@ -132,8 +162,10 @@ describe("loadContainerDetail", () => {
     });
 
     test("keeps the summary when inspect fails", async () => {
-        const detail = await loadContainerDetail(root, "cccccccccccc", fakeProvider(), detailedInspector({ list, inspect: { ...ok, code: 1 } }));
-        expect(detail!.details).toBeNull();
-        expect(detail!.note).toContain("could not be read");
+        const outcome = await loadContainerDetail(root, "cccccccccccc", fakeProvider(), detailedInspector({ list, inspect: { ...ok, code: 1 } }));
+        expect(outcome.kind).toBe("found");
+        if (outcome.kind !== "found") return;
+        expect(outcome.detail.details).toBeNull();
+        expect(outcome.detail.note).toContain("could not be read");
     });
 });

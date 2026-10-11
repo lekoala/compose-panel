@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import type { PathAlias } from "./container-state.ts";
 
 export interface LoginRateLimitConfig {
@@ -193,9 +194,36 @@ function parsePathAliases(env: Env): PathAlias[] {
         if (!from || !to) {
             throw new Error(`COMPOSE_PANEL_STACKS_PATH_ALIASES entry "${entry}" must be hostPrefix=panelPrefix.`);
         }
+        // Both sides are Unix path prefixes compared against Docker labels, so
+        // they must be absolute and free of "..": a relative or dot-dot prefix
+        // would silently match nothing (or the wrong subtree) and demote
+        // managed containers to External without explanation.
+        for (const prefix of [from, to]) {
+            if (!posix.isAbsolute(prefix)) {
+                throw new Error(`COMPOSE_PANEL_STACKS_PATH_ALIASES entry "${entry}" must use absolute prefixes (hostPrefix=panelPrefix).`);
+            }
+            if (prefix.split("/").includes("..")) {
+                throw new Error(`COMPOSE_PANEL_STACKS_PATH_ALIASES entry "${entry}" must not contain ".." segments.`);
+            }
+        }
         aliases.push({ from, to });
     }
     return aliases;
+}
+
+/**
+ * V1 targets Docker Compose only. Refused at startup with an actionable
+ * message instead of a generic factory error at first use.
+ */
+function parseComposeEngine(env: Env): string {
+    const engine = env.COMPOSE_PANEL_COMPOSE_ENGINE?.trim() || "docker";
+    if (engine === "podman") {
+        throw new Error('COMPOSE_PANEL_COMPOSE_ENGINE="podman" is not implemented yet; the V1 provider targets Docker Compose ("docker").');
+    }
+    if (engine !== "docker") {
+        throw new Error(`COMPOSE_PANEL_COMPOSE_ENGINE="${engine}" is not supported: V1 targets Docker Compose only ("docker").`);
+    }
+    return engine;
 }
 
 interface ProxySettings {
@@ -305,7 +333,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         maxBodyBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_BODY_BYTES", 8 * 1024),
         maxEditBytes: parsePositiveInt(env, "COMPOSE_PANEL_MAX_EDIT_BYTES", 1024 * 1024),
         dockerPath: env.COMPOSE_PANEL_DOCKER_PATH?.trim() || "docker",
-        composeEngine: env.COMPOSE_PANEL_COMPOSE_ENGINE?.trim() || "docker",
+        composeEngine: parseComposeEngine(env),
         hostStacksPathAliases: parsePathAliases(env),
         timeZone: parseTimeZone(env),
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),

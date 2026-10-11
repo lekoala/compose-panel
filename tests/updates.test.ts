@@ -66,6 +66,12 @@ describe("loadImageUpdates", () => {
         expect(updateText({ ...base, from: { version: "7", created: null, digest: "sha256:aaaaaaaaaaaa" }, to: { version: "7", created: null, digest: "sha256:bbbbbbbbbbbb" } }))
             .toBe("7 (sha256:aaaaaaaaaaaa) → 7 (sha256:bbbbbbbbbbbb)");
     });
+
+    test("escapes untrusted label text in the version summary", () => {
+        const base = { image: "x:1", link: null };
+        expect(updateText({ ...base, from: { version: "<img src=x>", created: null, digest: null }, to: { version: "2", created: null, digest: null } }))
+            .toBe("&lt;img src=x&gt; → 2");
+    });
 });
 
 describe("linkFor", () => {

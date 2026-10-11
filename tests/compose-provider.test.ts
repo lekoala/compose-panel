@@ -87,6 +87,18 @@ describe("DockerComposeProvider", () => {
         expect(calls[0]!.cwd).toBe("/opt/stacks/demo");
     });
 
+    test("clamps an absurd log tail instead of passing it to Docker", async () => {
+        const { runner, calls } = recording();
+        const provider = createComposeProvider({ runner });
+        const base = { composeFile: "compose.yaml", cwd: "/opt/stacks/demo" };
+        await provider.readLogs({ ...base, tailLines: 1_000_000_000 });
+        await provider.readLogs({ ...base, tailLines: -5 });
+        await provider.readLogs({ ...base, tailLines: Number.NaN });
+        await provider.readLogs({ ...base });
+        const tails = calls.map(call => call.args[call.args.indexOf("--tail") + 1]);
+        expect(tails).toEqual(["5000", "1", "200", "200"]);
+    });
+
     test("refuses a log read when the provider has no logs capability", async () => {
         const { runner } = recording();
         const provider = createComposeProvider({ runner });

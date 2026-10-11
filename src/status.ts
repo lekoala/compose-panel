@@ -16,6 +16,7 @@ import { loadImageUpdates, type ServiceUpdate } from "./updates.ts";
 
 export const DOCKER_UNAVAILABLE = "Docker is not reachable, so statuses are shown as unknown. Check that the Docker daemon is running and its socket is available to the panel.";
 export const DOCKER_SLOW = "Docker did not respond in time, so statuses are shown as unknown. Reload the page to try again.";
+export const DOCKER_TRUNCATED = "Docker returned more output than the panel reads, so this list may be incomplete. It is shown as unknown instead of partial. Reload the page to try again.";
 const SEVERAL_PROJECTS = "Several Docker Compose projects point to this folder, so the panel cannot tell which one is this stack. Its status is unknown and actions are refused until only one remains.";
 const MAX_ENV_BYTES = 1024 * 1024;
 
@@ -50,6 +51,9 @@ export async function loadProjects(provider: ComposeProvider): Promise<ProjectDi
     try {
         const result = await provider.listProjects();
         if (result.timedOut) return { projects: [], note: DOCKER_SLOW };
+        // A truncated list may omit projects, so it is never parsed as if
+        // complete: report it as unknown with a note instead.
+        if (result.truncated) return { projects: [], note: DOCKER_TRUNCATED };
         if (result.code !== 0) return { projects: [], note: DOCKER_UNAVAILABLE };
         return { projects: parseComposeLs(result.stdout), note: null };
     } catch {
@@ -184,6 +188,9 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
             cwd: dirname(location.path),
         });
         if (result.timedOut) return { project: project.name, state: "unknown", note: DOCKER_SLOW, services: [] };
+        // Same fail-closed rule as the project list: a truncated `ps` may omit
+        // services, so it is never parsed as if complete.
+        if (result.truncated) return { project: project.name, state: "unknown", note: DOCKER_TRUNCATED, services: [] };
         if (result.code !== 0) return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
         const services = parseComposePs(result.stdout);
         const updates = await loadImageUpdates(provider, { project: project.name, composeFile: location.filename, cwd: dirname(location.path) }, services);

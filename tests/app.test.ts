@@ -402,9 +402,9 @@ describe("access diagnostics", () => {
         const app = makeApp({ proxyOrigins: ["https://panel.example", "https://oracle.example.ts.net"], allowLoopback: true });
         const session = await login(app);
         const html = await (await authed(app, "/access", session)).text();
-        expect(html).toContain("HTTPS origin https://panel.example");
-        expect(html).toContain("HTTPS origin https://oracle.example.ts.net");
-        expect(html).toContain("TLS is validated at startup");
+        expect(html).toContain("Proxy origin https://panel.example");
+        expect(html).toContain("Proxy origin https://oracle.example.ts.net");
+        expect(html).toContain("Only the https scheme is checked at startup");
         expect(html).toContain("cannot be verified from the panel");
         expect(html).toContain("Verify externally");
         expect(html).toContain("Configured");
@@ -418,7 +418,7 @@ describe("access diagnostics", () => {
         const session = cookieValue(setCookies(login1), "cp_session")!;
         const response = await app.fetch(new Request(`${PROXY}/access`, { headers: { cookie: `cp_session=${session}` } }));
         const html = await response.text();
-        expect(html).toContain(`Arrived through <strong>HTTPS origin ${PROXY}</strong>`);
+        expect(html).toContain(`Arrived through <strong>proxy origin ${PROXY}</strong>`);
     });
 
     test("surfaces development and plain-HTTP warnings", async () => {
@@ -461,6 +461,22 @@ describe("navigation sidebar", () => {
         const app = makeApp();
         const html = await (await app.fetch(new Request(`${ORIGIN}/login`))).text();
         expect(html).not.toContain("nav-sections");
+    });
+
+    test("the stack list comes from the stacks folder alone, never Docker", async () => {
+        const dead: ComposeProvider = {
+            engine: "fake",
+            capabilities: () => { throw new Error("must not be called"); },
+            detect: async () => { throw new Error("must not be called"); },
+            listProjects: async () => { throw new Error("Docker is down"); },
+        } as unknown as ComposeProvider;
+        const app = makeApp({}, undefined, dead);
+        const session = await login(app);
+        // /access otherwise runs no Docker call: a 200 with the stack list
+        // proves the sidebar never consults Docker (no status, no counter).
+        const response = await authed(app, "/access", session);
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain('<a href="/stacks/demo">demo</a>');
     });
 });
 
@@ -1611,8 +1627,36 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         ]);
         const app = makeApp({}, undefined, provider);
         const session = await login(app);
-        expect((await authed(app, "/stacks/nope/logs", session)).status).toBe(404);
+        const unknown = await authed(app, "/stacks/nope/logs", session);
+        expect(unknown.status).toBe(404);
+        // A text/plain endpoint never answers an HTML error page.
+        expect(unknown.headers.get("content-type")).toContain("text/plain");
+        expect(await unknown.text()).not.toContain("<html");
         expect((await authed(app, "/stacks/demo/logs", session)).status).toBe(409);
+    });
+
+    test("answers HEAD on data endpoints with headers only, no body", async () => {
+        const { provider } = controllableProvider();
+        provider.readLogs = async () => ({ code: 0, stdout: "2026-10-10T10:00:00Z app-1  | hello\n", stderr: "", timedOut: false, truncated: false });
+        const app = makeApp({}, undefined, provider, undefined, root, detailedInspector({
+            list: containerFixture(),
+            logs: { code: 0, stdout: "hello\n", stderr: "", timedOut: false, truncated: false },
+        }));
+        const session = await login(app);
+        for (const [path, contentType] of [
+            ["/stacks/demo/logs", "text/plain"],
+            ["/containers/bbbbbbbbbbbb/logs", "text/plain"],
+            ["/server/stats", "application/json"],
+        ] as const) {
+            const head = await authed(app, path, session, { method: "HEAD" });
+            expect(head.status).toBe(200);
+            expect(head.headers.get("content-type")).toContain(contentType);
+            expect(await head.text()).toBe("");
+            const get = await authed(app, path, session);
+            expect(get.status).toBe(200);
+            expect(get.headers.get("content-type")).toContain(contentType);
+            expect((await get.text()).length).toBeGreaterThan(0);
+        }
     });
 
     test("validation uses the resolved project identity", async () => {
@@ -2077,6 +2121,16 @@ describe("container detail and logs", () => {
         expect((await authed(app, "/containers/ffffffffffff", session)).status).toBe(404);
     });
 
+    test("answers 503, not 404, when the container list is unreadable", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, fakeInspector("", { code: 1 }));
+        const session = await login(app);
+        const response = await authed(app, "/containers/aaaaaaaaaaaa", session);
+        expect(response.status).toBe(503);
+        const html = await response.text();
+        expect(html).toContain("Docker is not reachable");
+        expect(html).not.toContain("may have been removed");
+    });
+
     test("serves a bounded log snapshot with ANSI stripped", async () => {
         const app = makeApp({}, undefined, undefined, undefined, root, detailedInspector({
             list: containerFixture(),
@@ -2097,6 +2151,36 @@ describe("container detail and logs", () => {
         const app = makeApp({}, undefined, undefined, undefined, root, fakeInspector(containerFixture()));
         const session = await login(app);
         expect((await authed(app, "/containers/not-hex/logs", session)).status).toBe(400);
+    });
+
+    test("bounds the container log snapshot: allow-listed tail, fixed errors, no-store", async () => {
+        const seen: (number | undefined)[] = [];
+        const base: CommandResult = { code: 0, stdout: "line\n", stderr: "", timedOut: false, truncated: false };
+        const inspector: ContainerInspector = {
+            engine: "docker",
+            list: async () => ({ ...base, stdout: containerFixture() }),
+            inspect: async () => base,
+            logs: async target => { seen.push(target.tailLines); return { ...base }; },
+            info: async () => base,
+            stats: async () => base,
+            diskUsage: async () => base,
+        };
+        const app = makeApp({}, undefined, undefined, undefined, root, inspector);
+        const session = await login(app);
+        const ok = await authed(app, "/containers/bbbbbbbbbbbb/logs?tail=99999", session);
+        expect(ok.status).toBe(200);
+        expect(ok.headers.get("content-type")).toContain("text/plain");
+        expect(ok.headers.get("cache-control")).toBe("no-store");
+        // 99999 is not allow-listed, so the bounded default applies.
+        expect(seen).toEqual([200]);
+
+        const failing: ContainerInspector = { ...inspector, logs: async () => ({ ...base, code: 1, stderr: "secret-token" }) };
+        const failingApp = makeApp({}, undefined, undefined, undefined, root, failing);
+        const failingSession = await login(failingApp);
+        const denied = await authed(failingApp, "/containers/bbbbbbbbbbbb/logs", failingSession);
+        expect(denied.status).toBe(502);
+        expect(denied.headers.get("cache-control")).toBe("no-store");
+        expect(await denied.text()).not.toContain("secret-token");
     });
 });
 
