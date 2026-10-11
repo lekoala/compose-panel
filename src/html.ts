@@ -32,6 +32,18 @@ export function note(kind: NoteKind, text: string, options: { title?: string; id
     return `<div class="note note-${kind}"${id}${role}>${title}${escapeHtml(text)}</div>`;
 }
 
+/** The primary sections of the panel, in navigation order. */
+export type NavSection = "stacks" | "containers" | "server" | "audit" | "access";
+
+export interface NavigationOptions {
+    /** Valid stack names (from `listStacks`), shown as a switcher. Names only, no state. */
+    stacks: string[];
+    /** The section the current page belongs to, marked `aria-current`. */
+    section: NavSection;
+    /** The stack being viewed, when the page is about one stack. */
+    stack?: string;
+}
+
 export interface DocumentOptions {
     /** When set, the header renders an authenticated sign-out form using this CSRF token. */
     logoutCsrf?: string;
@@ -46,6 +58,50 @@ export interface DocumentOptions {
     timezone?: string;
     /** Standalone centered page without header and footer (sign-in, signed out). */
     bare?: boolean;
+    /** When set, renders the authenticated navigation sidebar. */
+    nav?: NavigationOptions;
+}
+
+const NAV_SECTIONS: readonly [NavSection, string, string][] = [
+    ["stacks", "/", "Stacks"],
+    ["containers", "/containers", "Containers"],
+    ["server", "/server", "Server"],
+    ["audit", "/audit", "Activity log"],
+    ["access", "/access", "Access"],
+];
+
+/**
+ * Authenticated navigation. Sections and the stack list are server-rendered
+ * links; the local search and the mobile disclosure are progressive
+ * enhancement. Only names are shown: no state, counter or badge here.
+ */
+export function renderSidebar(nav: NavigationOptions): string {
+    const sections = NAV_SECTIONS
+        .map(([key, href, label]) => {
+            const current = key === nav.section ? ` aria-current="page"` : "";
+            return `<a href="${href}"${current}>${escapeHtml(label)}</a>`;
+        })
+        .join("");
+    const hasStacks = nav.stacks.length > 0;
+    const items = nav.stacks
+        .map(name => {
+            const current = name === nav.stack;
+            return `<li${current ? ` class="is-current"` : ""}><a href="/stacks/${encodeURIComponent(name)}"${current ? ` aria-current="page"` : ""}>${escapeHtml(name)}</a></li>`;
+        })
+        .join("");
+    const search = hasStacks
+        ? `<input type="search" class="nav-search" id="nav-search" placeholder="Filter stacks" aria-label="Filter stacks" autocomplete="off" spellcheck="false" data-nav-search>`
+        : "";
+    const list = hasStacks
+        ? `<ul class="nav-list" id="nav-list">${items}</ul><p class="nav-empty muted" id="nav-empty" hidden>No stack matches.</p>`
+        : `<p class="nav-empty muted">No stacks yet.</p>`;
+    return `<details class="sidebar" open>
+<summary class="sidebar-summary">Navigation</summary>
+<div class="sidebar-body">
+<nav class="nav-sections" aria-label="Sections">${sections}</nav>
+<div class="nav-stacks"><p class="nav-heading">Your stacks</p>${search}${list}</div>
+</div>
+</details>`;
 }
 
 export function documentHtml(title: string, body: string, options: DocumentOptions = {}): string {
@@ -55,6 +111,9 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
         : "";
     const scripts = (options.scripts ?? []).map(src => `<script src="${escapeHtml(src)}" defer></script>`).join("");
     const timezone = options.timezone ? ` data-timezone="${escapeHtml(options.timezone)}"` : "";
+    const content = options.nav
+        ? `<div class="layout"><aside class="sidebar-wrap">${renderSidebar(options.nav)}</aside><main>${body}</main></div>`
+        : `<main>${body}</main>`;
     return `<!doctype html>
 <html lang="en"${timezone}>
 <head>
@@ -72,8 +131,8 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
 <body>
   ${options.bare ? `<main class="bare">${body}</main>` : `<div class="shell">
     <header><a href="/" class="brand"><img src="/favicon.svg" alt="" width="20" height="20">Compose Panel</a>${logout}</header>
-    <main>${body}</main>
-    <footer>Compose Panel ${escapeHtml(VERSION)}${options.logoutCsrf ? ` · <a href="/server">Server</a> · <a href="/containers">Containers</a> · <a href="/audit">Activity log</a> · <a href="/access">Access &amp; security</a>` : ""}${options.access ? ` · ${escapeHtml(options.access)}` : ""}</footer>
+    ${content}
+    <footer>Compose Panel ${escapeHtml(VERSION)}${options.access ? ` · ${escapeHtml(options.access)}` : ""}</footer>
   </div>`}
 </body>
 </html>`;
@@ -105,6 +164,7 @@ export interface EditPageOptions {
     csrf: string;
     access?: string;
     timezone?: string;
+    nav?: NavigationOptions;
     composeFilename: string;
     composeSource: string;
     composeHash: string;
@@ -139,7 +199,7 @@ ${error}
     <button type="submit" class="btn btn-primary" data-busy-label="Checking and saving…">Check and save</button>
     <a href="${stackHref}" class="btn">Cancel</a>
   </div>
-</form>`, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
+    </form>`, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"], nav: options.nav });
 }
 
 const STATE_LABELS: Record<string, string> = {
@@ -346,6 +406,7 @@ export interface AuditPageOptions {
     csrf: string;
     access?: string;
     timezone?: string;
+    nav?: NavigationOptions;
     periods: string[];
     selected: string | null;
     entries: AuditEntry[];
@@ -402,7 +463,7 @@ export function auditPage(options: AuditPageOptions): string {
         + selector
         + (options.selected ? `<p class="muted">Showing <code>${escapeHtml(options.selected)}.log</code> (${options.entries.length} entries, most recent last).</p>` : "")
         + table,
-        { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] },
+        { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"], nav: options.nav },
     );
 }
 
@@ -416,6 +477,7 @@ export interface AccessPageOptions {
     csrf: string;
     access?: string;
     timezone?: string;
+    nav?: NavigationOptions;
     report: AccessReport;
 }
 
@@ -441,7 +503,7 @@ ${summary}
 <section class="card"><h2>This request</h2><p>Arrived through <strong>${escapeHtml(report.request)}</strong>.</p></section>
 ${warnings}
 <section class="card"><h2>Access</h2><div class="table-wrap"><table class="table"><thead><tr><th>Area</th><th>Status</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
-    return documentHtml("Access & security", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
+    return documentHtml("Access & security", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"], nav: options.nav });
 }
 
 const CONTAINER_CATEGORY_LABELS: Record<ContainerCategory, string> = {
@@ -512,6 +574,7 @@ export interface ContainersPageOptions {
     csrf: string;
     access?: string;
     timezone?: string;
+    nav?: NavigationOptions;
     filter: ContainerFilter;
     containers: ClassifiedContainer[];
     note?: string | null;
@@ -548,7 +611,7 @@ export function containersPage(options: ContainersPageOptions): string {
         + (options.note ? note("warn", options.note) : "")
         + `<div class="toolbar">${filters}</div>`
         + (sections || (options.note ? "" : note("info", "No containers match this view.")));
-    return documentHtml("Containers", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
+    return documentHtml("Containers", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"], nav: options.nav });
 }
 
 const ATTENTION_LABELS: Record<AttentionReason, string> = {
@@ -638,6 +701,7 @@ export interface ServerPageOptions {
     csrf: string;
     access?: string;
     timezone?: string;
+    nav?: NavigationOptions;
     insights: Insights;
     /** Disk usage when requested with ?disk=1; null shows the on-demand link. */
     disk: DiskUsage | null;
@@ -732,7 +796,7 @@ export function serverPage(options: ServerPageOptions): string {
         + stacksCard
         + attentionCard
         + diskSection;
-    return documentHtml("Server", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
+    return documentHtml("Server", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"], nav: options.nav });
 }
 
 function containerTime(value: string | null): string {
@@ -805,6 +869,7 @@ export interface ContainerDetailPageOptions {
     csrf: string;
     access?: string;
     timezone?: string;
+    nav?: NavigationOptions;
     container: ClassifiedContainer;
     details: ContainerDetails | null;
     note?: string | null;
@@ -849,7 +914,7 @@ export function containerDetailPage(options: ContainerDetailPageOptions): string
         + (options.note ? note("warn", options.note) : "")
         + extras
         + containerLogsPanel(container.id, options.logTailLines, options.timezone);
-    return documentHtml(name, body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
+    return documentHtml(name, body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"], nav: options.nav });
 }
 
 export function htmlResponse(body: string, status = 200): Response {

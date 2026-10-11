@@ -1,6 +1,6 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, type NoteKind } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, type NavSection, type NavigationOptions, type NoteKind } from "./html.ts";
 import { dirname, join } from "node:path";
-import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
+import { listStacks, locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
 import { loadContainerDetail, loadContainers } from "./container-status.ts";
 import { parseContainerFilter, type ContainerFilter } from "./container-state.ts";
@@ -346,6 +346,19 @@ export function createApp(options: AppOptions): App {
         return { logoutCsrf: csrf, access, timezone: config.timeZone || undefined };
     }
 
+    /**
+     * Navigation data for the current page: section links plus the stack
+     * switcher. Names only, one filesystem read, no Docker call. If the stacks
+     * folder cannot be listed, the sidebar still shows the sections.
+     */
+    async function sidebarNav(section: NavSection, stack?: string): Promise<NavigationOptions> {
+        let stacks: string[] = [];
+        try {
+            stacks = (await listStacks(stacksRoot)).map(entry => entry.name);
+        } catch { /* navigation stays usable without the stack list */ }
+        return { stacks, section, stack };
+    }
+
     function sessionEnded(): Response {
         return htmlResponse(messagePage(
             "Signed out",
@@ -530,7 +543,7 @@ export function createApp(options: AppOptions): App {
         return htmlResponse(documentHtml(
             "Stacks",
             `<h1>Stacks</h1>${intro}${warning}${content}${otherContainersSection(containers, "running", containerNote)}`,
-            { ...pageChrome(csrf) },
+            { ...pageChrome(csrf), nav: { stacks: stacks.map(stack => stack.name), section: "stacks" } },
         ));
     }
 
@@ -546,10 +559,10 @@ export function createApp(options: AppOptions): App {
                 throw error;
             }
         }
-        return htmlResponse(auditPage({ csrf, access, timezone: config.timeZone || undefined, periods, selected, entries }));
+        return htmlResponse(auditPage({ csrf, access, timezone: config.timeZone || undefined, periods, selected, entries, nav: await sidebarNav("audit") }));
     }
 
-    function renderAccess(csrf: string, request: Request): Response {
+    async function renderAccess(csrf: string, request: Request): Promise<Response> {
         const report = buildAccessReport({
             port: config.port,
             proxyOrigins: config.proxyOrigins,
@@ -559,7 +572,7 @@ export function createApp(options: AppOptions): App {
             allowOpaqueOrigin: config.allowOpaqueOrigin,
             currentAccess: accessOf(request, config),
         });
-        return htmlResponse(accessPage({ csrf, access, timezone: config.timeZone || undefined, report }));
+        return htmlResponse(accessPage({ csrf, access, timezone: config.timeZone || undefined, report, nav: await sidebarNav("access") }));
     }
 
     async function renderServer(csrf: string, request: Request): Promise<Response> {
@@ -577,7 +590,7 @@ export function createApp(options: AppOptions): App {
         const disk = wantsDisk
             ? await diskCache.read(inspector, Date.now(), config.diskUsageTtlMs, { timeoutMs: config.insightsTimeoutMs, maxBytes: config.dockerMaxBytes })
             : null;
-        return htmlResponse(serverPage({ csrf, access, timezone: config.timeZone || undefined, insights, disk }));
+        return htmlResponse(serverPage({ csrf, access, timezone: config.timeZone || undefined, insights, disk, nav: await sidebarNav("server") }));
     }
 
     /**
@@ -627,6 +640,7 @@ export function createApp(options: AppOptions): App {
             filter,
             containers,
             note: containerNote,
+            nav: await sidebarNav("containers"),
         }));
     }
 
@@ -642,6 +656,7 @@ export function createApp(options: AppOptions): App {
             details: detail.details,
             note: detail.note,
             logTailLines: config.logTailLines,
+            nav: await sidebarNav("containers"),
         }));
     }
 
@@ -693,7 +708,7 @@ export function createApp(options: AppOptions): App {
             + servicesSection(status.services, status.state, status.updates)
             + logsPanel(stack.name, config.logTailLines, config.timeZone)
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
-            { ...pageChrome(csrf), scripts: ["/app.js"] },
+            { ...pageChrome(csrf), scripts: ["/app.js"], nav: await sidebarNav("stacks", stack.name) },
         ), statusCode);
     }
 
@@ -728,6 +743,7 @@ export function createApp(options: AppOptions): App {
             envHash: draft ? draft.baseEnvHash : stack.envHash,
             envExists: draft ? draft.baseEnvExists : stack.envExists,
             error: options.error ?? null,
+            nav: await sidebarNav("stacks", name),
         }), options.status ?? 200);
     }
 
@@ -1176,7 +1192,7 @@ export function createApp(options: AppOptions): App {
             if (url.pathname === "/server/stats") return await handleServerStats();
             if (url.pathname === "/server") return await renderServer(session.csrf, request);
             if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
-            if (url.pathname === "/access") return renderAccess(session.csrf, request);
+            if (url.pathname === "/access") return await renderAccess(session.csrf, request);
             if (url.pathname === "/containers") return await renderContainers(session.csrf, parseContainerFilter(url.searchParams.get("state")));
             const containerLogsMatch = /^\/containers\/([^/]+)\/logs$/.exec(url.pathname);
             if (containerLogsMatch) return await handleContainerLogs(decodeName(containerLogsMatch[1]!), url.searchParams.get("tail"));

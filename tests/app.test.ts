@@ -433,11 +433,34 @@ describe("access diagnostics", () => {
         expect(httpHtml).toContain("uses plain HTTP");
     });
 
-    test("the footer links to it from authenticated pages", async () => {
+    test("the navigation links to it from authenticated pages", async () => {
         const app = makeApp();
         const session = await login(app);
         const html = await (await authed(app, "/", session)).text();
-        expect(html).toContain('<a href="/access">Access &amp; security</a>');
+        expect(html).toContain('<a href="/access">Access</a>');
+    });
+});
+
+describe("navigation sidebar", () => {
+    test("shows the section links and the stack list on authenticated pages", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        const html = await (await authed(app, "/", session)).text();
+        expect(html).toContain('<nav class="nav-sections"');
+        expect(html).toContain('<a href="/stacks/demo">demo</a>');
+    });
+
+    test("marks the current stack on its own page", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo", session)).text();
+        expect(html).toContain('<a href="/stacks/demo" aria-current="page">demo</a>');
+    });
+
+    test("the sign-in page has no navigation", async () => {
+        const app = makeApp();
+        const html = await (await app.fetch(new Request(`${ORIGIN}/login`))).text();
+        expect(html).not.toContain("nav-sections");
     });
 });
 

@@ -50,6 +50,32 @@ footer{border-top:1px solid var(--border);padding-block:1rem;color:var(--muted);
 .card > :last-child{margin-bottom:0}
 .empty{max-width:48rem}
 
+/* Navigation sidebar: sections and the stack switcher (ADR 0016). Names only. */
+.layout{display:grid;grid-template-columns:15rem minmax(0,1fr);gap:2rem;align-items:start}
+.layout > main{min-width:0}
+.sidebar-wrap{position:sticky;top:1rem;align-self:start}
+.sidebar{border:1px solid var(--border);border-radius:.6rem;background:var(--surface)}
+.sidebar-summary{display:none}
+.sidebar-body{padding:.75rem}
+.nav-sections{display:flex;flex-direction:column;gap:.15rem}
+.nav-sections a{display:block;padding:.4rem .6rem;border-radius:.4rem;text-decoration:none;color:var(--ink)}
+.nav-sections a:hover{background:var(--code-bg)}
+.nav-sections a[aria-current="page"]{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.nav-heading{margin:.9rem .6rem .35rem;font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600}
+.nav-search{width:100%;font:inherit;font-size:.9rem;padding:.4rem .55rem;border:1px solid var(--border);border-radius:.4rem;background:var(--surface);color:var(--ink)}
+.nav-list{list-style:none;margin:.4rem 0 0;padding:0;max-height:22rem;overflow:auto}
+.nav-list a{display:block;padding:.35rem .6rem;border-radius:.4rem;text-decoration:none;color:var(--ink);overflow-wrap:anywhere}
+.nav-list a:hover{background:var(--code-bg)}
+.nav-list li.is-current a{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.nav-empty{margin:.4rem .6rem;font-size:.85rem}
+@media (max-width:52rem){
+  .layout{grid-template-columns:minmax(0,1fr);gap:1rem}
+  .sidebar-wrap{position:static}
+  .sidebar-summary{display:block;padding:.65rem .9rem;cursor:pointer;font-weight:600}
+  .sidebar-body{padding:0 .75rem .75rem}
+  .nav-list{max-height:none}
+}
+
 /* Buttons */
 .btn{display:inline-flex;align-items:center;justify-content:center;font:inherit;font-size:.95rem;line-height:1.2;padding:.5rem .9rem;min-width:6.5rem;
   border:1px solid var(--border);border-radius:.45rem;background:var(--surface);color:var(--ink);cursor:pointer;text-decoration:none}

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, servicesSection } from "../src/html.ts";
+import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, renderSidebar, servicesSection } from "../src/html.ts";
 import type { ComposeService } from "../src/compose-state.ts";
 
 function service(name: string, health: string | null): ComposeService {
@@ -44,6 +44,29 @@ test("keeps health apart from run state and flags unhealthy services", () => {
     expect(html).toContain("Starting");
     expect(healthSummaryBadge(services)).toContain("1 unhealthy");
     expect(healthSummaryBadge([service("app", "healthy")])).toBe("");
+});
+
+test("sidebar lists the sections and the stacks, marking the current ones", () => {
+    const html = renderSidebar({ stacks: ["alpha", "beta"], section: "stacks", stack: "beta" });
+    expect(html).toContain('<a href="/" aria-current="page">');
+    expect(html).toContain('<a href="/containers">');
+    expect(html).toContain('<a href="/stacks/alpha">');
+    expect(html).toContain('<a href="/stacks/beta" aria-current="page">');
+});
+
+test("sidebar escapes stack names and never emits other markup", () => {
+    const html = renderSidebar({ stacks: ["<script>alert(1)</script>"], section: "stacks" });
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+});
+
+test("the document renders the sidebar only when navigation is supplied", () => {
+    const withNav = documentHtml("Test", "<h1>OK</h1>", { nav: { stacks: ["alpha"], section: "stacks" } });
+    expect(withNav).toContain('<nav class="nav-sections"');
+    expect(withNav).toContain('id="nav-list"');
+
+    const withoutNav = documentHtml("Test", "<h1>OK</h1>");
+    expect(withoutNav).not.toContain("nav-sections");
 });
 
 test("logs panel exposes the snapshot link and the follow stream", () => {

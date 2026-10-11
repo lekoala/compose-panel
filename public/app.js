@@ -386,6 +386,37 @@
         });
     }
 
+    /* Local filter for the navigation stack list and the stacks table. Hides
+     * non-matching entries; without JavaScript every entry is simply shown. */
+    function wireNavSearch() {
+        var input = document.querySelector("[data-nav-search]");
+        var list = document.getElementById("nav-list");
+        var empty = document.getElementById("nav-empty");
+        if (!input) return;
+        var items = list ? Array.prototype.slice.call(list.querySelectorAll("li")) : [];
+        var rows = [];
+        each("tbody tr a.stack-name", function (link) {
+            var row = link.closest ? link.closest("tr") : null;
+            if (row) rows.push(row);
+        });
+        function apply() {
+            var query = input.value.trim().toLowerCase();
+            var shown = 0;
+            items.forEach(function (item) {
+                var match = query === "" || item.textContent.toLowerCase().indexOf(query) !== -1;
+                item.hidden = !match;
+                if (match) shown += 1;
+            });
+            if (empty) empty.hidden = query === "" || shown !== 0;
+            rows.forEach(function (row) {
+                var name = (row.querySelector("a.stack-name") || row).textContent.toLowerCase();
+                row.hidden = query !== "" && name.indexOf(query) === -1;
+            });
+        }
+        input.addEventListener("input", apply);
+        input.addEventListener("search", apply);
+    }
+
     /* A select marked data-auto-submit submits its form on change; the
      * fallback button is only needed without JavaScript. */
     function wireAutoSubmit() {
@@ -615,6 +646,7 @@
         localizeTimes();
         wireBusyButtons();
         wireAutoSubmit();
+        wireNavSearch();
         if (op) wireOperation(op);
         if (logs) wireLogs(logs);
         if (containerLogs) wireContainerLogs(containerLogs);

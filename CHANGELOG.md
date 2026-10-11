@@ -2,7 +2,18 @@
 
 ## 0.1.1 — unreleased
 
-- Read-only Server page (ADR 0015): `GET /server` (linked in the footer) shows
+- Navigation sidebar (ADR 0016): primary navigation (Stacks, Containers, Server,
+  Activity log, Access) moves from the footer into a persistent sidebar shown on
+  every authenticated page, together with the list of stacks and the current
+  stack highlighted. The stack list comes from the stacks folder alone
+  (`listStacks`): no Docker call, status, counter or badge is added to the
+  navigation. A local search box filters the sidebar and the stacks table
+  (vanilla JS; without JavaScript every entry stays visible) and the sidebar
+  collapses into a native `<details>` disclosure on small screens. Presentation
+  only: no route, backend or Docker behaviour changes, and each page adds at most
+  one cheap directory read.
+
+- Read-only Server page (ADR 0015): `GET /server` (linked in the navigation) shows
   Docker's own diagnostics. Engine facts come from `docker info`, projected onto
   a fixed field whitelist so registry, proxy and environment configuration never
   reach the page. Per-container and per-stack CPU/memory come from
@@ -24,7 +35,7 @@
 
 - Docker container inspection (ADR 0014): a read-only view of the containers the
   panel does not manage. The home page gains an **Other containers** section and
-  a **Containers** page (`/containers`, linked in the footer) lists every
+  a **Containers** page (`/containers`, linked in the navigation) lists every
   container Docker reports, grouped by `Managed`, `External Compose` and
   `Standalone`, with `Running` / `Stopped` / `All` filters (plain links, no
   JavaScript). A container whose membership is not certain stays *External*; a
@@ -73,7 +84,7 @@
   ```
 
 - Access diagnostics (ADR 0013): a read-only **Access & security** page
-  (`/access`, linked in the footer) shows the access point the current request
+  (`/access`, linked in the navigation) shows the access point the current request
   arrived on and a table of the configured paths with an honest status —
   *verified by the panel* (loopback bind, authentication, CSRF/Origin checks,
   the https scheme), *configured but unverified* (a proxy origin's network
