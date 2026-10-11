@@ -372,6 +372,71 @@ describe("auth gate", () => {
     });
 });
 
+describe("access diagnostics", () => {
+    test("requires a session", async () => {
+        const response = await makeApp().fetch(new Request(`${ORIGIN}/access`));
+        expect(response.status).toBe(302);
+        expect(response.headers.get("location")).toBe("/login");
+    });
+
+    test("loopback-only: listener verified, tunnel not verifiable", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        const response = await authed(app, "/access", session);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        const html = await response.text();
+        expect(html).toContain("Access &amp; security");
+        expect(html).toContain("Binds 127.0.0.1:5081");
+        expect(html).toContain("Arrived through <strong>loopback (127.0.0.1:5081)</strong>");
+        expect(html).toContain("SSH tunnel (loopback)");
+        expect(html).toContain("cannot tell whether a tunnel is currently open");
+        expect(html).toContain("checks verified by the panel");
+    });
+
+    test("proxy origins are listed as configured, never as verified", async () => {
+        const app = makeApp({ proxyOrigins: ["https://panel.example", "https://oracle.example.ts.net"], allowLoopback: true });
+        const session = await login(app);
+        const html = await (await authed(app, "/access", session)).text();
+        expect(html).toContain("HTTPS origin https://panel.example");
+        expect(html).toContain("HTTPS origin https://oracle.example.ts.net");
+        expect(html).toContain("TLS is validated at startup");
+        expect(html).toContain("cannot be verified from the panel");
+        expect(html).toContain("Verify externally");
+        expect(html).toContain("Configured");
+    });
+
+    test("reports the access point the current request arrived on", async () => {
+        const PROXY = "https://panel.example";
+        const app = makeApp({ proxyOrigins: [PROXY] });
+        const { cookie, csrf } = await loginCsrfAt(app, PROXY);
+        const login1 = await postLoginAt(app, PROXY, cookie, csrf, "admin", PASSWORD, PROXY);
+        const session = cookieValue(setCookies(login1), "cp_session")!;
+        const response = await app.fetch(new Request(`${PROXY}/access`, { headers: { cookie: `cp_session=${session}` } }));
+        const html = await response.text();
+        expect(html).toContain(`Arrived through <strong>HTTPS origin ${PROXY}</strong>`);
+    });
+
+    test("surfaces development and plain-HTTP warnings", async () => {
+        const app = makeApp({ devMode: true });
+        const session = await login(app);
+        const html = await (await authed(app, "/access", session)).text();
+        expect(html).toContain("COMPOSE_PANEL_DEV=true");
+
+        const httpApp = makeApp({ proxyOrigins: ["http://panel.localhost:8080"], allowLoopback: true, devMode: true });
+        const httpSession = await login(httpApp);
+        const httpHtml = await (await authed(httpApp, "/access", httpSession)).text();
+        expect(httpHtml).toContain("uses plain HTTP");
+    });
+
+    test("the footer links to it from authenticated pages", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        const html = await (await authed(app, "/", session)).text();
+        expect(html).toContain('<a href="/access">Access &amp; security</a>');
+    });
+});
+
 describe("login hardening", () => {
     test("redirects a mismatched Origin to the login page instead of a bare 403", async () => {
         const app = makeApp();

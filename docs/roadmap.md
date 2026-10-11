@@ -9,7 +9,9 @@ After V1 the direction is to understand the host the stacks run on, not only the
 ## Access
 - **Use HTTPS and the SSH tunnel at the same time.** Done in 0.1.1 ([ADR 0012](adr/0012-multiple-access-origins.md)): `COMPOSE_PANEL_PROXY_ORIGINS` (a list) plus `COMPOSE_PANEL_ALLOW_LOOPBACK`. Host and Origin are validated per access point, and the cookie attribute is chosen per path.
 - **Login CSRF across tabs and access modes.** Make the token robust when several tabs are open or the access path changes.
-- **Access diagnostics (later).** Show the configured origins and a security level or warning per entry — provider-agnostic, with no Caddy/Tailscale/Cloudflare detection in the code.
+- **Access diagnostics (0.1.1).** A read-only `/access` page done in 0.1.1 ([ADR 0013](adr/0013-access-diagnostics.md)): it lists the configured paths with an honest status (verified by the panel / configured but unverifiable / verify externally) and never shows an access as secure from its configuration alone. No extra privileges.
+- **Optional host diagnostics (later).** Detect Caddy/Tailscale from a bounded, read-only JSON status file produced by an optional local collector with strictly limited permissions (`systemctl is-active caddy`, `tailscale status|serve|funnel --json`), disabled by default, served to the panel through a read-only mount — never a Tailscale or systemd socket, no keys or raw config. Own ADR first. Provider-agnostic: no Caddy/Tailscale detection hard-coded beyond the collected file.
+- **Server health page (later).** Fold the access diagnostics into a broader host view: external containers, systemd services and exposed ports, still read-only and without becoming a general Linux administration panel.
 
 ## Usability
 - **Move between stacks without returning to the list**: a sidebar and a search/filter.

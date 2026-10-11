@@ -32,6 +32,10 @@ Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`,
 - Clearly mark mock/stub features; do not advertise incomplete functions.
 - If docs disagree, open a small ADR. Do not silently redefine scope.
 
+## Code style
+- Build HTML fragments and multi-line strings with template literals, not `+` concatenation.
+- Assemble HTML only from trusted markup; escape every dynamic value with `escapeHtml()`.
+
 ## Quality gates
 `bun run test` and `bun run typecheck` (`bun check` builtin, no `tsc` dependency). For Docker-related code, add an isolated Linux integration test and document manual verification before calling the PR done. No live Docker deployment in unattended CI.
 

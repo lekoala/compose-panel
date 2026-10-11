@@ -2,6 +2,7 @@ import type { ComposeService } from "./compose-state.ts";
 import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
 import type { ImageVersion, ServiceUpdate } from "./updates.ts";
+import type { AccessReport, AccessStatus } from "./access.ts";
 import packageJson from "../package.json";
 
 const VERSION = packageJson.version;
@@ -70,7 +71,7 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
   ${options.bare ? `<main class="bare">${body}</main>` : `<div class="shell">
     <header><a href="/" class="brand"><img src="/favicon.svg" alt="" width="20" height="20">Compose Panel</a>${logout}</header>
     <main>${body}</main>
-    <footer>Compose Panel ${escapeHtml(VERSION)}${options.logoutCsrf ? ` · <a href="/audit">Activity log</a>` : ""}${options.access ? ` · ${escapeHtml(options.access)}` : ""}</footer>
+    <footer>Compose Panel ${escapeHtml(VERSION)}${options.logoutCsrf ? ` · <a href="/audit">Activity log</a> · <a href="/access">Access &amp; security</a>` : ""}${options.access ? ` · ${escapeHtml(options.access)}` : ""}</footer>
   </div>`}
 </body>
 </html>`;
@@ -401,6 +402,44 @@ export function auditPage(options: AuditPageOptions): string {
         + table,
         { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] },
     );
+}
+
+const ACCESS_STATUS: Record<AccessStatus, { label: string; cls: string }> = {
+    verified: { label: "Verified", cls: "state state-done" },
+    configured: { label: "Configured", cls: "state" },
+    unknown: { label: "Verify externally", cls: "state" },
+};
+
+export interface AccessPageOptions {
+    csrf: string;
+    access?: string;
+    timezone?: string;
+    report: AccessReport;
+}
+
+/**
+ * Read-only access diagnostic (ADR 0013). Reports only what the panel can check
+ * itself; a configured access is never shown as verified or secure.
+ */
+export function accessPage(options: AccessPageOptions): string {
+    const report = options.report;
+    const rows = report.findings.map(finding => {
+        const status = ACCESS_STATUS[finding.status];
+        return `<tr><td>${escapeHtml(finding.area)}</td><td><span class="${status.cls}">${escapeHtml(status.label)}</span></td><td>${escapeHtml(finding.detail)}</td></tr>`;
+    }).join("");
+    const warnings = report.warnings.map(warning => note("warn", warning)).join("");
+    const summary = note(
+        "info",
+        `${report.verifiedCount} checks verified by the panel · ${report.externalCount} require an external check. The panel never marks an access secure from its configuration alone.`,
+    );
+    const body = `<p class="crumbs"><a href="/">← All stacks</a></p>
+<div class="page-head"><h1>Access &amp; security</h1></div>
+<p class="lead">Read-only. This page reports only what the panel can check itself; a configured access is not a verified one. Network-level protection (firewall, VPN, IP allow-list, identity proxy) is verified by you, not here.</p>
+${summary}
+<section class="card"><h2>This request</h2><p>Arrived through <strong>${escapeHtml(report.request)}</strong>.</p></section>
+${warnings}
+<section class="card"><h2>Access</h2><div class="table-wrap"><table class="table"><thead><tr><th>Area</th><th>Status</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+    return documentHtml("Access & security", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
 }
 
 export function htmlResponse(body: string, status = 200): Response {

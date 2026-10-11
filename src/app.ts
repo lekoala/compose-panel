@@ -1,4 +1,4 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, type NoteKind } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, type NoteKind } from "./html.ts";
 import { dirname, join } from "node:path";
 import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
@@ -9,6 +9,7 @@ import { LogManager, stripAnsi } from "./logs.ts";
 import { AuditLog, AuditError } from "./audit.ts";
 import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
 import { createComposeProvider, type ComposeProvider } from "./compose-provider.ts";
+import { buildAccessReport, type Access } from "./access.ts";
 import type { DockerRunner } from "./docker.ts";
 import {
     CSRF_COOKIE,
@@ -120,8 +121,6 @@ const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"] as const;
  * tunnel both reach the loopback listener, and a local client can present a
  * proxy-origin Host. See ADR 0012 for the trusted-local assumption behind it.
  */
-type Access = { kind: "loopback" } | { kind: "proxy"; origin: string };
-
 function requestHost(request: Request): string | null {
     const raw = request.headers.get("host") ?? new URL(request.url).host;
     return raw ? raw.toLowerCase() : null;
@@ -534,6 +533,19 @@ export function createApp(options: AppOptions): App {
             }
         }
         return htmlResponse(auditPage({ csrf, access, timezone: config.timeZone || undefined, periods, selected, entries }));
+    }
+
+    function renderAccess(csrf: string, request: Request): Response {
+        const report = buildAccessReport({
+            port: config.port,
+            proxyOrigins: config.proxyOrigins,
+            allowLoopback: config.allowLoopback,
+            cookieSecure: config.cookieSecure,
+            devMode: config.devMode,
+            allowOpaqueOrigin: config.allowOpaqueOrigin,
+            currentAccess: accessOf(request, config),
+        });
+        return htmlResponse(accessPage({ csrf, access, timezone: config.timeZone || undefined, report }));
     }
 
     async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200): Promise<Response> {
@@ -1043,6 +1055,7 @@ export function createApp(options: AppOptions): App {
         try {
             if (url.pathname === "/") return await renderStackList(session.csrf);
             if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
+            if (url.pathname === "/access") return renderAccess(session.csrf, request);
             if (editMatch) return await renderEdit(decodeName(editMatch[1]!), session.csrf);
             const logSnapshotMatch = /^\/stacks\/([^/]+)\/logs$/.exec(url.pathname);
             if (logSnapshotMatch) return await handleLogsSnapshot(decodeName(logSnapshotMatch[1]!), session.id);

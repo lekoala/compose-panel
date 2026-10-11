@@ -148,6 +148,14 @@ working tree, with a fake `docker` that never touches a daemon). Other proxies
 need explicit SSE flushing and correct `X-Forwarded-For` handling, and are not
 covered.
 
+**Review what is configured.** Once signed in, the read-only `Access & security`
+page (`/access`) lists the loopback path and every proxy origin with an honest
+status ([ADR 0013](adr/0013-access-diagnostics.md)): what the panel verified
+itself, what is configured but unverified (a proxy origin's network restriction),
+and what only you can check (whether a tunnel is open, whether a firewall or VPN
+really restricts access). It never marks an access secure from its configuration
+alone.
+
 ## Behind Cloudflare Access + Tunnel (identity proxy)
 
 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)

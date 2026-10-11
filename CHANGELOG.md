@@ -33,6 +33,16 @@
   COMPOSE_PANEL_ALLOW_LOOPBACK=true
   ```
 
+- Access diagnostics (ADR 0013): a read-only **Access & security** page
+  (`/access`, linked in the footer) shows the access point the current request
+  arrived on and a table of the configured paths with an honest status —
+  *verified by the panel* (loopback bind, authentication, CSRF/Origin checks,
+  the https scheme), *configured but unverified* (a proxy origin's network
+  restriction), or *verify externally* (whether a tunnel is open, whether a
+  firewall/VPN/allow-list really restricts access). It never marks an access
+  secure from its configuration alone, and it adds no privilege, host command
+  or Tailscale/systemd socket. Richer host diagnostics are deferred to the
+  roadmap.
 - Logs on open: the stack page now shows the last
   `COMPOSE_PANEL_LOG_TAIL_LINES` (200) lines as soon as it loads, instead of an
   empty box until *Follow logs* is clicked. A new bounded, read-only
