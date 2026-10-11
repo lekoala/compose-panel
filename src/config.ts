@@ -26,18 +26,31 @@ export interface AppConfig {
     port: number;
     adminUser: string;
     adminPasswordHash: string;
-    /** Set when the panel is served over TLS (directly or behind a proxy). */
+    /**
+     * Mark cookies `Secure` on the direct/loopback access path. The proxy path
+     * ignores it: there the matched origin's scheme decides (https => Secure).
+     */
     cookieSecure: boolean;
-    /** Explicit public origin used for Origin/Host checks behind a reverse proxy. */
-    publicOrigin: string | null;
+    /**
+     * Reverse-proxy origins explicitly allowed to reach the panel, as exact
+     * `scheme://host[:port]` values. Empty means direct loopback access only.
+     * Origin/Host checks, the cookie attribute and X-Forwarded-* trust are
+     * resolved per request against these entry points. Must be https outside
+     * development mode.
+     */
+    proxyOrigins: string[];
+    /**
+     * Allow the loopback/SSH-tunnel path alongside the configured proxy
+     * origins. Implicit when no proxy origin is configured; otherwise off by
+     * default, so one access path is used at a time.
+     */
+    allowLoopback: boolean;
     /**
      * IANA display time zone for every rendered time (activity log, action
      * start, container logs). Empty means each reader's browser zone. Stored
      * timestamps are always UTC; this only affects presentation.
      */
     timeZone: string;
-    /** Trust X-Forwarded-Proto / X-Forwarded-For from a configured proxy. */
-    trustProxy: boolean;
     /**
      * Opt-in local-testing relaxation: accept an absent or opaque (`null`)
      * Origin when Fetch Metadata says the request is same-origin/none. Default
@@ -115,19 +128,24 @@ function parseRotation(env: Env): AuditRotation {
     throw new Error("COMPOSE_PANEL_AUDIT_ROTATION must be \"day\" or \"month\".");
 }
 
-function parseOrigin(env: Env): string | null {
-    const raw = env.COMPOSE_PANEL_PUBLIC_ORIGIN;
-    if (raw === undefined || raw === "") return null;
-    let url: URL;
-    try { url = new URL(raw); }
-    catch { throw new Error("COMPOSE_PANEL_PUBLIC_ORIGIN must be an absolute http(s) URL."); }
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-        throw new Error("COMPOSE_PANEL_PUBLIC_ORIGIN must use http or https.");
+/**
+ * Legacy settings removed by ADR 0012. Security configuration is never
+ * silently reinterpreted: an operator who upgrades without editing the file
+ * gets a clear refusal at startup instead of a quiet change of access policy.
+ */
+function refuseLegacyProxyEnv(env: Env): void {
+    if (env.COMPOSE_PANEL_PUBLIC_ORIGIN) {
+        throw new Error(
+            "COMPOSE_PANEL_PUBLIC_ORIGIN is no longer supported. "
+            + "Replace it with COMPOSE_PANEL_PROXY_ORIGINS=<that url> (comma-separate several). See docs/deployment.md.",
+        );
     }
-    if (url.pathname !== "/" || url.search !== "" || url.hash !== "") {
-        throw new Error("COMPOSE_PANEL_PUBLIC_ORIGIN must not contain a path, query or fragment.");
+    if (env.COMPOSE_PANEL_TRUST_PROXY) {
+        throw new Error(
+            "COMPOSE_PANEL_TRUST_PROXY is no longer supported. Remove it: "
+            + "X-Forwarded-* is trusted only on a request whose Host matches a COMPOSE_PANEL_PROXY_ORIGINS entry.",
+        );
     }
-    return url.origin;
 }
 
 function parseTimeZone(env: Env): string {
@@ -142,43 +160,69 @@ function parseTimeZone(env: Env): string {
 }
 
 interface ProxySettings {
-    publicOrigin: string | null;
+    proxyOrigins: string[];
+    allowLoopback: boolean;
     cookieSecure: boolean;
-    trustProxy: boolean;
 }
 
 /**
- * Proxy mode is all or nothing, with safe defaults. The bind stays loopback, so
- * a public origin always means a reverse proxy on the same host:
- * - the public origin must be https (plain HTTP would carry the password and
- *   the session cookie in clear), except in development mode;
- * - Secure cookies and the forwarded client address follow from it, and
- *   turning either off explicitly is refused: without the forwarded address
- *   every visitor shares one throttle key, so one client could keep the admin
- *   waiting;
- * - trusting forwarded headers without a public origin is refused too.
+ * Parse one origin from the comma-separated list. Each entry must be an
+ * absolute http(s) origin: no credentials, path, query or fragment, and https
+ * outside development mode (plain HTTP would carry the password and session
+ * cookie in clear). Entries are normalized to `scheme://host[:port]`.
+ */
+function parseProxyOrigin(entry: string, devMode: boolean): string {
+    let url: URL;
+    try { url = new URL(entry); }
+    catch { throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must be an absolute http(s) URL.`); }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+        throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must use http or https.`);
+    }
+    if (url.username !== "" || url.password !== "") {
+        throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must not contain credentials (user:pass@).`);
+    }
+    if (url.pathname !== "/" || url.search !== "" || url.hash !== "") {
+        throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must not contain a path, query or fragment.`);
+    }
+    if (!devMode && url.protocol === "http:") {
+        throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must use https: plain HTTP would send the password and the session cookie in clear. (COMPOSE_PANEL_DEV=true allows http for local testing only.)`);
+    }
+    return url.origin;
+}
+
+/**
+ * Reverse-proxy access is a list of explicitly allowed origins, with safe
+ * defaults. The bind stays loopback, so an origin always means a reverse proxy
+ * on the same host. Loopback access is implicit when no origin is configured,
+ * and otherwise only with COMPOSE_PANEL_ALLOW_LOOPBACK=true, so an operator
+ * opts in to reaching the panel two ways at once. The cookie `Secure` attribute
+ * and X-Forwarded-* trust are decided per request from the matched entry point
+ * (see app.ts), not from a global switch.
  */
 function parseProxy(env: Env, devMode: boolean): ProxySettings {
-    const publicOrigin = parseOrigin(env);
-    const explicitSecure = env.COMPOSE_PANEL_COOKIE_SECURE ? parseBool(env, "COMPOSE_PANEL_COOKIE_SECURE", false) : undefined;
-    const explicitTrust = env.COMPOSE_PANEL_TRUST_PROXY ? parseBool(env, "COMPOSE_PANEL_TRUST_PROXY", false) : undefined;
-    if (!publicOrigin) {
-        if (explicitTrust) {
-            throw new Error("COMPOSE_PANEL_TRUST_PROXY=true requires COMPOSE_PANEL_PUBLIC_ORIGIN. Without a reverse proxy there is no forwarded address to trust.");
+    refuseLegacyProxyEnv(env);
+    const raw = env.COMPOSE_PANEL_PROXY_ORIGINS;
+    const origins: string[] = [];
+    if (raw !== undefined && raw.trim() !== "") {
+        const seen = new Set<string>();
+        for (const part of raw.split(",").map(value => value.trim())) {
+            if (part === "") {
+                throw new Error("COMPOSE_PANEL_PROXY_ORIGINS contains an empty entry. Remove the stray comma.");
+            }
+            const origin = parseProxyOrigin(part, devMode);
+            if (seen.has(origin)) {
+                throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS lists "${origin}" twice.`);
+            }
+            seen.add(origin);
+            origins.push(origin);
         }
-        return { publicOrigin, cookieSecure: explicitSecure ?? false, trustProxy: false };
     }
-    const https = publicOrigin.startsWith("https:");
-    if (!https && !devMode) {
-        throw new Error("COMPOSE_PANEL_PUBLIC_ORIGIN must use https: plain HTTP would send the password and the session cookie in clear. (COMPOSE_PANEL_DEV=true allows http for local testing only.)");
-    }
-    if (https && explicitSecure === false) {
-        throw new Error("COMPOSE_PANEL_COOKIE_SECURE=false is refused with an https COMPOSE_PANEL_PUBLIC_ORIGIN. Remove it: Secure cookies are the default behind TLS.");
-    }
-    if (explicitTrust === false) {
-        throw new Error("COMPOSE_PANEL_TRUST_PROXY=false is refused with COMPOSE_PANEL_PUBLIC_ORIGIN: every visitor would share one sign-in throttle key. Remove it: the proxy's X-Forwarded-For is used by default.");
-    }
-    return { publicOrigin, cookieSecure: explicitSecure ?? https, trustProxy: true };
+    const explicitSecure = env.COMPOSE_PANEL_COOKIE_SECURE ? parseBool(env, "COMPOSE_PANEL_COOKIE_SECURE", false) : undefined;
+    return {
+        proxyOrigins: origins,
+        allowLoopback: parseBool(env, "COMPOSE_PANEL_ALLOW_LOOPBACK", false),
+        cookieSecure: explicitSecure ?? false,
+    };
 }
 
 export function loadConfig(env: Env = process.env): AppConfig {

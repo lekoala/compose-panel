@@ -32,8 +32,8 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         adminUser: "admin",
         adminPasswordHash: passwordHash,
         cookieSecure: false,
-        publicOrigin: null,
-        trustProxy: false,
+        proxyOrigins: [],
+        allowLoopback: false,
         allowOpaqueOrigin: false,
         devMode: false,
         sessionTtlMs: 3_600_000,
@@ -125,20 +125,28 @@ function cookieValue(cookies: string[], name: string): string | null {
     return null;
 }
 
-async function loginCsrf(app: App): Promise<{ cookie: string; csrf: string }> {
-    const response = await app.fetch(new Request(`${ORIGIN}/login`));
+async function loginCsrfAt(app: App, base: string): Promise<{ cookie: string; csrf: string }> {
+    const response = await app.fetch(new Request(`${base}/login`));
     const cookie = cookieValue(setCookies(response), "cp_csrf");
     const html = await response.text();
     const match = /name="csrf" value="([^"]+)"/.exec(html);
     return { cookie: cookie!, csrf: match![1]! };
 }
 
-function postLogin(app: App, cookie: string, csrf: string, user: string, password: string, origin: string = ORIGIN): Promise<Response> {
-    return app.fetch(new Request(`${ORIGIN}/login`, {
+async function loginCsrf(app: App): Promise<{ cookie: string; csrf: string }> {
+    return loginCsrfAt(app, ORIGIN);
+}
+
+function postLoginAt(app: App, base: string, cookie: string, csrf: string, user: string, password: string, origin: string): Promise<Response> {
+    return app.fetch(new Request(`${base}/login`, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded", origin, cookie: `cp_csrf=${cookie}` },
         body: new URLSearchParams({ csrf, user, password }).toString(),
     }));
+}
+
+function postLogin(app: App, cookie: string, csrf: string, user: string, password: string, origin: string = ORIGIN): Promise<Response> {
+    return postLoginAt(app, ORIGIN, cookie, csrf, user, password, origin);
 }
 
 async function login(app: App): Promise<string> {
@@ -201,15 +209,94 @@ describe("host allow-list", () => {
         expect((await app.fetch(new Request(`${ORIGIN}/login`))).status).toBe(200);
     });
 
-    test("allows the configured public origin host", async () => {
-        const app = makeApp({ publicOrigin: "https://panel.example" });
+    test("allows each configured proxy origin host", async () => {
+        const app = makeApp({ proxyOrigins: ["https://panel.example", "https://oracle-ampere.example.ts.net"] });
         expect((await app.fetch(new Request("https://panel.example/login"))).status).toBe(200);
+        expect((await app.fetch(new Request("https://oracle-ampere.example.ts.net/login"))).status).toBe(200);
         expect((await app.fetch(new Request("http://attacker.invalid:5081/login"))).status).toBe(400);
+    });
+
+    test("refuses loopback when proxy origins are configured and loopback is not allowed", async () => {
+        const app = makeApp({ proxyOrigins: ["https://panel.example"] });
+        expect((await app.fetch(new Request("http://127.0.0.1:5081/login"))).status).toBe(400);
+    });
+
+    test("allows loopback alongside proxy origins when opted in", async () => {
+        const app = makeApp({ proxyOrigins: ["https://panel.example"], allowLoopback: true });
+        expect((await app.fetch(new Request("http://127.0.0.1:5081/login"))).status).toBe(200);
+        expect((await app.fetch(new Request("https://panel.example/login"))).status).toBe(200);
     });
 
     test("exempts the health probe from Host validation", async () => {
         const app = makeApp();
         expect((await app.fetch(new Request("http://panel.internal:5081/health/live"))).status).toBe(200);
+    });
+});
+
+describe("access paths", () => {
+    const PROXY = "https://panel.example";
+    const OTHER = "https://oracle-ampere.example.ts.net";
+    const FORM = "application/x-www-form-urlencoded";
+
+    test("a proxy Host with its matching Origin signs in with a Secure cookie", async () => {
+        const app = makeApp({ proxyOrigins: [PROXY] });
+        const { cookie, csrf } = await loginCsrfAt(app, PROXY);
+        const response = await postLoginAt(app, PROXY, cookie, csrf, "admin", PASSWORD, PROXY);
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/");
+        expect(setCookies(response).find(v => v.startsWith("cp_session="))).toContain("Secure");
+    });
+
+    test("a proxy Host with a loopback Origin is refused", async () => {
+        const app = makeApp({ proxyOrigins: [PROXY] });
+        const { cookie, csrf } = await loginCsrfAt(app, PROXY);
+        const response = await postLoginAt(app, PROXY, cookie, csrf, "admin", PASSWORD, ORIGIN);
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/login?e=blocked");
+    });
+
+    test("a loopback Host with a proxy Origin is refused", async () => {
+        const app = makeApp({ proxyOrigins: [PROXY], allowLoopback: true });
+        const { cookie, csrf } = await loginCsrf(app);
+        const response = await postLogin(app, cookie, csrf, "admin", PASSWORD, PROXY);
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/login?e=blocked");
+    });
+
+    test("cookies are not Secure on the loopback path", async () => {
+        const app = makeApp({ proxyOrigins: [PROXY], allowLoopback: true });
+        const { cookie, csrf } = await loginCsrf(app);
+        const response = await postLogin(app, cookie, csrf, "admin", PASSWORD);
+        const session = setCookies(response).find(v => v.startsWith("cp_session="));
+        expect(session).toBeTruthy();
+        expect(session).not.toContain("Secure");
+    });
+
+    test("two proxy origins are each usable, and their Origins do not cross", async () => {
+        const app = makeApp({ proxyOrigins: [PROXY, OTHER] });
+        for (const base of [PROXY, OTHER]) {
+            const { cookie, csrf } = await loginCsrfAt(app, base);
+            const response = await postLoginAt(app, base, cookie, csrf, "admin", PASSWORD, base);
+            expect(response.status).toBe(303);
+            expect(response.headers.get("location")).toBe("/");
+            expect(setCookies(response).find(v => v.startsWith("cp_session="))).toContain("Secure");
+        }
+        const { cookie, csrf } = await loginCsrfAt(app, PROXY);
+        const crossed = await postLoginAt(app, PROXY, cookie, csrf, "admin", PASSWORD, OTHER);
+        expect(crossed.headers.get("location")).toBe("/login?e=blocked");
+    });
+
+    test("a public-origin form action posted through the tunnel is refused", async () => {
+        // The reverse-proxy page renders forms for the proxy origin; posting them
+        // to the loopback listener (e.g. a stale tab behind the tunnel) must fail.
+        const app = makeApp({ proxyOrigins: [PROXY], allowLoopback: true });
+        const { cookie, csrf } = await loginCsrf(app);
+        const response = await app.fetch(new Request(`${ORIGIN}/login`, {
+            method: "POST",
+            headers: { "content-type": FORM, origin: PROXY, cookie: `cp_csrf=${cookie}` },
+            body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
+        }));
+        expect(response.headers.get("location")).toBe("/login?e=blocked");
     });
 });
 
@@ -486,22 +573,75 @@ describe("activity log", () => {
         }
     });
 
-    test("behind a trusted proxy, the actor is the address the proxy appended", async () => {
+    test("on a proxy origin, the actor is the address the proxy appended", async () => {
         const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-xff-"));
+        const PROXY = "https://panel.example";
         try {
             const audit = new AuditLog({ dir });
-            const app = makeApp({ trustProxy: true }, undefined, undefined, audit);
-            const { cookie, csrf } = await loginCsrf(app);
+            const app = makeApp({ proxyOrigins: [PROXY] }, undefined, undefined, audit);
+            const { cookie, csrf } = await loginCsrfAt(app, PROXY);
             // The first entry is client-controlled; only the last one comes from our proxy.
-            const response = await app.fetch(new Request(`${ORIGIN}/login`, {
+            const response = await app.fetch(new Request(`${PROXY}/login`, {
                 method: "POST",
-                headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: `cp_csrf=${cookie}`, "x-forwarded-for": "203.0.113.66, 198.51.100.7" },
+                headers: { "content-type": "application/x-www-form-urlencoded", origin: PROXY, cookie: `cp_csrf=${cookie}`, "x-forwarded-for": "203.0.113.66, 198.51.100.7" },
                 body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
             }));
             expect(response.status).toBe(401);
             const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
             expect(raw).toContain('"actor":"198.51.100.7"');
             expect(raw).not.toContain("203.0.113.66");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("on the loopback path, X-Forwarded-For is ignored (actor is direct)", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-loopback-xff-"));
+        const PROXY = "https://panel.example";
+        try {
+            const audit = new AuditLog({ dir });
+            const app = makeApp({ proxyOrigins: [PROXY], allowLoopback: true }, undefined, undefined, audit);
+            const { cookie, csrf } = await loginCsrf(app);
+            const response = await app.fetch(new Request(`${ORIGIN}/login`, {
+                method: "POST",
+                headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: `cp_csrf=${cookie}`, "x-forwarded-for": "6.6.6.6" },
+                body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
+            }));
+            expect(response.status).toBe(401);
+            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).toContain('"actor":"direct"');
+            expect(raw).not.toContain("6.6.6.6");
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("documented limit: a client able to reach the listener can forge a proxy Host and X-Forwarded-For", async () => {
+        // Host selects the access point but does not authenticate the proxy
+        // (ADR 0012). A local client presenting a proxy-origin Host is treated
+        // as arriving through the proxy, so its X-Forwarded-For is trusted. Auth
+        // and CSRF are unaffected; only the throttle key and audit actor can be
+        // misattributed. This test pins that known limitation.
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-forged-host-"));
+        const PROXY = "https://panel.example";
+        try {
+            const audit = new AuditLog({ dir });
+            const app = makeApp({ proxyOrigins: [PROXY], allowLoopback: true }, undefined, undefined, audit);
+            const { cookie, csrf } = await loginCsrfAt(app, PROXY);
+            const response = await app.fetch(new Request(`http://127.0.0.1:5081/login`, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/x-www-form-urlencoded",
+                    host: "panel.example",
+                    origin: PROXY,
+                    cookie: `cp_csrf=${cookie}`,
+                    "x-forwarded-for": "9.9.9.9",
+                },
+                body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
+            }));
+            expect(response.status).toBe(401);
+            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).toContain('"actor":"9.9.9.9"');
         } finally {
             await rm(dir, { recursive: true, force: true });
         }

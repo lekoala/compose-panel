@@ -80,37 +80,48 @@ describe("loadConfig timezone", () => {
     });
 });
 
-describe("loadConfig reverse proxy mode", () => {
+describe("loadConfig proxy origins", () => {
     const user = { ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala" };
 
-    test("direct loopback by default: no proxy trust, plain cookies", () => {
+    test("direct loopback by default: no origins, plain cookies", () => {
         const config = loadConfig(user);
-        expect(config.publicOrigin).toBeNull();
-        expect(config.trustProxy).toBe(false);
+        expect(config.proxyOrigins).toEqual([]);
+        expect(config.allowLoopback).toBe(false);
         expect(config.cookieSecure).toBe(false);
     });
 
-    test("an https public origin turns on Secure cookies and the forwarded address", () => {
-        const config = loadConfig({ ...user, COMPOSE_PANEL_PUBLIC_ORIGIN: "https://panel.example.com" });
-        expect(config.publicOrigin).toBe("https://panel.example.com");
-        expect(config.cookieSecure).toBe(true);
-        expect(config.trustProxy).toBe(true);
+    test("parses a comma-separated origin list, normalized", () => {
+        const config = loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "https://panel.example.com, https://oracle.example.ts.net:8443/" });
+        expect(config.proxyOrigins).toEqual(["https://panel.example.com", "https://oracle.example.ts.net:8443"]);
     });
 
-    test("refuses a plain-http public origin outside development", () => {
-        expect(() => loadConfig({ ...user, COMPOSE_PANEL_PUBLIC_ORIGIN: "http://panel.example.com" })).toThrow(/https/);
-        const dev = loadConfig({ ...user, COMPOSE_PANEL_PUBLIC_ORIGIN: "http://panel.localhost:8080", COMPOSE_PANEL_DEV: "true" });
+    test("refuses a plain-http origin outside development", () => {
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "http://panel.example.com" })).toThrow(/https/);
+        const dev = loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "http://panel.localhost:8080", COMPOSE_PANEL_DEV: "true" });
+        expect(dev.proxyOrigins).toEqual(["http://panel.localhost:8080"]);
         expect(dev.cookieSecure).toBe(false);
-        expect(dev.trustProxy).toBe(true);
     });
 
-    test("refuses switching off Secure cookies or the forwarded address behind a proxy", () => {
-        const origin = { ...user, COMPOSE_PANEL_PUBLIC_ORIGIN: "https://panel.example.com" };
-        expect(() => loadConfig({ ...origin, COMPOSE_PANEL_COOKIE_SECURE: "false" })).toThrow(/COOKIE_SECURE/);
-        expect(() => loadConfig({ ...origin, COMPOSE_PANEL_TRUST_PROXY: "false" })).toThrow(/TRUST_PROXY/);
+    test("refuses credentials, empty entries and duplicates", () => {
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "https://user:pass@panel.example.com" })).toThrow(/credentials/);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "https://panel.example.com," })).toThrow(/empty/);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "https://panel.example.com,https://panel.example.com" })).toThrow(/twice/);
     });
 
-    test("refuses trusting forwarded headers without a public origin", () => {
-        expect(() => loadConfig({ ...user, COMPOSE_PANEL_TRUST_PROXY: "true" })).toThrow(/PUBLIC_ORIGIN/);
+    test("parses allowLoopback, off by default", () => {
+        expect(loadConfig(user).allowLoopback).toBe(false);
+        expect(loadConfig({ ...user, COMPOSE_PANEL_ALLOW_LOOPBACK: "true" }).allowLoopback).toBe(true);
+    });
+
+    test("COMPOSE_PANEL_COOKIE_SECURE still controls the direct path", () => {
+        expect(loadConfig({ ...user, COMPOSE_PANEL_COOKIE_SECURE: "true" }).cookieSecure).toBe(true);
+    });
+
+    test("refuses the legacy COMPOSE_PANEL_PUBLIC_ORIGIN at startup", () => {
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_PUBLIC_ORIGIN: "https://panel.example.com" })).toThrow(/no longer supported/);
+    });
+
+    test("refuses the legacy COMPOSE_PANEL_TRUST_PROXY at startup", () => {
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_TRUST_PROXY: "true" })).toThrow(/no longer supported/);
     });
 });

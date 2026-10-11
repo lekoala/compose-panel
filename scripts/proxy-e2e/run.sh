@@ -5,9 +5,11 @@
 #
 # Runs the working tree with a fake `docker` (fake-docker: answers the panel's
 # calls, never contacts a daemon) behind Caddy (Caddyfile: internal CA, port
-# 8443), then checks sign-in, Secure cookies, Origin/Host refusal, forged
-# X-Forwarded-For, live SSE for actions and logs, UTF-8, and that signing out
-# closes open streams. Everything lives under $W; nothing is installed.
+# 8443, two origins), then checks sign-in, Secure cookies, Origin/Host refusal,
+# forged X-Forwarded-For, live SSE for actions and logs, UTF-8, that signing out
+# closes open streams, and that the loopback (SSH-tunnel) path coexists with the
+# proxy origins without mixing Origins or cookie attributes. Everything lives
+# under $W; nothing is installed.
 # Needs Bun (~/.bun) and curl; downloads a pinned Caddy release on first run.
 set -u
 SRC="$(pwd)"
@@ -16,7 +18,8 @@ W="${COMPOSE_PANEL_PROXY_E2E_DIR:-/tmp/compose-panel-proxy-e2e}"
 BUN="${BUN_INSTALL:-$HOME/.bun}/bin/bun"
 CADDY_VERSION=2.8.4
 O=https://panel.localhost:8443
-C=(curl -sk --resolve panel.localhost:8443:127.0.0.1)
+O2=https://alt.localhost:8443
+C=(curl -sk --resolve panel.localhost:8443:127.0.0.1 --resolve alt.localhost:8443:127.0.0.1)
 pass=0; fail=0
 ok() { echo "PASS  $1"; pass=$((pass+1)); }
 ko() { echo "FAIL  $1"; fail=$((fail+1)); }
@@ -26,7 +29,7 @@ mkdir -p "$W"
 if [ ! -x "$W/caddy" ]; then
   curl -fsSL "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz" | tar -xz -C "$W" caddy
 fi
-rm -rf "$W/app" "$W/stacks" "$W/audit" "$W"/jar* "$W"/*.log "$W"/*.txt "$W"/*.html "$W"/*.end "$W/h1" "$W/h2"; mkdir -p "$W/stacks/demo" "$W/app"
+rm -rf "$W/app" "$W/stacks" "$W/audit" "$W"/jar* "$W"/ljar* "$W"/xjar* "$W"/*.log "$W"/*.txt "$W"/*.html "$W"/*.end "$W"/h1 "$W"/h2; mkdir -p "$W/stacks/demo" "$W/app"
 printf 'services:\n  app:\n    image: nginx:alpine\n' > "$W/stacks/demo/compose.yaml"
 cp "$HERE/fake-docker" "$W/fake-docker"; chmod +x "$W/fake-docker"; sed -i 's/\r$//' "$W/fake-docker"
 rsync -a --delete --exclude node_modules --exclude .git --exclude private "$SRC/" "$W/app/"
@@ -34,7 +37,7 @@ cd "$W/app" && "$BUN" install --frozen-lockfile >/dev/null
 HASH=$(COMPOSE_PANEL_PASSWORD=proxy-test-pw "$BUN" src/scripts/hash-password.ts | tail -1)
 
 PROXY_E2E_STACK="$W/stacks/demo" STACKS_DIR="$W/stacks" COMPOSE_PANEL_ADMIN_USER=operator COMPOSE_PANEL_ADMIN_PASSWORD_HASH="$HASH" \
-  COMPOSE_PANEL_PUBLIC_ORIGIN="$O" COMPOSE_PANEL_DOCKER_PATH="$W/fake-docker" COMPOSE_PANEL_AUDIT_DIR="$W/audit" \
+  COMPOSE_PANEL_PROXY_ORIGINS="$O,$O2" COMPOSE_PANEL_ALLOW_LOOPBACK=true COMPOSE_PANEL_DOCKER_PATH="$W/fake-docker" COMPOSE_PANEL_AUDIT_DIR="$W/audit" \
   "$BUN" src/server.ts > "$W/panel.log" 2>&1 &
 PANEL=$!
 # Started directly (no subshell) so $! is Caddy itself and the trap stops it.
@@ -98,6 +101,31 @@ sleep 2
 check "sign-out closes the open log stream" "grep -q 'event: chunk' $W/log2.txt && [ -f $W/log2.end ] && [ \$(cat $W/log2.end) -ge $T0 ] && [ \$(cat $W/log2.end) -le \$((T0+2)) ]"
 CODE=$("${C[@]}" -b "$W/jar" -o /dev/null -w '%{http_code}' "$O/")
 check "after sign-out the session is gone (302 to login)" "[ $CODE = 302 ]"
+
+# 7. A second configured origin is accepted, with its own Secure session.
+"${C[@]}" -c "$W/jar3" -o "$W/l3.html" "$O2/login"
+C3=$(grep -o 'name="csrf" value="[^"]*"' "$W/l3.html" | head -1 | cut -d'"' -f4)
+CODE=$("${C[@]}" -b "$W/jar3" -c "$W/jar3" -D "$W/h3" -o /dev/null -w '%{http_code}' -H "Origin: $O2" \
+  --data-urlencode "csrf=$C3" --data-urlencode user=operator --data-urlencode password=proxy-test-pw "$O2/login")
+check "second proxy origin signs in (303)" "[ $CODE = 303 ]"
+check "second origin session cookie is Secure" "grep -qi 'set-cookie: cp_session=.*Secure' $W/h3"
+
+# 8. The loopback (SSH-tunnel) path coexists with the proxy origins.
+CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5081/login)
+check "loopback login page served alongside the proxy (200)" "[ $CODE = 200 ]"
+curl -s -c "$W/ljar" -o "$W/llogin.html" http://127.0.0.1:5081/login
+LCSRF=$(grep -o 'name="csrf" value="[^"]*"' "$W/llogin.html" | head -1 | cut -d'"' -f4)
+CODE=$(curl -s -b "$W/ljar" -c "$W/ljar" -D "$W/lh" -o /dev/null -w '%{http_code}' -H "Origin: http://127.0.0.1:5081" \
+  --data-urlencode "csrf=$LCSRF" --data-urlencode user=operator --data-urlencode password=proxy-test-pw http://127.0.0.1:5081/login)
+check "loopback sign-in succeeds (303)" "[ $CODE = 303 ]"
+check "loopback session cookie is not Secure" "grep -qi 'set-cookie: cp_session=' $W/lh && ! grep -qi 'set-cookie: cp_session=.*Secure' $W/lh"
+
+# 9. A proxy Origin posted on the loopback host is refused (no cross-path mix).
+curl -s -c "$W/xjar" -o "$W/xlogin.html" http://127.0.0.1:5081/login
+XCSRF=$(grep -o 'name="csrf" value="[^"]*"' "$W/xlogin.html" | head -1 | cut -d'"' -f4)
+curl -s -b "$W/xjar" -D "$W/xh" -o /dev/null -H "Origin: $O" \
+  --data-urlencode "csrf=$XCSRF" --data-urlencode user=operator --data-urlencode password=proxy-test-pw http://127.0.0.1:5081/login
+check "a proxy Origin on the loopback host is refused" "grep -qi 'location: /login?e=blocked' $W/xh"
 
 echo "---- $pass passed, $fail failed"
 echo "---- panel log:"; sed -n 1,8p "$W/panel.log"

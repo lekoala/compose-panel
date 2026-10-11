@@ -2,6 +2,32 @@
 
 ## 0.1.1 — unreleased
 
+- Multiple access origins (ADR 0012): HTTPS and the SSH tunnel can be used at
+  the same time, and several reverse-proxy origins (a public domain next to a
+  private overlay name) can be allowed without the panel knowing Caddy,
+  Tailscale or SSH. `COMPOSE_PANEL_PROXY_ORIGINS=https://a,https://b` lists the
+  allowed origins; each request is resolved to an access point from its Host and
+  its Origin/Host, cookie `Secure` attribute and X-Forwarded-* trust follow that
+  point. `COMPOSE_PANEL_ALLOW_LOOPBACK=true` keeps the loopback path alongside
+  the origins (implicit when none are configured). Entries are validated at
+  startup: https only (outside `COMPOSE_PANEL_DEV`), no credentials, path,
+  query, fragment, empty entry or duplicate. **Breaking config change:**
+  `COMPOSE_PANEL_PUBLIC_ORIGIN` and `COMPOSE_PANEL_TRUST_PROXY` are refused at
+  startup with a migration message (never silently reinterpreted). The
+  `scripts/proxy-e2e/run.sh` check now covers two origins plus the coexisting
+  loopback path.
+
+  ```sh
+  # Before
+  COMPOSE_PANEL_PUBLIC_ORIGIN=https://panel.example.com
+  COMPOSE_PANEL_TRUST_PROXY=true
+  # After — proxy only
+  COMPOSE_PANEL_PROXY_ORIGINS=https://panel.example.com
+  # After — HTTPS and the SSH tunnel together, with a second private origin
+  COMPOSE_PANEL_PROXY_ORIGINS=https://panel.example.com,https://oracle-ampere.example.ts.net
+  COMPOSE_PANEL_ALLOW_LOOPBACK=true
+  ```
+
 - Logs on open: the stack page now shows the last
   `COMPOSE_PANEL_LOG_TAIL_LINES` (200) lines as soon as it loads, instead of an
   empty box until *Follow logs* is clicked. A new bounded, read-only

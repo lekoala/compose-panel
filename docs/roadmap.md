@@ -7,7 +7,7 @@ Nothing below is scheduled or promised. Each item changes a documented guarantee
 After V1 the direction is to understand the host the stacks run on, not only the stacks themselves: observe resource use and service health, and carry out targeted server maintenance — without becoming a general-purpose Linux administration panel. Working tagline: *Manage your stacks. Understand your server.*
 
 ## Access
-- **Use HTTPS and the SSH tunnel at the same time.** Proxy mode refuses a form posted through the tunnel today because its Origin is the loopback one ([ADR 0010](adr/0010-reverse-proxy-mode.md)). Accept both access paths with Host and Origin validated per path, and cookie attributes chosen per path (`Secure` only for the public origin; plain HTTP stays loopback-only). Amends ADR 0010.
+- **Use HTTPS and the SSH tunnel at the same time.** Done in 0.1.1 ([ADR 0012](adr/0012-multiple-access-origins.md)): `COMPOSE_PANEL_PROXY_ORIGINS` (a list) plus `COMPOSE_PANEL_ALLOW_LOOPBACK`. Host and Origin are validated per access point, and the cookie attribute is chosen per path.
 - **Login CSRF across tabs and access modes.** Make the token robust when several tabs are open or the access path changes.
 
 ## Usability

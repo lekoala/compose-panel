@@ -111,16 +111,70 @@ async function readTextLimited(request: Request, maxBytes: number): Promise<stri
     return Buffer.concat(chunks).toString("utf8");
 }
 
-function requestOrigin(request: Request, config: AppConfig): string | null {
-    const url = new URL(request.url);
-    let proto = url.protocol.replace(":", "");
-    if (config.trustProxy) {
-        const forwarded = request.headers.get("x-forwarded-proto");
-        if (forwarded) proto = forwarded.split(",")[0]!.trim();
-    }
-    const host = request.headers.get("host") ?? url.host;
+const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"] as const;
+
+/**
+ * The access point a request arrived on, resolved from its Host header. This
+ * decides which origin, cookie attribute and X-Forwarded-* trust apply. It is
+ * NOT proof that the request came through the reverse proxy: Caddy and an SSH
+ * tunnel both reach the loopback listener, and a local client can present a
+ * proxy-origin Host. See ADR 0012 for the trusted-local assumption behind it.
+ */
+type Access = { kind: "loopback" } | { kind: "proxy"; origin: string };
+
+function requestHost(request: Request): string | null {
+    const raw = request.headers.get("host") ?? new URL(request.url).host;
+    return raw ? raw.toLowerCase() : null;
+}
+
+function resolveAccess(request: Request, config: AppConfig): Access | null {
+    const host = requestHost(request);
     if (!host) return null;
-    return `${proto}://${host}`;
+    // The loopback path is implicit when no proxy origin is configured;
+    // otherwise it must be opted in, so unexpected Hosts stay refused.
+    if (config.proxyOrigins.length === 0 || config.allowLoopback) {
+        for (const name of LOOPBACK_HOSTS) {
+            if (host === name || host === `${name}:${config.port}`) return { kind: "loopback" };
+        }
+    }
+    for (const origin of config.proxyOrigins) {
+        if (new URL(origin).host.toLowerCase() === host) return { kind: "proxy", origin };
+    }
+    return null;
+}
+
+/** Per-request memo so Host/origin/cookie resolution runs once. */
+const accessCache = new WeakMap<Request, Access | null>();
+function accessOf(request: Request, config: AppConfig): Access | null {
+    if (accessCache.has(request)) return accessCache.get(request) ?? null;
+    const access = resolveAccess(request, config);
+    accessCache.set(request, access);
+    return access;
+}
+
+/** The origin of the request as the client used it, ignoring forwarded headers. */
+function directRequestOrigin(request: Request): string | null {
+    const host = request.headers.get("host") ?? new URL(request.url).host;
+    if (!host) return null;
+    return `${new URL(request.url).protocol.replace(":", "")}://${host}`;
+}
+
+/**
+ * The origin a state-changing request must present for the access point it
+ * arrived on: the configured proxy origin exactly, or the loopback origin the
+ * client used. A request that mixes the two paths (proxy Host with loopback
+ * Origin, or the reverse) is refused.
+ */
+function expectedOrigin(request: Request, access: Access): string | null {
+    if (access.kind === "proxy") return access.origin;
+    return directRequestOrigin(request);
+}
+
+/** Cookie `Secure` for this request: the proxy origin's scheme decides, otherwise the direct default. */
+function cookieSecureFor(request: Request, config: AppConfig): boolean {
+    const access = accessOf(request, config);
+    if (access?.kind === "proxy") return access.origin.startsWith("https:");
+    return config.cookieSecure;
 }
 
 const ENV_NOT_REGULAR = "This stack's .env is a symbolic link or not a regular file. For safety, the panel will not run Docker with it.";
@@ -136,7 +190,9 @@ const ORIGIN_BLOCKED_MESSAGE = "Sign-in was blocked because the request did not 
 
 /** Strict same-origin check for state-changing requests. Fails closed. */
 function isAllowedOrigin(request: Request, config: AppConfig): boolean {
-    const expected = config.publicOrigin ?? requestOrigin(request, config);
+    const access = accessOf(request, config);
+    if (!access) return false;
+    const expected = expectedOrigin(request, access);
     if (!expected) return false;
     let candidate: string | null = request.headers.get("origin");
     if (!candidate) {
@@ -162,32 +218,21 @@ function isAllowedOrigin(request: Request, config: AppConfig): boolean {
 /** The session was revoked or expired while a mutation was being prepared. */
 class SessionEndedError extends Error {}
 
-const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"] as const;
-
 /**
- * Accept only the loopback authorities (on the configured port) and the
- * explicitly configured public origin. This rejects an unexpected Host before
- * routing, which protects against DNS rebinding and proxy misrouting.
+ * Accept only the loopback authorities (on the configured port, when the
+ * loopback path is enabled) and the configured proxy origins. This rejects an
+ * unexpected Host before routing, which protects against DNS rebinding and
+ * proxy misrouting.
  */
 function isAllowedHost(request: Request, config: AppConfig): boolean {
-    const raw = request.headers.get("host") ?? new URL(request.url).host;
-    if (!raw) return false;
-    const host = raw.toLowerCase();
-    const allowed = new Set<string>();
-    for (const name of LOOPBACK_HOSTS) {
-        allowed.add(name);
-        allowed.add(`${name}:${config.port}`);
-    }
-    if (config.publicOrigin) {
-        const origin = new URL(config.publicOrigin);
-        allowed.add(origin.host.toLowerCase());
-        allowed.add(origin.hostname.toLowerCase());
-    }
-    return allowed.has(host);
+    return accessOf(request, config) !== null;
 }
 
 function clientKey(request: Request, config: AppConfig): string {
-    if (config.trustProxy) {
+    // X-Forwarded-For is trusted only on a proxy access point. Elsewhere it is
+    // client-controlled and ignored, so it cannot forge the throttle key or the
+    // audit actor.
+    if (accessOf(request, config)?.kind === "proxy") {
         // The last entry is the one our own proxy appended. Earlier entries
         // come from the client and can be forged, which would let an attacker
         // dodge the throttle or put someone else's address in the audit log.
@@ -283,7 +328,11 @@ export function createApp(options: AppOptions): App {
     }
 
     // Shared page options: sign-out form and how the panel is reached.
-    const access = config.publicOrigin ? `${new URL(config.publicOrigin).host} (proxy)` : `127.0.0.1:${config.port} (loopback)`;
+    const loopbackEnabled = config.proxyOrigins.length === 0 || config.allowLoopback;
+    const access = [
+        ...config.proxyOrigins.map(origin => `${new URL(origin).host} (proxy)`),
+        loopbackEnabled ? `127.0.0.1:${config.port} (loopback)` : "",
+    ].filter(Boolean).join(", ");
     function pageChrome(csrf: string | undefined): { logoutCsrf?: string; access: string; timezone?: string } {
         return { logoutCsrf: csrf, access, timezone: config.timeZone || undefined };
     }
@@ -334,10 +383,10 @@ export function createApp(options: AppOptions): App {
         ), 413);
     }
 
-    function loginFailure(message: string | null, status: number, retryAfterSec?: number): Response {
+    function loginFailure(request: Request, message: string | null, status: number, retryAfterSec?: number): Response {
         const nonce = randomToken();
         const response = htmlResponse(loginPage({ csrf: nonce, error: message }), status);
-        response.headers.append("Set-Cookie", csrfCookie(nonce, config.cookieSecure));
+        response.headers.append("Set-Cookie", csrfCookie(nonce, cookieSecureFor(request, config)));
         if (retryAfterSec !== undefined) response.headers.set("Retry-After", String(retryAfterSec));
         return response;
     }
@@ -349,7 +398,7 @@ export function createApp(options: AppOptions): App {
         const nonce = randomToken();
         const blocked = new URL(request.url).searchParams.get("e") === "blocked";
         const response = htmlResponse(loginPage({ csrf: nonce, error: blocked ? ORIGIN_BLOCKED_MESSAGE : null }));
-        response.headers.append("Set-Cookie", csrfCookie(nonce, config.cookieSecure));
+        response.headers.append("Set-Cookie", csrfCookie(nonce, cookieSecureFor(request, config)));
         return response;
     }
 
@@ -360,7 +409,8 @@ export function createApp(options: AppOptions): App {
         if (!isAllowedOrigin(request, config)) {
             // Name both sides so a misconfigured origin is diagnosable from the log.
             const received = request.headers.get("origin") ?? (request.headers.get("referer") ? "referer only" : "none");
-            const expected = config.publicOrigin ?? requestOrigin(request, config) ?? "unknown";
+            const access = accessOf(request, config);
+            const expected = (access ? expectedOrigin(request, access) : null) ?? "unknown";
             await recordLoginNoise({ event: "login", result: "refused", actor: clientKey(request, config), detail: `origin blocked: received ${received}, expected ${expected}` });
             return redirect("/login?e=blocked", 303);
         }
@@ -372,7 +422,7 @@ export function createApp(options: AppOptions): App {
         const formToken = form.get("csrf") ?? "";
         if (!cookieToken || !formToken || !safeEqual(cookieToken, formToken)) {
             await recordLoginNoise({ event: "login", result: "refused", actor: clientKey(request, config), detail: "stale form" });
-            return loginFailure("The sign-in form expired. Please sign in again.", 403);
+            return loginFailure(request, "The sign-in form expired. Please sign in again.", 403);
         }
 
         const key = clientKey(request, config);
@@ -385,11 +435,11 @@ export function createApp(options: AppOptions): App {
         const verdict = limiter.tryReserve(key);
         if (!verdict.allowed && verdict.reason === "capacity") {
             await recordLoginNoise({ event: "login", result: "refused", actor: key, detail: "too many sources tracked" });
-            return loginFailure("The panel is busy with sign-in attempts from many addresses. Try again later.", 429, verdict.retryAfterSec);
+            return loginFailure(request, "The panel is busy with sign-in attempts from many addresses. Try again later.", 429, verdict.retryAfterSec);
         }
         if (!verdict.allowed) {
             await recordLoginNoise({ event: "login", result: "refused", actor: key, detail: "parallel attempt" });
-            return loginFailure("Another sign-in attempt from your address is still being checked. Try again in a moment.", 429, verdict.retryAfterSec);
+            return loginFailure(request, "Another sign-in attempt from your address is still being checked. Try again in a moment.", 429, verdict.retryAfterSec);
         }
 
         const user = form.get("user") ?? "";
@@ -403,7 +453,7 @@ export function createApp(options: AppOptions): App {
             slotHeld = limiter.acquireSlot();
             if (!slotHeld) {
                 await recordLoginNoise({ event: "login", result: "refused", actor: key, detail: "verification capacity reached" });
-                return loginFailure("The panel is busy with other sign-in attempts. Try again in a moment.", 429, 1);
+                return loginFailure(request, "The panel is busy with other sign-in attempts. Try again in a moment.", 429, 1);
             }
             // Verify unconditionally to keep the response time independent of the username.
             const passwordOk = await verifyPassword(config.adminPasswordHash, password);
@@ -418,7 +468,7 @@ export function createApp(options: AppOptions): App {
                     username: user === config.adminUser ? "admin account" : "unknown user",
                     detail: verdict.delayMs > 0 ? "over limit, delayed" : undefined,
                 });
-                return loginFailure("Wrong username or password.", 401);
+                return loginFailure(request, "Wrong username or password.", 401);
             }
             await recordAudit({ event: "login", result: "success", actor: key });
 
@@ -426,7 +476,7 @@ export function createApp(options: AppOptions): App {
             const response = redirect("/", 303);
             response.headers.append(
                 "Set-Cookie",
-                sessionCookie(session.id, { secure: config.cookieSecure, maxAgeSec: Math.floor(config.sessionTtlMs / 1000) }),
+                sessionCookie(session.id, { secure: cookieSecureFor(request, config), maxAgeSec: Math.floor(config.sessionTtlMs / 1000) }),
             );
             return response;
         } finally {
@@ -973,7 +1023,7 @@ export function createApp(options: AppOptions): App {
             closeSessionStreams(session.id);
             await recordAudit({ event: "logout", result: "success", actor: clientKey(request, config) });
             const response = redirect("/login", 303);
-            response.headers.append("Set-Cookie", clearedSessionCookie(config.cookieSecure));
+            response.headers.append("Set-Cookie", clearedSessionCookie(cookieSecureFor(request, config)));
             return response;
         }
 

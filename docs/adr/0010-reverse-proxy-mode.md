@@ -1,6 +1,8 @@
 # ADR 0010 — Reverse proxy mode, loopback bind kept
 
-Status: accepted.
+Status: accepted. Amended by [ADR 0012](0012-multiple-access-origins.md), which
+supersedes the single-origin rule and the global `COMPOSE_PANEL_TRUST_PROXY`
+handling; the hard-coded loopback bind below stays in force.
 
 ## Context
 Until now the panel was reachable only through an SSH tunnel, and its docs

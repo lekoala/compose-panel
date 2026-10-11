@@ -52,18 +52,34 @@ the **same host** ([ADR 0010](adr/0010-reverse-proxy-mode.md)). The panel stays
 bound to `127.0.0.1`, so Caddy must reach the host loopback: run it on the host
 itself, or in a container with `network_mode: host`.
 
-1. In `deploy/compose-panel.env`, set the public origin. This single setting
-   turns on Secure cookies and reads the client address from Caddy's
-   `X-Forwarded-For`:
+1. In `deploy/compose-panel.env`, list the origins. This setting allows HTTPS
+   access and makes Secure cookies and Caddy's `X-Forwarded-For` apply on those
+   hosts:
 
    ```sh
-   COMPOSE_PANEL_PUBLIC_ORIGIN=https://panel.example.com
+   COMPOSE_PANEL_PROXY_ORIGINS=https://panel.example.com
    ```
 
-   It must be `https`. Startup is refused if it is `http`, or if
-   `COMPOSE_PANEL_COOKIE_SECURE=false` or `COMPOSE_PANEL_TRUST_PROXY=false` is
-   also set: those combinations would leak the session or let one client slow
-   down everyone's sign-in.
+   Each entry must be `https` (outside `COMPOSE_PANEL_DEV=true`), with no
+   credentials, path or query, and no duplicates. Several origins are
+   comma-separated:
+
+   ```sh
+   # A public domain and a private overlay name, for example
+   COMPOSE_PANEL_PROXY_ORIGINS=https://dockge.example.com,https://oracle-ampere.example.ts.net
+   ```
+
+   With no origin listed, the SSH tunnel is the only path. To keep using the
+   tunnel *and* the proxy, opt in explicitly:
+
+   ```sh
+   COMPOSE_PANEL_ALLOW_LOOPBACK=true
+   ```
+
+   Upgrading from 0.1.0: `COMPOSE_PANEL_PUBLIC_ORIGIN` is refused at startup —
+   rename it to `COMPOSE_PANEL_PROXY_ORIGINS`, and remove any
+   `COMPOSE_PANEL_TRUST_PROXY` (forwarded headers now follow the matched origin
+   automatically). See [ADR 0012](adr/0012-multiple-access-origins.md).
 
 2. Add a site to Caddy. Caddy obtains the certificate, redirects HTTP to HTTPS
    and streams the live output without extra settings:
@@ -87,10 +103,25 @@ itself, or in a container with `network_mode: host`.
    A Caddy container on a bridge network cannot reach the panel. That is
    deliberate: the bind is not configurable.
 
-3. Restart the panel and check that it says `Reverse proxy mode: public origin
-   https://panel.example.com, Secure cookies on` at startup. Sign in through the
-   public URL. In this mode, forms posted through the SSH tunnel are refused
-   (wrong Origin): use one access path at a time.
+3. Restart the panel and check that it says `Reverse proxy mode: origins
+   https://panel.example.com; ...` at startup. Sign in through the public URL.
+   With `COMPOSE_PANEL_ALLOW_LOOPBACK=true`, the SSH tunnel
+   (`ssh -L5081:127.0.0.1:5081 you@host`) keeps working alongside it: each path
+   is validated on its own — a form built for the proxy origin is refused when
+   posted through the tunnel and the reverse — and only the HTTPS path sets
+   Secure cookies.
+
+   With several proxy origins, Caddy serves each name and forwards to the same
+   panel; no second panel is needed:
+
+   ```caddyfile
+   dockge.example.com {
+   	reverse_proxy 127.0.0.1:5081
+   }
+   oracle-ampere.example.ts.net {
+   	reverse_proxy 127.0.0.1:5081
+   }
+   ```
 
 **Add a second barrier.** The panel controls Docker, i.e. the host, and one
 password protects it. In order of preference:
@@ -193,9 +224,12 @@ findtime = 600
 bantime  = 3600
 ```
 
-Forwarded addresses are trusted only in proxy mode (`COMPOSE_PANEL_PUBLIC_ORIGIN`
-set); the panel refuses to start with `COMPOSE_PANEL_TRUST_PROXY=true` and no
-public origin, since the header would then be client-controlled.
+Forwarded addresses are trusted only on a request whose Host matches a
+`COMPOSE_PANEL_PROXY_ORIGINS` entry; through the loopback (SSH) path
+`X-Forwarded-For` is ignored and `actor` is `direct`. Note the trust boundary
+([ADR 0012](adr/0012-multiple-access-origins.md)): a client able to reach the
+loopback listener can present a proxy-origin Host and forge the header, so this
+is a best-effort attribution, not an authenticated proxy identity.
 
 ## Manual verification (release gate)
 
@@ -223,6 +257,11 @@ release. Verified 2026-10-10 against image `compose-panel:local`
       24.04, fake `docker`): `scripts/proxy-e2e/run.sh` passes 14/14 — Secure
       cookies, foreign Origin and Host refused, forged `X-Forwarded-For` ignored,
       live SSE for actions and logs, UTF-8, sign-out closes open streams.
+- [x] Multiple access origins ([ADR 0012](adr/0012-multiple-access-origins.md)):
+      `scripts/proxy-e2e/run.sh` with two TLS origins and the coexisting loopback
+      path passes 20/20 (2026-10-11, WSL Ubuntu 24.04, fake `docker`) — both
+      origins accepted with Secure cookies, loopback non-Secure, a cross-path
+      Origin refused.
 - [ ] Same check on the target host with its real Caddy and a real stack.
 
 ## Audit correction verification
