@@ -3,7 +3,7 @@ import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
 import type { ImageVersion, ServiceUpdate } from "./updates.ts";
 import type { AccessReport, AccessStatus } from "./access.ts";
-import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerFilter } from "./container-state.ts";
+import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerDetails, type ContainerFilter } from "./container-state.ts";
 import packageJson from "../package.json";
 
 const VERSION = packageJson.version;
@@ -473,12 +473,7 @@ function portsCell(ports: string): string {
 
 function containerNameCell(container: ClassifiedContainer): string {
     const name = container.name || container.id.slice(0, 12);
-    // A managed container already has a page: link it to its stack. External
-    // containers are plain text until the detail page exists (PR 3).
-    if (container.category === "managed" && container.stack) {
-        return `<a href="/stacks/${encodeURIComponent(container.stack)}">${escapeHtml(name)}</a>`;
-    }
-    return escapeHtml(name);
+    return `<a href="/containers/${encodeURIComponent(container.id)}">${escapeHtml(name)}</a>`;
 }
 
 function containerRows(containers: ClassifiedContainer[], columns: "full" | "compact"): string {
@@ -553,6 +548,123 @@ export function containersPage(options: ContainersPageOptions): string {
         + `<div class="toolbar">${filters}</div>`
         + (sections || (options.note ? "" : note("info", "No containers match this view.")));
     return documentHtml("Containers", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
+}
+
+function containerTime(value: string | null): string {
+    if (!value) return `<span class="muted">—</span>`;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return escapeHtml(value);
+    const iso = date.toISOString();
+    return `<time datetime="${escapeHtml(iso)}" data-local-time="full">${escapeHtml(iso.slice(0, 19).replace("T", " "))} UTC</time>`;
+}
+
+function healthCell(health: string | null): string {
+    if (!health) return `<span class="muted">Not configured</span>`;
+    const key = health.toLowerCase();
+    const cls = key === "healthy" ? "state-done" : key === "unhealthy" ? "state-failed" : "state-stopped";
+    const label = HEALTH_LABELS[key] ?? health;
+    return `<span class="state ${cls}">${escapeHtml(label)}</span>`;
+}
+
+function detailRow(label: string, value: string): string {
+    return `<tr><th scope="row">${escapeHtml(label)}</th><td>${value}</td></tr>`;
+}
+
+function containerPortsSection(details: ContainerDetails): string {
+    if (details.ports.length === 0) {
+        return `<section class="card"><h2>Ports</h2><p class="muted">No port published or exposed.</p></section>`;
+    }
+    const rows = details.ports.map(port => {
+        const host = port.host ? `<code>${escapeHtml(port.host)}</code>` : `<span class="muted">Not published</span>`;
+        const scope = port.publicInterface ? ` <span class="state state-stopped">All interfaces</span>` : "";
+        return `<tr><td><code>${escapeHtml(port.container)}</code></td><td>${host}${scope}</td></tr>`;
+    }).join("");
+    return `<section class="card"><h2>Ports</h2>`
+        + `<p class="muted">“All interfaces” means Docker binds the port on every host interface. A firewall or NAT outside the panel may still block it.</p>`
+        + `<div class="table-wrap"><table class="table"><thead><tr><th>Container</th><th>Host binding</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+
+function containerMountsSection(details: ContainerDetails): string {
+    if (details.mounts.length === 0) {
+        return `<section class="card"><h2>Mounts</h2><p class="muted">No mounts.</p></section>`;
+    }
+    const rows = details.mounts.map(mount => {
+        const mode = mount.mode || (mount.readOnly ? "ro" : "rw");
+        return `<tr><td>${escapeHtml(mount.type)}</td><td>${mount.source ? `<code>${escapeHtml(mount.source)}</code>` : `<span class="muted">—</span>`}</td>`
+            + `<td><code>${escapeHtml(mount.destination)}</code></td><td>${escapeHtml(mode)}</td></tr>`;
+    }).join("");
+    return `<section class="card"><details><summary>Mounts (${details.mounts.length})</summary>`
+        + `<p class="muted">Host source paths are shown for debugging: treat them as sensitive.</p>`
+        + `<div class="table-wrap"><table class="table"><thead><tr><th>Type</th><th>Source (host)</th><th>Destination</th><th>Mode</th></tr></thead><tbody>${rows}</tbody></table></div></details></section>`;
+}
+
+/**
+ * Read-only log snapshot panel for one container. No follow: the Docker `logs`
+ * call is a single bounded read, re-run on demand. The `data-container-logs`
+ * URL is fetched by app.js; the "Latest ... lines" link works without scripts.
+ */
+export function containerLogsPanel(id: string, tailLines: number, timezone = ""): string {
+    const base = `/containers/${encodeURIComponent(id)}/logs`;
+    const zoneHint = timezone
+        ? ` Times are shown in <strong>${escapeHtml(timezone)}</strong>.`
+        : ` Times are shown in your browser's time zone.`;
+    return `<section class="card logs" data-container-logs="${base}"><h2>Logs</h2>`
+        + `<p class="muted">Last ${tailLines} lines, read once on demand. Read only: the panel never follows or restarts this container.${zoneHint}</p>`
+        + `<div class="toolbar"><a class="btn" href="${base}?tail=${tailLines}">Latest ${tailLines} lines</a><button type="button" class="btn" id="container-logs-refresh">Refresh</button></div>`
+        + `<p id="container-logs-status" class="muted" role="status">Not loaded.</p>`
+        + `<pre class="output" id="container-logs-output"></pre>`
+        + `</section>`;
+}
+
+export interface ContainerDetailPageOptions {
+    csrf: string;
+    access?: string;
+    timezone?: string;
+    container: ClassifiedContainer;
+    details: ContainerDetails | null;
+    note?: string | null;
+    logTailLines: number;
+}
+
+/**
+ * Read-only detail of a single container. Shows the whitelisted `inspect`
+ * projection, ports, restart policy, health and mounts (collapsed); there is no
+ * start/stop/remove/exec and no env or args.
+ */
+export function containerDetailPage(options: ContainerDetailPageOptions): string {
+    const container = options.container;
+    const details = options.details;
+    const name = container.name || container.id.slice(0, 12);
+    const stackLink = container.category === "managed" && container.stack
+        ? ` · <a href="/stacks/${encodeURIComponent(container.stack)}">Stack ${escapeHtml(container.stack)}</a>`
+        : "";
+    let extras = "";
+    if (details) {
+        extras = `<section class="card"><h2>Details</h2><div class="table-wrap"><table class="table"><tbody>`
+            + detailRow("Container ID", `<code>${escapeHtml(details.id)}</code>`)
+            + detailRow("Image", details.image ? `<code>${escapeHtml(details.image)}</code>` : `<span class="muted">—</span>`)
+            + detailRow("State", `${containerStateBadge(details.state)} <span class="muted">${escapeHtml(container.status)}</span>`)
+            + detailRow("Health", healthCell(details.health))
+            + detailRow("Restart policy", details.restartPolicy ? `<code>${escapeHtml(details.restartPolicy)}</code>` : `<span class="muted">—</span>`)
+            + detailRow("Created", containerTime(details.created))
+            + detailRow("Started", containerTime(details.startedAt))
+            + detailRow("Finished", containerTime(details.finishedAt))
+            + detailRow("Exit code", details.exitCode !== null ? `<code>${details.exitCode}</code>` : `<span class="muted">—</span>`)
+            + `</tbody></table></div></section>`
+            + containerPortsSection(details)
+            + containerMountsSection(details);
+    } else {
+        extras = `<section class="card"><h2>Details</h2><p class="muted">No details available.</p></section>`
+            + `<section class="card"><h2>Ports</h2><p class="muted">Ports are shown from the container list: <code>${escapeHtml(container.ports || "none")}</code>.</p></section>`;
+    }
+    const body = `<p class="crumbs"><a href="/containers">← All containers</a></p>`
+        + `<div class="page-head"><h1>${escapeHtml(name)}</h1></div>`
+        + `<p class="meta">${containerStateBadge(container.state)}<span class="state">${escapeHtml(CONTAINER_CATEGORY_LABELS[container.category])}</span>`
+        + `<span class="muted">Read only: observation only, no action on this container.</span>${stackLink}</p>`
+        + (options.note ? note("warn", options.note) : "")
+        + extras
+        + containerLogsPanel(container.id, options.logTailLines, options.timezone);
+    return documentHtml(name, body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
 }
 
 export function htmlResponse(body: string, status = 200): Response {

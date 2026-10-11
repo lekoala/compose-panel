@@ -266,6 +266,31 @@
         loadSnapshot();
     }
 
+    /* Read-only log snapshot for one container: a single bounded fetch, re-run
+     * on demand. There is no follow and no action on the container. */
+    function wireContainerLogs(section) {
+        var url = section.getAttribute("data-container-logs");
+        var output = document.getElementById("container-logs-output");
+        var status = document.getElementById("container-logs-status");
+        var refresh = document.getElementById("container-logs-refresh");
+        if (!url || !output || typeof fetch !== "function") return;
+        function load() {
+            if (status) status.textContent = "Loading recent lines…";
+            fetch(url, { headers: { "Accept": "text/plain" } })
+                .then(function (response) { return response.text(); })
+                .then(function (text) {
+                    output.textContent = localizeLogText(text);
+                    output.scrollTop = output.scrollHeight;
+                    if (status) status.textContent = "Read only: the panel never follows or restarts this container.";
+                })
+                .catch(function () {
+                    if (status) status.textContent = "Could not read the logs. Reload the page to try again.";
+                });
+        }
+        if (refresh) refresh.addEventListener("click", load);
+        load();
+    }
+
     /* Show times in the panel's display zone (or the reader's own) instead of UTC. */
     function localizeTimes() {
         each("time[data-local-time]", function (el) {
@@ -374,12 +399,14 @@
     document.addEventListener("DOMContentLoaded", function () {
         var op = document.querySelector("[data-op-stream]");
         var logs = document.querySelector("[data-logs-stream]");
+        var containerLogs = document.querySelector("[data-container-logs]");
         var editor = document.querySelector("[data-edit-form]");
         localizeTimes();
         wireBusyButtons();
         wireAutoSubmit();
         if (op) wireOperation(op);
         if (logs) wireLogs(logs);
+        if (containerLogs) wireContainerLogs(containerLogs);
         if (editor) wireEditor(editor);
     });
 })();

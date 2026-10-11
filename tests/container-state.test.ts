@@ -5,6 +5,7 @@ import {
     matchesContainerFilter,
     normalizeComposePath,
     parseContainerFilter,
+    parseContainerInspect,
     parseContainerLs,
     type ContainerSummary,
     type ManagedStack,
@@ -98,6 +99,80 @@ describe("parseContainerLs", () => {
         expect(() => parseContainerLs(badId)).toThrow(ContainerStateError);
         const brokenJson = row().replace('"nginx:1.27"', "not-json");
         expect(() => parseContainerLs(brokenJson)).toThrow(ContainerStateError);
+    });
+});
+
+describe("parseContainerInspect", () => {
+    const imageId = `sha256:${"a".repeat(64)}`;
+    const inspect = JSON.stringify([{
+        Id: ID,
+        Name: "/demo-app-1",
+        Created: "2026-10-05T08:31:11.123456789Z",
+        Image: imageId,
+        Config: { Image: "nginx:1.27", Env: ["SECRET_TOKEN=super-secret"], Labels: { "com.docker.compose.project": "demo" } },
+        State: {
+            Status: "running", Running: true, Paused: false, Restarting: false, ExitCode: 0,
+            StartedAt: "2026-10-05T08:31:12Z", FinishedAt: "0001-01-01T00:00:00Z", Health: { Status: "healthy" },
+        },
+        HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
+        NetworkSettings: {
+            Ports: {
+                "80/tcp": [{ HostIp: "0.0.0.0", HostPort: "8080" }],
+                "443/tcp": null,
+                "9000/tcp": [{ HostIp: "127.0.0.1", HostPort: "9000" }],
+            },
+        },
+        Mounts: [
+            { Type: "bind", Source: "/host/data", Destination: "/data", Mode: "ro", RW: false },
+            { Type: "volume", Source: "demo_data", Destination: "/var/lib", Mode: "", RW: true },
+        ],
+    }]);
+
+    test("projects only the whitelisted fields", () => {
+        const details = parseContainerInspect(inspect);
+        expect(details.name).toBe("demo-app-1");
+        expect(details.image).toBe("nginx:1.27");
+        expect(details.imageId).toBe(imageId);
+        expect(details.state).toBe("running");
+        expect(details.running).toBe(true);
+        expect(details.exitCode).toBe(0);
+        expect(details.health).toBe("healthy");
+        expect(details.restartPolicy).toBe("unless-stopped");
+    });
+
+    test("never exposes Config.Env", () => {
+        expect(JSON.stringify(parseContainerInspect(inspect))).not.toContain("super-secret");
+    });
+
+    test("flattens published ports and flags all-interface bindings", () => {
+        expect(parseContainerInspect(inspect).ports).toEqual([
+            { container: "443/tcp", host: null, publicInterface: false },
+            { container: "80/tcp", host: "0.0.0.0:8080", publicInterface: true },
+            { container: "9000/tcp", host: "127.0.0.1:9000", publicInterface: false },
+        ]);
+    });
+
+    test("brackets IPv6 host bindings", () => {
+        const ipv6 = JSON.stringify([{
+            Id: ID, Name: "/v6", Config: { Image: "nginx" }, State: { Status: "running" },
+            NetworkSettings: { Ports: { "80/tcp": [{ HostIp: "::", HostPort: "80" }] } },
+        }]);
+        expect(parseContainerInspect(ipv6).ports).toEqual([
+            { container: "80/tcp", host: "[::]:80", publicInterface: true },
+        ]);
+    });
+
+    test("projects mounts with a read-only flag", () => {
+        expect(parseContainerInspect(inspect).mounts).toEqual([
+            { type: "bind", source: "/host/data", destination: "/data", mode: "ro", readOnly: true },
+            { type: "volume", source: "demo_data", destination: "/var/lib", mode: "", readOnly: false },
+        ]);
+    });
+
+    test("rejects malformed or unrecognized inspect output", () => {
+        expect(() => parseContainerInspect("")).toThrow(ContainerStateError);
+        expect(() => parseContainerInspect("not json")).toThrow(ContainerStateError);
+        expect(() => parseContainerInspect(JSON.stringify([{ Id: "not-hex" }]))).toThrow(ContainerStateError);
     });
 });
 

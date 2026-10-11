@@ -3,16 +3,20 @@ import { findProjectForStack, parseComposeLs } from "./compose-state.ts";
 import {
     ContainerStateError,
     classifyContainers,
+    parseContainerInspect,
     parseContainerLs,
     type ClassifiedContainer,
+    type ContainerDetails,
     type ManagedStack,
     type PathAlias,
 } from "./container-state.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
-import type { ContainerInspector } from "./containers.ts";
+import { ContainerRefError, isContainerId, type ContainerInspector } from "./containers.ts";
 import { DOCKER_SLOW, DOCKER_UNAVAILABLE, type ProjectDiscovery } from "./status.ts";
 
 const UNEXPECTED = "Docker returned an unexpected container list. Statuses are shown as unknown. Reload the page to try again.";
+const DETAILS_UNAVAILABLE = "The container may have been removed, so its details could not be read. Reload the page to try again.";
+const DETAILS_SLOW = "Docker did not respond in time while reading this container. Reload the page to try again.";
 
 export interface ContainerListStatus {
     containers: ClassifiedContainer[];
@@ -86,6 +90,46 @@ export async function loadContainers(
         return { containers: classifyContainers(parseContainerLs(result.stdout), managed, aliases), note: null };
     } catch (error) {
         if (error instanceof ContainerStateError) return { containers: [], note: UNEXPECTED };
+        throw error;
+    }
+}
+
+export interface ContainerDetailStatus {
+    container: ClassifiedContainer;
+    /** Whitelisted projection, or null when Docker could not return it. */
+    details: ContainerDetails | null;
+    note: string | null;
+}
+
+/**
+ * Resolve one container for its detail page: find it in the classified list
+ * (for category and stack) then read a single `docker container inspect`.
+ * Returns null when no container matches the reference (a 404), and throws
+ * `ContainerRefError` for a malformed reference (a 400).
+ */
+export async function loadContainerDetail(
+    root: string,
+    id: string,
+    provider: ComposeProvider,
+    inspector: ContainerInspector,
+    aliases: PathAlias[] = [],
+): Promise<ContainerDetailStatus | null> {
+    if (!isContainerId(id)) throw new ContainerRefError();
+    const { containers } = await loadContainers(root, provider, inspector, aliases);
+    const container = containers.find(entry => entry.id === id || entry.id.startsWith(id));
+    if (!container) return null;
+    let result: Awaited<ReturnType<ContainerInspector["inspect"]>>;
+    try {
+        result = await inspector.inspect(container.id);
+    } catch {
+        return { container, details: null, note: DETAILS_UNAVAILABLE };
+    }
+    if (result.timedOut) return { container, details: null, note: DETAILS_SLOW };
+    if (result.code !== 0) return { container, details: null, note: DETAILS_UNAVAILABLE };
+    try {
+        return { container, details: parseContainerInspect(result.stdout), note: null };
+    } catch (error) {
+        if (error instanceof ContainerStateError) return { container, details: null, note: DETAILS_UNAVAILABLE };
         throw error;
     }
 }

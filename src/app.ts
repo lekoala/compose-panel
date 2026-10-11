@@ -1,10 +1,10 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, otherContainersSection, containersPage, type NoteKind } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, type NoteKind } from "./html.ts";
 import { dirname, join } from "node:path";
 import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
-import { loadContainers } from "./container-status.ts";
+import { loadContainerDetail, loadContainers } from "./container-status.ts";
 import { parseContainerFilter, type ContainerFilter } from "./container-state.ts";
-import { createContainerInspector, type ContainerInspector } from "./containers.ts";
+import { createContainerInspector, isContainerId, sanitizeTailLines, type ContainerInspector } from "./containers.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
 import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
@@ -571,6 +571,43 @@ export function createApp(options: AppOptions): App {
         }));
     }
 
+    async function renderContainerDetail(rawId: string, csrf: string): Promise<Response> {
+        if (!isContainerId(rawId)) throw new StackError("This container reference is not valid.", 400);
+        const detail = await loadContainerDetail(stacksRoot, rawId, provider, inspector, config.hostStacksPathAliases);
+        if (!detail) throw new StackError("No container with this reference was found. It may have been removed.", 404);
+        return htmlResponse(containerDetailPage({
+            csrf,
+            access,
+            timezone: config.timeZone || undefined,
+            container: detail.container,
+            details: detail.details,
+            note: detail.note,
+            logTailLines: config.logTailLines,
+        }));
+    }
+
+    /**
+     * Bounded one-shot log history for a single container. Read-only, `no-store`,
+     * `tail` restricted to an allow-list; Docker stderr is never echoed (logs may
+     * hold secrets), only a fixed failure message. Works without JavaScript.
+     */
+    async function handleContainerLogs(rawId: string, tail: string | null): Promise<Response> {
+        if (!isContainerId(rawId)) return plain("This container reference is not valid.", 400);
+        const requested = tail !== null && /^\d+$/.test(tail) ? Number(tail) : undefined;
+        const tailLines = sanitizeTailLines(requested);
+        let result: Awaited<ReturnType<ContainerInspector["logs"]>>;
+        try {
+            result = await inspector.logs({ id: rawId, tailLines, maxBytes: config.logMaxBytes, timeoutMs: config.dockerTimeoutMs });
+        } catch {
+            return plain("Docker could not read these logs. Reload the page to try again.", 502);
+        }
+        if (result.timedOut) return plain("Docker did not respond in time. Reload the page to try again.", 504);
+        if (result.code !== 0) return plain("Docker could not read these logs. The container may have been removed; reload the page.", 502);
+        const text = stripAnsi(result.stdout).replace(/\s+$/, "");
+        if (!text) return plain("No recent logs for this container.", 200);
+        return plain(result.truncated ? `${text}\n\n[Output shortened: only the most recent part is kept.]` : text, 200);
+    }
+
     async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200): Promise<Response> {
         const stack = await readStackCompose(stacksRoot, name);
         let status: StackDetailStatus;
@@ -1080,6 +1117,10 @@ export function createApp(options: AppOptions): App {
             if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
             if (url.pathname === "/access") return renderAccess(session.csrf, request);
             if (url.pathname === "/containers") return await renderContainers(session.csrf, parseContainerFilter(url.searchParams.get("state")));
+            const containerLogsMatch = /^\/containers\/([^/]+)\/logs$/.exec(url.pathname);
+            if (containerLogsMatch) return await handleContainerLogs(decodeName(containerLogsMatch[1]!), url.searchParams.get("tail"));
+            const containerDetailMatch = /^\/containers\/([^/]+)$/.exec(url.pathname);
+            if (containerDetailMatch) return await renderContainerDetail(decodeName(containerDetailMatch[1]!), session.csrf);
             if (editMatch) return await renderEdit(decodeName(editMatch[1]!), session.csrf);
             const logSnapshotMatch = /^\/stacks\/([^/]+)\/logs$/.exec(url.pathname);
             if (logSnapshotMatch) return await handleLogsSnapshot(decodeName(logSnapshotMatch[1]!), session.id);

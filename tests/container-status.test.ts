@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveRoot } from "../src/stacks.ts";
-import { loadContainers, loadManagedStacks } from "../src/container-status.ts";
+import { loadContainerDetail, loadContainers, loadManagedStacks } from "../src/container-status.ts";
+import { ContainerRefError } from "../src/containers.ts";
 import type { ComposeProvider } from "../src/compose-provider.ts";
 import type { CommandResult } from "../src/docker.ts";
 import type { ContainerInspector } from "../src/containers.ts";
@@ -31,6 +32,16 @@ function fakeProvider(projects: { Name: string; Status: string; ConfigFiles: str
 function fakeInspector(stdout: string, result: Partial<CommandResult> = {}): ContainerInspector {
     const value: CommandResult = { ...ok, stdout, ...result };
     return { engine: "docker", list: async () => value, inspect: async () => value, logs: async () => value };
+}
+
+function detailedInspector(outputs: { list?: string; inspect?: CommandResult }): ContainerInspector {
+    const base: CommandResult = { ...ok, stdout: "" };
+    return {
+        engine: "docker",
+        list: async () => ({ ...base, stdout: outputs.list ?? "" }),
+        inspect: async () => outputs.inspect ?? base,
+        logs: async () => base,
+    };
 }
 
 type Fields = [string, string, string, string, string, string, string, string, string, string, string, string, string];
@@ -84,5 +95,42 @@ describe("loadContainers", () => {
         const result = await loadContainers(gone, fakeProvider(), fakeInspector(line(["cccccccccccc", "legacy", "redis:7", "running", "Up", "none", "", "", "", "", "", "", ""])));
         expect(result.note).toBeNull();
         expect(result.containers[0]!.category).toBe("standalone");
+    });
+});
+
+describe("loadContainerDetail", () => {
+    const list = line(["cccccccccccc", "legacy", "redis:7", "running", "Up 5 minutes", "none", "", "", "6379/tcp", "", "", "", ""]);
+    const inspect = JSON.stringify([{
+        Id: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        Name: "/legacy",
+        Image: `sha256:${"b".repeat(64)}`,
+        Config: { Image: "redis:7" },
+        State: { Status: "running", Running: true, ExitCode: 0 },
+        HostConfig: { RestartPolicy: { Name: "always" } },
+        NetworkSettings: { Ports: {} },
+        Mounts: [],
+    }]);
+
+    test("finds the container and reads a single inspect", async () => {
+        const detail = await loadContainerDetail(root, "cccccccccccc", fakeProvider(), detailedInspector({ list, inspect: { ...ok, stdout: inspect } }));
+        expect(detail).not.toBeNull();
+        expect(detail!.container.name).toBe("legacy");
+        expect(detail!.details!.restartPolicy).toBe("always");
+        expect(detail!.note).toBeNull();
+    });
+
+    test("returns null when no container matches", async () => {
+        const detail = await loadContainerDetail(root, "ffffffffffff", fakeProvider(), detailedInspector({ list }));
+        expect(detail).toBeNull();
+    });
+
+    test("rejects a malformed reference", async () => {
+        await expect(loadContainerDetail(root, "not-hex", fakeProvider(), detailedInspector({ list }))).rejects.toThrow(ContainerRefError);
+    });
+
+    test("keeps the summary when inspect fails", async () => {
+        const detail = await loadContainerDetail(root, "cccccccccccc", fakeProvider(), detailedInspector({ list, inspect: { ...ok, code: 1 } }));
+        expect(detail!.details).toBeNull();
+        expect(detail!.note).toContain("could not be read");
     });
 });

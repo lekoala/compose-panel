@@ -1895,6 +1895,30 @@ function fakeInspector(stdout: string, result: Partial<CommandResult> = {}): Con
     return { engine: "docker", list: async () => value, inspect: async () => value, logs: async () => value };
 }
 
+function detailedInspector(outputs: { list: string; inspect?: CommandResult; logs?: CommandResult }): ContainerInspector {
+    const base: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+    return {
+        engine: "docker",
+        list: async () => ({ ...base, stdout: outputs.list }),
+        inspect: async () => outputs.inspect ?? base,
+        logs: async () => outputs.logs ?? base,
+    };
+}
+
+function inspectJson(id: string, name: string): string {
+    return JSON.stringify([{
+        Id: id,
+        Name: `/${name}`,
+        Created: "2026-10-05T08:31:11Z",
+        Image: `sha256:${"a".repeat(64)}`,
+        Config: { Image: "nginx:1.27", Env: ["SECRET=hidden"] },
+        State: { Status: "running", Running: true, ExitCode: 0, StartedAt: "2026-10-05T08:31:12Z", FinishedAt: "0001-01-01T00:00:00Z", Health: { Status: "healthy" } },
+        HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
+        NetworkSettings: { Ports: { "80/tcp": [{ HostIp: "0.0.0.0", HostPort: "8080" }] } },
+        Mounts: [{ Type: "bind", Source: "/host/data", Destination: "/data", Mode: "ro", RW: false }],
+    }]);
+}
+
 /**
  * One managed stack (demo) plus a running standalone, a running external Compose
  * container, an external container mid-restart, and an exited external job.
@@ -1932,8 +1956,8 @@ describe("containers page", () => {
         expect(running).toContain("edge");
         // The exited job is not in the default view.
         expect(running).not.toContain("old-job");
-        // A managed container links back to its stack.
-        expect(running).toContain("/stacks/demo");
+        // Container names link to the (read-only) detail page.
+        expect(running).toContain("/containers/aaaaaaaaaaaa");
 
         const all = await (await authed(app, "/containers?state=all", session)).text();
         expect(all).toContain("old-job");
@@ -1987,5 +2011,63 @@ describe("home other-containers section", () => {
         const html = await (await authed(app, "/", session)).text();
         expect(html).toContain("Other containers");
         expect(html).toContain("Docker is not reachable");
+    });
+});
+
+describe("container detail and logs", () => {
+    test("renders a read-only detail page with ports and mounts", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, detailedInspector({
+            list: containerFixture(),
+            inspect: { code: 0, stdout: inspectJson("bbbbbbbbbbbb", "watchtower"), stderr: "", timedOut: false, truncated: false },
+        }));
+        const session = await login(app);
+        const html = await (await authed(app, "/containers/bbbbbbbbbbbb", session)).text();
+        expect(html).toContain("watchtower");
+        expect(html).toContain("Restart policy");
+        expect(html).toContain("unless-stopped");
+        expect(html).toContain("All interfaces");
+        expect(html).toContain("Mounts (1)");
+        expect(html).toContain("Logs");
+        // The whitelist never exposes the container environment.
+        expect(html).not.toContain("SECRET=hidden");
+    });
+
+    test("a managed container links back to its stack", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, detailedInspector({
+            list: containerFixture(),
+            inspect: { code: 0, stdout: inspectJson("aaaaaaaaaaaa", "demo-app-1"), stderr: "", timedOut: false, truncated: false },
+        }));
+        const session = await login(app);
+        const html = await (await authed(app, "/containers/aaaaaaaaaaaa", session)).text();
+        expect(html).toContain("/stacks/demo");
+    });
+
+    test("rejects a malformed reference and 404s an unknown one", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, fakeInspector(containerFixture()));
+        const session = await login(app);
+        expect((await authed(app, "/containers/not-hex", session)).status).toBe(400);
+        expect((await authed(app, "/containers/ffffffffffff", session)).status).toBe(404);
+    });
+
+    test("serves a bounded log snapshot with ANSI stripped", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, detailedInspector({
+            list: containerFixture(),
+            logs: { code: 0, stdout: "\u001b[31mhello logs\u001b[0m\n", stderr: "secret-stderr", timedOut: false, truncated: false },
+        }));
+        const session = await login(app);
+        const response = await authed(app, "/containers/bbbbbbbbbbbb/logs?tail=500", session);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("text/plain");
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        const text = await response.text();
+        expect(text).toContain("hello logs");
+        expect(text).not.toContain("\u001b");
+        expect(text).not.toContain("secret-stderr");
+    });
+
+    test("rejects a malformed container id on the logs endpoint", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, fakeInspector(containerFixture()));
+        const session = await login(app);
+        expect((await authed(app, "/containers/not-hex/logs", session)).status).toBe(400);
     });
 });

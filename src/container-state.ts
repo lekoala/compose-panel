@@ -128,6 +128,139 @@ export function parseContainerLs(stdout: string): ContainerSummary[] {
     return containers;
 }
 
+export interface ContainerPort {
+    /** Container side, e.g. "8080/tcp". */
+    container: string;
+    /** Host binding, e.g. "0.0.0.0:8080", or null when not published. */
+    host: string | null;
+    /** True when Docker binds it on every host interface (0.0.0.0 / :: / empty). */
+    publicInterface: boolean;
+}
+
+export interface ContainerMount {
+    type: string;
+    source: string;
+    destination: string;
+    mode: string;
+    readOnly: boolean;
+}
+
+/**
+ * The whitelisted projection of `docker container inspect`. Only these fields
+ * are ever extracted: `Config.Env`, `Args` and every other field are dropped and
+ * must never be retained, logged or returned (see ADR 0014).
+ */
+export interface ContainerDetails {
+    id: string;
+    name: string;
+    image: string | null;
+    imageId: string | null;
+    created: string | null;
+    state: string;
+    running: boolean;
+    paused: boolean;
+    restarting: boolean;
+    exitCode: number | null;
+    startedAt: string | null;
+    finishedAt: string | null;
+    health: string | null;
+    restartPolicy: string | null;
+    ports: ContainerPort[];
+    mounts: ContainerMount[];
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function asText(value: unknown): string | null {
+    return typeof value === "string" && value ? value : null;
+}
+
+function parsePublishedPorts(value: unknown): ContainerPort[] {
+    const ports: ContainerPort[] = [];
+    for (const [containerPort, bindings] of Object.entries(asRecord(value))) {
+        if (!Array.isArray(bindings) || bindings.length === 0) {
+            ports.push({ container: containerPort, host: null, publicInterface: false });
+            continue;
+        }
+        for (const binding of bindings) {
+            const entry = asRecord(binding);
+            const hostIp = asText(entry.HostIp) ?? "";
+            const hostPort = asText(entry.HostPort) ?? "";
+            const ip = hostIp || "0.0.0.0";
+            // Bracket an IPv6 address so "[::]:8080" is unambiguous.
+            const formatted = ip.includes(":") ? `[${ip}]` : ip;
+            ports.push({
+                container: containerPort,
+                host: hostPort ? `${formatted}:${hostPort}` : null,
+                publicInterface: hostIp === "" || hostIp === "0.0.0.0" || hostIp === "::",
+            });
+        }
+    }
+    return ports.sort((a, b) => a.container.localeCompare(b.container));
+}
+
+function parseMounts(value: unknown): ContainerMount[] {
+    if (!Array.isArray(value)) return [];
+    const mounts: ContainerMount[] = [];
+    for (const item of value) {
+        const mount = asRecord(item);
+        const type = asText(mount.Type);
+        const destination = asText(mount.Destination);
+        if (!type || !destination) continue;
+        const mode = asText(mount.Mode) ?? "";
+        mounts.push({
+            type,
+            source: asText(mount.Source) ?? "",
+            destination,
+            mode,
+            readOnly: mount.RW === false || /\bro\b/.test(mode),
+        });
+    }
+    return mounts;
+}
+
+/**
+ * Project `docker container inspect` onto the whitelisted fields. The raw object
+ * is never returned: `Config.Env` and `Args` cannot leak through here.
+ */
+export function parseContainerInspect(stdout: string): ContainerDetails {
+    const raw = stdout.trim();
+    if (!raw) throw new ContainerStateError("Unexpected docker container inspect output.");
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(raw);
+    } catch {
+        throw new ContainerStateError("Unexpected docker container inspect output.");
+    }
+    const container = asRecord(Array.isArray(parsed) ? parsed[0] : parsed);
+    const id = asText(container.Id);
+    if (!id || !CONTAINER_ID.test(id)) throw new ContainerStateError("Unexpected docker container inspect output.");
+    const state = asRecord(container.State);
+    const config = asRecord(container.Config);
+    const hostConfig = asRecord(container.HostConfig);
+    const network = asRecord(container.NetworkSettings);
+    return {
+        id,
+        name: (asText(container.Name) ?? "").replace(/^\/+/, ""),
+        image: asText(config.Image),
+        imageId: asText(container.Image),
+        created: asText(container.Created),
+        state: asText(state.Status) ?? "unknown",
+        running: state.Running === true,
+        paused: state.Paused === true,
+        restarting: state.Restarting === true,
+        exitCode: typeof state.ExitCode === "number" ? state.ExitCode : null,
+        startedAt: asText(state.StartedAt),
+        finishedAt: asText(state.FinishedAt),
+        health: asText(asRecord(state.Health).Status),
+        restartPolicy: asText(asRecord(hostConfig.RestartPolicy).Name),
+        ports: parsePublishedPorts(network.Ports),
+        mounts: parseMounts(container.Mounts),
+    };
+}
+
 /**
  * Normalize a Compose path to a comparable form: apply a known host/panel alias
  * first, then POSIX-normalize and drop trailing slashes. Never assumes the path

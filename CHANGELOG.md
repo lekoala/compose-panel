@@ -2,6 +2,25 @@
 
 ## 0.1.1 — unreleased
 
+- Docker container inspection (ADR 0014): a read-only view of the containers the
+  panel does not manage. The home page gains an **Other containers** section and
+  a **Containers** page (`/containers`, linked in the footer) lists every
+  container Docker reports, grouped by `Managed`, `External Compose` and
+  `Standalone`, with `Running` / `Stopped` / `All` filters (plain links, no
+  JavaScript). A container whose membership is not certain stays *External*; a
+  managed container is matched by its Compose file path (with an optional
+  `COMPOSE_PANEL_STACKS_PATH_ALIASES=hostPrefix=panelPrefix` remap for migrations
+  where the Docker-side path differs) or, when no file is recorded, by a project
+  name that matches exactly one deployed stack. Each container has a read-only
+  detail page (`/containers/<id>`) with the status, health, restart policy,
+  created/started times, published ports (with an honest "All interfaces" mark, no
+  claim of reachability), mounts collapsed behind a disclosure, and a bounded log
+  snapshot (`/containers/<id>/logs`, plain text, `no-store`, `--tail` allow-listed
+  and ANSI stripped). It is observation only: no start, stop, restart, remove or
+  exec, and no raw `docker inspect` — the environment (`Config.Env`) and arguments
+  are never shown. Lower-level Docker calls live in a separate `ContainerInspector`
+  boundary, not in the Compose provider.
+
 - Multiple access origins (ADR 0012): HTTPS and the SSH tunnel can be used at
   the same time, and several reverse-proxy origins (a public domain next to a
   private overlay name) can be allowed without the panel knowing Caddy,
