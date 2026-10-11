@@ -1,10 +1,11 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, type NoteKind } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, type NoteKind } from "./html.ts";
 import { dirname, join } from "node:path";
 import { locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
 import { loadContainerDetail, loadContainers } from "./container-status.ts";
 import { parseContainerFilter, type ContainerFilter } from "./container-state.ts";
 import { createContainerInspector, isContainerId, sanitizeTailLines, type ContainerInspector } from "./containers.ts";
+import { createDiskUsageCache, loadInsights } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
 import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
@@ -284,6 +285,8 @@ export function createApp(options: AppOptions): App {
         maxBytes: config.logMaxBytes,
         timeoutMs: config.logTimeoutMs,
     });
+    // `docker system df` is expensive, so it is read on demand and cached (ADR 0015).
+    const diskCache = createDiskUsageCache();
     let activeSse = 0;
     let shuttingDown = false;
     const saves = new Set<Promise<unknown>>();
@@ -557,6 +560,24 @@ export function createApp(options: AppOptions): App {
             currentAccess: accessOf(request, config),
         });
         return htmlResponse(accessPage({ csrf, access, timezone: config.timeZone || undefined, report }));
+    }
+
+    async function renderServer(csrf: string, request: Request): Promise<Response> {
+        // Reuse the same classification as the container views (ADR 0014) so a
+        // container is attributed to a stack on the same strict basis.
+        const { containers, note: containerNote } = await loadContainers(stacksRoot, provider, inspector, config.hostStacksPathAliases);
+        const insights = await loadInsights(inspector, containerNote === null ? containers : null, {
+            timeoutMs: config.insightsTimeoutMs,
+            maxBytes: config.dockerMaxBytes,
+        });
+        if (containerNote) insights.notes.unshift(containerNote);
+        // Disk usage is only read when explicitly requested, and served from the
+        // cache within its TTL so a repeated click does not hit the daemon.
+        const wantsDisk = new URL(request.url).searchParams.get("disk") === "1";
+        const disk = wantsDisk
+            ? await diskCache.read(inspector, Date.now(), config.diskUsageTtlMs, { timeoutMs: config.insightsTimeoutMs, maxBytes: config.dockerMaxBytes })
+            : null;
+        return htmlResponse(serverPage({ csrf, access, timezone: config.timeZone || undefined, insights, disk }));
     }
 
     async function renderContainers(csrf: string, filter: ContainerFilter): Promise<Response> {
@@ -1114,6 +1135,7 @@ export function createApp(options: AppOptions): App {
 
         try {
             if (url.pathname === "/") return await renderStackList(session.csrf);
+            if (url.pathname === "/server") return await renderServer(session.csrf, request);
             if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
             if (url.pathname === "/access") return renderAccess(session.csrf, request);
             if (url.pathname === "/containers") return await renderContainers(session.csrf, parseContainerFilter(url.searchParams.get("state")));

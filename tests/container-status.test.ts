@@ -31,7 +31,7 @@ function fakeProvider(projects: { Name: string; Status: string; ConfigFiles: str
 
 function fakeInspector(stdout: string, result: Partial<CommandResult> = {}): ContainerInspector {
     const value: CommandResult = { ...ok, stdout, ...result };
-    return { engine: "docker", list: async () => value, inspect: async () => value, logs: async () => value };
+    return { engine: "docker", list: async () => value, inspect: async () => value, logs: async () => value, info: async () => value, stats: async () => value, diskUsage: async () => value };
 }
 
 function detailedInspector(outputs: { list?: string; inspect?: CommandResult }): ContainerInspector {
@@ -41,6 +41,9 @@ function detailedInspector(outputs: { list?: string; inspect?: CommandResult }):
         list: async () => ({ ...base, stdout: outputs.list ?? "" }),
         inspect: async () => outputs.inspect ?? base,
         logs: async () => base,
+        info: async () => base,
+        stats: async () => base,
+        diskUsage: async () => base,
     };
 }
 

@@ -57,10 +57,17 @@ export interface ContainerLogTarget {
     maxBytes?: number;
 }
 
+/** Bounded read options for the engine-wide, read-only calls. */
+export interface InspectorReadOptions {
+    timeoutMs?: number;
+    maxBytes?: number;
+}
+
 /**
  * Boundary around the lower-level, read-only Docker calls that are not Compose
- * operations: `docker container ls`, `inspect` and `logs`. The Compose lifecycle
- * contract stays in `ComposeProvider` (ADR 0005); the two are never mixed.
+ * operations: `docker container ls`, `inspect`, `logs`, and the engine-wide
+ * `info`/`stats`/`system df` diagnostics. The Compose lifecycle contract stays
+ * in `ComposeProvider` (ADR 0005); the two are never mixed.
  *
  * Every command uses the fixed Docker executable and an explicit argument array,
  * never a shell. There is no mutation, no exec and no user-supplied option: the
@@ -75,6 +82,12 @@ export interface ContainerInspector {
     inspect(id: string): Promise<CommandResult>;
     /** Bounded, one-shot `docker container logs`; no follow. */
     logs(target: ContainerLogTarget): Promise<CommandResult>;
+    /** `docker info`, projected onto named fields by the caller (ADR 0015). */
+    info(options?: InspectorReadOptions): Promise<CommandResult>;
+    /** `docker stats --no-stream`, one JSON object per container. */
+    stats(options?: InspectorReadOptions): Promise<CommandResult>;
+    /** `docker system df`, Docker-managed storage only. Read on demand. */
+    diskUsage(options?: InspectorReadOptions): Promise<CommandResult>;
 }
 
 class DockerContainerInspector implements ContainerInspector {
@@ -102,6 +115,23 @@ class DockerContainerInspector implements ContainerInspector {
             ["container", "logs", "--tail", String(tail), "--timestamps", "--", target.id],
             { timeoutMs: target.timeoutMs, maxBytes: target.maxBytes },
         );
+    }
+
+    info(options: InspectorReadOptions = {}): Promise<CommandResult> {
+        // `{{json .}}` yields one JSON object; the caller projects named fields.
+        return this.runner(["info", "--format", "{{json .}}"], options);
+    }
+
+    stats(options: InspectorReadOptions = {}): Promise<CommandResult> {
+        // `--no-stream` returns once; `--no-trunc` keeps full container IDs so
+        // they can be joined with the container list.
+        return this.runner(["stats", "--no-stream", "--no-trunc", "--format", "{{json .}}"], options);
+    }
+
+    diskUsage(options: InspectorReadOptions = {}): Promise<CommandResult> {
+        // Potentially expensive on large hosts; the caller only calls it on
+        // demand and caches the result (ADR 0015).
+        return this.runner(["system", "df", "--format", "{{json .}}"], options);
     }
 }
 

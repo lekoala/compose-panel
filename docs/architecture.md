@@ -11,7 +11,7 @@ Bun.serve (1 process, single instance)
     |-- Audit log (append-only NDJSON files, bounded)
     |-- ComposeProvider (listProjects · projectServices · validateConfig)
     |     `-- Bun.spawn([docker, "compose", ...], explicit cwd, no shell)
-    `-- ContainerInspector (list · inspect · logs, read-only)
+    `-- ContainerInspector (list · inspect · logs · info · stats · diskUsage, read-only)
           `-- Bun.spawn([docker, "container", ...], explicit args, no shell)
                 |-- directories /opt/stacks/<name>/compose.yaml + .env
                 `-- Container Engine (source of truth for state)
@@ -27,6 +27,19 @@ listing and classification are pure and unit-tested in `src/container-state.ts`
 panel exposes no start/stop/remove/exec: the read-only guarantee is
 application-level, not enforced by the socket mount. See
 [ADR 0014](adr/0014-docker-container-inspection.md).
+
+## Engine and resource insights (read-only)
+`GET /server` renders Docker's own diagnostics: engine facts (`docker info`,
+projected onto a fixed field whitelist), per-container and per-stack resource
+usage (`docker stats --no-stream`) and, on demand only, Docker-managed storage
+(`docker system df`, served through a short in-memory TTL cache). The calls live
+on the `ContainerInspector` boundary and the pure parsing/aggregation is in
+`src/insights.ts`. A collection that fails yields `null` for that section and a
+note, never a fabricated zero. Stack usage reuses the ADR 0014 classification,
+and a stack's CPU is a cumulative figure that may exceed 100 %. Host-level health
+(load, memory, uptime, filesystems, package updates) is out of scope and would
+need a separate host component and its own ADR. See
+[ADR 0015](adr/0015-readonly-engine-insights.md).
 
 ## Audit log
 Auth and action events are written by `src/audit.ts` as append-only NDJSON files, one per day under `<stacksRoot>/.compose-panel/audit/` (overridable), with a bounded number of retained files, a per-file size cap and bounded tail reads. It is not a database and holds no in-memory history: the files on disk are the record (see [ADR 0009](adr/0009-audit-log-and-login-backoff.md)). The same module backs the read-only `/audit` page and the change that replaces per-client login lockout with a bounded delay and one attempt in progress per client, so a single source cannot lock the administrator out.

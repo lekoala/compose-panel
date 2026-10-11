@@ -14,10 +14,11 @@ A trusted technical administrator. No multi-tenancy, no access for untrusted use
 - Start, stop, restart, pull images on their own or followed by an up (predefined, explicit actions), and see which services have an update ready, from which version to which, before applying it ([ADR 0011](adr/0011-pull-and-update-ready.md)).
 - Follow progress via SSE and review the real state after an interruption.
 - View Compose logs, without an interactive console.
+- Show read-only Docker diagnostics: engine facts, per-container and per-stack CPU/memory, and Docker-managed disk usage, with no history and no host agent ([ADR 0015](adr/0015-readonly-engine-insights.md)).
 - Single-administrator authentication, CSRF, correct sessions and minimal audit logging without secrets.
 
 ## Out of scope (do not implement without an ADR)
-Agents, remote control, terminal / PTY, graphical Compose editor, file generation, general-purpose file manager, panel self-update, Restic backups, encrypted secrets editor, scheduler, public API, multi-user, CPU/RAM dashboards, registry UI, plugins, Kubernetes, notifications.
+Agents, remote control, terminal / PTY, graphical Compose editor, file generation, general-purpose file manager, panel self-update, Restic backups, encrypted secrets editor, scheduler, public API, multi-user, monitoring with retained history or alerts, registry UI, plugins, Kubernetes, notifications. A read-only resource snapshot is now in scope (ADR 0015); a time-series dashboard, alerting and host-level health remain out of scope until a new ADR.
 
 ## Assumed non-goals
 - No guaranteed operation outcome after a panel crash: the outcome may be unknown.

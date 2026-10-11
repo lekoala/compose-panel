@@ -15,6 +15,7 @@ A small, self-hosted web panel for the Docker Compose stacks of **one Linux serv
 - **Edits `compose.yaml` and `.env` as raw text**: comments and formatting are kept. Every change is checked with `docker compose config` before anything is written, each save keeps a backup, and a file changed elsewhere in the meantime is detected instead of overwritten.
 - **Runs a fixed set of actions**: Up, Pull + up, Restart, Stop and Down, one at a time per stack. An action keeps running if you close the page, and its output streams live.
 - **Follows logs** live (`docker compose logs --follow`).
+- **Shows Docker diagnostics** on a read-only **Server** page (`/server`): engine facts from `docker info`, per-container and per-stack CPU/memory from `docker stats`, a current-state "Needs attention" list, and Docker-managed disk usage read on demand. It uses only the Docker API: no host agent, no history, and the host view (load, memory, uptime, filesystems, system updates) is not covered.
 - **Works on a phone**, in light or dark mode, with server-rendered pages and a few lines of plain JavaScript.
 
 It deliberately has no terminal, no file browser, no arbitrary Docker command, no database and no multi-user support. Stacks that use Compose override files are refused rather than half-managed.

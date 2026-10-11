@@ -2,6 +2,20 @@
 
 ## 0.1.1 — unreleased
 
+- Read-only Server page (ADR 0015): `GET /server` (linked in the footer) shows
+  Docker's own diagnostics. Engine facts come from `docker info`, projected onto
+  a fixed field whitelist so registry, proxy and environment configuration never
+  reach the page. Per-container and per-stack CPU/memory come from
+  `docker stats --no-stream` (a top-consumers table, plus a stack total whose CPU
+  is cumulative and may exceed 100 %); a "Needs attention" list reports the
+  current state (`unhealthy`, `restarting`, non-zero exit) with no history.
+  Docker-managed storage (`docker system df`) is read **on demand only** (a link,
+  served through a short in-memory cache, `COMPOSE_PANEL_DISK_USAGE_TTL_MS`)
+  because it can be expensive on a large host. The three calls extend the
+  read-only `ContainerInspector` boundary; a collection that fails shows a note
+  and stays unavailable rather than reporting zero. No host agent is involved:
+  host load, memory, uptime, filesystems and package updates stay out of scope.
+
 - Docker container inspection (ADR 0014): a read-only view of the containers the
   panel does not manage. The home page gains an **Other containers** section and
   a **Containers** page (`/containers`, linked in the footer) lists every

@@ -135,6 +135,28 @@ function projectStatus(services: Service[]): string {
     return [running ? `running(${running})` : "", exited ? `exited(${exited})` : ""].filter(Boolean).join(", ");
 }
 
+function containerNameOf(project: string, service: string): string {
+    return `${project}-${service}-1`;
+}
+
+/** Deterministic pseudo-value so the simulated stats are stable across reloads. */
+function pseudo(text: string, salt: number): number {
+    let hash = salt >>> 0;
+    for (let index = 0; index < text.length; index++) hash = (Math.imul(hash, 31) + text.charCodeAt(index)) >>> 0;
+    return hash;
+}
+
+function humanBytes(bytes: number): string {
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+    }
+    return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)}${units[unit]}`;
+}
+
 function inspect(ref: string): object | null {
     const found = images.get(ref) ?? images.get(localTags.get(ref) ?? "");
     if (!found) return null;
@@ -156,6 +178,81 @@ const runner: DockerRunner = async (args, options) => {
         const refs = args.slice(args.indexOf("--") + 1);
         const found = refs.map(inspect).filter(Boolean);
         return { ...ok(JSON.stringify(found)), code: found.length === refs.length ? 0 : 1 };
+    }
+    if (args[0] === "info") {
+        return ok(JSON.stringify({
+            OperatingSystem: "Ubuntu 22.04.5 LTS",
+            OSType: "linux",
+            Architecture: "aarch64",
+            KernelVersion: "5.15.0-107-generic",
+            ServerVersion: "27.3.1",
+            NCPU: 4,
+            MemTotal: 24 * 1024 ** 3,
+            Containers: [...projects.values()].reduce((total, services) => total + services.length, 0),
+            ContainersRunning: [...projects.values()].reduce((total, services) => total + services.filter(service => service.state === "running").length, 0),
+            ContainersPaused: 0,
+            ContainersStopped: [...projects.values()].reduce((total, services) => total + services.filter(service => service.state !== "running").length, 0),
+            Images: localTags.size,
+            Driver: "overlay2",
+        }));
+    }
+    if (args[0] === "stats") {
+        const lines: string[] = [];
+        const limit = 24 * 1024 ** 3;
+        for (const [project, services] of projects) {
+            for (const service of services) {
+                if (service.state !== "running") continue;
+                const name = containerNameOf(project, service.name);
+                const seed = pseudo(name, 7);
+                const cpu = (seed % 900) / 10;
+                const used = (20 + (seed % 880)) * 1024 ** 2;
+                lines.push(JSON.stringify({
+                    Container: name,
+                    Name: name,
+                    ID: service.imageId.replace("sha256:", ""),
+                    CPUPerc: `${cpu.toFixed(2)}%`,
+                    MemUsage: `${humanBytes(used)} / ${humanBytes(limit)}`,
+                    MemPerc: `${((used / limit) * 100).toFixed(2)}%`,
+                    NetIO: "1.2MB / 3.4MB",
+                    BlockIO: "0B / 8.1MB",
+                    PIDs: String(seed % 40),
+                }));
+            }
+        }
+        return ok(lines.length > 0 ? `${lines.join("\n")}\n` : "");
+    }
+    if (args[0] === "system" && args[1] === "df") {
+        return ok([
+            { Type: "Images", TotalCount: "9", Active: "4", Size: "8.2GB", Reclaimable: "3.1GB (37%)" },
+            { Type: "Containers", TotalCount: "6", Active: "4", Size: "512MB", Reclaimable: "128MB (25%)" },
+            { Type: "Local Volumes", TotalCount: "3", Active: "2", Size: "4.1GB", Reclaimable: "1.2GB (29%)" },
+            { Type: "Build Cache", TotalCount: "12", Active: "0", Size: "1.4GB", Reclaimable: "1.4GB (100%)" },
+        ].map(row => JSON.stringify(row)).join("\n") + "\n");
+    }
+    if (args[0] === "container" && args[1] === "ls") {
+        const lines: string[] = [];
+        for (const [project, services] of projects) {
+            for (const service of services) {
+                const running = service.state === "running";
+                const fields = [
+                    service.imageId.replace("sha256:", ""),
+                    containerNameOf(project, service.name),
+                    service.image,
+                    service.state,
+                    running ? "Up 2 hours" : `Exited (${service.exitCode}) 5 minutes ago`,
+                    service.health || "none",
+                    "2026-10-05T08:31:11Z",
+                    running ? "2 hours ago" : "5 minutes ago",
+                    "",
+                    project,
+                    service.name,
+                    join(stacksRoot, project, "compose.yaml"),
+                    join(stacksRoot, project),
+                ];
+                lines.push(fields.map(field => JSON.stringify(field)).join("\t"));
+            }
+        }
+        return ok(lines.length > 0 ? `${lines.join("\n")}\n` : "");
     }
     const project = arg(args, "-p") ?? basename(arg(args, "--project-directory") ?? "");
     const composeFile = arg(args, "-f") ?? "";
@@ -269,7 +366,7 @@ const config = loadConfig({
     COMPOSE_PANEL_ADMIN_USER: "admin",
     COMPOSE_PANEL_ADMIN_PASSWORD_HASH: await Bun.password.hash(PASSWORD, { algorithm: "argon2id" }),
 });
-const app = createApp({ config, stacksRoot, provider });
+const app = createApp({ config, stacksRoot, provider, runner });
 const server = Bun.serve({ hostname: "127.0.0.1", port: config.port, fetch: request => app.fetch(request) });
 
 console.info(`

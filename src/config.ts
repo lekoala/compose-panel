@@ -83,6 +83,14 @@ export interface AppConfig {
     hostStacksPathAliases: PathAlias[];
     dockerTimeoutMs: number;
     dockerMaxBytes: number;
+    /**
+     * Timeout for the read-only engine diagnostics calls (`docker info`,
+     * `docker stats --no-stream`, `docker system df`). Separate from the
+     * general Docker timeout because `stats` can take longer on a busy host.
+     */
+    insightsTimeoutMs: number;
+    /** Cache lifetime for `docker system df`, which is read on demand only. */
+    diskUsageTtlMs: number;
     /** Maximum duration of a mutating Compose operation. */
     operationTimeoutMs: number;
     /** Bounded drain window for running operations on shutdown. */
@@ -302,6 +310,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
         timeZone: parseTimeZone(env),
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),
         dockerMaxBytes: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_MAX_BYTES", 1024 * 1024),
+        insightsTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_INSIGHTS_TIMEOUT_MS", 10_000),
+        diskUsageTtlMs: parsePositiveInt(env, "COMPOSE_PANEL_DISK_USAGE_TTL_MS", 300_000),
         operationTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_OPERATION_TIMEOUT_MS", 5 * 60 * 1000),
         shutdownGraceMs: parsePositiveInt(env, "COMPOSE_PANEL_SHUTDOWN_GRACE_MS", 30 * 1000),
         sseHeartbeatMs: parsePositiveInt(env, "COMPOSE_PANEL_SSE_HEARTBEAT_MS", 15 * 1000),

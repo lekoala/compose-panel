@@ -49,6 +49,8 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         timeZone: "",
         dockerTimeoutMs: 5000,
         dockerMaxBytes: 1024 * 1024,
+        insightsTimeoutMs: 10_000,
+        diskUsageTtlMs: 300_000,
         operationTimeoutMs: 60_000,
         shutdownGraceMs: 5_000,
         sseHeartbeatMs: 15_000,
@@ -1892,7 +1894,7 @@ function containerLine(fields: ContainerFields): string {
 
 function fakeInspector(stdout: string, result: Partial<CommandResult> = {}): ContainerInspector {
     const value: CommandResult = { code: 0, stdout, stderr: "", timedOut: false, truncated: false, ...result };
-    return { engine: "docker", list: async () => value, inspect: async () => value, logs: async () => value };
+    return { engine: "docker", list: async () => value, inspect: async () => value, logs: async () => value, info: async () => value, stats: async () => value, diskUsage: async () => value };
 }
 
 function detailedInspector(outputs: { list: string; inspect?: CommandResult; logs?: CommandResult }): ContainerInspector {
@@ -1902,6 +1904,9 @@ function detailedInspector(outputs: { list: string; inspect?: CommandResult; log
         list: async () => ({ ...base, stdout: outputs.list }),
         inspect: async () => outputs.inspect ?? base,
         logs: async () => outputs.logs ?? base,
+        info: async () => base,
+        stats: async () => base,
+        diskUsage: async () => base,
     };
 }
 
@@ -2069,5 +2074,108 @@ describe("container detail and logs", () => {
         const app = makeApp({}, undefined, undefined, undefined, root, fakeInspector(containerFixture()));
         const session = await login(app);
         expect((await authed(app, "/containers/not-hex/logs", session)).status).toBe(400);
+    });
+});
+
+function serverProvider(): ComposeProvider {
+    const empty: CommandResult = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+    return {
+        engine: "fake",
+        listProjects: async () => ({ ...empty, stdout: JSON.stringify([{ Name: "demo", Status: "running(5)", ConfigFiles: join(root, "demo", "compose.yaml") }]) }),
+    } as unknown as ComposeProvider;
+}
+
+function serverInspector(outputs: { list?: string; info?: CommandResult; stats?: CommandResult; diskUsage?: CommandResult }): ContainerInspector {
+    const base: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+    return {
+        engine: "docker",
+        list: async () => ({ ...base, stdout: outputs.list ?? "" }),
+        inspect: async () => base,
+        logs: async () => base,
+        info: async () => outputs.info ?? base,
+        stats: async () => outputs.stats ?? base,
+        diskUsage: async () => outputs.diskUsage ?? base,
+    };
+}
+
+const SERVER_INFO: CommandResult = {
+    code: 0,
+    stdout: JSON.stringify({
+        OperatingSystem: "Ubuntu 22.04.5 LTS", OSType: "linux", Architecture: "x86_64",
+        KernelVersion: "5.15.0-107-generic", ServerVersion: "27.3.1", NCPU: 4,
+        MemTotal: 16 * 1024 ** 3, Containers: 5, ContainersRunning: 3, Images: 9, Driver: "overlay2",
+        RegistryConfig: { secret: "leak" }, HttpProxy: "http://internal",
+    }),
+    stderr: "", timedOut: false, truncated: false,
+};
+
+const SERVER_STATS: CommandResult = {
+    code: 0,
+    stdout: JSON.stringify({
+        Container: "demo-app-1", Name: "demo-app-1", ID: "aaaaaaaaaaaa", CPUPerc: "12.50%",
+        MemUsage: "100MiB / 1GiB", MemPerc: "9.77%", NetIO: "1MB / 2MB", BlockIO: "0B / 0B", PIDs: "5",
+    }),
+    stderr: "", timedOut: false, truncated: false,
+};
+
+const SERVER_DF: CommandResult = {
+    code: 0,
+    stdout: JSON.stringify({ Type: "Images", TotalCount: "9", Active: "4", Size: "8.2GB", Reclaimable: "3.1GB (37%)" }),
+    stderr: "", timedOut: false, truncated: false,
+};
+
+describe("server page", () => {
+    test("requires a session", async () => {
+        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({ list: containerFixture() }));
+        const response = await app.fetch(new Request(`${ORIGIN}/server`));
+        expect(response.status).toBe(302);
+        expect(response.headers.get("location")).toBe("/login");
+    });
+
+    test("renders engine facts and container usage without leaking raw info", async () => {
+        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({
+            list: containerFixture(), info: SERVER_INFO, stats: SERVER_STATS,
+        }));
+        const session = await login(app);
+        const response = await authed(app, "/server", session);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("text/html");
+        const html = await response.text();
+        expect(html).toContain("Ubuntu 22.04.5 LTS");
+        expect(html).toContain("demo-app-1");
+        expect(html).not.toContain("leak");
+        expect(html).not.toContain("http://internal");
+    });
+
+    test("reads disk usage only on demand and caches it", async () => {
+        let calls = 0;
+        const inspector = serverInspector({ list: containerFixture(), diskUsage: undefined });
+        inspector.diskUsage = async () => { calls += 1; return SERVER_DF; };
+        const app = makeApp({}, undefined, serverProvider(), undefined, root, inspector);
+        const session = await login(app);
+
+        const plain = await (await authed(app, "/server", session)).text();
+        expect(calls).toBe(0);
+        expect(plain).not.toContain("8.2GB");
+
+        const withDisk = await (await authed(app, "/server?disk=1", session)).text();
+        expect(calls).toBe(1);
+        expect(withDisk).toContain("8.2GB");
+
+        // A second request within the TTL is served from the cache.
+        await authed(app, "/server?disk=1", session);
+        expect(calls).toBe(1);
+    });
+
+    test("still renders with a note when Docker diagnostics fail", async () => {
+        const failure: CommandResult = { code: 1, stdout: "", stderr: "boom", timedOut: false, truncated: false };
+        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({
+            list: containerFixture(), info: failure, stats: failure,
+        }));
+        const session = await login(app);
+        const response = await authed(app, "/server", session);
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        expect(html).toContain("note-warn");
     });
 });

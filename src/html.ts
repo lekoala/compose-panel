@@ -4,6 +4,7 @@ import type { AuditEntry } from "./audit.ts";
 import type { ImageVersion, ServiceUpdate } from "./updates.ts";
 import type { AccessReport, AccessStatus } from "./access.ts";
 import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerDetails, type ContainerFilter } from "./container-state.ts";
+import type { AttentionItem, AttentionReason, ClassifiedStat, DiskUsage, DiskUsageRow, EngineInfo, Insights, StackUsage } from "./insights.ts";
 import packageJson from "../package.json";
 
 const VERSION = packageJson.version;
@@ -72,7 +73,7 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
   ${options.bare ? `<main class="bare">${body}</main>` : `<div class="shell">
     <header><a href="/" class="brand"><img src="/favicon.svg" alt="" width="20" height="20">Compose Panel</a>${logout}</header>
     <main>${body}</main>
-    <footer>Compose Panel ${escapeHtml(VERSION)}${options.logoutCsrf ? ` · <a href="/containers">Containers</a> · <a href="/audit">Activity log</a> · <a href="/access">Access &amp; security</a>` : ""}${options.access ? ` · ${escapeHtml(options.access)}` : ""}</footer>
+    <footer>Compose Panel ${escapeHtml(VERSION)}${options.logoutCsrf ? ` · <a href="/server">Server</a> · <a href="/containers">Containers</a> · <a href="/audit">Activity log</a> · <a href="/access">Access &amp; security</a>` : ""}${options.access ? ` · ${escapeHtml(options.access)}` : ""}</footer>
   </div>`}
 </body>
 </html>`;
@@ -548,6 +549,176 @@ export function containersPage(options: ContainersPageOptions): string {
         + `<div class="toolbar">${filters}</div>`
         + (sections || (options.note ? "" : note("info", "No containers match this view.")));
     return documentHtml("Containers", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
+}
+
+const ATTENTION_LABELS: Record<AttentionReason, string> = {
+    "unhealthy": "Unhealthy",
+    "restarting": "Restarting",
+    "exited-nonzero": "Exited with an error",
+};
+
+function formatBytes(bytes: number | null): string {
+    if (bytes === null || !Number.isFinite(bytes)) return "—";
+    if (bytes < 1024) return `${Math.round(bytes)} B`;
+    const units = ["KiB", "MiB", "GiB", "TiB", "PiB"];
+    let value = bytes / 1024;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+    }
+    return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+function formatPercent(value: number | null): string {
+    if (value === null || !Number.isFinite(value)) return "—";
+    return `${Math.round(value * 10) / 10}%`;
+}
+
+/** A stack link for a managed container, else the category, else a dash. */
+function stackCell(container: ClassifiedContainer | null): string {
+    if (!container) return `<span class="muted">Unattributed</span>`;
+    if (container.stack) return `<a href="/stacks/${encodeURIComponent(container.stack)}">${escapeHtml(container.stack)}</a>`;
+    return `<span class="muted">${escapeHtml(CONTAINER_CATEGORY_LABELS[container.category])}</span>`;
+}
+
+function statRows(stats: ClassifiedStat[]): string {
+    return stats.map(stat => {
+        const name = stat.name || stat.id.slice(0, 12);
+        const memory = stat.memUsedBytes === null
+            ? `<span class="muted">—</span>`
+            : escapeHtml(stat.memLimitBytes === null
+                ? formatBytes(stat.memUsedBytes)
+                : `${formatBytes(stat.memUsedBytes)} / ${formatBytes(stat.memLimitBytes)}`);
+        return `<tr><td><a href="/containers/${encodeURIComponent(stat.id)}">${escapeHtml(name)}</a></td>`
+            + `<td>${stackCell(stat.container)}</td>`
+            + `<td>${escapeHtml(formatPercent(stat.cpuPercent))}</td>`
+            + `<td>${memory}</td>`
+            + `<td>${escapeHtml(formatPercent(stat.memPercent))}</td>`
+            + `<td><code>${escapeHtml(stat.netIo || "—")}</code></td>`
+            + `<td><code>${escapeHtml(stat.blockIo || "—")}</code></td>`
+            + `<td>${stat.pids === null ? `<span class="muted">—</span>` : stat.pids}</td></tr>`;
+    }).join("");
+}
+
+function stackRows(stacks: StackUsage[]): string {
+    return stacks.map(usage => `<tr><td><a href="/stacks/${encodeURIComponent(usage.stack)}">${escapeHtml(usage.stack)}</a></td>`
+        + `<td>${escapeHtml(formatPercent(usage.cpuPercent))}</td>`
+        + `<td>${escapeHtml(formatBytes(usage.memUsedBytes))}</td>`
+        + `<td>${usage.containers}</td></tr>`).join("");
+}
+
+function attentionRows(items: AttentionItem[]): string {
+    return items.map(item => {
+        const cls = item.reason === "unhealthy" ? "state-failed" : "state-stopped";
+        const stack = item.stack ? `<a href="/stacks/${encodeURIComponent(item.stack)}">${escapeHtml(item.stack)}</a>` : `<span class="muted">—</span>`;
+        return `<tr><td><a href="/containers/${encodeURIComponent(item.id)}">${escapeHtml(item.name)}</a></td>`
+            + `<td><span class="state ${cls}">${escapeHtml(ATTENTION_LABELS[item.reason])}</span></td><td>${stack}</td></tr>`;
+    }).join("");
+}
+
+function diskRows(rows: DiskUsageRow[]): string {
+    return rows.map(row => `<tr><td>${escapeHtml(row.type)}</td>`
+        + `<td>${row.totalCount === null ? `<span class="muted">—</span>` : row.totalCount}</td>`
+        + `<td>${row.active === null ? `<span class="muted">—</span>` : row.active}</td>`
+        + `<td>${escapeHtml(row.size || "—")}</td>`
+        + `<td>${escapeHtml(row.reclaimable || "—")}</td></tr>`).join("");
+}
+
+function engineFacts(info: EngineInfo): string {
+    return `<div class="table-wrap"><table class="table"><thead><tr><th>Operating system</th><th class="col-optional">Kernel</th><th>Architecture</th><th>Engine</th><th class="col-optional">Storage driver</th></tr></thead><tbody><tr>`
+        + `<td>${escapeHtml(info.operatingSystem ?? "—")}</td>`
+        + `<td class="col-optional">${escapeHtml(info.kernelVersion ?? "—")}</td>`
+        + `<td>${escapeHtml(info.architecture ?? "—")}</td>`
+        + `<td>${escapeHtml(info.engineVersion ?? "—")}</td>`
+        + `<td class="col-optional">${escapeHtml(info.driver ?? "—")}</td></tr></tbody></table></div>`;
+}
+
+export interface ServerPageOptions {
+    csrf: string;
+    access?: string;
+    timezone?: string;
+    insights: Insights;
+    /** Disk usage when requested with ?disk=1; null shows the on-demand link. */
+    disk: DiskUsage | null;
+}
+
+/**
+ * Read-only Docker diagnostics for the host's engine: what runs, what consumes,
+ * and what needs attention. Honest by construction: engine facts are labelled as
+ * the daemon's machine (not host monitoring), disk usage is Docker-managed only,
+ * stack CPU is a cumulative figure that may exceed 100 %, and an unavailable
+ * section is never rendered as zero.
+ */
+export function serverPage(options: ServerPageOptions): string {
+    const { insights } = options;
+    const readAtIso = new Date(insights.readAt).toISOString();
+    const readAt = `<time datetime="${escapeHtml(readAtIso)}" data-local-time="full">${escapeHtml(readAtIso.slice(0, 19).replace("T", " "))} UTC</time>`;
+
+    const engineCard = `<section class="card"><h2>Docker Engine diagnostics</h2>`
+        + `<p class="muted">Facts Docker reports about the machine running the daemon, which may be a VM. This is not live host monitoring. Snapshot as of ${readAt}.</p>`
+        + (insights.info
+            ? `<div class="stats" aria-label="Docker Engine summary">`
+                + `<div class="stat"><span class="stat-value">${insights.info.cpus ?? "—"}</span><span class="stat-label">Engine CPUs</span></div>`
+                + `<div class="stat"><span class="stat-value">${escapeHtml(formatBytes(insights.info.memoryTotalBytes))}</span><span class="stat-label">Engine memory</span></div>`
+                + `<div class="stat"><span class="stat-value">${insights.info.containersRunning ?? "—"}</span><span class="stat-label">Running containers</span></div>`
+                + `<div class="stat"><span class="stat-value">${insights.attention === null ? "—" : insights.attention.length}</span><span class="stat-label">Needs attention</span></div>`
+                + `</div>`
+                + engineFacts(insights.info)
+            : `<p class="muted">Docker Engine details are unavailable.</p>`)
+        + `</section>`;
+
+    const topContent = insights.stats === null
+        ? `<p class="muted">Container usage is unavailable.</p>`
+        : insights.stats.length === 0
+            ? `<p class="muted">No running containers.</p>`
+            : `<div class="table-wrap"><table class="table"><thead><tr><th>Container</th><th>Stack</th><th>CPU</th><th>Memory</th><th class="col-optional">Mem %</th><th class="col-optional">Network I/O</th><th class="col-optional">Block I/O</th><th class="col-optional">PIDs</th></tr></thead><tbody>`
+                + statRows([...insights.stats].sort((a, b) => (b.cpuPercent ?? -1) - (a.cpuPercent ?? -1)))
+                + `</tbody></table></div>`
+                + `<p class="muted">Reported by <code>docker stats</code>, read once on load. Network and block I/O are cumulative counters, not rates.</p>`;
+    const topCard = `<section class="card"><h2>Top containers by CPU</h2>${topContent}</section>`;
+
+    const stacksContent = insights.stacks === null
+        ? `<p class="muted">Per-stack usage is unavailable.</p>`
+        : insights.stacks.length === 0
+            ? `<p class="muted">No managed running containers.</p>`
+            : `<div class="table-wrap"><table class="table"><thead><tr><th>Stack</th><th>CPU (cumulated)</th><th>Memory (summed)</th><th>Containers</th></tr></thead><tbody>`
+                + stackRows(insights.stacks)
+                + `</tbody></table></div>`
+                + `<p class="muted">CPU is summed across the stack's containers and may exceed 100 %: Docker's scale is per core.</p>`;
+    const stacksCard = `<section class="card"><h2>Per-stack usage</h2>${stacksContent}</section>`;
+
+    const attentionContent = insights.attention === null
+        ? `<p class="muted">Container health could not be checked.</p>`
+        : insights.attention.length === 0
+            ? `<p class="muted">No current issues.</p>`
+            : `<div class="table-wrap"><table class="table"><thead><tr><th>Container</th><th>Issue</th><th>Stack</th></tr></thead><tbody>${attentionRows(insights.attention)}</tbody></table></div>`
+                + `<p class="muted">A snapshot of the current state, with no history. An exited job with an error may be harmless.</p>`;
+    const attentionCard = `<section class="card"><h2>Needs attention</h2>${attentionContent}</section>`;
+
+    let diskCard: string;
+    if (options.disk === null) {
+        diskCard = `<p class="muted">Docker-managed storage is read on demand because it can be expensive on a large host.</p>`
+            + `<p><a class="btn" href="/server?disk=1">Load disk usage</a></p>`;
+    } else if (options.disk.rows === null) {
+        diskCard = note("warn", options.disk.note ?? "Docker disk usage is unavailable.")
+            + `<p><a class="btn" href="/server?disk=1">Try again</a></p>`;
+    } else {
+        diskCard = `<div class="table-wrap"><table class="table"><thead><tr><th>Type</th><th>Items</th><th>Active</th><th>Size</th><th>Reclaimable</th></tr></thead><tbody>${diskRows(options.disk.rows)}</tbody></table></div>`
+            + `<p class="muted">Docker-managed storage only. Not total host disk usage. Snapshot as of ${readAt}.</p>`;
+    }
+    const diskSection = `<section class="card"><h2>Docker disk usage</h2>${diskCard}</section>`;
+
+    const body = `<p class="crumbs"><a href="/">← All stacks</a></p>`
+        + `<div class="page-head"><h1>Server</h1></div>`
+        + `<p class="lead">Docker's own diagnostics for this engine: what runs and what consumes resources. Read only. The wider host view — load, memory, uptime, filesystems and system updates — is not available here.</p>`
+        + insights.notes.map(text => note("warn", text)).join("")
+        + engineCard
+        + topCard
+        + stacksCard
+        + attentionCard
+        + diskSection;
+    return documentHtml("Server", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"] });
 }
 
 function containerTime(value: string | null): string {
