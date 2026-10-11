@@ -390,6 +390,42 @@
         });
     }
 
+    /* Navigation drawer: the sidebar renders closed everywhere. On wide
+     * screens it is opened (the toggle is hidden there by CSS); on small
+     * screens it stays a native <details> disclosure opening as an overlay,
+     * with Escape and outside-tap dismissal as enhancement. Without
+     * JavaScript the menu stays usable, collapsed into its toggle. */
+    function wireNavDrawer() {
+        var sidebar = document.querySelector("details.sidebar");
+        if (!sidebar) return;
+        var mobile = null;
+        try {
+            mobile = window.matchMedia("(max-width: 52rem)");
+        } catch { mobile = null; }
+        if (!mobile) return;
+        function syncNavigation() {
+            sidebar.open = !mobile.matches;
+        }
+        if (typeof mobile.addEventListener === "function") mobile.addEventListener("change", syncNavigation);
+        else if (typeof mobile.addListener === "function") mobile.addListener(syncNavigation);
+        syncNavigation();
+        // Dismissal only applies where the toggle exists: on desktop the
+        // menu has no visible way to reopen once closed.
+        document.addEventListener("keydown", function (e) {
+            if (e.key !== "Escape" || !mobile.matches || !sidebar.open) return;
+            sidebar.open = false;
+        });
+        document.addEventListener("click", function (e) {
+            if (!mobile.matches || !sidebar.open) return;
+            if (sidebar.contains(e.target)) return;
+            sidebar.open = false;
+        });
+    }
+
+    // Runs immediately (this script is deferred, so the DOM is parsed):
+    // wide screens must not flash a closed sidebar.
+    wireNavDrawer();
+
     /* Local filter for the navigation stack list and the stacks table. Hides
      * non-matching entries; without JavaScript every entry is simply shown. */
     function wireNavSearch() {

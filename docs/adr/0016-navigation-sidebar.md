@@ -29,6 +29,13 @@ not require a new Docker collection, endpoint, cache or durable state.
   of links is shown, so no function is lost.
 - **Responsive by CSS only.** On small screens the sidebar collapses into a
   native `<details>` disclosure. No JavaScript is required to open the menu.
+- **Mobile behavior.** The sidebar renders closed everywhere. On small screens
+  it opens as an overlay above the content instead of pushing it down; a small
+  script opens it on wide screens and adds Escape/outside-tap dismissal on
+  small ones. Without JavaScript the menu stays usable, collapsed into its
+  toggle on arrival and opened with one tap. `/app.js` loads on every page
+  that renders navigation (defaulted in `documentHtml`), so the drawer sync
+  and the stack filter cannot be forgotten by a page.
 - The `bare` pages (sign-in, session ended, error messages) are unchanged: the
   sidebar is rendered only when navigation data is supplied.
 

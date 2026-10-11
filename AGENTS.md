@@ -23,6 +23,7 @@ Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`,
 10. Existing stacks must remain manageable by `docker compose` CLI without this panel.
 
 ## Working style
+- HTML first, progressive enhancement. Core navigation and operations must remain usable without JavaScript. Prefer native browser capabilities and server-rendered HTML; use vanilla JavaScript to enhance interactions where useful, without requiring identical no-JS functionality.
 - Language: code, comments, identifiers, tests, UI strings and documentation in English.
 - Make one vertical, testable change per PR. Explain why every new dependency is necessary.
 - No speculative abstractions, event buses or plugin systems.

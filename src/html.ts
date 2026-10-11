@@ -72,8 +72,9 @@ const NAV_SECTIONS: readonly [NavSection, string, string][] = [
 
 /**
  * Authenticated navigation. Sections and the stack list are server-rendered
- * links; the local search and the mobile disclosure are progressive
- * enhancement. Only names are shown: no state, counter or badge here.
+ * links; the disclosure starts closed (app.js opens it on wide screens) and
+ * the local search is progressive enhancement. Only names are shown: no
+ * state, counter or badge here.
  */
 export function renderSidebar(nav: NavigationOptions): string {
     const sections = NAV_SECTIONS
@@ -95,7 +96,7 @@ export function renderSidebar(nav: NavigationOptions): string {
     const list = hasStacks
         ? `<ul class="nav-list" id="nav-list">${items}</ul><p class="nav-empty muted" id="nav-empty" hidden>No stack matches.</p>`
         : `<p class="nav-empty muted">No stacks yet.</p>`;
-    return `<details class="sidebar" open>
+    return `<details class="sidebar">
 <summary class="sidebar-summary">Navigation</summary>
 <div class="sidebar-body">
 <nav class="nav-sections" aria-label="Sections">${sections}</nav>
@@ -109,7 +110,9 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
     const logout = options.logoutCsrf
         ? `<div class="session"><form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="${escapeHtml(options.logoutCsrf)}"><button type="submit" class="btn btn-quiet">Sign out</button></form></div>`
         : "";
-    const scripts = (options.scripts ?? []).map(src => `<script src="${escapeHtml(src)}" defer></script>`).join("");
+    // Every page with navigation needs app.js (drawer sync, stack filter):
+    // default it here so no page can forget it.
+    const scripts = (options.scripts ?? (options.nav ? ["/app.js"] : [])).map(src => `<script src="${escapeHtml(src)}" defer></script>`).join("");
     const timezone = options.timezone ? ` data-timezone="${escapeHtml(options.timezone)}"` : "";
     const content = options.nav
         ? `<div class="layout"><aside class="sidebar-wrap">${renderSidebar(options.nav)}</aside><main>${body}</main></div>`
