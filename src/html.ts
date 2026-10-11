@@ -244,12 +244,12 @@ export function servicesSection(services: ComposeService[], state: string, updat
 }
 
 const OPERATIONS: { action: OperationAction; label: string; help: string; style: string; needsDeployment: boolean }[] = [
-    { action: "up", label: "Up", help: "Create or update the containers so they match the Compose file and the local images. Use this after editing or after Pull.", style: "btn-primary", needsDeployment: false },
-    { action: "pull", label: "Pull", help: "Check for newer images and download them. No container is touched: services with a newer image are then marked “Update ready”.", style: "", needsDeployment: false },
-    { action: "pull-up", label: "Pull + up", help: "Pull, then Up, in one step: services with a newer image are recreated right away.", style: "", needsDeployment: false },
-    { action: "restart", label: "Restart", help: "Restart the existing containers. Does not apply file changes.", style: "", needsDeployment: true },
-    { action: "stop", label: "Stop", help: "Stop the containers without removing them. Up starts them again.", style: "", needsDeployment: true },
-    { action: "down", label: "Down", help: "Stop and remove the containers and networks. Volumes and images are kept.", style: "btn-danger", needsDeployment: true },
+    { action: "up", label: "Up", help: "Create or update this stack's containers so they match the Compose file and the local images. Use this after editing or after Pull.", style: "btn-primary", needsDeployment: false },
+    { action: "pull", label: "Pull", help: "Check this stack's images for updates and download them. No container is touched: services with a newer image are then marked “Update ready”.", style: "", needsDeployment: false },
+    { action: "pull-up", label: "Pull + up", help: "Pull this stack's images, then Up, in one step: services with a newer image are recreated right away.", style: "", needsDeployment: false },
+    { action: "restart", label: "Restart", help: "Restart all containers in this stack. Does not apply Compose file changes.", style: "", needsDeployment: true },
+    { action: "stop", label: "Stop", help: "Stop this stack's containers without removing them. Up starts them again.", style: "", needsDeployment: true },
+    { action: "down", label: "Down", help: "Stop and remove this stack's containers and networks. Volumes and images are kept.", style: "btn-danger", needsDeployment: true },
 ];
 
 export const OPERATION_LABELS: Record<OperationAction, string> = Object.fromEntries(OPERATIONS.map(op => [op.action, op.label])) as Record<OperationAction, string>;
@@ -279,7 +279,7 @@ export function operationControls(name: string, csrf: string, options: { busy: b
                 ? note("info", `Update ready for ${options.updatesReady.join(", ")}: Up recreates ${options.updatesReady.length === 1 ? "it" : "them"} with the newer image. The other services are not affected by the image change. Details under Services.`)
                 : "";
     return `<section class="card"><h2>Actions</h2>`
-        + `<p class="muted">Actions run on the server and keep going if you close this page. Only one action or save runs at a time per stack.</p>`
+        + `<p class="muted">These actions apply to this stack only. They run on the server and keep going if you close this page. Only one action or save runs at a time per stack.</p>`
         + `${status}<div class="op-list">${rows}</div></section>`;
 }
 

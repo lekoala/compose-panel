@@ -27,6 +27,7 @@ Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`,
 - Make one vertical, testable change per PR. Explain why every new dependency is necessary.
 - No speculative abstractions, event buses or plugin systems.
 - Add regression tests for every nontrivial bug or security issue.
+- Do not test user-facing copy with unit tests. Displayed wording is not a behavior contract and must stay free to be edited; the code is the source of truth. Tests must assert behavior, not exact UI strings.
 - Preserve existing file contents when reading; never round-trip YAML through a parser on save.
 - Use Linux CI for process/signal tests; Windows Bun process behavior is not proof of Linux correctness.
 - Clearly mark mock/stub features; do not advertise incomplete functions.
