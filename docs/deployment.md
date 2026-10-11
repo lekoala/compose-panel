@@ -110,8 +110,8 @@ itself, or in a container with `network_mode: host`.
    ```
 
    Each entry must be `https` (outside `COMPOSE_PANEL_DEV=true`), with no
-   credentials, path or query, and no duplicates. Several origins are
-   comma-separated:
+   credentials, path, query or fragment, no empty entry and no duplicates.
+   Several origins are comma-separated:
 
    ```sh
    # A public domain and a private overlay name, for example
@@ -320,7 +320,8 @@ signed in. The log never contains passwords, hashes or `.env` values.
 Useful variables: `COMPOSE_PANEL_AUDIT_ENABLED` (default `true`),
 `COMPOSE_PANEL_AUDIT_DIR` (default the stacks path above),
 `COMPOSE_PANEL_AUDIT_ROTATION` (`day` or `month`),
-`COMPOSE_PANEL_AUDIT_RETAIN_FILES`, `COMPOSE_PANEL_AUDIT_MAX_READ_LINES`.
+`COMPOSE_PANEL_AUDIT_RETAIN_FILES`, `COMPOSE_PANEL_AUDIT_MAX_FILE_BYTES`,
+`COMPOSE_PANEL_AUDIT_MAX_READ_LINES`.
 
 The activity log, the start time of an action and container logs are all shown
 in one display time zone. Set `COMPOSE_PANEL_TIMEZONE` to an IANA name (e.g.

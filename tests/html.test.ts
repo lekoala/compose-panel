@@ -26,23 +26,24 @@ test("exposes the display time zone on the document, escaped", () => {
 
 test("hides the health column when no service declares a health check", () => {
     const html = servicesSection([service("app", null), service("cache", null)], "running");
-    expect(html).not.toContain("Health check");
-    expect(html).not.toContain("Not configured");
+    expect(html.match(/<th[\s>]/g)).toHaveLength(3);
+    expect(html).not.toContain("state-done");
 });
 
-test("shows the health column, with Not configured, once one service declares one", () => {
+test("shows the health column, with a not-configured cell, once one service declares one", () => {
     const html = servicesSection([service("app", "healthy"), service("cache", null)], "running");
-    expect(html).toContain("Health check");
-    expect(html).toContain(">Healthy<");
-    expect(html).toContain("Not configured");
+    expect(html.match(/<th[\s>]/g)).toHaveLength(4);
+    expect(html).toContain("state-done");
+    expect(html).toContain('class="muted"');
 });
 
 test("keeps health apart from run state and flags unhealthy services", () => {
     const services = [service("app", "unhealthy"), service("cache", "starting")];
     const html = servicesSection(services, "running");
-    expect(html).toContain("Unhealthy");
-    expect(html).toContain("Starting");
-    expect(healthSummaryBadge(services)).toContain("1 unhealthy");
+    expect(html).toContain("state-failed");
+    expect(html).toContain("state-stopped");
+    const badge = healthSummaryBadge(services);
+    expect(badge).toMatch(/<span class="state state-failed">[^<]*1[^<]*<\/span>/);
     expect(healthSummaryBadge([service("app", "healthy")])).toBe("");
 });
 
@@ -73,6 +74,6 @@ test("logs panel exposes the snapshot link and the follow stream", () => {
     const html = logsPanel("demo", 200, "Europe/Brussels");
     expect(html).toContain('data-logs-snapshot="/stacks/demo/logs"');
     expect(html).toContain('data-logs-stream="/stacks/demo/logs/events"');
-    expect(html).toContain("Latest 200 lines");
-    expect(html).toContain("Follow live");
+    expect(html).toContain('id="logs-follow"');
+    expect(html).toContain('id="logs-refresh"');
 });

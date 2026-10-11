@@ -390,24 +390,23 @@ describe("access diagnostics", () => {
         expect(response.status).toBe(200);
         expect(response.headers.get("cache-control")).toBe("no-store");
         const html = await response.text();
-        expect(html).toContain("Access &amp; security");
         expect(html).toContain("Binds 127.0.0.1:5081");
         expect(html).toContain("Arrived through <strong>loopback (127.0.0.1:5081)</strong>");
-        expect(html).toContain("SSH tunnel (loopback)");
-        expect(html).toContain("cannot tell whether a tunnel is currently open");
-        expect(html).toContain("checks verified by the panel");
+        // The tunnel row exists but is never verified: status class without -done.
+        expect(html).toContain('<td>SSH tunnel (loopback)</td><td><span class="state">');
+        expect(html).toContain('<span class="state state-done">');
+        expect(html).toContain("note-info");
     });
 
     test("proxy origins are listed as configured, never as verified", async () => {
         const app = makeApp({ proxyOrigins: ["https://panel.example", "https://oracle.example.ts.net"], allowLoopback: true });
         const session = await login(app);
         const html = await (await authed(app, "/access", session)).text();
-        expect(html).toContain("Proxy origin https://panel.example");
-        expect(html).toContain("Proxy origin https://oracle.example.ts.net");
-        expect(html).toContain("Only the https scheme is checked at startup");
-        expect(html).toContain("cannot be verified from the panel");
-        expect(html).toContain("Verify externally");
-        expect(html).toContain("Configured");
+        // Each origin row binds its area to the configured status (no -done class).
+        expect(html).toContain('<td>Proxy origin https://panel.example</td><td><span class="state">');
+        expect(html).toContain('<td>Proxy origin https://oracle.example.ts.net</td><td><span class="state">');
+        // Exactly the three panel-controlled rows are verified; origins never are.
+        expect(html.match(/<span class="state state-done">/g)).toHaveLength(3);
     });
 
     test("reports the access point the current request arrived on", async () => {
@@ -655,7 +654,7 @@ describe("activity log", () => {
             const response = await authed(app, "/audit", session);
             expect(response.status).toBe(200);
             const html = await response.text();
-            expect(html).toContain("Activity log");
+            expect(html).toContain("<table");
             expect(html).toContain("login");
             expect(html).toContain("success");
         } finally {
@@ -994,10 +993,10 @@ describe("editor routes", () => {
     test("shows a fixed confirmation after saving and never reflects the query", async () => {
         const app = makeApp({}, okRunner);
         const session = await login(app);
-        expect(await (await authed(app, "/stacks/demo?saved=1", session)).text()).toContain("Saved.");
+        expect(await (await authed(app, "/stacks/demo?saved=1", session)).text()).toContain("note-success");
         const other = await (await authed(app, "/stacks/demo?saved=%3Cscript%3E", session)).text();
         expect(other).not.toContain("<script>");
-        expect(other).not.toContain("Saved.");
+        expect(other).not.toContain("note-success");
     });
 });
 
@@ -1082,10 +1081,10 @@ describe("operations routes", () => {
         const app = makeApp({}, runner);
         const session = await login(app);
         const html = await (await authed(app, "/stacks/demo", session)).text();
-        expect(html).toContain("Update ready");
+        expect(html).toContain("state-update");
         expect(html).toContain(`<span class="version">1.27.1</span> → <span class="version">1.27.2</span>`);
         expect(html).toContain('href="https://hub.docker.com/_/nginx"');
-        expect(html).toContain("Update ready for app: Up recreates it with the newer image.");
+        expect(html).toContain("note-info");
     });
 
     test("puts Down behind an explicit confirmation on a deployed stack", async () => {

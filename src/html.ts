@@ -332,7 +332,7 @@ export function operationControls(name: string, csrf: string, options: { busy: b
         const form = (label: string) => `<form method="post" action="${action}" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="action" value="${op.action}"><button type="submit" class="btn ${op.style}"${disabled}${lock} data-op-button data-busy-label="Starting…">${escapeHtml(label)}</button></form>`;
         if (op.action === "down" && options.deployed) {
             // Destructive: a disclosure asks for a second, explicit click. Works without JS.
-            return `<details class="op-confirm"><summary class="op-row"><span class="btn ${op.style}">${op.label}…</span><span class="op-help">${escapeHtml(op.help)}</span></summary>`
+            return `<details class="op-confirm"><summary class="op-row"><span class="btn ${op.style}">${escapeHtml(op.label)}…</span><span class="op-help">${escapeHtml(op.help)}</span></summary>`
                 + `<div class="op-confirm-panel">${note("warn", `This stops and removes every container and network of ${name}. Volumes and images are kept, and Up recreates the containers. Click Down… again to cancel.`)}`
                 + `${form("Yes, remove the containers")}</div></details>`;
         }
@@ -387,7 +387,7 @@ export function operationPanel(operation: OperationView | null, stack?: string):
     return `<section class="card operation"${stream} data-op-status="${escapeHtml(operation.status)}" data-op-started="${operation.startedAt}">`
         + `<h2>Last action: ${escapeHtml(OPERATION_LABELS[operation.action] ?? operation.action)}</h2>`
         + `<p class="op-summary"><span class="state state-${escapeHtml(operation.status)}" id="op-status" aria-live="polite">${escapeHtml(operationStatusLabel(operation.status))}</span>`
-        + ` <span class="muted">started <time datetime="${started}" data-local-time>${started.slice(11, 19)} UTC</time></span>`
+        + ` <span class="muted">started <time datetime="${escapeHtml(started)}" data-local-time>${started.slice(11, 19)} UTC</time></span>`
         + `<span class="muted" id="op-meta">${details ? ` · ${escapeHtml(details)}` : ""}</span></p>`
         + `<pre class="output" id="op-output">${escapeHtml(operation.output)}</pre>`
         + `<p class="muted" id="op-live-note" hidden>Live output. Closing this page does not stop the action.</p>`

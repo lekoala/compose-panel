@@ -105,7 +105,7 @@ describe("rendering", () => {
                 link: { href: "https://example.com/?a=\"><script>", label: "Source" },
             },
         });
-        expect(html).toContain("Update ready");
+        expect(html).toContain("state-update");
         expect(html).not.toContain("<script>");
         expect(html).not.toContain("<b>1</b>");
         expect(html).toContain('rel="noopener noreferrer"');

@@ -7,7 +7,7 @@
 
 A small, self-hosted web panel for the Docker Compose stacks of **one Linux server**. Your Compose files on disk stay the source of truth and Docker stays in charge of the containers: everything the panel does, you can still do with the `docker compose` CLI.
 
-> **Status: 0.1, for a single trusted administrator.** The panel only ever listens on `127.0.0.1`, so a port mapping cannot expose it by mistake. Reach it through an SSH tunnel (`ssh -L5081:127.0.0.1:5081 you@host`), over HTTPS with Caddy on the same host, or both at once: `COMPOSE_PANEL_PROXY_ORIGINS` lists the allowed origins and `COMPOSE_PANEL_ALLOW_LOOPBACK=true` keeps the tunnel, see [docs/deployment.md](docs/deployment.md#behind-caddy-https).
+> **Status: 0.1.1-unreleased, for a single trusted administrator.** The panel only ever listens on `127.0.0.1`, so a port mapping cannot expose it by mistake. Reach it through an SSH tunnel (`ssh -L5081:127.0.0.1:5081 you@host`), over HTTPS with Caddy on the same host, or both at once: `COMPOSE_PANEL_PROXY_ORIGINS` lists the allowed origins and `COMPOSE_PANEL_ALLOW_LOOPBACK=true` keeps the tunnel, see [docs/deployment.md](docs/deployment.md#behind-caddy-https).
 
 ## What it does
 

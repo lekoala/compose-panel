@@ -124,6 +124,10 @@
         });
         source.onerror = function () {
             // EventSource retries on its own; the server also times out idle streams.
+            // No 401 handling here (EventSource never exposes the status): an
+            // expired session closes the stream server-side at the next
+            // heartbeat, which surfaces as an error and a retry that stays
+            // unauthenticated until the reader signs in again.
         };
         function renderStatus(snap) {
             var state = snap.status || "unknown";
