@@ -43,6 +43,15 @@
   secure from its configuration alone, and it adds no privilege, host command
   or Tailscale/systemd socket. Richer host diagnostics are deferred to the
   roadmap.
+- Documentation from a real migration: the deployment guide generates the
+  admin password hash with the image itself (no Bun on the host) and warns that
+  the Argon2id hash must be single-quoted in `env_file`, where Docker Compose
+  would otherwise interpolate its `$`; the Dockge guide adds a
+  `docker inspect` check for existing projects, a post-switch checklist and how
+  to find the active Caddy configuration; a new `docs/troubleshooting.md`
+  covers refused sign-ins (origin vs CSRF), missing/`unknown` stacks, empty
+  logs, the health column, host-vs-container Compose, Caddy configs and zombie
+  processes (`init: true`).
 - Logs on open: the stack page now shows the last
   `COMPOSE_PANEL_LOG_TAIL_LINES` (200) lines as soon as it loads, instead of an
   empty box until *Follow logs* is clicked. A new bounded, read-only

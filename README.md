@@ -27,14 +27,39 @@ Mounting the Docker socket gives the panel full control of the host's Docker: on
 
 ## Deploy
 
+You need Docker Engine with Compose v2 and a stacks directory already managed by
+`docker compose`. No Bun install is required on the host: the image provides it.
+
 ```sh
+# 1. Clone and copy the env file
+git clone https://github.com/lekoala/compose-panel.git
+cd compose-panel
 cp deploy/compose-panel.env.example deploy/compose-panel.env
-# Set COMPOSE_PANEL_ADMIN_USER (a unique name) and COMPOSE_PANEL_ADMIN_PASSWORD_HASH:
-COMPOSE_PANEL_PASSWORD='change-me-please' bun run hash-password
-docker compose -f deploy/compose.yaml up -d --build
+
+# 2. Build (or pull) the image first, so step 3 can use it
+docker compose -f deploy/compose.yaml build
+
+# 3. Generate the admin password hash with the image itself (no Bun on the host)
+read -rsp "Compose Panel password: " COMPOSE_PANEL_PASSWORD; echo
+export COMPOSE_PANEL_PASSWORD
+docker run --rm --entrypoint bun -e COMPOSE_PANEL_PASSWORD \
+  compose-panel:local src/scripts/hash-password.ts
+unset COMPOSE_PANEL_PASSWORD
+
+# 4. Put the hash and a unique COMPOSE_PANEL_ADMIN_USER in
+#    deploy/compose-panel.env. Keep the hash in single quotes: its "$" must
+#    reach the panel literally (Compose interpolates unquoted env_file values).
+
+# 5. Lock the file down and start
+chmod 600 deploy/compose-panel.env
+docker compose -f deploy/compose.yaml up -d
 ```
 
-The stacks directory must be mounted at the same path inside and outside the container. Backups, rollback and the release checklist are in [docs/deployment.md](docs/deployment.md). Every setting is listed in [.env.example](.env.example).
+The stacks directory must be mounted at the same path inside and outside the
+container. Backups, rollback and the release checklist are in
+[docs/deployment.md](docs/deployment.md). Every setting is listed in
+[.env.example](.env.example). If sign-in or a stack looks wrong, see
+[docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Develop
 
@@ -88,6 +113,7 @@ The same pages are published as a static site at <https://lekoala.github.io/comp
 - [docs/architecture.md](docs/architecture.md) and [docs/adr/](docs/adr/): how it is built and why
 - [docs/security.md](docs/security.md): threat model and invariants
 - [docs/deployment.md](docs/deployment.md): deploying, backups, rollback, release checklist
+- [docs/troubleshooting.md](docs/troubleshooting.md): sign-in, stacks, logs and other common issues
 - [docs/migrating-from-dockge.md](docs/migrating-from-dockge.md): switching from Dockge, step by step
 - [docs/operations.md](docs/operations.md): adding Compose commands safely, switching over from another panel
 - [docs/roadmap.md](docs/roadmap.md): what may come next

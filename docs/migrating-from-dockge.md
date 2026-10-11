@@ -100,6 +100,27 @@ Check that every stack is listed with its real status. A stack shown as
 Dockge used (`/opt/stacks` versus a different mount), so Docker's records do
 not match the files.
 
+### Verify existing projects
+
+Compose Panel identifies each stack's project by its Compose file path, not by
+the folder name, so it works even when the two differ. On a server that already
+runs Compose projects, confirm the recorded paths point where the panel will look:
+
+```sh
+docker inspect <container> --format '
+Project={{index .Config.Labels "com.docker.compose.project"}}
+Directory={{index .Config.Labels "com.docker.compose.project.working_dir"}}
+Files={{index .Config.Labels "com.docker.compose.project.config_files"}}
+'
+```
+
+The project name may differ from the folder name — that is fine. What matters is
+that `Files` points at the `compose.yaml` inside the mounted stacks folder (for
+example `/opt/stacks/onedev/compose.yaml` when `STACKS_DIR=/opt/stacks`). A
+project created from another directory or file path cannot be matched, and its
+stack shows as `unknown`; recreate it from the stacks folder with the
+`docker compose` CLI to bring it in.
+
 ## 4. Stop Dockge
 
 ```sh
@@ -122,6 +143,36 @@ Docker port mappings bypass host firewalls such as `ufw`.
   Dockge, as described in
   [Behind Caddy](deployment.md#behind-caddy-https). With caddy-docker-proxy,
   move the `caddy` labels from Dockge's compose file to the panel's.
+
+### Caddy: which config is active?
+
+A Caddy installed as a systemd service reads `/etc/caddy/Caddyfile`, while a
+Caddy run as a container/stack reads the file inside that stack (for example
+`/opt/stacks/caddy/Caddyfile`). Editing the wrong one changes nothing. Find the
+active file, then validate and reload:
+
+```sh
+systemctl status caddy --no-pager
+caddy validate --config /etc/caddy/Caddyfile
+systemctl reload caddy
+```
+
+Move the panel's site off the old Dockge port:
+
+```diff
+- reverse_proxy 127.0.0.1:5001
++ reverse_proxy 127.0.0.1:5081
+```
+
+A folder that contains only a `Caddyfile` is not a Compose stack and will not
+appear in the panel; that is expected.
+
+### Post-switch checklist
+
+- Every stack appears in the panel with the status Docker reports.
+- You can open a stack, see its services and read its logs.
+- Dockge is stopped and its port is closed.
+- Your applications still answer on their own domains.
 
 Then, for each stack: open it, check its services, and follow its logs once.
 Running `Pull` on a stack shows whether newer images are waiting, without

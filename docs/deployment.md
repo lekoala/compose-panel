@@ -2,27 +2,48 @@
 
 One panel container, one Docker Engine, one administrator. The panel never
 owns your stacks: Compose files on disk and Docker itself stay the sources of
-truth, so removing the panel never stops your services.
+truth, so removing the panel never stops your services. For sign-in, stack or
+log problems, see [troubleshooting.md](troubleshooting.md).
 
 ## Prerequisites
 
 - Linux host with Docker Engine + Compose v2 and the stacks directory
   (e.g. `/opt/stacks`) already managed by `docker compose`.
-- Bun 1.4.3+ on the build machine (pinned in CI and the Dockerfile).
-- An admin password hash generated **outside** the image:
-  `COMPOSE_PANEL_PASSWORD='...' bun run hash-password`.
+- Docker to build or pull the image. No Bun install is needed on the host: the
+  image runs `hash-password` for you below. Bun 1.4.3+ is only needed to build
+  the image (pinned in CI and the Dockerfile).
 - A unique admin username (`COMPOSE_PANEL_ADMIN_USER`): common names
   (`admin`, `root`, …) are refused at startup unless `COMPOSE_PANEL_DEV=true`.
 
 ## Deploy
 
+Build or pull the image **before** generating the hash, so the image can
+generate it for you:
+
 ```sh
+# 1. Copy the settings and build (or pull) the image
 cp deploy/compose-panel.env.example deploy/compose-panel.env
-# Fill in COMPOSE_PANEL_ADMIN_PASSWORD_HASH in deploy/compose-panel.env.
 docker compose -f deploy/compose.yaml build
+
+# 2. Generate the admin password hash with the image itself
+read -rsp "Compose Panel password: " COMPOSE_PANEL_PASSWORD; echo
+export COMPOSE_PANEL_PASSWORD
+docker run --rm --entrypoint bun -e COMPOSE_PANEL_PASSWORD \
+  compose-panel:local src/scripts/hash-password.ts
+unset COMPOSE_PANEL_PASSWORD
+
+# 3. Paste the hash, single-quoted, and a unique username into
+#    deploy/compose-panel.env, then lock the file down and start
+chmod 600 deploy/compose-panel.env
 docker compose -f deploy/compose.yaml up -d
 curl -fsS http://127.0.0.1:5081/health/live  # -> ok
 ```
+
+The hash must be **single-quoted** in `compose-panel.env`: Docker Compose
+applies variable interpolation to unquoted and double-quoted `env_file` values,
+so a `$` in the Argon2id hash would be expanded and the panel would reject the
+password. On a machine that already has Bun you can instead run
+`COMPOSE_PANEL_PASSWORD='...' bun run hash-password`.
 
 Rules that must stay true:
 
@@ -45,12 +66,40 @@ Rules that must stay true:
   never reach a stack. Other variables (e.g. `COMPOSE_PROJECT_NAME`,
   `DOCKER_HOST`) pass through by design.
 
+## Upgrading from 0.1.0
+
+0.1.1 replaces the single `COMPOSE_PANEL_PUBLIC_ORIGIN` with the list
+`COMPOSE_PANEL_PROXY_ORIGINS`, and removes `COMPOSE_PANEL_TRUST_PROXY` (the
+forwarded address is now trusted per matched origin automatically). Both old
+settings are refused at startup with a migration message — the panel never
+reinterprets security configuration silently ([ADR 0012](adr/0012-multiple-access-origins.md)).
+
+```sh
+# 0.1.0
+COMPOSE_PANEL_PUBLIC_ORIGIN=https://panel.example.com
+COMPOSE_PANEL_TRUST_PROXY=true
+
+# 0.1.1 — reverse proxy only
+COMPOSE_PANEL_PROXY_ORIGINS=https://panel.example.com
+# 0.1.1 — HTTPS and the SSH tunnel together
+COMPOSE_PANEL_PROXY_ORIGINS=https://panel.example.com
+COMPOSE_PANEL_ALLOW_LOOPBACK=true
+```
+
+A single origin behaves as before. The change is that the SSH tunnel and HTTPS
+no longer exclude each other, and several origins can be listed.
+
 ## Behind Caddy (HTTPS)
 
 To use the panel from a browser without a tunnel, put Caddy in front of it on
 the **same host** ([ADR 0010](adr/0010-reverse-proxy-mode.md)). The panel stays
 bound to `127.0.0.1`, so Caddy must reach the host loopback: run it on the host
 itself, or in a container with `network_mode: host`.
+
+> **Version note.** The list setting below (`COMPOSE_PANEL_PROXY_ORIGINS`) is the
+> 0.1.1 contract ([ADR 0012](adr/0012-multiple-access-origins.md)). On 0.1.0 the
+> equivalent is the single `COMPOSE_PANEL_PUBLIC_ORIGIN=https://…`; see
+> [Upgrading from 0.1.0](#upgrading-from-010).
 
 1. In `deploy/compose-panel.env`, list the origins. This setting allows HTTPS
    access and makes Secure cookies and Caddy's `X-Forwarded-For` apply on those
@@ -155,6 +204,32 @@ itself, what is configured but unverified (a proxy origin's network restriction)
 and what only you can check (whether a tunnel is open, whether a firewall or VPN
 really restricts access). It never marks an access secure from its configuration
 alone.
+
+## Private access (Tailscale Serve)
+
+If the panel does not need to be reachable from the internet, expose it only on
+a private network. [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)
+publishes a local service over HTTPS to the members of your tailnet, with no
+public port and no Caddy:
+
+```sh
+# On the host, after `tailscale up` (with MagicDNS and HTTPS enabled):
+tailscale serve --bg --https=443 http://127.0.0.1:5081
+tailscale serve status   # prints https://<host>.<tailnet>.ts.net
+```
+
+Then list that `ts.net` origin and keep the SSH tunnel as a fallback (0.1.1):
+
+```sh
+COMPOSE_PANEL_PROXY_ORIGINS=https://oracle-ampere.example-tailnet.ts.net
+COMPOSE_PANEL_ALLOW_LOOPBACK=true
+```
+
+Use `tailscale serve`, never `tailscale funnel`: Funnel would publish the panel
+to the public internet. Tailscale is only an access path here — the panel keeps
+its own password, so it stays optional and is never a dependency. A Caddy site
+bound to the private interface, or an IP allow-list in front of a public Caddy
+site, are equally valid alternatives; use whichever your network already has.
 
 ## Behind Cloudflare Access + Tunnel (identity proxy)
 
