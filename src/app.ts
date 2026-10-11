@@ -580,6 +580,44 @@ export function createApp(options: AppOptions): App {
         return htmlResponse(serverPage({ csrf, access, timezone: config.timeZone || undefined, insights, disk }));
     }
 
+    /**
+     * Live data for the Server page: the dynamic zones only. It never reads
+     * `docker system df` and never runs `docker info`; a browser polls it on
+     * demand while the page is visible (ADR 0015). Authenticated, `no-store`.
+     */
+    async function handleServerStats(): Promise<Response> {
+        const { containers, note: containerNote } = await loadContainers(stacksRoot, provider, inspector, config.hostStacksPathAliases);
+        const insights = await loadInsights(inspector, containerNote === null ? containers : null, {
+            includeInfo: false,
+            timeoutMs: config.insightsTimeoutMs,
+            maxBytes: config.dockerMaxBytes,
+        });
+        if (containerNote) insights.notes.unshift(containerNote);
+        const payload = {
+            readAt: insights.readAt,
+            runningContainers: insights.runningContainers,
+            stats: insights.stats === null ? null : insights.stats.map(stat => ({
+                id: stat.id,
+                name: stat.name,
+                cpuPercent: stat.cpuPercent,
+                memUsedBytes: stat.memUsedBytes,
+                memLimitBytes: stat.memLimitBytes,
+                memPercent: stat.memPercent,
+                netIo: stat.netIo,
+                blockIo: stat.blockIo,
+                pids: stat.pids,
+                stack: stat.container?.stack ?? null,
+                category: stat.container?.category ?? null,
+            })),
+            stacks: insights.stacks,
+            attention: insights.attention,
+            notes: insights.notes,
+        };
+        return new Response(JSON.stringify(payload), {
+            headers: { "Content-Type": "application/json; charset=utf-8", ...BASE_HEADERS },
+        });
+    }
+
     async function renderContainers(csrf: string, filter: ContainerFilter): Promise<Response> {
         const { containers, note: containerNote } = await loadContainers(stacksRoot, provider, inspector, config.hostStacksPathAliases);
         return htmlResponse(containersPage({
@@ -1135,6 +1173,7 @@ export function createApp(options: AppOptions): App {
 
         try {
             if (url.pathname === "/") return await renderStackList(session.csrf);
+            if (url.pathname === "/server/stats") return await handleServerStats();
             if (url.pathname === "/server") return await renderServer(session.csrf, request);
             if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
             if (url.pathname === "/access") return renderAccess(session.csrf, request);

@@ -13,8 +13,14 @@
   served through a short in-memory cache, `COMPOSE_PANEL_DISK_USAGE_TTL_MS`)
   because it can be expensive on a large host. The three calls extend the
   read-only `ContainerInspector` boundary; a collection that fails shows a note
-  and stays unavailable rather than reporting zero. No host agent is involved:
-  host load, memory, uptime, filesystems and package updates stay out of scope.
+  and stays unavailable rather than reporting zero. An opt-in **Live** toggle
+  refreshes only the dynamic zones (running count, per-stack usage, top
+  containers, attention) every 15 s from a bounded JSON endpoint
+  (`GET /server/stats`), with sequential requests, paused while the tab is
+  hidden and stopped after a `401`; the static engine facts and the disk-usage
+  snapshot are never part of it and no history is kept. No host agent is
+  involved: host load, memory, uptime, filesystems and package updates stay out
+  of scope.
 
 - Docker container inspection (ADR 0014): a read-only view of the containers the
   panel does not manage. The home page gains an **Other containers** section and

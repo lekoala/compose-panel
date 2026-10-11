@@ -61,6 +61,10 @@ footer{border-top:1px solid var(--border);padding-block:1rem;color:var(--muted);
 .btn-danger:hover{background:var(--danger-bg);border-color:var(--danger)}
 .btn-quiet{min-width:0;padding:.35rem .75rem;background:transparent}
 .toolbar{display:flex;flex-wrap:wrap;gap:.5rem;margin-block:.5rem}
+.server-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;margin-block:.5rem}
+.live-toggle{display:inline-flex;align-items:center;gap:.4rem;font-size:.9rem;font-weight:600}
+.live-toggle input{margin:0}
+#server-live-status{min-height:1rem}
 
 /* Messages */
 .note{padding:.65rem .9rem;border:1px solid;border-left-width:4px;border-radius:.45rem;margin-block:1rem;white-space:pre-line;max-width:60rem;overflow-wrap:anywhere}

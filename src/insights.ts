@@ -1,5 +1,5 @@
 import type { CommandResult } from "./docker.ts";
-import type { ClassifiedContainer } from "./container-state.ts";
+import { matchesContainerFilter, type ClassifiedContainer } from "./container-state.ts";
 import type { ContainerInspector, InspectorReadOptions } from "./containers.ts";
 
 /**
@@ -96,8 +96,16 @@ export interface Insights {
     stacks: StackUsage[] | null;
     /** null = could not verify; [] = nothing to report. */
     attention: AttentionItem[] | null;
+    /** Active containers (running/restarting/paused), or null without a list. */
+    runningContainers: number | null;
     notes: string[];
     readAt: number;
+}
+
+/** Read options plus whether the live (stats-only) path should skip `docker info`. */
+export interface InsightsOptions extends InspectorReadOptions {
+    /** Skip `docker info`: the live endpoint only needs the dynamic data. */
+    includeInfo?: boolean;
 }
 
 export interface DiskUsage {
@@ -359,11 +367,11 @@ async function readInspector(
 export async function loadInsights(
     inspector: ContainerInspector,
     containers: ClassifiedContainer[] | null,
-    options: InspectorReadOptions = {},
+    options: InsightsOptions = {},
 ): Promise<Insights> {
     const notes: string[] = [];
     const [infoResult, statsResult] = await Promise.all([
-        readInspector(opts => inspector.info(opts), options, notes),
+        options.includeInfo === false ? Promise.resolve(null) : readInspector(opts => inspector.info(opts), options, notes),
         readInspector(opts => inspector.stats(opts), options, notes),
     ]);
 
@@ -391,7 +399,10 @@ export async function loadInsights(
     }
 
     const attention = containers === null ? null : buildAttention(containers);
-    return { info, stats, stacks, attention, notes, readAt: Date.now() };
+    const runningContainers = containers === null
+        ? null
+        : containers.filter(container => matchesContainerFilter(container.state, "running")).length;
+    return { info, stats, stacks, attention, runningContainers, notes, readAt: Date.now() };
 }
 
 /**

@@ -2179,3 +2179,60 @@ describe("server page", () => {
         expect(html).toContain("note-warn");
     });
 });
+
+interface ServerStatsPayload {
+    readAt: number;
+    runningContainers: number | null;
+    stats: { id: string; stack: string | null; category: string | null }[] | null;
+    stacks: unknown[] | null;
+    attention: unknown[] | null;
+    notes: string[];
+}
+
+describe("server stats endpoint", () => {
+    test("requires a session", async () => {
+        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({ list: containerFixture() }));
+        const response = await app.fetch(new Request(`${ORIGIN}/server/stats`));
+        expect(response.status).toBe(302);
+        expect(response.headers.get("location")).toBe("/login");
+    });
+
+    test("returns the dynamic contract and never reads disk usage or info", async () => {
+        let diskCalls = 0;
+        let infoCalls = 0;
+        const inspector = serverInspector({ list: containerFixture(), stats: SERVER_STATS });
+        inspector.diskUsage = async () => { diskCalls += 1; return SERVER_DF; };
+        inspector.info = async () => { infoCalls += 1; return SERVER_INFO; };
+        const app = makeApp({}, undefined, serverProvider(), undefined, root, inspector);
+        const session = await login(app);
+
+        const response = await authed(app, "/server/stats", session);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("application/json");
+        expect(response.headers.get("cache-control")).toBe("no-store");
+
+        const payload = await response.json() as ServerStatsPayload;
+        expect(payload.runningContainers).toBeGreaterThan(0);
+        expect(payload.stats).toHaveLength(1);
+        expect(payload.stats![0]!.stack).toBe("demo");
+        expect(payload.stats![0]!.category).toBe("managed");
+        expect(payload.notes).toEqual([]);
+        expect(diskCalls).toBe(0);
+        expect(infoCalls).toBe(0);
+    });
+
+    test("reports an unavailable section as null with a note, keeping the list-derived fields", async () => {
+        const failure: CommandResult = { code: 1, stdout: "", stderr: "boom", timedOut: false, truncated: false };
+        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({ list: containerFixture(), stats: failure }));
+        const session = await login(app);
+
+        const response = await authed(app, "/server/stats", session);
+        expect(response.status).toBe(200);
+        const payload = await response.json() as ServerStatsPayload;
+        expect(payload.stats).toBeNull();
+        expect(payload.stacks).toBeNull();
+        expect(payload.runningContainers).toBeGreaterThan(0);
+        expect(Array.isArray(payload.attention)).toBe(true);
+        expect(payload.notes.length).toBeGreaterThan(0);
+    });
+});

@@ -292,13 +292,15 @@
     }
 
     /* Show times in the panel's display zone (or the reader's own) instead of UTC. */
+    function localizeTime(el) {
+        var date = new Date(el.getAttribute("datetime"));
+        if (isNaN(date.getTime())) return;
+        var format = formatters();
+        el.textContent = el.getAttribute("data-local-time") === "full" ? format.dateTime.format(date) : format.time.format(date);
+    }
+
     function localizeTimes() {
-        each("time[data-local-time]", function (el) {
-            var date = new Date(el.getAttribute("datetime"));
-            if (isNaN(date.getTime())) return;
-            var format = formatters();
-            el.textContent = el.getAttribute("data-local-time") === "full" ? format.dateTime.format(date) : format.time.format(date);
-        });
+        each("time[data-local-time]", localizeTime);
     }
 
     /* Mark the clicked button as busy and block a double submit. */
@@ -396,11 +398,220 @@
         });
     }
 
+    /* Live refresh of the Server page. Only the dynamic zones rendered by the
+     * server are rebuilt from a bounded JSON endpoint; the static engine facts
+     * and the Docker disk-usage snapshot are never touched. Sequential
+     * setTimeout (not setInterval) so a slow read cannot overlap the next one,
+     * paused while the tab is hidden, aborted on disable or page hide. No
+     * history is kept; every value is inserted via textContent, never HTML. */
+    var SERVER_CATEGORY = { managed: "Managed", external: "External Compose", standalone: "Standalone" };
+    var SERVER_ISSUE = { "unhealthy": "Unhealthy", "restarting": "Restarting", "exited-nonzero": "Exited with an error" };
+
+    function element(tag, className, text) {
+        var node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined && text !== null) node.textContent = text;
+        return node;
+    }
+
+    function anchor(href, text) {
+        var link = element("a");
+        link.href = href;
+        link.textContent = text;
+        return link;
+    }
+
+    function codeCell(text) {
+        var td = element("td");
+        td.appendChild(element("code", null, text));
+        return td;
+    }
+
+    function emptyRow(columns, text) {
+        var td = element("td", "muted", text);
+        td.setAttribute("colspan", String(columns));
+        var row = element("tr");
+        row.appendChild(td);
+        return row;
+    }
+
+    function setRows(tbody, nodes) {
+        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+        Array.prototype.forEach.call(nodes, function (node) { tbody.appendChild(node); });
+    }
+
+    function formatBytesValue(bytes) {
+        if (bytes === null || bytes === undefined || !isFinite(bytes)) return "—";
+        if (bytes < 1024) return Math.round(bytes) + " B";
+        var units = ["KiB", "MiB", "GiB", "TiB", "PiB"];
+        var value = bytes / 1024, unit = 0;
+        while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+        return (value >= 10 ? Math.round(value) : value.toFixed(1)) + " " + units[unit];
+    }
+
+    function formatPercentValue(value) {
+        if (value === null || value === undefined || !isFinite(value)) return "—";
+        return Math.round(value * 10) / 10 + "%";
+    }
+
+    function stackCell(stat) {
+        if (!stat.category) return element("span", "muted", "Unattributed");
+        if (stat.stack) return anchor("/stacks/" + encodeURIComponent(stat.stack), stat.stack);
+        return element("span", "muted", SERVER_CATEGORY[stat.category] || stat.category);
+    }
+
+    function statRow(stat) {
+        var row = element("tr");
+        var nameCell = element("td");
+        nameCell.appendChild(anchor("/containers/" + encodeURIComponent(stat.id), stat.name || (stat.id ? stat.id.slice(0, 12) : "—")));
+        row.appendChild(nameCell);
+        var stackTd = element("td");
+        stackTd.appendChild(stackCell(stat));
+        row.appendChild(stackTd);
+        row.appendChild(element("td", null, formatPercentValue(stat.cpuPercent)));
+        var memory = (stat.memUsedBytes === null || stat.memUsedBytes === undefined)
+            ? "—"
+            : (stat.memLimitBytes === null || stat.memLimitBytes === undefined
+                ? formatBytesValue(stat.memUsedBytes)
+                : formatBytesValue(stat.memUsedBytes) + " / " + formatBytesValue(stat.memLimitBytes));
+        row.appendChild(element("td", null, memory));
+        row.appendChild(element("td", null, formatPercentValue(stat.memPercent)));
+        row.appendChild(codeCell(stat.netIo || "—"));
+        row.appendChild(codeCell(stat.blockIo || "—"));
+        row.appendChild(element("td", null, stat.pids === null || stat.pids === undefined ? "—" : String(stat.pids)));
+        return row;
+    }
+
+    function stackRow(usage) {
+        var row = element("tr");
+        var stackTd = element("td");
+        stackTd.appendChild(anchor("/stacks/" + encodeURIComponent(usage.stack), usage.stack));
+        row.appendChild(stackTd);
+        row.appendChild(element("td", null, formatPercentValue(usage.cpuPercent)));
+        row.appendChild(element("td", null, formatBytesValue(usage.memUsedBytes)));
+        row.appendChild(element("td", null, String(usage.containers)));
+        return row;
+    }
+
+    function attentionRow(item) {
+        var row = element("tr");
+        var nameTd = element("td");
+        nameTd.appendChild(anchor("/containers/" + encodeURIComponent(item.id), item.name));
+        row.appendChild(nameTd);
+        var issueTd = element("td");
+        issueTd.appendChild(element("span", "state " + (item.reason === "unhealthy" ? "state-failed" : "state-stopped"), SERVER_ISSUE[item.reason] || item.reason));
+        row.appendChild(issueTd);
+        var stackTd = element("td");
+        if (item.stack) stackTd.appendChild(anchor("/stacks/" + encodeURIComponent(item.stack), item.stack));
+        else stackTd.appendChild(element("span", "muted", "—"));
+        row.appendChild(stackTd);
+        return row;
+    }
+
+    function applyServer(payload) {
+        if (payload.runningContainers !== null && payload.runningContainers !== undefined) {
+            const running = document.getElementById("live-running");
+            if (running) running.textContent = String(payload.runningContainers);
+        }
+        if (payload.attention !== null && payload.attention !== undefined) {
+            const attentionCount = document.getElementById("live-attention");
+            if (attentionCount) attentionCount.textContent = String(payload.attention.length);
+            const attentionBody = document.getElementById("live-attention-rows");
+            if (attentionBody) {
+                setRows(attentionBody, payload.attention.length > 0 ? payload.attention.map(attentionRow) : [emptyRow(3, "No current issues.")]);
+            }
+        }
+        if (payload.stats !== null && payload.stats !== undefined) {
+            const statsBody = document.getElementById("live-stats");
+            if (statsBody) {
+                const sorted = payload.stats.slice().sort(function (a, b) {
+                    return (b.cpuPercent === null ? -1 : b.cpuPercent) - (a.cpuPercent === null ? -1 : a.cpuPercent);
+                });
+                setRows(statsBody, sorted.length > 0 ? sorted.map(statRow) : [emptyRow(8, "No running containers.")]);
+            }
+        }
+        if (payload.stacks !== null && payload.stacks !== undefined) {
+            const stacksBody = document.getElementById("live-stacks");
+            if (stacksBody) {
+                setRows(stacksBody, payload.stacks.length > 0 ? payload.stacks.map(stackRow) : [emptyRow(4, "No managed running containers.")]);
+            }
+        }
+        const timeEl = document.getElementById("live-read-at");
+        if (payload.readAt && timeEl) {
+            timeEl.setAttribute("datetime", new Date(payload.readAt).toISOString());
+            localizeTime(timeEl);
+        }
+    }
+
+    function wireServerLive(section) {
+        var url = section.getAttribute("data-server-stats");
+        var toggle = document.getElementById("server-live");
+        var status = document.getElementById("server-live-status");
+        if (!url || !toggle || typeof fetch !== "function") return;
+        var interval = parseInt(section.getAttribute("data-live-interval"), 10);
+        if (!isFinite(interval) || interval < 1000) interval = 15000;
+        var enabled = false, timer = null, controller = null, lastSuccess = "";
+
+        function setStatus(text) { if (status) status.textContent = text; }
+        function clearTimer() { if (timer) { clearTimeout(timer); timer = null; } }
+        function abortInFlight() { if (controller) { try { controller.abort(); } catch (e) { /* ignore */ } controller = null; } }
+        function stop() { enabled = false; clearTimer(); abortInFlight(); }
+
+        function schedule() {
+            clearTimer();
+            if (!enabled || document.hidden) return;
+            timer = setTimeout(tick, interval);
+        }
+
+        function tick() {
+            if (!enabled || document.hidden) return;
+            controller = new AbortController();
+            fetch(url, { headers: { "Accept": "application/json" }, signal: controller.signal })
+                .then(function (response) {
+                    if (response.status === 401) {
+                        // The session ended: stop instead of polling forever.
+                        stop();
+                        toggle.checked = false;
+                        setStatus("Session ended. Reload the page to sign in again.");
+                        return null;
+                    }
+                    if (!response.ok) throw new Error("status " + response.status);
+                    return response.json();
+                })
+                .then(function (payload) {
+                    if (!payload) return;
+                    applyServer(payload);
+                    lastSuccess = new Date().toLocaleTimeString();
+                    setStatus("Live · updated " + lastSuccess);
+                    schedule();
+                })
+                .catch(function (error) {
+                    if (error && error.name === "AbortError") return;
+                    // Keep the last successful values visible, clearly marked as old.
+                    setStatus(lastSuccess
+                        ? "Live update failed · last successful refresh " + lastSuccess
+                        : "Live update failed.");
+                    schedule();
+                });
+        }
+
+        toggle.addEventListener("change", function () {
+            if (toggle.checked) { enabled = true; tick(); }
+            else { stop(); setStatus("Manual refresh"); }
+        });
+        document.addEventListener("visibilitychange", function () {
+            if (document.hidden) { clearTimer(); abortInFlight(); }
+            else if (enabled) { tick(); }
+        });
+        window.addEventListener("pagehide", stop);
+    }
+
     document.addEventListener("DOMContentLoaded", function () {
         var op = document.querySelector("[data-op-stream]");
         var logs = document.querySelector("[data-logs-stream]");
         var containerLogs = document.querySelector("[data-container-logs]");
         var editor = document.querySelector("[data-edit-form]");
+        var serverLive = document.querySelector("[data-server-live]");
         localizeTimes();
         wireBusyButtons();
         wireAutoSubmit();
@@ -408,5 +619,6 @@
         if (logs) wireLogs(logs);
         if (containerLogs) wireContainerLogs(containerLogs);
         if (editor) wireEditor(editor);
+        if (serverLive) wireServerLive(serverLive);
     });
 })();
