@@ -121,6 +121,7 @@ The same pages are published as a static site at <https://lekoala.github.io/comp
 - [docs/troubleshooting.md](docs/troubleshooting.md): sign-in, stacks, logs and other common issues
 - [docs/migrating-from-dockge.md](docs/migrating-from-dockge.md): switching from Dockge, step by step
 - [docs/operations.md](docs/operations.md): adding Compose commands safely, switching over from another panel
+- [docs/integrations/libredb.md](docs/integrations/libredb.md): linking a stack to an external database explorer (LibreDB example)
 - [docs/roadmap.md](docs/roadmap.md): what may come next
 - [CHANGELOG.md](CHANGELOG.md): what changed
 

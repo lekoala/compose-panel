@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import type { PathAlias } from "./container-state.ts";
+import { normalizeDatabaseExplorerUrl } from "./database.ts";
 
 export interface LoginRateLimitConfig {
     windowMs: number;
@@ -78,6 +79,14 @@ export interface AppConfig {
     dockerPath: string;
     /** Compose engine/provider identifier. V1 supports "docker". */
     composeEngine: string;
+    /**
+     * Optional base URL of an external database explorer (LibreDB Studio,
+     * Adminer, pgAdmin…) that stacks may link to through their
+     * `x-compose-panel.database` extension. Normalized to an origin, or null
+     * when unset. The panel only builds a link to it: it never contacts the
+     * explorer (ADR 0027).
+     */
+    databaseExplorerUrl: string | null;
     /**
      * Host-to-panel path prefixes used to classify external containers as
      * managed after a migration where the Docker-side Compose path differs from
@@ -343,6 +352,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         backupRetain: parsePositiveInt(env, "COMPOSE_PANEL_BACKUP_RETAIN", 10),
         dockerPath: env.COMPOSE_PANEL_DOCKER_PATH?.trim() || "docker",
         composeEngine: parseComposeEngine(env),
+        databaseExplorerUrl: normalizeDatabaseExplorerUrl(env.COMPOSE_PANEL_DATABASE_EXPLORER_URL ?? "", devMode),
         hostStacksPathAliases: parsePathAliases(env),
         timeZone: parseTimeZone(env),
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),

@@ -1,4 +1,4 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, toolboxPage, type NavSection, type NavigationOptions, type NoteKind, type ToolboxSourceView } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, toolboxPage, databaseSection, type NavSection, type NavigationOptions, type NoteKind, type ToolboxSourceView } from "./html.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { managedBy } from "./deployment.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
@@ -10,6 +10,7 @@ import { parseContainerFilter, type ContainerFilter } from "./container-state.ts
 import { createContainerInspector, isContainerId, sanitizeTailLines, type ContainerInspector } from "./containers.ts";
 import { createActionRunner, type ActionRunner } from "./action-runner.ts";
 import { buildCatalog, buildRunnerArgv, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
+import { buildExplorerUrl, parseDatabaseExplorer } from "./database.ts";
 import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
@@ -738,6 +739,21 @@ export function createApp(options: AppOptions): App {
         return plain(result.truncated ? `${text}\n\n[Output shortened: only the most recent part is kept.]` : text, 200);
     }
 
+    /**
+     * Database explorer card (ADR 0027). Declarative only: the panel builds a
+     * link to an external explorer and never contacts it. Nothing is shown
+     * without a global explorer URL; an invalid stack declaration is reported
+     * as a warning without affecting the rest of the page.
+     */
+    function databaseExplorerSection(composeSource: string): string {
+        if (!config.databaseExplorerUrl) return "";
+        const parsed = parseDatabaseExplorer(composeSource);
+        if (!parsed.ok) return databaseSection(null, parsed.error);
+        if (!parsed.value) return "";
+        const url = buildExplorerUrl(config.databaseExplorerUrl, parsed.value.query);
+        return databaseSection({ url, label: parsed.value.label, query: parsed.value.query });
+    }
+
     async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200): Promise<Response> {
         const stack = await readStackCompose(stacksRoot, name);
         let status: StackDetailStatus;
@@ -763,6 +779,7 @@ export function createApp(options: AppOptions): App {
             + operationControls(stack.name, csrf, { busy: operation?.status === "running", state: status.state, updatesReady: Object.keys(status.updates ?? {}), managedBy: owner })
             + operationPanel(operation, stack.name)
             + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" })
+            + databaseExplorerSection(stack.source)
             + deploymentSection(status.deployed, status.declared, status.state !== "not-created")
             + logsPanel(stack.name, config.logTailLines, config.timeZone, status.services.map(service => service.name))
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,

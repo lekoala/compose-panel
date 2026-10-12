@@ -8,6 +8,7 @@ import { ROLLBACK_TAG, UPDATER_NAME, recoveryCommands, rollbackCommands, type Se
 import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerDetails, type ContainerFilter } from "./container-state.ts";
 import { statDisplayName, type AttentionItem, type AttentionReason, type ClassifiedStat, type DiskUsage, type DiskUsageRow, type EngineInfo, type Insights, type StackUsage } from "./insights.ts";
 import type { ToolboxAction, ToolboxRunner } from "./toolbox.ts";
+import { isExplorerHref } from "./database.ts";
 import packageJson from "../package.json";
 
 const VERSION = packageJson.version;
@@ -342,6 +343,32 @@ ${image.digests.map(digest => field("Repository digest", digest)).join("")}</dl>
     const heading = showDeployed ? "Deployed version" : "Deployment metadata";
     const deployedBlock = showDeployed ? images || `<p class="muted">Deployed image metadata is unavailable. No version is inferred from an image tag.</p>` : "";
     return `<section class="card deployment"><h2>${heading}</h2>${deployedBlock}${warning}${declaredBlock}</section>`;
+}
+
+/**
+ * External database explorer link (ADR 0027). Rendered only when the stack
+ * declares an `x-compose-panel.database` extension and the panel has a global
+ * explorer URL, or to report an invalid declaration. The panel never contacts
+ * the explorer: this is a plain external link, opened without referrer or
+ * opener access. The link carries only public, bounded query parameters, never
+ * a secret.
+ */
+export function databaseSection(
+    explorer: { url: string; label: string | null; query: Record<string, string> } | null,
+    error: string | null = null,
+): string {
+    if (!explorer) {
+        return error ? `<section class="card database"><h2>Database</h2>${note("warn", error)}</section>` : "";
+    }
+    const link = isExplorerHref(explorer.url)
+        ? `<p><a class="btn" href="${escapeHtml(explorer.url)}" target="_blank" rel="noopener noreferrer">Explore the database ↗</a></p>`
+        : note("warn", "The configured database explorer URL is not valid, so no link is shown.");
+    const context = [
+        explorer.label ? escapeHtml(explorer.label) : "",
+        ...Object.entries(explorer.query).map(([key, value]) => `<code>${escapeHtml(key)}=${escapeHtml(value)}</code>`),
+    ].filter(Boolean).join(" · ");
+    const meta = context ? `<p class="meta">${context}</p>` : "";
+    return `<section class="card database"><h2>Database</h2>${meta}${link}</section>`;
 }
 
 /** "1.27.1 → 1.27.2"; when both sides read the same, the digests tell them apart. */

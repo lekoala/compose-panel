@@ -104,6 +104,38 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   external Docker writers, and the container is pinned so an action is never run
   on a container other than the one discovered.
 
+## External database explorer link (ADR 0027)
+- The panel builds an **external link** to a separately deployed explorer
+  (LibreDB Studio, Adminer, pgAdmin…). It never contacts the explorer, reads no
+  credential, opens no database and runs no Docker command for it. The link is
+  inert until an administrator clicks it; the target is a separate system with
+  its own authentication and access control. See
+  [ADR 0027](adr/0027-external-database-explorer-links.md).
+- The global `COMPOSE_PANEL_DATABASE_EXPLORER_URL` is administrator
+  configuration, validated at startup like the access settings: http(s), https
+  outside `COMPOSE_PANEL_DEV`, no credentials, path, query or fragment. V1
+  targets an explorer served at the root of its domain. An invalid value is
+  refused at startup; an empty value disables the feature.
+- A stack declares the link in `x-compose-panel.database`, read from the raw
+  Compose file and never re-serialized. Only a display `label` and a mapping of
+  scalar `query` parameters are read, and only strings and booleans are accepted
+  (a bare number is refused, since YAML would change its textual form). Nested
+  mappings, lists and null values are refused, keys and values reject control
+  characters and are length-bounded, and the number of parameters is capped. An
+  invalid declaration is a **warning** on the stack page, never a `500`, and
+  never blocks the stack's administration.
+- The link is built with `new URL()`/`URLSearchParams` and rendered with
+  `target="_blank" rel="noopener noreferrer"`; the label and every parameter are
+  HTML-escaped. Parameters are public by construction (a connection id, a host,
+  a database name): a **secret must never be placed in a query parameter**. The
+  panel neither verifies nor stores the link, the parameters or the connection.
+- The panel cannot create users, connections or secrets, and does not configure
+  Docker networks or the explorer. The real protection against unwanted SQL is
+  the target system's own authentication and its database-level grants; network
+  isolation limits connectivity but is not a sandbox. The panel makes no
+  assumption about any explorer-specific setting. See
+  [the LibreDB deployment example](integrations/libredb.md).
+
 ## Self-update
 - `POST /about/check` (pull the panel's own tag) and `POST /about/update` (start the updater) require a session, an allowed Origin and the CSRF token, are refused during shutdown and are recorded in the activity log (`self-update-check`, `self-update`). See [ADR 0018](adr/0018-self-update.md).
 - Nothing comes from the browser except the target image ID, which must be a `sha256:` ID equal to the image the tag points to when the request is handled. Project, service, paths, image reference, socket source, user and groups are read from Docker (`/proc/self/mountinfo`, then `container inspect` of the panel's own container) and validated: plain absolute paths without `..` or CSV-breaking characters, Compose and env files inside the deployment directory, a tag reference (not a digest or ID), a socket bind mount. Anything unexpected disables the feature with a reason.

@@ -49,6 +49,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         backupRetain: 10,
         dockerPath: "docker",
         composeEngine: "docker",
+        databaseExplorerUrl: null,
         hostStacksPathAliases: [],
         timeZone: "",
         dockerTimeoutMs: 5000,
@@ -521,6 +522,62 @@ describe("auth gate", () => {
         const session = await login(app);
         const response = await authed(app, "/stacks/..%2Fsecret", session);
         expect(response.status).toBe(400);
+    });
+});
+
+describe("external database explorer link", () => {
+    const name = "explorer";
+    const dir = () => join(root, name);
+
+    async function writeStack(compose: string): Promise<void> {
+        await mkdir(dir(), { recursive: true });
+        await writeFile(join(dir(), "compose.yaml"), compose);
+    }
+
+    const valid = "services:\n  db:\n    image: postgres:16\nx-compose-panel:\n  database:\n    label: LibreDB\n    query:\n      connection: seed:shop-staging\n";
+
+    test("shows the explorer link when the stack declares an extension and a URL is configured", async () => {
+        await writeStack(valid);
+        try {
+            const app = makeApp({ databaseExplorerUrl: "https://db.example.com" });
+            const session = await login(app);
+            const response = await authed(app, `/stacks/${name}`, session);
+            expect(response.status).toBe(200);
+            const html = await response.text();
+            expect(html).toContain('class="card database"');
+            expect(html).toContain('href="https://db.example.com/?connection=seed%3Ashop-staging"');
+            expect(html).toContain('rel="noopener noreferrer"');
+        } finally {
+            await rm(dir(), { recursive: true, force: true });
+        }
+    });
+
+    test("shows no link without a configured explorer URL", async () => {
+        await writeStack(valid);
+        try {
+            const app = makeApp();
+            const session = await login(app);
+            const html = await (await authed(app, `/stacks/${name}`, session)).text();
+            expect(html).not.toContain('class="card database"');
+        } finally {
+            await rm(dir(), { recursive: true, force: true });
+        }
+    });
+
+    test("reports an invalid declaration as a warning without an explorer link", async () => {
+        await writeStack("services:\n  db:\n    image: postgres:16\nx-compose-panel:\n  database:\n    query: not-a-map\n");
+        try {
+            const app = makeApp({ databaseExplorerUrl: "https://db.example.com" });
+            const session = await login(app);
+            const response = await authed(app, `/stacks/${name}`, session);
+            expect(response.status).toBe(200);
+            const html = await response.text();
+            const card = /<section class="card database">[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
+            expect(card).toContain('class="note note-warn"');
+            expect(card).not.toContain("<a ");
+        } finally {
+            await rm(dir(), { recursive: true, force: true });
+        }
     });
 });
 

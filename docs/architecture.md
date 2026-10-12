@@ -117,6 +117,19 @@ context and the referenced script definitions (including `pre*`/`post*` hooks),
 and does not guarantee the immutability of the executed code. See
 [ADR 0026](adr/0026-application-toolbox.md).
 
+## External database explorer link (declarative)
+A stack may declare an `x-compose-panel.database` extension (a `label` and a
+mapping of scalar `query` parameters) in its canonical Compose file. When the
+panel has a global `COMPOSE_PANEL_DATABASE_EXPLORER_URL`, the stack page shows
+a link that opens an external explorer (LibreDB Studio, Adminer, pgAdmin…) with
+those parameters preselected. `src/database.ts` holds the pure parsing,
+validation and URL building; `src/config.ts` validates the global URL at
+startup and `src/html.ts` renders the card. The panel never contacts the
+explorer, reads no credential and opens no database: it only builds a URL from
+trusted configuration. The contract is software-agnostic, and no new Docker
+boundary is added. See [ADR 0027](adr/0027-external-database-explorer-links.md)
+and the [LibreDB example](integrations/libredb.md).
+
 ## Compose context
 Stack creation (`src/create-stack.ts`, [ADR 0024](adr/0024-controlled-stack-creation.md))
 reserves a new owner-only directory with exclusive mkdir under the shared stack

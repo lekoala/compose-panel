@@ -60,6 +60,12 @@ services:
     image: postgres:16
     environment:
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
+
+x-compose-panel:
+  database:
+    label: LibreDB
+    query:
+      connection: seed:shop-staging
 `,
     worker: `# Not deployed yet: try Up.
 services:
@@ -495,6 +501,7 @@ const config = loadConfig({
     COMPOSE_PANEL_DEV: "true",
     COMPOSE_PANEL_ADMIN_USER: "admin",
     COMPOSE_PANEL_ADMIN_PASSWORD_HASH: await Bun.password.hash(PASSWORD, { algorithm: "argon2id" }),
+    COMPOSE_PANEL_DATABASE_EXPLORER_URL: process.env.COMPOSE_PANEL_DATABASE_EXPLORER_URL || "https://db.example.com",
 });
 const app = createApp({ config, stacksRoot, provider, runner });
 const server = Bun.serve({ hostname: "127.0.0.1", port: config.port, fetch: request => app.fetch(request) });
@@ -506,6 +513,7 @@ console.info(`
   Docker is SIMULATED: no command runs, nothing real is touched.
   Demo stacks: ${stacksRoot}  (bun run preview --reset to recreate)
   Open release: deployed version + commit, declared staging/build/application links.
+  Open db: the "Explore the database" card links to the configured explorer (simulated).
   Try Pull, then Up: the deployed version changes only after Up (all simulated).
   Try New stack: name scratch; paste services: / app: / image: busybox (YAML).
   Creation writes only demo files; deploying remains a separate Up action.

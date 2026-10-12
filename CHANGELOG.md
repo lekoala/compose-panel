@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- External database explorer link (ADR 0027): a stack declares, in an
+  `x-compose-panel.database` Compose extension, a label and scalar query
+  parameters, and the panel shows an **Explore the database** card linking to a
+  separately deployed explorer (LibreDB Studio, Adminer, pgAdmin…) behind the
+  global `COMPOSE_PANEL_DATABASE_EXPLORER_URL`. Declarative only: the panel
+  never contacts the explorer, reads no credential and opens no database; the
+  link carries only public parameters and opens with `rel="noopener noreferrer"`.
+  An invalid global URL is refused at startup; an invalid stack declaration is a
+  warning. See `docs/integrations/libredb.md` for a deployment example. Available
+  in simulated preview (the `db` stack).
+
 - Deployed metadata on the containerd image store (ADR 0023 amendment): when a
   retag or pull removes the image a container still runs, its OCI version and
   revision are read from the labels the container inherited, instead of

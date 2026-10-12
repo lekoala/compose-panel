@@ -126,6 +126,7 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
         backupRetain: 10,
         dockerPath: "docker",
         composeEngine: "docker",
+        databaseExplorerUrl: null,
         hostStacksPathAliases: [],
         timeZone: "",
         dockerTimeoutMs: 5000,

@@ -168,3 +168,22 @@ describe("loadConfig compose engine", () => {
         expect(() => loadConfig({ ...user, COMPOSE_PANEL_COMPOSE_ENGINE: "containerd" })).toThrow(/not supported/);
     });
 });
+
+describe("loadConfig external database explorer", () => {
+    const user = { ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala" };
+
+    test("defaults to no explorer URL", () => {
+        expect(loadConfig(user).databaseExplorerUrl).toBeNull();
+    });
+
+    test("normalizes a valid https URL to its origin", () => {
+        expect(loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "https://db.example.com/" }).databaseExplorerUrl)
+            .toBe("https://db.example.com");
+    });
+
+    test("refuses an invalid explorer URL at startup", () => {
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "http://db.example.com" })).toThrow(/https/i);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "https://db.example.com/app" })).toThrow(/path, query or fragment/i);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "https://user:pass@db.example.com" })).toThrow(/credentials/i);
+    });
+});

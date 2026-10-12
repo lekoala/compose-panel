@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import { isComposeServiceName } from "./compose-provider.ts";
+import { asRecord, readComposeExtension, type ParseResult } from "./compose-extension.ts";
 
 /**
  * The application toolbox (ADR 0026): a stack points, through the Compose
@@ -15,9 +16,6 @@ export type ToolboxRunner = typeof TOOLBOX_RUNNERS[number];
 
 export const TOOLBOX_SCHEMA_VERSION = 1;
 
-/** Upper bounds for the stack-side source list. */
-const MAX_SOURCES = 32;
-
 const SOURCE_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 /** Docker `exec -u` user: `name`, `uid`, `name:group` or `uid:gid`; never option-like. */
 const TOOLBOX_USER = /^(?!-)[A-Za-z0-9_.-]{1,32}(?::(?!-)[A-Za-z0-9_.-]{1,32})?$/;
@@ -28,8 +26,8 @@ const MAX_LABEL = 200;
 const MAX_GROUP = 80;
 const MAX_CONFIRMATION = 500;
 const MAX_PATH = 4096;
-
-export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
+/** Upper bounds for the stack-side source list. */
+const MAX_SOURCES = 32;
 
 export interface ToolboxSource {
     id: string;
@@ -87,12 +85,6 @@ export function buildRunnerArgv(runner: ToolboxRunner, name: string): string[] {
     }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-        ? value as Record<string, unknown>
-        : null;
-}
-
 /** A container-internal absolute path without ".." segments or NUL bytes. */
 export function isSafeContainerPath(value: string): boolean {
     if (value.length === 0 || value.length > MAX_PATH || value.includes("\0")) return false;
@@ -102,21 +94,13 @@ export function isSafeContainerPath(value: string): boolean {
 
 /**
  * Read `x-compose-panel.toolbox.sources` from a raw Compose file. Compose
- * ignores `x-*` fields, so the extension never reaches the deployed project. The
- * parser is defensive: only known keys are read, so a cyclic YAML alias
- * elsewhere in the document cannot be traversed. No sources declared is not an
- * error: it simply means the stack offers no actions.
+ * ignores `x-*` fields, so the extension never reaches the deployed project. No
+ * sources declared is not an error: it simply means the stack offers no actions.
  */
 export function parseToolboxSources(composeSource: string): ParseResult<ToolboxSource[]> {
-    let document: unknown;
-    try {
-        document = Bun.YAML.parse(composeSource);
-    } catch {
-        return { ok: false, error: "The Compose file is not valid YAML." };
-    }
-    const root = asRecord(document);
-    const extension = root ? asRecord(root["x-compose-panel"]) : null;
-    const toolbox = extension ? asRecord(extension["toolbox"]) : null;
+    const extension = readComposeExtension(composeSource);
+    if (!extension.ok) return extension;
+    const toolbox = extension.value ? asRecord(extension.value["toolbox"]) : null;
     const raw = toolbox ? toolbox["sources"] : undefined;
     if (raw === undefined || raw === null) return { ok: true, value: [] };
     if (!Array.isArray(raw)) return { ok: false, error: "x-compose-panel.toolbox.sources must be a list." };

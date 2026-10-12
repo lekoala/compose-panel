@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, operationPanel, renderSidebar, servicesSection, usageBar } from "../src/html.ts";
+import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, operationPanel, renderSidebar, servicesSection, usageBar, databaseSection } from "../src/html.ts";
+import { buildExplorerUrl } from "../src/database.ts";
 import type { ComposeService } from "../src/compose-state.ts";
 import type { OperationView } from "../src/operations.ts";
 
@@ -131,4 +132,57 @@ test("usage bars are clamped, decorative, and absent when the value is unknown",
     expect(usageBar(-1)).toContain('<rect class="bar-fill" width="0"');
     expect(usageBar(0.95)).toContain('class="bar bar-high"');
     expect(usageBar(0.5)).not.toContain("bar-high");
+});
+
+test("database section is absent without a valid explorer link", () => {
+    expect(databaseSection(null)).toBe("");
+});
+
+test("database section reports an invalid declaration as a warning without a link", () => {
+    const html = databaseSection(null, "x-compose-panel.database.query must be a mapping of scalar values.");
+    expect(html).toContain('class="note note-warn"');
+    expect(html).not.toContain("<a ");
+});
+
+test("database section escapes the warning message", () => {
+    const html = databaseSection(null, '<script>alert("x")</script>');
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+});
+
+test("database section renders a long but valid explorer link", () => {
+    // Two 256-character values exceed metadataUrl's 512-char cap while staying
+    // within the ADR 0027 bounds: the link must still be rendered.
+    const query = { a: "x".repeat(256), b: "y".repeat(256) };
+    const url = buildExplorerUrl("https://db.example.com", query);
+    expect(url).not.toBeNull();
+    expect(url!.length).toBeGreaterThan(512);
+    const html = databaseSection({ url: url!, label: null, query });
+    expect(html).toContain('<a class="btn" href=');
+    expect(html).toContain('rel="noopener noreferrer"');
+});
+
+test("database section links to the explorer in a new tab without opener access", () => {
+    const html = databaseSection({
+        url: "https://db.example.com/?connection=seed%3Ashop-staging",
+        label: "LibreDB",
+        query: { connection: "seed:shop-staging" },
+    });
+    expect(html).toContain('class="card database"');
+    expect(html).toContain('<a class="btn" href="https://db.example.com/?connection=seed%3Ashop-staging"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain("LibreDB");
+    expect(html).toContain("connection=seed:shop-staging");
+});
+
+test("database section escapes the label and query values and refuses a non-http link", () => {
+    const escaped = databaseSection({ url: "https://db.example.com/", label: '<script>"', query: { db: "<b>x</b>" } });
+    expect(escaped).not.toContain("<script>");
+    expect(escaped).toContain("&lt;script&gt;");
+    expect(escaped).not.toContain("<b>x</b>");
+    expect(escaped).toContain("&lt;b&gt;x&lt;/b&gt;");
+    const bad = databaseSection({ url: "javascript:alert(1)", label: null, query: { db: "shop" } });
+    expect(bad).not.toContain("javascript:");
+    expect(bad).not.toContain("<a ");
 });
