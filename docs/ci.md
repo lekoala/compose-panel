@@ -1,6 +1,6 @@
 # CI — pipeline
 
-The pipeline lives in `.github/workflows/ci.yml` (Linux runners, Bun 1.4.3
+The pipeline lives in `.github/workflows/ci.yml` (`ubuntu-24.04` runners, Bun 1.4.3
 pinned): `bun install --frozen-lockfile`, `bun audit`, `bun run typecheck`, `bun run test`,
 then a pinned image build, a socket-less smoke test (reads and auth
 only, no Docker socket mounted) and Trivy scans that fail on CRITICAL/HIGH.
@@ -20,8 +20,11 @@ directly), to keep unused packages and their CVEs out. The build runs no
 `apt-get upgrade`: Debian fixes arrive through deliberate base digest
 refreshes, not as a side effect of the build date. The base image
 is pinned by version and multi-arch digest in the `Dockerfile`, and every GitHub
-Action is pinned to a full commit SHA (with the human tag in a comment). Bump
-them deliberately and re-run the smoke checklist when you do.
+Action is pinned to a full commit SHA (with the human tag in a comment). The
+runner image is pinned too (`ubuntu-24.04`, not `ubuntu-latest`), so a new
+Ubuntu release never changes the build silently. Bump them deliberately and
+re-run the smoke checklist when you do; prefer action releases that run on a
+supported Node.js (`runs.using` in their `action.yml`).
 
 Update tracking: Dependabot (`.github/dependabot.yml`) proposes base image
 digest refreshes for the pinned Bun tag; the `FROM` reference is written

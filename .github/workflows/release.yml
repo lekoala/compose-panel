@@ -20,7 +20,7 @@ env:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Refuse a tag that does not match package.json
@@ -28,7 +28,7 @@ jobs:
           test "$GITHUB_REF_NAME" = "$(node -p "require('./package.json').version")"
       # QEMU emulates arm64 on the amd64 runner (e.g. Oracle Ampere hosts).
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # Each platform is built and loaded locally, then scanned, before anything
       # is pushed. The final multi-platform push reuses the builder cache.
       - name: Build linux/amd64 image (local only, not pushed yet)
@@ -62,7 +62,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           trivyignores: .trivyignore.yaml
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
