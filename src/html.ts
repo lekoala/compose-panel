@@ -314,7 +314,7 @@ function versionText(version: ImageVersion): string {
     return version.version ?? (version.created ? `built ${version.created}` : version.digest ?? "unknown version");
 }
 
-export function deploymentSection(deployed: DeployedImage[] = [], declared?: DeclaredMetadata | null): string {
+export function deploymentSection(deployed: DeployedImage[] = [], declared?: DeclaredMetadata | null, showDeployed = true): string {
     const link = (value: string): string => {
         const href = metadataUrl(value);
         return href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(value)} ↗</a>` : escapeHtml(value);
@@ -331,8 +331,11 @@ ${image.digests.map(digest => field("Repository digest", digest)).join("")}</dl>
     const declaredBlock = labels
         ? `<details><summary>Declared Compose metadata</summary><p class="muted">Resolved labels from the current Compose file. These may differ from the deployed containers.</p>${labels}</details>`
         : "";
-    return `<section class="card deployment"><h2>Deployed version</h2>${images || `<p class="muted">Deployed image metadata is unavailable. No version is inferred from an image tag.</p>`}
-${declaredBlock}</section>`;
+    const warning = declared === null ? note("warn", "Declared Compose metadata could not be read. Check the Compose file, .env and Docker availability.") : "";
+    if (!showDeployed && !declaredBlock && !warning) return "";
+    const heading = showDeployed ? "Deployed version" : "Deployment metadata";
+    const deployedBlock = showDeployed ? images || `<p class="muted">Deployed image metadata is unavailable. No version is inferred from an image tag.</p>` : "";
+    return `<section class="card deployment"><h2>${heading}</h2>${deployedBlock}${warning}${declaredBlock}</section>`;
 }
 
 /** "1.27.1 → 1.27.2"; when both sides read the same, the digests tell them apart. */

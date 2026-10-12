@@ -12,6 +12,19 @@ reported incomplete, inspect the named folder manually before retrying. A crash
 may leave a private unfinished directory; the panel does not recover it.
 See [ADR 0024](adr/0024-controlled-stack-creation.md) for manual verification.
 
+On Linux new directories and files inherit the stacks root's uid/gid, with
+0700 directory permissions and 0600 files (including `.env`). Set the root's
+owner to the host administrator who will use Compose; other users/groups do not
+gain access. Failure to transfer ownership aborts creation.
+
+Creation requires a filesystem allowing hard links for exclusive publication.
+Some Docker Desktop shares or FUSE/NFS mounts may refuse these; the form reports
+the publication error and cleans up its files. Use compatible local Linux storage
+or correct the mount permissions; there is no unsafe overwrite fallback.
+
+Project collision checks cover deployed Docker projects. Two undeployed folders
+may still declare the same `name:`; Up checks ownership again before deployment.
+
 The panel runs real Docker commands for state, validation, operations and log follows. On Windows, developing HTML and pure logic is possible without Docker. Process, signal and Docker tests must pass on Linux (CI).
 
 ## Safety of future commands

@@ -5,14 +5,24 @@ import { StackError, validateStackName } from "./stacks.ts";
 import { dirIdentity, hashContent, randomSuffix, readFileSafe, sameDirIdentity } from "./fs-safe.ts";
 import { parseComposeLs } from "./compose-state.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
+import { collectSecrets, configValidationResult } from "./editor.ts";
 
 export interface CreateStackRequest { name: string; composeSource: string; envSource: string }
+type CreationStage = "filesystem" | "validation" | "project-identity" | "project-collision" | "publication";
 export class StackCreationPartialError extends StackError {
-    constructor() { super("Creation could not be fully cleaned up. Inspect the stack folder before retrying; no Docker resources were started.", 500); }
+    constructor(readonly stage: CreationStage, reason?: string) {
+        super(`${reason ? `${reason}\n` : ""}Creation could not be fully cleaned up. Inspect the stack folder before retrying; no Docker resources were started.`, 500);
+    }
+}
+
+export interface CreateStackOptions {
+    beforeCommit?: () => void;
+    /** Test seam for filesystems that refuse hard-link publication. */
+    linker?: typeof link;
 }
 
 /** Raw-file creation only. The caller holds the shared stack lock. */
-export async function createStack(root: string, draft: CreateStackRequest, provider: ComposeProvider, maxBytes: number, beforeCommit?: () => void): Promise<void> {
+export async function createStack(root: string, draft: CreateStackRequest, provider: ComposeProvider, maxBytes: number, options: CreateStackOptions = {}): Promise<void> {
     validateStackName(draft.name);
     if (!draft.composeSource.trim()) throw new StackError("Enter a Compose file.");
     if ([draft.composeSource, draft.envSource].some(text => Buffer.byteLength(text, "utf8") > maxBytes)) throw new StackError("The files are too large for the panel.", 413);
@@ -25,6 +35,9 @@ export async function createStack(root: string, draft: CreateStackRequest, provi
     let anchored = directory;
     let reserved = false;
     let committed = false;
+    let stage: CreationStage = "filesystem";
+    let failure: StackError | null = null;
+    let rootInfo: Stats;
     const owned = new Map<string, Stats>();
     const checkIdentity = async () => {
         if (!sameDirIdentity(await dirIdentity(root), rootIdentity) || !identity || !sameDirIdentity(await dirIdentity(directory), identity)) throw new StackError("The stack folder changed while it was being checked.", 409);
@@ -32,13 +45,24 @@ export async function createStack(root: string, draft: CreateStackRequest, provi
     const write = async (filename: string, source: string) => {
         const handle = await open(join(anchored, filename), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
         try {
-            owned.set(filename, await handle.stat());
+            const info = await handle.stat();
+            owned.set(filename, info);
+            if (process.platform === "linux" && (info.uid !== rootInfo.uid || info.gid !== rootInfo.gid)) {
+                try { await handle.chown(rootInfo.uid, rootInfo.gid); }
+                catch { throw new StackError("The new files could not inherit the stacks folder's owner and group. Check filesystem permissions.", 500); }
+            }
             await handle.writeFile(source, "utf8");
             await handle.sync();
         } finally { await handle.close(); }
     };
     const publish = async (source: string, destination: string) => {
-        await link(join(anchored, source), join(anchored, destination));
+        try { await (options.linker ?? link)(join(anchored, source), join(anchored, destination)); }
+        catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (["EPERM", "EOPNOTSUPP", "ENOTSUP", "EXDEV"].includes(code ?? "")) throw new StackError("The stacks filesystem does not allow hard-link publication. Check its permissions or use a local Linux filesystem that supports hard links.", 500);
+            if (code === "EEXIST") throw new StackError("A Compose file appeared before publication. It was not overwritten.", 409);
+            throw error;
+        }
         owned.set(destination, owned.get(source)!);
     };
     const checkProjects = async (project: string) => {
@@ -50,7 +74,8 @@ export async function createStack(root: string, draft: CreateStackRequest, provi
         if (projects.some(item => item.name === project)) throw new StackError("The resolved Compose project already exists in Docker. Choose another project name.", 409);
     };
     try {
-        if (rootHandle && !sameDirIdentity(await rootHandle.stat(), rootIdentity)) throw new StackError("The stacks folder changed.", 409);
+        rootInfo = rootHandle ? await rootHandle.stat() : await lstat(root);
+        if (!sameDirIdentity(rootInfo, rootIdentity)) throw new StackError("The stacks folder changed.", 409);
         try { await mkdir(join(rooted, draft.name), { mode: 0o700 }); }
         catch (error) {
             if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new StackError("A file or folder with this stack name already exists.", 409);
@@ -63,6 +88,10 @@ export async function createStack(root: string, draft: CreateStackRequest, provi
         if (directoryHandle && !sameDirIdentity(await directoryHandle.stat(), identity)) throw new StackError("The stack folder changed.", 409);
         anchored = directoryHandle ? `/proc/self/fd/${directoryHandle.fd}` : directory;
         await checkIdentity();
+        if (directoryHandle && (identity.uid !== rootInfo.uid || identity.gid !== rootInfo.gid)) {
+            try { await directoryHandle.chown(rootInfo.uid, rootInfo.gid); }
+            catch { throw new StackError("The new folder could not inherit the stacks folder's owner and group. Check filesystem permissions.", 500); }
+        }
         const composeTmp = `.cp-create-${randomSuffix()}.yaml`;
         const envName = draft.envSource.length ? ".env" : `.cp-create-env-${randomSuffix()}`;
         // A real temporary .env is needed for relative service env_file: .env.
@@ -71,12 +100,16 @@ export async function createStack(root: string, draft: CreateStackRequest, provi
         await write(envName, draft.envSource);
         const composeFile = join(directory, composeTmp);
         const envFile = join(directory, envName);
-        const validation = await provider.validateConfig({ directory, composeFile, envFile });
-        if (validation.code !== 0 || validation.timedOut || validation.truncated) throw new StackError("Compose validation failed or was unavailable. Check the Compose file and variables, then try again.");
+        stage = "validation";
+        const result = await provider.validateConfig({ directory, composeFile, envFile });
+        const validation = configValidationResult(result, collectSecrets(draft.envSource));
+        if (!validation.ok) throw new StackError(validation.message ?? "Compose validation failed.");
         await checkIdentity();
+        stage = "project-identity";
         const project = await provider.projectName({ cwd: directory, composeFile, envFile });
         if (!project) throw new StackError("The Compose project name could not be resolved.", 503);
         await checkIdentity();
+        stage = "project-collision";
         await checkProjects(project);
         await checkIdentity();
         const compose = await readFileSafe(join(anchored, composeTmp), maxBytes);
@@ -89,9 +122,15 @@ export async function createStack(root: string, draft: CreateStackRequest, provi
         if (files.length !== 2 || !files.includes(composeTmp) || !files.includes(envName)) throw new StackError("Files were added while this stack was being checked.", 409);
         await checkProjects(project);
         await checkIdentity();
-        beforeCommit?.();
+        options.beforeCommit?.();
+        stage = "publication";
         await publish(composeTmp, "compose.yaml");
         committed = true;
+    } catch (error) {
+        // Only application errors have a safe message (including redacted
+        // validation diagnostics). Never retain/log an arbitrary provider error.
+        if (error instanceof StackError) failure = error;
+        throw error;
     } finally {
         let incomplete = false;
         if (reserved) {
@@ -112,6 +151,6 @@ export async function createStack(root: string, draft: CreateStackRequest, provi
         }
         await directoryHandle?.close();
         await rootHandle?.close();
-        if (incomplete) throw new StackCreationPartialError();
+        if (incomplete) throw new StackCreationPartialError(stage, failure?.message);
     }
 }

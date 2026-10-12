@@ -4,7 +4,8 @@
 
 - Controlled stack creation (ADR 0024): New stack accepts a name, raw Compose
   and optional `.env`, validates the exact directory and project context, and
-  creates private files without starting containers. Existing paths and
+  creates private files inheriting the stacks root's uid/gid on Linux without
+  starting containers. Validation diagnostics are redacted. Existing paths and
   deployed project collisions are refused. Auth, Origin, CSRF, stack locking,
   safe rollback, audit and shutdown drain apply. Available in simulated preview.
 

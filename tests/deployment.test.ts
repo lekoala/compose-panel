@@ -85,6 +85,18 @@ test("renders a metadata disclosure only when it contains actual fields", () => 
     expect(html).not.toContain("<h3>empty</h3>");
 });
 
+test("undeployed stacks omit the deployed card and failed config stays visible outside a disclosure", () => {
+    expect(deploymentSection([], {}, false)).toBe("");
+    const unavailable = deploymentSection([], null, false);
+    expect(unavailable).toContain('class="note note-warn"');
+    expect(unavailable).not.toContain("<details>");
+    const image = deployedImage("app", "app-1", { id: oldId, repoTags: [], repoDigests: [], created: null, labels: {} });
+    const declared = deploymentSection([image], { app: { "stack.version": "declared-v2" } }, false);
+    expect(declared).toContain("<details>");
+    expect(declared).toContain("declared-v2");
+    expect(declared).not.toContain(oldId);
+});
+
 test.skipIf(process.platform !== "linux")("an unsafe .env prevents config metadata reads without breaking Docker status", async () => {
     const root = await mkdtemp(join(tmpdir(), "cp-metadata-"));
     const cwd = join(root, "demo");

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, chown, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createStack, StackCreationPartialError } from "../src/create-stack.ts";
@@ -8,6 +8,7 @@ import { listStacks, StackError } from "../src/stacks.ts";
 import { StackLocks } from "../src/locks.ts";
 import type { CommandResult } from "../src/docker.ts";
 import { writeFileSync } from "node:fs";
+import { foreignOwner } from "./helpers/ownership.ts";
 
 const ok = (stdout = ""): CommandResult => ({ code: 0, stdout, stderr: "", timedOut: false, truncated: false });
 const composeSource = '# preserve comments\r\nname: chosen-project\r\nservices:\r\n  app:\r\n    image: busybox\r\n';
@@ -61,6 +62,74 @@ test("empty variables use an explicit empty interpolation file and leave no .env
     } });
     await createStack(root, { ...draft, envSource: "" }, fake, 10000);
     expect(await readdir(join(root, draft.name))).toEqual(["compose.yaml"]);
+}));
+
+test.skipIf(process.platform !== "linux" || !foreignOwner)("new stack ownership follows the root even when the process creates files with another owner/group", async () => fixture(async root => {
+    const owner = foreignOwner!;
+    await chown(root, owner.uid, owner.gid);
+    await createStack(root, draft, provider(), 10000);
+    for (const path of [join(root, draft.name), join(root, draft.name, "compose.yaml"), join(root, draft.name, ".env")]) {
+        const info = await lstat(path);
+        expect({ uid: info.uid, gid: info.gid }).toEqual(owner);
+        expect(info.mode & 0o777).toBe(info.isDirectory() ? 0o700 : 0o600);
+    }
+    if (process.getuid?.() === 0) {
+        // Drop privilege in an isolated child to prove the inherited owner can
+        // read the pair without sudo. No Docker daemon is involved.
+        const child = Bun.spawn([process.execPath, "-e", 'const fs = require("node:fs"); process.setgid(Number(process.argv[1])); process.setuid(Number(process.argv[2])); for (const path of process.argv.slice(3)) fs.readFileSync(path);', String(owner.gid), String(owner.uid), join(root, draft.name, "compose.yaml"), join(root, draft.name, ".env")], { stdout: "ignore", stderr: "pipe" });
+        expect(await child.exited).toBe(0);
+    }
+}));
+
+test.skipIf(process.platform !== "linux" || process.getuid?.() !== 0)("refuses publication when an unprivileged process cannot inherit the root owner", async () => fixture(async root => {
+    await chown(root, 65534, 65534);
+    await chmod(root, 0o777); // Disposable fixture allowing another uid to mkdir.
+    const script = 'const { createStack } = await import(process.argv[1]); process.setgid(65533); process.setuid(65533); try { await createStack(process.argv[2], {name:"denied",composeSource:"services: {}",envSource:""}, {}, 10000); process.exit(1); } catch (error) { process.exit(error.status === 500 ? 0 : 2); }';
+    const child = Bun.spawn([process.execPath, "-e", script, join(import.meta.dir, "../src/create-stack.ts"), root], { stdout: "ignore", stderr: "pipe" });
+    expect(await child.exited).toBe(0);
+    expect(await readdir(root)).toEqual([]);
+}));
+
+test("creation shows redacted validation diagnostics and suppresses truncated stderr", async () => fixture(async root => {
+    const stderr = "fixture-yaml-location: private-secret\nextra detail";
+    const fake = provider({ validateConfig: async () => ({ ...ok(), code: 1, stderr }) });
+    const error = await createStack(root, draft, fake, 10000).catch(error => error);
+    expect(error).toBeInstanceOf(StackError);
+    expect(error.message).toContain("fixture-yaml-location");
+    expect(error.message).not.toContain("private-secret");
+    expect(error.message).toContain("***");
+    for (const code of [0, 1]) {
+        const truncated = provider({ validateConfig: async () => ({ ...ok(), code, stderr, truncated: true }) });
+        const failure = await createStack(root, draft, truncated, 10000).catch(error => error);
+        expect(failure).toBeInstanceOf(StackError);
+        expect(failure.message).not.toContain("fixture-yaml-location");
+        expect(failure.message).not.toContain("private-secret");
+    }
+    expect(await readdir(root)).toEqual([]);
+}));
+
+test("hard-link refusal gives an explicit application error and cleans up the reserved folder", async () => fixture(async root => {
+    for (const code of ["EPERM", "EOPNOTSUPP", "EXDEV"]) {
+        const error = await createStack(root, draft, provider(), 10000, { linker: async () => { throw Object.assign(new Error("private-secret"), { code }); } }).catch(error => error);
+        expect(error).toBeInstanceOf(StackError);
+        expect(error).not.toBeInstanceOf(StackCreationPartialError);
+        expect(error.status).toBe(500);
+        expect(error.message).not.toContain("private-secret");
+        expect(await readdir(root)).toEqual([]);
+    }
+}));
+
+test("incomplete cleanup preserves the redacted validation cause and a safe stage", async () => fixture(async root => {
+    const fake = provider({ validateConfig: async input => {
+        await writeFile(join(input.directory, "foreign"), "untouched");
+        return { ...ok(), code: 1, stderr: "fixture-validation-cause: private-secret" };
+    } });
+    const error = await createStack(root, draft, fake, 10000).catch(error => error);
+    expect(error).toBeInstanceOf(StackCreationPartialError);
+    expect(error.stage).toBe("validation");
+    expect(error.message).toContain("fixture-validation-cause");
+    expect(error.message).not.toContain("private-secret");
+    expect(await readFile(join(root, draft.name, "foreign"), "utf8")).toBe("untouched");
 }));
 
 test("refuses invalid names, empty source and oversized drafts before any directory or Docker read", async () => fixture(async root => {
@@ -121,7 +190,7 @@ test("concurrent requests under the shared lock refuse the second create", async
 
 test("a denied commit cleans up the drafts and preserves the denial", async () => fixture(async root => {
     const denial = new Error("session ended");
-    await expect(createStack(root, draft, provider(), 10000, () => { throw denial; })).rejects.toBe(denial);
+    await expect(createStack(root, draft, provider(), 10000, { beforeCommit: () => { throw denial; } })).rejects.toBe(denial);
     expect(await readdir(root)).toEqual([]);
 }));
 
@@ -137,7 +206,7 @@ test("foreign files introduced during validation are preserved and rollback is r
 
 test("exclusive publication never overwrites a file added immediately before commit", async () => fixture(async root => {
     const path = join(root, draft.name, "compose.yaml");
-    await expect(createStack(root, draft, provider(), 10000, () => { writeFileSync(path, "foreign-compose"); })).rejects.toBeInstanceOf(StackCreationPartialError);
+    await expect(createStack(root, draft, provider(), 10000, { beforeCommit: () => { writeFileSync(path, "foreign-compose"); } })).rejects.toBeInstanceOf(StackCreationPartialError);
     expect(await readFile(path, "utf8")).toBe("foreign-compose");
     expect(await readdir(join(root, draft.name))).toEqual(["compose.yaml"]);
 }));

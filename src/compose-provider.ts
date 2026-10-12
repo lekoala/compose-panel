@@ -205,13 +205,13 @@ class DockerComposeProvider implements ComposeProvider {
 
     async stackMetadata(target: ComposeTarget): Promise<DeclaredMetadata | null> {
         if (!this.caps.operations.config) throw new ComposeUnsupportedError("config");
-        const result = await this.mutation(target, ["config", "--format", "json"]);
+        const result = await this.runTarget(target, ["config", "--format", "json"]);
         if (result.code !== 0 || result.timedOut || result.truncated) return null;
         try { return projectMetadata(JSON.parse(result.stdout)); }
         catch { return null; }
     }
 
-    private mutation(target: ComposeTarget, command: string[]): Promise<CommandResult> {
+    private runTarget(target: ComposeTarget, command: string[]): Promise<CommandResult> {
         const args = ["compose"];
         if (target.project) args.push("-p", target.project);
         if (target.envFile) args.push("--env-file", target.envFile);
@@ -222,7 +222,7 @@ class DockerComposeProvider implements ComposeProvider {
     pull(target: ComposeTarget): Promise<CommandResult> {
         // ADR 0022: services with a `build:` section are skipped, including
         // ones that also declare `image:`. Those are built by Up, not pulled.
-        return this.mutation(target, ["pull", "--ignore-buildable"]);
+        return this.runTarget(target, ["pull", "--ignore-buildable"]);
     }
 
     up(target: ComposeTarget): Promise<CommandResult> {
@@ -234,15 +234,15 @@ class DockerComposeProvider implements ComposeProvider {
         const command = target.service === undefined
             ? ["up", "-d"]
             : ["up", "-d", "--no-deps", "--", target.service];
-        return this.mutation(target, command);
+        return this.runTarget(target, command);
     }
 
     stop(target: ComposeTarget): Promise<CommandResult> {
-        return this.mutation(target, ["stop"]);
+        return this.runTarget(target, ["stop"]);
     }
 
     start(target: ComposeTarget): Promise<CommandResult> {
-        return this.mutation(target, ["start"]);
+        return this.runTarget(target, ["start"]);
     }
 
     restart(target: ComposeTarget): Promise<CommandResult> {
@@ -253,11 +253,11 @@ class DockerComposeProvider implements ComposeProvider {
         const command = target.service === undefined
             ? ["restart"]
             : ["restart", "--no-deps", "--", target.service];
-        return this.mutation(target, command);
+        return this.runTarget(target, command);
     }
 
     down(target: ComposeTarget): Promise<CommandResult> {
-        return this.mutation(target, ["down"]);
+        return this.runTarget(target, ["down"]);
     }
 
     private projectArgs(input: ComposeProjectFiles): string[] {

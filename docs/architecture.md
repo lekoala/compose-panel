@@ -93,6 +93,11 @@ twice for an existing project. Compose is published last with an exclusive hard
 link, so stack discovery sees only the completed pair. Linux descriptor-pinned
 writes and inode-checked, non-recursive cleanup protect against path substitution.
 Creation joins the save drain and audit trail; it never deploys Docker resources.
+New directory/file ownership follows the stacks root's uid/gid on Linux, with a
+failed transfer aborting creation. Creation and editing share redacted validation
+diagnostics. Stack detail loads declared metadata alongside Docker services;
+failed config reads produce a fixed warning without exposing stderr. Undeployed
+stacks show declared metadata only when present and omit the deployed-image card.
 
 A stack is defined by the paths of its files, its `--project-directory`, its variable sources and its Compose identity. The **folder name is not necessarily the Docker project**. Do not automatically inject `-p <folder>`.
 

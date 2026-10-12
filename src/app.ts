@@ -1,7 +1,5 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, type NavSection, type NavigationOptions, type NoteKind } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, type NavSection, type NavigationOptions, type NoteKind } from "./html.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
-import { deploymentSection } from "./html.ts";
-import { createStackPage } from "./html.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
 import { dirname, join } from "node:path";
 import { listStacks, locateComposeFile, readStackCompose, StackError, validateStackName } from "./stacks.ts";
@@ -751,7 +749,7 @@ export function createApp(options: AppOptions): App {
             + operationControls(stack.name, csrf, { busy: operation?.status === "running", state: status.state, updatesReady: Object.keys(status.updates ?? {}) })
             + operationPanel(operation, stack.name)
             + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" })
-            + deploymentSection(status.deployed, status.declared)
+            + deploymentSection(status.deployed, status.declared, status.state !== "not-created")
             + logsPanel(stack.name, config.logTailLines, config.timeZone, status.services.map(service => service.name))
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
             { ...pageChrome(csrf), scripts: ["/app.js"], nav: await sidebarNav("stacks", stack.name) },
@@ -869,7 +867,7 @@ export function createApp(options: AppOptions): App {
             };
             const task = locks.run(draft.name, async () => {
                 checkAuthorization();
-                await createStack(stacksRoot, draft, provider, config.maxEditBytes, checkAuthorization);
+                await createStack(stacksRoot, draft, provider, config.maxEditBytes, { beforeCommit: checkAuthorization });
             });
             saves.add(task);
             try { await task; }
@@ -884,6 +882,7 @@ export function createApp(options: AppOptions): App {
             const status = error instanceof StackError ? error.status : error instanceof StackBusyError || error instanceof OperationsDisabledError ? 409 : 500;
             const message = error instanceof StackError || error instanceof StackBusyError || error instanceof OperationsDisabledError
                 ? error.message : "The stack could not be created. Check directory permissions and Docker availability.";
+            if (error instanceof StackCreationPartialError) console.error("Stack creation cleanup incomplete", { stack: draft.name, stage: error.stage });
             await recordAudit({ event: "create", result: error instanceof StackCreationPartialError ? "partial" : "refused", actor: clientKey(request, config), stack: validName ? draft.name : undefined });
             return renderCreate(csrf, draft, message, status);
         }

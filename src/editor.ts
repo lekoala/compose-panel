@@ -5,6 +5,7 @@ import { locateComposeFile, StackError, ENV_FILENAME } from "./stacks.ts";
 import { resolveProjectContext } from "./status.ts";
 import { backupFile, dirIdentity, ensureBackupDir, hashContent, randomSuffix, readFileSafe, sameDirIdentity, writeFileAtomic, type FileAttributes, type SafeFile } from "./fs-safe.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
+import type { CommandResult } from "./docker.ts";
 
 export { ENV_FILENAME } from "./stacks.ts";
 const ABSENT_HASH = hashContent("");
@@ -185,6 +186,17 @@ export interface ValidationResult {
     message: string | null;
 }
 
+/** Shared creation/edit diagnostics: redact before shortening, never show cut output. */
+export function configValidationResult(result: CommandResult, secrets: string[]): ValidationResult {
+    if (result.timedOut) return { ok: false, message: "docker compose config did not answer in time. Check that Docker is responsive, then try again." };
+    // A secret crossing the runner's output cap may survive as a fragment.
+    if (result.truncated) return { ok: false, message: "docker compose config output was too long to show safely. Check the draft with docker compose config --quiet using the CLI." };
+    if (result.code !== 0) {
+        return { ok: false, message: firstLines(redactSecrets(result.stderr, secrets)) || "docker compose config rejected the file without giving a reason." };
+    }
+    return { ok: true, message: null };
+}
+
 /**
  * Validate a draft in its real project context: same directory, same relative
  * paths, explicit -f and --env-file, `config --quiet` only (never an
@@ -222,19 +234,7 @@ export async function validateDraft(
             envFile,
             projectName,
         });
-        if (result.timedOut) return { ok: false, message: "docker compose config did not answer in time. Check that Docker is responsive, then save again." };
-        if (result.code !== 0) {
-            // The runner already cut the output: a secret crossing that cut
-            // survives as a fragment no redaction can recognize. Show nothing of it.
-            if (result.truncated) {
-                return { ok: false, message: "docker compose config rejected the file. Its message was too long to show safely; run docker compose config --quiet in the stack folder to read it." };
-            }
-            // Redact BEFORE truncating: a secret crossing the line/char boundary
-            // would otherwise survive as an unreplaceable prefix.
-            const raw = firstLines(redactSecrets(result.stderr, secrets)) || "docker compose config rejected the file without giving a reason.";
-            return { ok: false, message: raw };
-        }
-        return { ok: true, message: null };
+        return configValidationResult(result, secrets);
     } finally {
         await rm(composeTmp, { force: true }).catch(() => {});
         if (envTmp) await rm(envTmp, { force: true }).catch(() => {});

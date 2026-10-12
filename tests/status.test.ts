@@ -7,7 +7,7 @@ import { resolveRoot } from "../src/stacks.ts";
 import type { ComposeProvider } from "../src/compose-provider.ts";
 import type { CommandResult } from "../src/docker.ts";
 import { StackError } from "../src/stacks.ts";
-import { loadProjects, loadStackStates } from "../src/status.ts";
+import { loadProjects, loadStackDetail, loadStackStates } from "../src/status.ts";
 
 const ok: CommandResult = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
 
@@ -64,4 +64,48 @@ describe("loadProjects with a truncated Docker list", () => {
             await rm(root, { recursive: true, force: true });
         }
     });
+});
+
+test("detail loads config and services concurrently and preserves Docker state when metadata fails", async () => {
+    const root = await resolveRoot(await mkdtemp(join(tmpdir(), "cp-detail-parallel-")));
+    const file = join(root, "demo", "compose.yaml");
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let configStarted!: () => void;
+    let servicesStarted!: () => void;
+    const bothStarted = Promise.all([
+        new Promise<void>(resolve => { configStarted = resolve; }),
+        new Promise<void>(resolve => { servicesStarted = resolve; }),
+    ]);
+    const provider = createComposeProvider({ runner: async () => ok });
+    provider.listProjects = async () => ({ ...ok, stdout: JSON.stringify([{ Name: "demo", Status: "running(1)", ConfigFiles: file }]) });
+    provider.stackMetadata = async () => { configStarted(); await gate; throw new Error("private-config-output"); };
+    provider.projectServices = async () => {
+        servicesStarted();
+        await gate;
+        return { ...ok, stdout: JSON.stringify([{ Name: "demo-app-1", Service: "app", State: "running", Image: "busybox" }]) };
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let task: ReturnType<typeof loadStackDetail> | undefined;
+    try {
+        await mkdir(join(root, "demo"));
+        await writeFile(file, "services:\n  app:\n    image: busybox\n");
+        task = loadStackDetail(root, "demo", provider);
+        const started = await Promise.race([
+            bothStarted.then(() => true),
+            new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 1000); }),
+        ]);
+        expect(started).toBe(true);
+        release();
+        const detail = await task;
+        expect(detail.state).toBe("running");
+        expect(detail.services).toHaveLength(1);
+        expect(detail.declared).toBeNull();
+        expect(JSON.stringify(detail)).not.toContain("private-config-output");
+    } finally {
+        clearTimeout(timer);
+        release();
+        await task;
+        await rm(root, { recursive: true, force: true });
+    }
 });

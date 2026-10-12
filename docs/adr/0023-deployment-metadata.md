@@ -22,6 +22,9 @@ Raw interpolated config and errors never leave the provider. Values are bounded,
 HTML-escaped, and links allow only HTTP(S), without credentials. The panel never
 fetches declared URLs. No registry, CI API, manifest, storage or new mutation.
 Missing or failed reads show unavailable information without breaking status.
+Config and service inspection run concurrently on the detail page. A failed
+config read shows a fixed warning outside the disclosure; no labels omits the
+disclosure entirely. Undeployed stacks omit the deployed-image card.
 
 ## Verification
 

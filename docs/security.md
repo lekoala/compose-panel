@@ -5,10 +5,14 @@ Stack creation (`POST /new-stack`, ADR 0024) requires an active session, valid
 Origin and CSRF, bounded inputs and a validated stack name before path use.
 Existing paths are refused by exclusive mkdir. Validation uses the exact new
 directory and explicit `.env`; project collisions and failed discovery refuse
-publication. Files are 0600 in a 0700 directory. Linux writes and cleanup use
+publication. Files are 0600 in a 0700 directory; on Linux both inherit the uid/gid
+of the stacks root, failing creation if chown is refused. Linux writes and cleanup use
 pinned directories and inode checks; cleanup never recursively deletes a
-user-named directory. Failed cleanup reports a partial outcome. Provider errors
-are replaced with fixed messages and the audit records only name and result.
+user-named directory. Failed cleanup reports a partial outcome and keeps a safe
+original cause; logs include only the stack and fixed creation phase. Compose
+validation stderr uses the same redaction and bounds as editing and is suppressed
+when timed out or truncated. Other provider errors use fixed messages; the audit
+records only name and result.
 Authorization, shutdown and self-update state are rechecked before publication.
 
 Deployment metadata is authenticated and `no-store` like the stack detail.

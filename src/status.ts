@@ -183,31 +183,39 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
     }
     // Config interpolation must never read an unsafe .env. Failure only makes
     // metadata unavailable; Docker remains authoritative for service state.
-    let declared: DeclaredMetadata | null = null;
-    try {
-        const cwd = dirname(location.path);
-        const env = await readFileSafe(join(cwd, ENV_FILENAME), MAX_ENV_BYTES);
-        declared = await provider.stackMetadata({ project: match.project?.name, composeFile: location.path, cwd, envFile: env?.path });
-    } catch { /* Never expose config errors or secrets. */ }
-    if (!match.project) return { project: null, state: "not-created", note: null, services: [], declared };
+    const declaredTask = (async (): Promise<DeclaredMetadata | null> => {
+        try {
+            const cwd = dirname(location.path);
+            const env = await readFileSafe(join(cwd, ENV_FILENAME), MAX_ENV_BYTES);
+            return await provider.stackMetadata({ project: match.project?.name, composeFile: location.path, cwd, envFile: env?.path });
+        } catch {
+            // Never expose config errors or secrets.
+            return null;
+        }
+    })();
+    if (!match.project) return { project: null, state: "not-created", note: null, services: [], declared: await declaredTask };
 
     const project = match.project;
-    try {
-        const result = await provider.projectServices({
-            project: project.name,
-            composeFile: location.filename,
-            cwd: dirname(location.path),
-        });
-        if (result.timedOut) return { project: project.name, state: "unknown", note: DOCKER_SLOW, services: [] };
-        // Same fail-closed rule as the project list: a truncated `ps` may omit
-        // services, so it is never parsed as if complete.
-        if (result.truncated) return { project: project.name, state: "unknown", note: DOCKER_TRUNCATED, services: [] };
-        if (result.code !== 0) return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
-        const services = parseComposePs(result.stdout);
-        const deployed: DeployedImage[] = [];
-        const updates = await loadImageUpdates(provider, { project: project.name, composeFile: location.filename, cwd: dirname(location.path) }, services, deployed);
-        return { project: project.name, state: summarizeServices(services), note: null, services, updates, deployed, declared };
-    } catch {
-        return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
-    }
+    const servicesTask = (async (): Promise<StackDetailStatus> => {
+        try {
+            const result = await provider.projectServices({
+                project: project.name,
+                composeFile: location.filename,
+                cwd: dirname(location.path),
+            });
+            if (result.timedOut) return { project: project.name, state: "unknown", note: DOCKER_SLOW, services: [] };
+            // Same fail-closed rule as the project list: a truncated `ps` may omit
+            // services, so it is never parsed as if complete.
+            if (result.truncated) return { project: project.name, state: "unknown", note: DOCKER_TRUNCATED, services: [] };
+            if (result.code !== 0) return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
+            const services = parseComposePs(result.stdout);
+            const deployed: DeployedImage[] = [];
+            const updates = await loadImageUpdates(provider, { project: project.name, composeFile: location.filename, cwd: dirname(location.path) }, services, deployed);
+            return { project: project.name, state: summarizeServices(services), note: null, services, updates, deployed };
+        } catch {
+            return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
+        }
+    })();
+    const [declared, detail] = await Promise.all([declaredTask, servicesTask]);
+    return { ...detail, declared };
 }

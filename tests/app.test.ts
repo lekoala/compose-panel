@@ -228,11 +228,39 @@ describe("controlled stack creation", () => {
         const html = await response.text();
         expect(html).toContain("&lt;/textarea&gt;&lt;script&gt;bad&lt;/script&gt;");
         expect(html).not.toContain("<script>bad</script>");
-        expect(html).not.toContain("provider-error-secret");
+        expect(html).toContain("fixture-invalid-yaml");
+        expect(html).not.toContain("<script>diagnostic</script>");
+        expect(html).toContain("&lt;script&gt;diagnostic&lt;/script&gt;");
+        expect(html.match(/private-value/g)).toHaveLength(1); // Only in the retained draft.
         // The supplied secret stays only in its authenticated draft textarea.
         expect(html).toContain('data-sensitive');
         expect(await readdir(dir)).toEqual([]);
-    }, {}, async () => ({ code: 1, stdout: "", stderr: "provider-error-secret", timedOut: false, truncated: false })));
+    }, {}, async () => ({ code: 1, stdout: "", stderr: "fixture-invalid-yaml: private-value <script>diagnostic</script>", timedOut: false, truncated: false })));
+
+    test("incomplete cleanup logs only the stack and stage while keeping the redacted cause visible", async () => {
+        const logged: unknown[][] = [];
+        const original = console.error;
+        console.error = (...args: unknown[]) => { logged.push(args); };
+        try {
+            await fixture(async (app, dir) => {
+                const session = await login(app);
+                const csrf = await form(app, session);
+                const response = await post(app, session, { csrf, name: "fresh", compose, env: "SECRET=private-value" });
+                expect(response.status).toBe(500);
+                const html = await response.text();
+                expect(html).toContain("fixture-validation-cause");
+                expect(html.match(/private-value/g)).toHaveLength(1);
+                expect(await readFile(join(dir, "fresh/foreign"), "utf8")).toBe("untouched");
+            }, {}, async args => {
+                const file = args[args.indexOf("-f") + 1]!;
+                await writeFile(join(file, "..", "foreign"), "untouched");
+                return { code: 1, stdout: "", stderr: "fixture-validation-cause private-value", timedOut: false, truncated: false };
+            });
+        } finally { console.error = original; }
+        expect(JSON.stringify(logged)).not.toContain("private-value");
+        expect(JSON.stringify(logged)).not.toContain("fixture-validation-cause");
+        expect(logged).toEqual([["Stack creation cleanup incomplete", { stack: "fresh", stage: "validation" }]]);
+    });
 
     test("invalid names and oversized bodies never reach Docker", async () => fixture(async (app, dir, calls) => {
         const session = await login(app);
