@@ -62,6 +62,40 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - On `SIGTERM`/`SIGINT`, new operations, saves and log follows are refused synchronously before anything is awaited, then running work drains under one shared deadline. There is no persistence and no automatic replay: after a crash the outcome may be unknown and the UI re-reads Docker.
 - Operation output is captured from both streams and bounded; pipe chunks stream to observers while the command runs (retention stays head-capped with a truncation flag). Output is HTML-escaped before display and never written to application logs.
 
+## Application toolbox (planned, ADR 0026)
+Not implemented. Accepted by [ADR 0026](adr/0026-application-toolbox.md); this
+records the boundary the future feature must respect, not current behavior.
+
+- The panel may execute only **explicitly declared, non-interactive application
+  actions** inside a running stack service. There is still no arbitrary command
+  execution and no interactive terminal, and the generic "run command" endpoint
+  stays prohibited (see Operations above). The new capability is a closed,
+  declared set of actions.
+- Actions come only from a project's manifest (`extra["compose-panel"]` in
+  `composer.json`, `"compose-panel"` in `package.json`), intersected with its
+  `scripts`. The Compose `x-compose-panel.toolbox.sources` extension only names
+  where to run and never authorizes an action. The manifest is trusted code: a
+  deployment can change an action's behavior; the catalog revision records what
+  ran, it does not guarantee immutability.
+- The browser sends identifiers only. The backend resolves the action in the
+  catalog, validates the name against a strict grammar that refuses option-like
+  names (a leading `-`) for all runners, and never builds the argument array from
+  the transmitted name.
+- Discovery resolves exactly one running container per service and reads the
+  manifest from that container via `docker cp` (the Engine archive API),
+  size-capped, never by running the runner. Several running containers make the
+  action unavailable in V1 (no `--index`, no fan-out).
+- Execution acquires the per-stack lock before revalidating, pins the same
+  container id, and runs a fixed `docker exec` argument array with no shell, no
+  TTY, no stdin and no `--privileged`; the optional `user`/`workdir` override the
+  container defaults, and a supplied `workdir` must be absolute. Mutations stay
+  authenticated, Origin- and CSRF-protected and recorded in the activity log
+  (action, source, container id, image id, catalog revision, exit code, bounded
+  output).
+- Success is exit 0; a timeout is `unknown`. The lock does not protect against
+  external Docker writers, and the container is pinned so an action is never run
+  on a container other than the one discovered.
+
 ## Self-update
 - `POST /about/check` (pull the panel's own tag) and `POST /about/update` (start the updater) require a session, an allowed Origin and the CSRF token, are refused during shutdown and are recorded in the activity log (`self-update-check`, `self-update`). See [ADR 0018](adr/0018-self-update.md).
 - Nothing comes from the browser except the target image ID, which must be a `sha256:` ID equal to the image the tag points to when the request is handled. Project, service, paths, image reference, socket source, user and groups are read from Docker (`/proc/self/mountinfo`, then `container inspect` of the panel's own container) and validated: plain absolute paths without `..` or CSV-breaking characters, Compose and env files inside the deployment directory, a tag reference (not a digest or ID), a socket bind mount. Anything unexpected disables the feature with a reason.

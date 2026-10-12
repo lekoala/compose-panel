@@ -17,6 +17,7 @@ After V1 the direction is to understand the host the stacks run on, not only the
 - **Controlled stack creation.** Done ([ADR 0024](adr/0024-controlled-stack-creation.md)): name, raw Compose and optional `.env`, validated in the final directory and published without overwrite or deployment. No templates or catalogue.
 - **Move between stacks without returning to the list.** Done in 0.2.0 ([ADR 0016](adr/0016-navigation-sidebar.md)): a persistent sidebar carries the section links, the stack list with the current stack highlighted, a local search filter, and a native mobile disclosure. Names only: no status, counter, badge or Docker call in the navigation.
 - **Per-stack network options** from a fixed allow-list, instead of editing raw YAML for common cases (see Dockge's edit screen).
+- **Application actions (planned).** Accepted by [ADR 0026](adr/0026-application-toolbox.md), **not implemented**. A stack points, through an `x-compose-panel` Compose extension, at the services whose Composer/npm/Bun scripts are exposed from each project's own manifest, and the panel runs them non-interactively through the existing operations machinery. No terminal, no free arguments, one running container per service.
 
 ## Engine support
 - **Podman.** Add a Podman `ComposeProvider` behind the existing boundary (ADR 0005). Announce compatibility only after integration tests cover `config`, `ps`, `pull`, `up`, `down`, project names and file mounts.
@@ -31,6 +32,7 @@ After V1 the direction is to understand the host the stacks run on, not only the
 ## Host insights and maintenance
 - **Read-only host status** the container cannot see through namespaces: available packages and security updates, reboot required, filesystems, swap, zombie processes. Data comes from an optional, strictly allow-listed read-only host component — no arbitrary commands, no terminal, no free `sudo`.
 - **Targeted maintenance** using the distribution's own mechanism (for example `unattended-upgrades`): check, review and apply updates, then a controlled reboot with a separate confirmation. One package transaction at a time, audited, never a distribution upgrade. A single failing third-party repository should be identifiable and offered for temporary disable without blocking the rest.
+- **Host toolbox (later, not accepted).** A host-side runner, socket, sudoers entries or systemd units for administrator scripts stay out of scope; [ADR 0026](adr/0026-application-toolbox.md) covers only the application toolbox. A concrete need would need its own ADR.
 - Out of scope, even here: users, firewall, package repositories, arbitrary services and distribution upgrades. Compose Panel must not be marketed as a general server management panel.
 
 ## Self-update
