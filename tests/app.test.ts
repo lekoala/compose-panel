@@ -221,9 +221,9 @@ describe("host allow-list", () => {
     });
 
     test("allows each configured proxy origin host", async () => {
-        const app = makeApp({ proxyOrigins: ["https://panel.example", "https://oracle-ampere.example.ts.net"] });
+        const app = makeApp({ proxyOrigins: ["https://panel.example", "https://other-machine.example.ts.net"] });
         expect((await app.fetch(new Request("https://panel.example/login"))).status).toBe(200);
-        expect((await app.fetch(new Request("https://oracle-ampere.example.ts.net/login"))).status).toBe(200);
+        expect((await app.fetch(new Request("https://other-machine.example.ts.net/login"))).status).toBe(200);
         expect((await app.fetch(new Request("http://attacker.invalid:5081/login"))).status).toBe(400);
     });
 
@@ -246,7 +246,7 @@ describe("host allow-list", () => {
 
 describe("access paths", () => {
     const PROXY = "https://panel.example";
-    const OTHER = "https://oracle-ampere.example.ts.net";
+    const OTHER = "https://other-machine.example.ts.net";
     const FORM = "application/x-www-form-urlencoded";
 
     test("a proxy Host with its matching Origin signs in with a Secure cookie", async () => {

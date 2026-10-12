@@ -115,7 +115,7 @@ itself, or in a container with `network_mode: host`.
 
    ```sh
    # A public domain and a private overlay name, for example
-   COMPOSE_PANEL_PROXY_ORIGINS=https://dockge.example.com,https://oracle-ampere.example.ts.net
+   COMPOSE_PANEL_PROXY_ORIGINS=https://dockge.example.com,https://<machine>.<tailnet>.ts.net
    ```
 
    With no origin listed, the SSH tunnel is the only path. To keep using the
@@ -163,14 +163,16 @@ itself, or in a container with `network_mode: host`.
    With several proxy origins, Caddy serves each name and forwards to the same
    panel; no second panel is needed:
 
-   ```caddyfile
-   dockge.example.com {
-   	reverse_proxy 127.0.0.1:5081
-   }
-   oracle-ampere.example.ts.net {
-   	reverse_proxy 127.0.0.1:5081
-   }
-   ```
+    ```caddyfile
+    dockge.example.com {
+    	reverse_proxy 127.0.0.1:5081
+    }
+    # Replace this placeholder with the exact HTTPS URL returned by
+    # `tailscale serve status`:
+    <machine>.<tailnet>.ts.net {
+    	reverse_proxy 127.0.0.1:5081
+    }
+    ```
 
 **Add a second barrier.** The panel controls Docker, i.e. the host, and one
 password protects it. In order of preference:
@@ -179,13 +181,14 @@ password protects it. In order of preference:
   bound to that interface;
 - restrict sources in Caddy:
 
-  ```caddyfile
-  panel.example.com {
-  	@outside not remote_ip 203.0.113.0/24
-  	respond @outside 403
-  	reverse_proxy 127.0.0.1:5081
-  }
-  ```
+   ```caddyfile
+   panel.example.com {
+   	# Replace TEST-NET-3 with your actual trusted client CIDR.
+   	@outside not remote_ip 203.0.113.0/24
+   	respond @outside 403
+   	reverse_proxy 127.0.0.1:5081
+   }
+   ```
 
 - or add Caddy `basic_auth` in front of the panel's own sign-in;
 - and in every case, ban repeated failures at the host from the activity log
@@ -221,7 +224,9 @@ tailscale serve status   # prints https://<host>.<tailnet>.ts.net
 Then list that `ts.net` origin and keep the SSH tunnel as a fallback (0.2.0):
 
 ```sh
-COMPOSE_PANEL_PROXY_ORIGINS=https://oracle-ampere.example-tailnet.ts.net
+# Replace this placeholder with the exact HTTPS URL returned by
+# `tailscale serve status`:
+COMPOSE_PANEL_PROXY_ORIGINS=https://<machine>.<tailnet>.ts.net
 COMPOSE_PANEL_ALLOW_LOOPBACK=true
 ```
 
