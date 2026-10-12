@@ -245,3 +245,14 @@ footer a{color:inherit}
 .info>summary:hover,.info[open]>summary{border-color:var(--muted);color:var(--ink)}
 .info>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .info-body{position:absolute;z-index:20;top:calc(100% + .4rem);left:-.5rem;width:max-content;max-width:min(20rem,80vw);padding:.5rem .7rem;background:var(--surface);border:1px solid var(--border);border-radius:.45rem;box-shadow:0 4px 14px rgba(0,0,0,.14);color:var(--ink);font-size:.85rem;line-height:1.4;white-space:normal;text-transform:none;letter-spacing:normal}
+/* Numeric table columns: right-aligned, fixed-width digits, never wrapped */
+.table th.num,.table td.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+/* Containers stopped with an error, folded under Needs attention */
+.exited{margin-top:.9rem}
+.exited>summary{cursor:pointer;color:var(--muted)}
+.exited[open]>summary{margin-bottom:.5rem}
+/* Thin usage bars under numbers (memory, reclaimable disk) */
+.bar{display:block;width:100%;max-width:5.5rem;height:4px;margin:.3rem 0 0 auto}
+.bar .bar-track{fill:var(--border)}
+.bar .bar-fill{fill:var(--accent)}
+.bar-high .bar-fill{fill:var(--warn)}

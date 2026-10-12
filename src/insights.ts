@@ -94,8 +94,13 @@ export interface Insights {
     stats: ClassifiedStat[] | null;
     /** null = could not attribute (no container list); [] = no managed running container. */
     stacks: StackUsage[] | null;
-    /** null = could not verify; [] = nothing to report. */
+    /** Unhealthy or restarting now. null = could not verify; [] = nothing to report. */
     attention: AttentionItem[] | null;
+    /**
+     * Stopped with a non-zero exit code. Informational, not a health problem:
+     * finished jobs (CI, build steps) often end this way. null = could not verify.
+     */
+    exited: AttentionItem[] | null;
     /** Active containers (running/restarting/paused), or null without a list. */
     runningContainers: number | null;
     notes: string[];
@@ -197,7 +202,8 @@ export function parseDockerStats(stdout: string): ContainerStat[] {
         const memory = parseMemoryUsage(row.MemUsage);
         return {
             id,
-            name: asText(row.Container) ?? asText(row.Name) ?? id.slice(0, 12),
+            // With `--no-trunc`, "Container" is the full ID: the name is "Name".
+            name: asText(row.Name) ?? asText(row.Container) ?? id.slice(0, 12),
             cpuPercent: parsePercent(String(row.CPUPerc ?? "")),
             memUsedBytes: memory.used,
             memLimitBytes: memory.limit,
@@ -273,6 +279,7 @@ export function exitCodeFromStatus(status: string): number | null {
  * Current-state attention only; there is no history. A non-zero exit is a
  * mention, not a critical alert: a one-shot job may fail harmlessly.
  */
+/** Containers with an observable problem now: unhealthy or restarting. */
 export function buildAttention(containers: ClassifiedContainer[]): AttentionItem[] {
     const items: AttentionItem[] = [];
     for (const container of containers) {
@@ -282,14 +289,31 @@ export function buildAttention(containers: ClassifiedContainer[]): AttentionItem
             items.push({ id: container.id, name: container.name, reason: "unhealthy", stack: container.stack });
         } else if (state === "restarting") {
             items.push({ id: container.id, name: container.name, reason: "restarting", stack: container.stack });
-        } else if (state === "exited") {
-            const code = exitCodeFromStatus(container.status);
-            if (code !== null && code !== 0) {
-                items.push({ id: container.id, name: container.name, reason: "exited-nonzero", stack: container.stack });
-            }
         }
     }
     return items;
+}
+
+/** Stopped containers whose last exit code was not 0. Shown apart from attention. */
+export function buildExited(containers: ClassifiedContainer[]): AttentionItem[] {
+    const items: AttentionItem[] = [];
+    for (const container of containers) {
+        if (container.state.toLowerCase() !== "exited") continue;
+        const code = exitCodeFromStatus(container.status);
+        if (code !== null && code !== 0) {
+            items.push({ id: container.id, name: container.name, reason: "exited-nonzero", stack: container.stack });
+        }
+    }
+    return items;
+}
+
+/** The name to show for a stat: the container list's, then Docker stats', then a short ID. */
+export function statDisplayName(stat: ClassifiedStat): string {
+    const fromList = stat.container?.name;
+    if (fromList) return fromList;
+    // A full ID is never a name: `docker stats` falls back to it.
+    if (stat.name && stat.name !== stat.id && !/^[0-9a-f]{64}$/.test(stat.name)) return stat.name;
+    return stat.id.slice(0, 12);
 }
 
 /** Join each stat with its classification, by full container ID. */
@@ -399,10 +423,11 @@ export async function loadInsights(
     }
 
     const attention = containers === null ? null : buildAttention(containers);
+    const exited = containers === null ? null : buildExited(containers);
     const runningContainers = containers === null
         ? null
         : containers.filter(container => matchesContainerFilter(container.state, "running")).length;
-    return { info, stats, stacks, attention, runningContainers, notes, readAt: Date.now() };
+    return { info, stats, stacks, attention, exited, runningContainers, notes, readAt: Date.now() };
 }
 
 /**

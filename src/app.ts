@@ -6,7 +6,7 @@ import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, 
 import { loadContainerDetail, loadContainers } from "./container-status.ts";
 import { parseContainerFilter, type ContainerFilter } from "./container-state.ts";
 import { createContainerInspector, isContainerId, sanitizeTailLines, type ContainerInspector } from "./containers.ts";
-import { createDiskUsageCache, loadInsights } from "./insights.ts";
+import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
 import { listBackups, pruneBackups } from "./backups.ts";
@@ -647,7 +647,8 @@ export function createApp(options: AppOptions): App {
             runningContainers: insights.runningContainers,
             stats: insights.stats === null ? null : insights.stats.map(stat => ({
                 id: stat.id,
-                name: stat.name,
+                // Same name as the first render, so Live never brings IDs back.
+                name: statDisplayName(stat),
                 cpuPercent: stat.cpuPercent,
                 memUsedBytes: stat.memUsedBytes,
                 memLimitBytes: stat.memLimitBytes,
@@ -660,6 +661,7 @@ export function createApp(options: AppOptions): App {
             })),
             stacks: insights.stacks,
             attention: insights.attention,
+            exited: insights.exited,
             notes: insights.notes,
         };
         return new Response(JSON.stringify(payload), {

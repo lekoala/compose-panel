@@ -265,7 +265,8 @@ const runner: DockerRunner = async (args, options) => {
                 const cpu = (seed % 900) / 10;
                 const used = (20 + (seed % 880)) * 1024 ** 2;
                 lines.push(JSON.stringify({
-                    Container: name,
+                    // Like `docker stats --no-trunc`: "Container" is the full ID.
+                    Container: service.imageId.replace("sha256:", ""),
                     Name: name,
                     ID: service.imageId.replace("sha256:", ""),
                     CPUPerc: `${cpu.toFixed(2)}%`,
@@ -281,7 +282,7 @@ const runner: DockerRunner = async (args, options) => {
             const seed = pseudo(other.name, 7);
             const used = (40 + (seed % 600)) * 1024 ** 2;
             lines.push(JSON.stringify({
-                Container: other.name, Name: other.name, ID: other.id,
+                Container: other.id, Name: other.name, ID: other.id,
                 CPUPerc: `${((seed % 300) / 10).toFixed(2)}%`,
                 MemUsage: `${humanBytes(used)} / ${humanBytes(limit)}`,
                 MemPerc: `${((used / limit) * 100).toFixed(2)}%`,

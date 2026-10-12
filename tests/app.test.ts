@@ -2539,6 +2539,20 @@ describe("server page", () => {
         expect(html).not.toContain("http://internal");
     });
 
+    test("names containers from the container list, in the page and in Live, even when stats only give an ID", async () => {
+        const idOnly: CommandResult = {
+            ...SERVER_STATS,
+            stdout: JSON.stringify({ Container: "aaaaaaaaaaaa", ID: "aaaaaaaaaaaa", CPUPerc: "12.50%", MemUsage: "100MiB / 1GiB", MemPerc: "9.77%", NetIO: "1MB / 2MB", BlockIO: "0B / 0B", PIDs: "5" }),
+        };
+        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({ list: containerFixture(), info: SERVER_INFO, stats: idOnly }));
+        const session = await login(app);
+        const html = await (await authed(app, "/server", session)).text();
+        expect(html).toContain(">demo-app-1</a>");
+        expect(html).not.toContain(">aaaaaaaaaaaa</a>");
+        const payload = await (await authed(app, "/server/stats", session)).json() as { stats: { name: string }[] };
+        expect(payload.stats[0]!.name).toBe("demo-app-1");
+    });
+
     test("reads disk usage only on demand and caches it", async () => {
         let calls = 0;
         const inspector = serverInspector({ list: containerFixture(), diskUsage: undefined });

@@ -6,6 +6,7 @@ import {
     InsightsParseError,
     attachStats,
     buildAttention,
+    buildExited,
     buildStacks,
     createDiskUsageCache,
     exitCodeFromStatus,
@@ -16,6 +17,7 @@ import {
     parseHumanBytes,
     parsePercent,
     parseSystemDf,
+    statDisplayName,
 } from "../src/insights.ts";
 import type { ClassifiedContainer } from "../src/container-state.ts";
 import type { ContainerInspector } from "../src/containers.ts";
@@ -126,6 +128,11 @@ describe("parseDockerStats", () => {
         expect(parsed[0]!.pids).toBe(5);
     });
 
+    test("takes the name from Name: with --no-trunc, Container is the full ID", () => {
+        const parsed = parseDockerStats(statsLine({ Container: "a".repeat(64), Name: "onedev-server-1" }));
+        expect(parsed[0]!.name).toBe("onedev-server-1");
+    });
+
     test("falls back to the id when no name is reported", () => {
         const parsed = parseDockerStats(statsLine({ Container: "", Name: "" }));
         expect(parsed[0]!.name).toBe("a".repeat(12));
@@ -198,15 +205,33 @@ describe("exitCodeFromStatus / buildAttention", () => {
         expect(exitCodeFromStatus("Up 2 hours")).toBeNull();
     });
 
-    test("flags unhealthy, restarting and non-zero exits only", () => {
-        const items = buildAttention([
-            container({ id: "1".repeat(64), name: "unhealthy", health: "unhealthy" }),
-            container({ id: "2".repeat(64), name: "restarting", state: "restarting" }),
-            container({ id: "3".repeat(64), name: "failed-job", state: "exited", status: "Exited (1) 5 minutes ago" }),
-            container({ id: "4".repeat(64), name: "clean-job", state: "exited", status: "Exited (0) 5 minutes ago" }),
-            container({ id: "5".repeat(64), name: "fine" }),
-        ]);
-        expect(items.map(item => item.reason)).toEqual(["unhealthy", "restarting", "exited-nonzero"]);
+    const mixed = () => [
+        container({ id: "1".repeat(64), name: "unhealthy", health: "unhealthy" }),
+        container({ id: "2".repeat(64), name: "restarting", state: "restarting" }),
+        container({ id: "3".repeat(64), name: "failed-job", state: "exited", status: "Exited (1) 5 minutes ago" }),
+        container({ id: "4".repeat(64), name: "clean-job", state: "exited", status: "Exited (0) 5 minutes ago" }),
+        container({ id: "5".repeat(64), name: "fine" }),
+    ];
+
+    test("attention is what is wrong now: unhealthy or restarting", () => {
+        expect(buildAttention(mixed()).map(item => item.name)).toEqual(["unhealthy", "restarting"]);
+    });
+
+    test("non-zero exits are listed apart, never as attention", () => {
+        expect(buildExited(mixed()).map(item => item.name)).toEqual(["failed-job"]);
+    });
+});
+
+describe("statDisplayName", () => {
+    const stat = (name: string, listName: string | null) => ({
+        ...parseDockerStats(statsLine({ Container: "a".repeat(64), Name: name }))[0]!,
+        container: listName === null ? null : container({ id: "a".repeat(64), name: listName }),
+    });
+
+    test("prefers the container list name, then Docker stats, never a full ID", () => {
+        expect(statDisplayName(stat("a".repeat(64), "web-1"))).toBe("web-1");
+        expect(statDisplayName(stat("stats-name", null))).toBe("stats-name");
+        expect(statDisplayName(stat("a".repeat(64), null))).toBe("a".repeat(12));
     });
 });
 

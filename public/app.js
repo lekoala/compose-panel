@@ -583,28 +583,64 @@
         var stackTd = element("td");
         stackTd.appendChild(stackCell(stat));
         row.appendChild(stackTd);
-        row.appendChild(element("td", null, formatPercentValue(stat.cpuPercent)));
-        var memory = (stat.memUsedBytes === null || stat.memUsedBytes === undefined)
-            ? "—"
-            : (stat.memLimitBytes === null || stat.memLimitBytes === undefined
-                ? formatBytesValue(stat.memUsedBytes)
-                : formatBytesValue(stat.memUsedBytes) + " / " + formatBytesValue(stat.memLimitBytes));
-        row.appendChild(element("td", null, memory));
-        row.appendChild(element("td", null, formatPercentValue(stat.memPercent)));
-        row.appendChild(codeCell(stat.netIo || "—"));
-        row.appendChild(codeCell(stat.blockIo || "—"));
-        row.appendChild(element("td", null, stat.pids === null || stat.pids === undefined ? "—" : String(stat.pids)));
+        row.appendChild(element("td", "num", formatPercentValue(stat.cpuPercent)));
+        /* Used memory only, the limit on hover: same as the server render. */
+        var memoryTd = element("td", "num");
+        var memory = element("span", null, (stat.memUsedBytes === null || stat.memUsedBytes === undefined) ? "—" : formatBytesValue(stat.memUsedBytes));
+        if (stat.memUsedBytes !== null && stat.memUsedBytes !== undefined && stat.memLimitBytes !== null && stat.memLimitBytes !== undefined) {
+            memory.setAttribute("title", "of " + formatBytesValue(stat.memLimitBytes));
+        }
+        memoryTd.appendChild(memory);
+        withBar(memoryTd, stat.memPercent === null || stat.memPercent === undefined ? null : stat.memPercent / 100);
+        row.appendChild(memoryTd);
+        row.appendChild(element("td", "num col-optional", formatPercentValue(stat.memPercent)));
+        var netTd = codeCell(stat.netIo || "—");
+        netTd.className = "col-optional";
+        row.appendChild(netTd);
+        var blockTd = codeCell(stat.blockIo || "—");
+        blockTd.className = "col-optional";
+        row.appendChild(blockTd);
+        row.appendChild(element("td", "num col-optional", stat.pids === null || stat.pids === undefined ? "—" : String(stat.pids)));
         return row;
     }
 
-    function stackRow(usage) {
+    /* Same thin bar as usageBar() in src/html.ts: SVG built with DOM calls,
+     * width as an attribute (CSP-safe), decorative. Null when unknown. */
+    var SVG_NS = "http://www.w3.org/2000/svg";
+    function bar(fraction) {
+        if (fraction === null || fraction === undefined || !isFinite(fraction)) return null;
+        var value = Math.min(Math.max(fraction, 0), 1);
+        var svg = document.createElementNS(SVG_NS, "svg");
+        svg.setAttribute("class", value >= 0.9 ? "bar bar-high" : "bar");
+        svg.setAttribute("viewBox", "0 0 100 4");
+        svg.setAttribute("preserveAspectRatio", "none");
+        svg.setAttribute("aria-hidden", "true");
+        svg.setAttribute("focusable", "false");
+        [["bar-track", 100], ["bar-fill", Math.round(value * 1000) / 10]].forEach(function (part) {
+            var rect = document.createElementNS(SVG_NS, "rect");
+            rect.setAttribute("class", part[0]);
+            rect.setAttribute("width", String(part[1]));
+            rect.setAttribute("height", "4");
+            rect.setAttribute("rx", "2");
+            svg.appendChild(rect);
+        });
+        return svg;
+    }
+
+    function withBar(td, fraction) {
+        var node = bar(fraction);
+        if (node) td.appendChild(node);
+        return td;
+    }
+
+    function stackRow(usage, memoryTotal) {
         var row = element("tr");
         var stackTd = element("td");
         stackTd.appendChild(anchor("/stacks/" + encodeURIComponent(usage.stack), usage.stack));
         row.appendChild(stackTd);
-        row.appendChild(element("td", null, formatPercentValue(usage.cpuPercent)));
-        row.appendChild(element("td", null, formatBytesValue(usage.memUsedBytes)));
-        row.appendChild(element("td", null, String(usage.containers)));
+        row.appendChild(element("td", "num", formatPercentValue(usage.cpuPercent)));
+        row.appendChild(withBar(element("td", "num", formatBytesValue(usage.memUsedBytes)), memoryTotal ? usage.memUsedBytes / memoryTotal : null));
+        row.appendChild(element("td", "num", String(usage.containers)));
         return row;
     }
 
@@ -623,7 +659,30 @@
         return row;
     }
 
+    function exitedRow(item) {
+        var row = element("tr");
+        var nameTd = element("td");
+        nameTd.appendChild(anchor("/containers/" + encodeURIComponent(item.id), item.name));
+        row.appendChild(nameTd);
+        var stackTd = element("td");
+        if (item.stack) stackTd.appendChild(anchor("/stacks/" + encodeURIComponent(item.stack), item.stack));
+        else stackTd.appendChild(element("span", "muted", "—"));
+        row.appendChild(stackTd);
+        return row;
+    }
+
     function applyServer(payload) {
+        if (payload.exited !== null && payload.exited !== undefined) {
+            const exited = document.getElementById("live-exited");
+            const exitedCount = document.getElementById("live-exited-count");
+            const exitedBody = document.getElementById("live-exited-rows");
+            if (exitedCount) exitedCount.textContent = String(payload.exited.length);
+            if (exitedBody) setRows(exitedBody, payload.exited.map(exitedRow));
+            if (exited) {
+                if (payload.exited.length > 0) exited.removeAttribute("hidden");
+                else exited.setAttribute("hidden", "");
+            }
+        }
         if (payload.runningContainers !== null && payload.runningContainers !== undefined) {
             const running = document.getElementById("live-running");
             if (running) running.textContent = String(payload.runningContainers);
@@ -648,7 +707,8 @@
         if (payload.stacks !== null && payload.stacks !== undefined) {
             const stacksBody = document.getElementById("live-stacks");
             if (stacksBody) {
-                setRows(stacksBody, payload.stacks.length > 0 ? payload.stacks.map(stackRow) : [emptyRow(4, "No managed running containers.")]);
+                var memoryTotal = Number(stacksBody.getAttribute("data-mem-total")) || null;
+                setRows(stacksBody, payload.stacks.length > 0 ? payload.stacks.map(function (usage) { return stackRow(usage, memoryTotal); }) : [emptyRow(4, "No managed running containers.")]);
             }
         }
         const timeEl = document.getElementById("live-read-at");

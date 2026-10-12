@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, renderSidebar, servicesSection } from "../src/html.ts";
+import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, renderSidebar, servicesSection, usageBar } from "../src/html.ts";
 import type { ComposeService } from "../src/compose-state.ts";
 
 function service(name: string, health: string | null): ComposeService {
@@ -89,4 +89,18 @@ test("logs panel offers server-known services and line counts without trusting t
     expect(html).not.toContain("<b>evil</b>");
     expect(html).toContain('value="500"');
     expect(html).toContain('method="get"');
+});
+
+test("usage bars are clamped, decorative, and absent when the value is unknown", () => {
+    expect(usageBar(null)).toBe("");
+    expect(usageBar(Number.NaN)).toBe("");
+    const quarter = usageBar(0.25);
+    expect(quarter).toContain('<rect class="bar-fill" width="25"');
+    expect(quarter).toContain('aria-hidden="true"');
+    // No inline style: the CSP forbids it, the width is an SVG attribute.
+    expect(quarter).not.toContain("style=");
+    expect(usageBar(1.7)).toContain('<rect class="bar-fill" width="100"');
+    expect(usageBar(-1)).toContain('<rect class="bar-fill" width="0"');
+    expect(usageBar(0.95)).toContain('class="bar bar-high"');
+    expect(usageBar(0.5)).not.toContain("bar-high");
 });

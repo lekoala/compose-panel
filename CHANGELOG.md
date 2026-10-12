@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Server page readability (presentation only, same Docker calls):
+  - Containers show their real name (from the container list, then `docker
+    stats`, then a 12-character ID), never the full 64-character ID that
+    `docker stats --no-trunc` prints as "Container". Live refresh uses the same
+    name, computed on the server.
+  - Memory shows what is used; the limit moves to a hover detail (Mem % keeps
+    the proportion). Numeric columns are right-aligned with fixed-width digits,
+    and I/O and PIDs columns fold away on narrow screens.
+  - "Needs attention" counts only what is wrong now (unhealthy, restarting).
+    Containers that stopped with a non-zero exit code are listed apart, folded
+    under it ("Stopped with an error"), and kept up to date by Live (ADR 0015
+    amended).
+  - Thin usage bars under the numbers where proportions matter: container
+    memory (share of its limit), stack memory (share of the engine's memory)
+    and reclaimable disk (share of each type's size). Inline SVG with the width
+    as an attribute (no inline style, CSP unchanged), decorative next to the
+    number, drawn the same way by Live; amber from 90 %.
+
 ## 0.3.1
 
 - Fix: the production entry point (`src/server.ts`) gave the container

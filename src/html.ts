@@ -5,7 +5,7 @@ import type { ImageVersion, ServiceUpdate } from "./updates.ts";
 import type { AccessReport, AccessStatus } from "./access.ts";
 import { ROLLBACK_TAG, UPDATER_NAME, recoveryCommands, rollbackCommands, type SelfIdentity, type SelfUpdateStatus, type UpdaterOutcome } from "./self-update.ts";
 import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerDetails, type ContainerFilter } from "./container-state.ts";
-import type { AttentionItem, AttentionReason, ClassifiedStat, DiskUsage, DiskUsageRow, EngineInfo, Insights, StackUsage } from "./insights.ts";
+import { statDisplayName, type AttentionItem, type AttentionReason, type ClassifiedStat, type DiskUsage, type DiskUsageRow, type EngineInfo, type Insights, type StackUsage } from "./insights.ts";
 import packageJson from "../package.json";
 
 const VERSION = packageJson.version;
@@ -727,28 +727,42 @@ function stackCell(container: ClassifiedContainer | null): string {
 
 function statRows(stats: ClassifiedStat[]): string {
     return stats.map(stat => {
-        const name = stat.name || stat.id.slice(0, 12);
+        // Used memory is the figure that matters; the limit is a hover detail
+        // (Mem % already gives the proportion).
+        const limit = stat.memLimitBytes === null ? "" : ` title="of ${escapeHtml(formatBytes(stat.memLimitBytes))}"`;
         const memory = stat.memUsedBytes === null
             ? `<span class="muted">—</span>`
-            : escapeHtml(stat.memLimitBytes === null
-                ? formatBytes(stat.memUsedBytes)
-                : `${formatBytes(stat.memUsedBytes)} / ${formatBytes(stat.memLimitBytes)}`);
-        return `<tr><td><a href="/containers/${encodeURIComponent(stat.id)}">${escapeHtml(name)}</a></td>`
+            : `<span${limit}>${escapeHtml(formatBytes(stat.memUsedBytes))}</span>${usageBar(stat.memPercent === null ? null : stat.memPercent / 100)}`;
+        return `<tr><td><a href="/containers/${encodeURIComponent(stat.id)}">${escapeHtml(statDisplayName(stat))}</a></td>`
             + `<td>${stackCell(stat.container)}</td>`
-            + `<td>${escapeHtml(formatPercent(stat.cpuPercent))}</td>`
-            + `<td>${memory}</td>`
-            + `<td>${escapeHtml(formatPercent(stat.memPercent))}</td>`
-            + `<td><code>${escapeHtml(stat.netIo || "—")}</code></td>`
-            + `<td><code>${escapeHtml(stat.blockIo || "—")}</code></td>`
-            + `<td>${stat.pids === null ? `<span class="muted">—</span>` : stat.pids}</td></tr>`;
+            + `<td class="num">${escapeHtml(formatPercent(stat.cpuPercent))}</td>`
+            + `<td class="num">${memory}</td>`
+            + `<td class="num col-optional">${escapeHtml(formatPercent(stat.memPercent))}</td>`
+            + `<td class="col-optional"><code>${escapeHtml(stat.netIo || "—")}</code></td>`
+            + `<td class="col-optional"><code>${escapeHtml(stat.blockIo || "—")}</code></td>`
+            + `<td class="num col-optional">${stat.pids === null ? `<span class="muted">—</span>` : stat.pids}</td></tr>`;
     }).join("");
 }
 
-function stackRows(stacks: StackUsage[]): string {
+/**
+ * A thin usage bar under a number. Inline SVG with the width as an attribute,
+ * so the CSP (no inline styles) allows it; colors come from CSS. Decorative:
+ * the number next to it carries the value, so the SVG is hidden from screen
+ * readers. Nothing when the fraction is unknown. Mirrored by `bar()` in app.js.
+ */
+export function usageBar(fraction: number | null): string {
+    if (fraction === null || !Number.isFinite(fraction)) return "";
+    const value = Math.min(Math.max(fraction, 0), 1);
+    const width = Math.round(value * 1000) / 10;
+    const high = value >= 0.9 ? " bar-high" : "";
+    return `<svg class="bar${high}" viewBox="0 0 100 4" preserveAspectRatio="none" aria-hidden="true" focusable="false"><rect class="bar-track" width="100" height="4" rx="2"/><rect class="bar-fill" width="${width}" height="4" rx="2"/></svg>`;
+}
+
+function stackRows(stacks: StackUsage[], memoryTotalBytes: number | null): string {
     return stacks.map(usage => `<tr><td><a href="/stacks/${encodeURIComponent(usage.stack)}">${escapeHtml(usage.stack)}</a></td>`
-        + `<td>${escapeHtml(formatPercent(usage.cpuPercent))}</td>`
-        + `<td>${escapeHtml(formatBytes(usage.memUsedBytes))}</td>`
-        + `<td>${usage.containers}</td></tr>`).join("");
+        + `<td class="num">${escapeHtml(formatPercent(usage.cpuPercent))}</td>`
+        + `<td class="num">${escapeHtml(formatBytes(usage.memUsedBytes))}${usageBar(memoryTotalBytes ? usage.memUsedBytes / memoryTotalBytes : null)}</td>`
+        + `<td class="num">${usage.containers}</td></tr>`).join("");
 }
 
 function attentionRows(items: AttentionItem[]): string {
@@ -760,12 +774,30 @@ function attentionRows(items: AttentionItem[]): string {
     }).join("");
 }
 
+function exitedRows(items: AttentionItem[]): string {
+    return items.map(item => {
+        const stack = item.stack ? `<a href="/stacks/${encodeURIComponent(item.stack)}">${escapeHtml(item.stack)}</a>` : `<span class="muted">—</span>`;
+        return `<tr><td><a href="/containers/${encodeURIComponent(item.id)}">${escapeHtml(item.name)}</a></td><td>${stack}</td></tr>`;
+    }).join("");
+}
+
+/**
+ * Stopped-with-an-error containers, folded under Needs attention. Kept in the
+ * page even when empty (hidden) so the Live refresh can fill it.
+ */
+function exitedSection(items: AttentionItem[] | null): string {
+    const list = items ?? [];
+    const hidden = list.length === 0 ? " hidden" : "";
+    return `<details class="exited" id="live-exited"${hidden}><summary>Stopped with an error (<span id="live-exited-count">${list.length}</span>)</summary>`
+        + `<div class="table-wrap"><table class="table"><thead><tr><th>Container</th><th>Stack</th></tr></thead><tbody id="live-exited-rows">${exitedRows(list)}</tbody></table></div></details>`;
+}
+
 function diskRows(rows: DiskUsageRow[]): string {
     return rows.map(row => `<tr><td>${escapeHtml(row.type)}</td>`
         + `<td>${row.totalCount === null ? `<span class="muted">—</span>` : row.totalCount}</td>`
         + `<td>${row.active === null ? `<span class="muted">—</span>` : row.active}</td>`
-        + `<td>${escapeHtml(row.size || "—")}</td>`
-        + `<td>${escapeHtml(row.reclaimable || "—")}</td></tr>`).join("");
+        + `<td class="num">${escapeHtml(row.size || "—")}</td>`
+        + `<td class="num">${escapeHtml(row.reclaimable || "—")}${usageBar(row.sizeBytes && row.reclaimableBytes !== null ? row.reclaimableBytes / row.sizeBytes : null)}</td></tr>`).join("");
 }
 
 function engineFacts(info: EngineInfo): string {
@@ -817,7 +849,7 @@ export function serverPage(options: ServerPageOptions): string {
         + `</section>`;
 
     const topCard = `<section class="card"><h2>Top containers by CPU${infoTip("Network and block I/O are totals since each container started.")}</h2>`
-        + `<div class="table-wrap"><table class="table"><thead><tr><th>Container</th><th>Stack</th><th>CPU</th><th>Memory</th><th class="col-optional">Mem %</th><th class="col-optional">Network I/O</th><th class="col-optional">Block I/O</th><th class="col-optional">PIDs</th></tr></thead><tbody id="live-stats">`
+        + `<div class="table-wrap"><table class="table"><thead><tr><th>Container</th><th>Stack</th><th class="num">CPU</th><th class="num">Memory</th><th class="num col-optional">Mem %</th><th class="col-optional">Network I/O</th><th class="col-optional">Block I/O</th><th class="num col-optional">PIDs</th></tr></thead><tbody id="live-stats">`
         + (insights.stats === null
             ? emptyRow(8, "Container usage is unavailable.")
             : insights.stats.length === 0
@@ -827,16 +859,16 @@ export function serverPage(options: ServerPageOptions): string {
         + `</section>`;
 
     const stacksCard = `<section class="card"><h2>Usage by stack${infoTip("CPU adds up the stack's containers. 100 % is one core, so it can go higher.")}</h2>`
-        + `<div class="table-wrap"><table class="table"><thead><tr><th>Stack</th><th>CPU</th><th>Memory</th><th>Containers</th></tr></thead><tbody id="live-stacks">`
+        + `<div class="table-wrap"><table class="table"><thead><tr><th>Stack</th><th class="num">CPU</th><th class="num">Memory</th><th class="num">Containers</th></tr></thead><tbody id="live-stacks"${insights.info?.memoryTotalBytes ? ` data-mem-total="${insights.info.memoryTotalBytes}"` : ""}>`
         + (insights.stacks === null
             ? emptyRow(4, "Per-stack usage is unavailable.")
             : insights.stacks.length === 0
                 ? emptyRow(4, "No managed running containers.")
-                : stackRows(insights.stacks))
+                : stackRows(insights.stacks, insights.info?.memoryTotalBytes ?? null))
         + `</tbody></table></div>`
         + `</section>`;
 
-    const attentionCard = `<section class="card"><h2>Needs attention${infoTip("Current state only. A finished job that exited with an error may be expected.")}</h2>`
+    const attentionCard = `<section class="card"><h2>Needs attention${infoTip("Unhealthy or restarting right now. Containers that stopped with an error are listed below: a finished job often ends that way.")}</h2>`
         + `<div class="table-wrap"><table class="table"><thead><tr><th>Container</th><th>Issue</th><th>Stack</th></tr></thead><tbody id="live-attention-rows">`
         + (insights.attention === null
             ? emptyRow(3, "Container health could not be checked.")
@@ -844,6 +876,7 @@ export function serverPage(options: ServerPageOptions): string {
                 ? emptyRow(3, "No current issues.")
                 : attentionRows(insights.attention))
         + `</tbody></table></div>`
+        + exitedSection(insights.exited)
         + `</section>`;
 
     let diskCard: string;
@@ -854,7 +887,7 @@ export function serverPage(options: ServerPageOptions): string {
             + `<p><a class="btn" href="/server?disk=1">Try again</a></p>`;
     } else {
         const readAt = options.disk.readAt === null ? "" : `<p class="muted">Read ${timeTag(options.disk.readAt)} · <a href="/server?disk=1">Read again</a></p>`;
-        diskCard = `<div class="table-wrap"><table class="table"><thead><tr><th>Type</th><th>Items</th><th>Active</th><th>Size</th><th>Reclaimable</th></tr></thead><tbody>${diskRows(options.disk.rows)}</tbody></table></div>`
+        diskCard = `<div class="table-wrap"><table class="table"><thead><tr><th>Type</th><th>Items</th><th>Active</th><th class="num">Size</th><th class="num">Reclaimable</th></tr></thead><tbody>${diskRows(options.disk.rows)}</tbody></table></div>`
             + readAt;
     }
     const diskSection = `<section class="card"><h2>Docker disk usage${infoTip("Images, containers, volumes and build cache only, not the whole disk.")}</h2>${diskCard}</section>`;

@@ -79,9 +79,12 @@ Two mistakes must be avoided:
   name resemblance; only containers classified as Managed contribute to a stack
   total.
 - **"Needs attention" is a snapshot of the current state**, from data already in
-  the container list: `unhealthy`, `restarting`, and an exited container whose
-  status shows a non-zero exit code (derived from the `docker ps` `Status` text
-  so no extra `inspect` is needed). It carries no history and no alerting.
+  the container list: `unhealthy` and `restarting`, the problems visible now.
+  An exited container whose status shows a non-zero exit code (derived from the
+  `docker ps` `Status` text so no extra `inspect` is needed) is listed apart,
+  folded under it as "Stopped with an error", and not counted: finished jobs
+  such as CI or build steps often end that way. (Amended in 0.3.2; it was
+  counted as attention before.) It carries no history and no alerting.
 
 ## Consequences
 - An operator can see what runs, what consumes, and what looks wrong, on one

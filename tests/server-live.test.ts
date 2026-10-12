@@ -43,6 +43,10 @@ class FakeNode {
         return this.attributes.get(name) ?? null;
     }
 
+    removeAttribute(name: string): void {
+        this.attributes.delete(name);
+    }
+
     addEventListener(type: string, handler: (event?: unknown) => void): void {
         const list = this.listeners.get(type) ?? [];
         list.push(handler);
@@ -62,7 +66,7 @@ class FakeDocument {
     private listeners = new Map<string, ((event?: unknown) => void)[]>();
 
     constructor(public readonly id: string, private readonly toolbar: FakeNode) {
-        for (const elementId of ["server-live", "server-live-status", "live-running", "live-attention", "live-attention-rows", "live-stats", "live-stacks", "live-read-at"]) {
+        for (const elementId of ["server-live", "server-live-status", "live-running", "live-attention", "live-attention-rows", "live-exited", "live-exited-count", "live-exited-rows", "live-stats", "live-stacks", "live-read-at"]) {
             this.byId.set(elementId, new FakeNode("div"));
         }
     }
@@ -77,6 +81,10 @@ class FakeDocument {
 
     querySelectorAll(): FakeNode[] {
         return [];
+    }
+
+    createElementNS(_ns: string, tag: string): FakeNode {
+        return new FakeNode(tag);
     }
 
     createElement(tag: string): FakeNode {
@@ -99,7 +107,8 @@ const PAYLOAD = {
     runningContainers: 3,
     stats: [{ id: "a".repeat(64), name: "web-1", cpuPercent: 55.5, memUsedBytes: 100 * 1024 ** 2, memLimitBytes: 1024 ** 3, memPercent: 9.8, netIo: "1MB / 2MB", blockIo: "0B / 0B", pids: 5, stack: "web", category: "managed" }],
     stacks: [{ stack: "web", cpuPercent: 55.5, memUsedBytes: 100 * 1024 ** 2, containers: 1 }],
-    attention: [{ id: "b".repeat(64), name: "db-1", reason: "exited-nonzero", stack: "db" }],
+    attention: [{ id: "b".repeat(64), name: "db-1", reason: "unhealthy", stack: "db" }],
+    exited: [{ id: "c".repeat(64), name: "build-step-9", reason: "exited-nonzero", stack: null }],
     notes: [],
 };
 
@@ -148,6 +157,15 @@ describe("server live refresh (public/app.js)", () => {
         expect(doc.getElementById("live-running")!.textContent).toBe("3");
         expect(doc.getElementById("live-stats")!.children).toHaveLength(1);
         expect(doc.getElementById("live-attention-rows")!.children).toHaveLength(1);
+        // Stopped-with-an-error containers fill their own folded list.
+        expect(doc.getElementById("live-exited-rows")!.children).toHaveLength(1);
+        expect(doc.getElementById("live-exited-count")!.textContent).toBe("1");
+        expect(doc.getElementById("live-exited")!.getAttribute("hidden")).toBeNull();
+        // Used memory only; the limit is a hover detail, as in the server render.
+        const memoryCell = doc.getElementById("live-stats")!.children[0]!.children[3]!;
+        expect(memoryCell.children[0]!.getAttribute("title")).not.toBeNull();
+        // Followed by its usage bar, built like the server one.
+        expect(memoryCell.children[1]!.getAttribute("class")).toBe("bar");
         expect(status.textContent).toContain("updated");
 
         // Sequential scheduling: a second fetch happens after the interval.
