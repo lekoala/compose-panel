@@ -16,7 +16,7 @@ A trusted technical administrator. No multi-tenancy, no access for untrusted use
 - View Compose logs, without an interactive console.
 - Show read-only Docker diagnostics: engine facts, per-container and per-stack CPU/memory, and Docker-managed disk usage, with no history and no host agent ([ADR 0015](adr/0015-readonly-engine-insights.md)).
 - Single-administrator authentication, CSRF, correct sessions and minimal audit logging without secrets.
-- Update the panel itself from the browser, for the documented Docker deployment: pull its own image tag, then recreate its container through an independent one-shot updater, with the outcome read back from Docker ([ADR 0018](adr/0018-self-update.md)).
+- Update the panel itself from the browser, for the documented Docker deployment of the official image: pull its own image tag, install it only when its release is at least 72 hours old and matches the published digest, then recreate its container through an independent one-shot updater that keeps the previous image for rollback, with the outcome read back from Docker ([ADR 0018](adr/0018-self-update.md)).
 
 ## Out of scope (do not implement without an ADR)
 Agents, remote control, terminal / PTY, graphical Compose editor, file generation, general-purpose file manager, Restic backups, encrypted secrets editor, scheduler, public API, multi-user, monitoring with retained history or alerts, registry UI, plugins, Kubernetes, notifications. A read-only resource snapshot is now in scope (ADR 0015); a time-series dashboard, alerting and host-level health remain out of scope until a new ADR.

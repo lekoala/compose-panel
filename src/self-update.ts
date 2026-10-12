@@ -22,6 +22,16 @@ export const UPDATER_LABEL = "io.github.lekoala.compose-panel.updater";
 export const UPDATER_EXIT = { updated: 0, failed: 1, refused: 2 } as const;
 /** The socket path inside the panel and updater containers. */
 export const DOCKER_SOCKET = "/var/run/docker.sock";
+/** The only image repository self-update installs from. Never read from a label. */
+export const OFFICIAL_IMAGE = "ghcr.io/lekoala/compose-panel";
+/** Fixed release source for `OFFICIAL_IMAGE`; the version is appended. */
+export const RELEASE_API = "https://api.github.com/repos/lekoala/compose-panel/releases/tags/";
+/** A release becomes installable from the panel this long after publication. */
+export const MIN_RELEASE_AGE_MS = 72 * 60 * 60 * 1000;
+/** Line the release workflow writes in the release body. */
+export const DIGEST_MARKER = "compose-panel-image-digest:";
+/** Local tag keeping the image the panel ran before an update, for rollback. */
+export const ROLLBACK_TAG = "compose-panel:rollback";
 
 const CONTAINER_ID = /^[0-9a-f]{64}$/;
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
@@ -31,6 +41,10 @@ const SERVICE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$/;
 const SAFE_PATH = /^\/[A-Za-z0-9._/@+ -]{0,1023}$/;
 const USER_SPEC = /^[A-Za-z0-9_.-]{1,64}(:[A-Za-z0-9_.-]{1,64})?$/;
 const GROUP = /^[A-Za-z0-9_.-]{1,64}$/;
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
+const RELEASE_VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}$/;
+/** Display versions from labels: short and plain. */
+const LABEL_VERSION = /^[0-9A-Za-z.+_-]{1,64}$/;
 
 export class SelfUpdateError extends Error {
     constructor(message: string, readonly status = 409) {
@@ -91,6 +105,25 @@ export function isInside(dir: string, path: string): boolean {
 /** A pullable tag, never an image ID or a digest-pinned reference. */
 export function isTagReference(value: string): boolean {
     return isImageReference(value) && !value.includes("@") && !value.startsWith("sha256:");
+}
+
+/** `ghcr.io/a/b:tag` → `ghcr.io/a/b`; a registry port (`host:5000/x`) is kept. */
+export function imageRepository(ref: string): string {
+    const at = ref.indexOf("@");
+    if (at !== -1) return ref.slice(0, at);
+    const slash = ref.lastIndexOf("/");
+    const colon = ref.lastIndexOf(":");
+    return colon > slash ? ref.slice(0, colon) : ref;
+}
+
+/** `repository@sha256:…`, as `RepoDigests` lists it. */
+export function isRepoDigest(value: string): boolean {
+    const at = value.indexOf("@");
+    return at > 0 && isImageReference(value.slice(0, at)) && !value.slice(0, at).includes("@") && DIGEST.test(value.slice(at + 1));
+}
+
+export function isLabelVersion(value: string): boolean {
+    return LABEL_VERSION.test(value);
 }
 
 /**
@@ -182,17 +215,31 @@ export function shellQuote(value: string): string {
     return /^[A-Za-z0-9._/@:+=-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** What the host commands need to address the panel's Compose project. */
+export interface ComposeIdentity {
+    imageRef: string;
+    workingDir: string;
+    project: string;
+    service: string;
+    composeFiles: string[];
+    envFiles: string[];
+}
+
+function composeCommand(target: ComposeIdentity): string {
+    return [
+        "docker", "compose", "-p", target.project,
+        ...target.envFiles.flatMap(file => ["--env-file", file]),
+        ...target.composeFiles.flatMap(file => ["-f", file]),
+    ].map(shellQuote).join(" ");
+}
+
 /**
  * Host commands that redo the update by hand, shown both in the updater output
  * and on the About page so the two never disagree. A manual `pull` + `up` is
  * the documented recovery (docs/deployment.md, "Upgrade and rollback").
  */
-export function recoveryCommands(target: { workingDir: string; project: string; service: string; composeFiles: string[]; envFiles: string[] }): string[] {
-    const compose = [
-        "docker", "compose", "-p", target.project,
-        ...target.envFiles.flatMap(file => ["--env-file", file]),
-        ...target.composeFiles.flatMap(file => ["-f", file]),
-    ].map(shellQuote).join(" ");
+export function recoveryCommands(target: ComposeIdentity): string[] {
+    const compose = composeCommand(target);
     return [
         `cd ${shellQuote(target.workingDir)}`,
         `${compose} pull ${shellQuote(target.service)}`,
@@ -200,12 +247,37 @@ export function recoveryCommands(target: { workingDir: string; project: string; 
     ];
 }
 
+/**
+ * Host commands that go back to the exact image the panel ran before the
+ * update: the updater kept it as `ROLLBACK_TAG`. Nothing is downloaded and no
+ * file is edited; the next Check downloads the newer image again.
+ */
+export function rollbackCommands(target: ComposeIdentity): string[] {
+    return [
+        `docker image tag ${ROLLBACK_TAG} ${shellQuote(target.imageRef)}`,
+        `cd ${shellQuote(target.workingDir)}`,
+        `${composeCommand(target)} up -d --no-deps --no-build --pull never ${shellQuote(target.service)}`,
+    ];
+}
+
+/** What the administrator approved: the image and the digest its release published. */
+export interface UpdatePlan {
+    targetImageId: string;
+    /** `OFFICIAL_IMAGE@sha256:…`, from the release. */
+    expectedDigest: string;
+    targetVersion: string;
+    /** Version of the image the panel runs, for display after the restart. */
+    previousVersion: string | null;
+}
+
 /** Arguments of the updater script, in the order `parseUpdaterArgs` reads them. */
-export function updaterCommand(identity: SelfIdentity, targetImageId: string): string[] {
+export function updaterCommand(identity: SelfIdentity, plan: Pick<UpdatePlan, "targetImageId" | "expectedDigest">): string[] {
     const args = [
         "--panel-container", identity.containerId,
         "--image-ref", identity.imageRef,
-        "--target-image", targetImageId,
+        "--target-image", plan.targetImageId,
+        "--expected-digest", plan.expectedDigest,
+        "--previous-image", identity.imageId,
         "--project", identity.project,
         "--service", identity.service,
         "--working-dir", identity.workingDir,
@@ -215,17 +287,33 @@ export function updaterCommand(identity: SelfIdentity, targetImageId: string): s
     return args;
 }
 
+/** Labels of the updater container, read back by the next panel. */
+const RUN_LABELS = {
+    previousImage: `${UPDATER_LABEL}.previous-image`,
+    previousVersion: `${UPDATER_LABEL}.previous-version`,
+    targetImage: `${UPDATER_LABEL}.target-image`,
+    targetVersion: `${UPDATER_LABEL}.target-version`,
+} as const;
+
 /**
  * `docker container run` for the updater: started from the image the panel
  * runs now, no network (the daemon pulls, not the updater), the socket and the
  * deployment directory read-only at the same path, same user and groups.
  */
-export function updaterRunArgs(identity: SelfIdentity, targetImageId: string): string[] {
-    if (!isImageId(targetImageId)) throw new SelfUpdateError("The target image is not a valid image ID.", 400);
+export function updaterRunArgs(identity: SelfIdentity, plan: UpdatePlan): string[] {
+    if (!isImageId(plan.targetImageId)) throw new SelfUpdateError("The target image is not a valid image ID.", 400);
+    if (!isRepoDigest(plan.expectedDigest)) throw new SelfUpdateError("The expected image digest is not valid.", 400);
+    const labels: [string, string | null][] = [
+        [UPDATER_LABEL, "1"],
+        [RUN_LABELS.previousImage, identity.imageId],
+        [RUN_LABELS.previousVersion, plan.previousVersion !== null && isLabelVersion(plan.previousVersion) ? plan.previousVersion : null],
+        [RUN_LABELS.targetImage, plan.targetImageId],
+        [RUN_LABELS.targetVersion, isLabelVersion(plan.targetVersion) ? plan.targetVersion : null],
+    ];
     const args = [
         "container", "run", "--detach",
         "--name", UPDATER_NAME,
-        "--label", `${UPDATER_LABEL}=1`,
+        ...labels.flatMap(([key, value]) => (value === null ? [] : ["--label", `${key}=${value}`])),
         "--network", "none",
         "--pull", "never",
         "--restart", "no",
@@ -235,7 +323,7 @@ export function updaterRunArgs(identity: SelfIdentity, targetImageId: string): s
     ];
     if (identity.user) args.push("--user", identity.user);
     for (const group of identity.groupAdd) args.push("--group-add", group);
-    args.push(identity.imageId, "src/scripts/self-update.ts", ...updaterCommand(identity, targetImageId));
+    args.push(identity.imageId, "src/scripts/self-update.ts", ...updaterCommand(identity, plan));
     return args;
 }
 
@@ -246,6 +334,11 @@ export interface UpdaterRun {
     exitCode: number | null;
     startedAt: string | null;
     finishedAt: string | null;
+    /** From the updater labels; null when absent or unexpected. */
+    previousImage: string | null;
+    previousVersion: string | null;
+    targetImage: string | null;
+    targetVersion: string | null;
 }
 
 export type UpdaterLookup =
@@ -265,7 +358,8 @@ export function parseUpdaterInspect(stdout: string): UpdaterLookup {
     catch { return { kind: "none" }; }
     if (!Array.isArray(rows) || rows.length === 0) return { kind: "none" };
     const row = record(rows[0]);
-    if (stringRecord(record(row.Config).Labels)[UPDATER_LABEL] !== "1") return { kind: "foreign" };
+    const labels = stringRecord(record(row.Config).Labels);
+    if (labels[UPDATER_LABEL] !== "1") return { kind: "foreign" };
     const state = record(row.State);
     const status = typeof state.Status === "string" ? state.Status : "";
     const exitCode = typeof state.ExitCode === "number" ? state.ExitCode : null;
@@ -274,9 +368,92 @@ export function parseUpdaterInspect(stdout: string): UpdaterLookup {
     else if (status === "exited" && exitCode === UPDATER_EXIT.updated) outcome = "updated";
     else if (status === "exited" && exitCode === UPDATER_EXIT.refused) outcome = "refused";
     else outcome = "failed";
+    const label = (key: string, valid: (value: string) => boolean): string | null => {
+        const value = labels[key];
+        return value !== undefined && valid(value) ? value : null;
+    };
     return {
         kind: "run",
-        run: { outcome, exitCode: outcome === "running" ? null : exitCode, startedAt: isoTime(state.StartedAt), finishedAt: outcome === "running" ? null : isoTime(state.FinishedAt) },
+        run: {
+            outcome,
+            exitCode: outcome === "running" ? null : exitCode,
+            startedAt: isoTime(state.StartedAt),
+            finishedAt: outcome === "running" ? null : isoTime(state.FinishedAt),
+            previousImage: label(RUN_LABELS.previousImage, isImageId),
+            previousVersion: label(RUN_LABELS.previousVersion, isLabelVersion),
+            targetImage: label(RUN_LABELS.targetImage, isImageId),
+            targetVersion: label(RUN_LABELS.targetVersion, isLabelVersion),
+        },
+    };
+}
+
+/** What the release source answered for one version. */
+export type ReleaseLookup =
+    | { kind: "found"; release: unknown }
+    | { kind: "missing" }
+    | { kind: "unavailable" };
+
+export type ReleaseSource = (version: string) => Promise<ReleaseLookup>;
+
+export type ReleaseVerdict =
+    | { kind: "installable"; version: string; expectedDigest: string; publishedAt: string }
+    | { kind: "waiting"; version: string; publishedAt: string; installableAt: number }
+    | { kind: "refused"; reason: string };
+
+/**
+ * Whether a downloaded image may be installed from the panel (ADR 0018): a
+ * published, non-prerelease release of exactly that version, whose recorded
+ * index digest is among the image's `RepoDigests`, published at least
+ * `MIN_RELEASE_AGE_MS` ago. Anything unexpected refuses.
+ */
+export function evaluateRelease(input: { version: string | null; repoDigests: string[]; lookup: ReleaseLookup; now: number }): ReleaseVerdict {
+    const { version, lookup } = input;
+    if (version === null || !RELEASE_VERSION.test(version)) {
+        return { kind: "refused", reason: "The downloaded image does not declare a release version, so it cannot be matched to a release." };
+    }
+    if (lookup.kind === "unavailable") return { kind: "refused", reason: `GitHub could not be reached to verify release ${version}. Check again later.` };
+    if (lookup.kind === "missing") return { kind: "refused", reason: `No published release ${version} was found for the official image.` };
+    const release = record(lookup.release);
+    if (release.tag_name !== version) return { kind: "refused", reason: `GitHub answered with a release that is not ${version}.` };
+    if (release.draft !== false || release.prerelease !== false) return { kind: "refused", reason: `Release ${version} is a draft or a prerelease.` };
+    const publishedAt = typeof release.published_at === "string" ? release.published_at : "";
+    const published = Date.parse(publishedAt);
+    if (!/^\d{4}-\d{2}-\d{2}T/.test(publishedAt) || !Number.isFinite(published)) {
+        return { kind: "refused", reason: `Release ${version} has no publication date.` };
+    }
+    const body = typeof release.body === "string" ? release.body : "";
+    const marker = new RegExp(`^${DIGEST_MARKER}\\s*(sha256:[0-9a-f]{64})\\s*$`, "m").exec(body);
+    if (!marker) return { kind: "refused", reason: `Release ${version} does not record an image digest.` };
+    const expectedDigest = `${OFFICIAL_IMAGE}@${marker[1]}`;
+    if (!input.repoDigests.includes(expectedDigest)) {
+        return { kind: "refused", reason: `The downloaded image does not match the digest published with release ${version}. Do not install it; check the image on the host.` };
+    }
+    const installableAt = published + MIN_RELEASE_AGE_MS;
+    if (input.now < installableAt) return { kind: "waiting", version, publishedAt, installableAt };
+    return { kind: "installable", version, expectedDigest, publishedAt };
+}
+
+const RELEASE_MAX_BYTES = 512 * 1024;
+
+/** One unauthenticated GitHub request per call, bounded in time and size. */
+export function githubReleaseSource(fetchImpl: typeof fetch = fetch, timeoutMs = 10_000): ReleaseSource {
+    return async version => {
+        if (!RELEASE_VERSION.test(version)) return { kind: "missing" };
+        try {
+            const response = await fetchImpl(`${RELEASE_API}${version}`, {
+                headers: { Accept: "application/vnd.github+json", "User-Agent": "compose-panel", "X-GitHub-Api-Version": "2022-11-28" },
+                redirect: "error",
+                signal: AbortSignal.timeout(timeoutMs),
+            });
+            if (response.status === 404) return { kind: "missing" };
+            if (!response.ok) return { kind: "unavailable" };
+            if (Number(response.headers.get("content-length") ?? "0") > RELEASE_MAX_BYTES) return { kind: "unavailable" };
+            const text = await response.text();
+            if (text.length > RELEASE_MAX_BYTES) return { kind: "unavailable" };
+            return { kind: "found", release: JSON.parse(text) };
+        } catch {
+            return { kind: "unavailable" };
+        }
     };
 }
 
@@ -284,6 +461,9 @@ export interface AvailableUpdate {
     imageId: string;
     version: ImageVersion;
     link: ImageLink | null;
+    /** Raw `org.opencontainers.image.version` label, matched to a release. */
+    releaseVersion: string | null;
+    repoDigests: string[];
 }
 
 export interface SelfUpdateStatus {
@@ -292,6 +472,8 @@ export interface SelfUpdateStatus {
     current: ImageVersion | null;
     /** The tag now points to another image than the one running. */
     available: AvailableUpdate | null;
+    /** Release check of `available`, from the last Check; null when not checked yet. */
+    verdict: ReleaseVerdict | null;
     /** The last updater container, if one is still in Docker. */
     lastRun: UpdaterLookup;
 }
@@ -301,6 +483,9 @@ export interface SelfUpdaterOptions {
     provider: ComposeProvider;
     /** Reads `/proc/self/mountinfo`; null when unreadable (not Linux, no /proc). */
     readMountinfo?: () => Promise<string | null>;
+    /** Release metadata for `OFFICIAL_IMAGE`. Defaults to the GitHub API. */
+    releases?: ReleaseSource;
+    now?: () => number;
     /** Bound for the image pull. */
     pullTimeoutMs: number;
     /** Bound for one updater run, used by `wait`. */
@@ -324,9 +509,15 @@ const UNAVAILABLE = "Docker did not respond. Nothing was changed.";
 /** The panel-side half of ADR 0018. */
 export class SelfUpdater {
     private readonly readMountinfo: () => Promise<string | null>;
+    private readonly releases: ReleaseSource;
+    private readonly now: () => number;
+    /** Last release answer, for one image ID only. In memory; gone on restart. */
+    private checked: { imageId: string; lookup: ReleaseLookup } | null = null;
 
     constructor(private readonly options: SelfUpdaterOptions) {
         this.readMountinfo = options.readMountinfo ?? defaultMountinfo;
+        this.releases = options.releases ?? githubReleaseSource();
+        this.now = options.now ?? Date.now;
     }
 
     private run(args: string[], extra: { timeoutMs?: number; maxBytes?: number } = {}): Promise<CommandResult> {
@@ -343,6 +534,11 @@ export class SelfUpdater {
             if (result.code !== 0 || result.timedOut || result.truncated) return unsupported("Docker could not describe the panel container.");
             const support = parseSelfInspect(result.stdout, id);
             if (support.kind !== "ready") return support;
+            // Releases are verified against a fixed source, so only the
+            // official image can be updated from the panel.
+            if (imageRepository(support.identity.imageRef) !== OFFICIAL_IMAGE) {
+                return unsupported(`Self-update only installs releases of ${OFFICIAL_IMAGE}. Update this image from the host.`);
+            }
             const images = await this.options.provider.inspectImages([support.identity.imageId]);
             const current = images.timedOut || images.truncated
                 ? undefined
@@ -361,11 +557,11 @@ export class SelfUpdater {
         }
     }
 
-    /** Read-only: identity, running and tagged image, last updater. */
+    /** Read-only: identity, running and tagged image, cached release verdict, last updater. Never calls GitHub. */
     async status(): Promise<SelfUpdateStatus> {
         const support = await this.identify();
         const lastRun = await this.lookup().catch((): UpdaterLookup => ({ kind: "none" }));
-        if (support.kind !== "ready") return { support, current: null, available: null, lastRun };
+        if (support.kind !== "ready") return { support, current: null, available: null, verdict: null, lastRun };
         const { imageId, imageRef } = support.identity;
         let current: ImageVersion | null = null;
         let available: AvailableUpdate | null = null;
@@ -377,11 +573,33 @@ export class SelfUpdater {
                 current = running ? versionOf(running) : null;
                 const tagged = findByTag(details, imageRef);
                 if (tagged && tagged.id !== imageId && isImageId(tagged.id)) {
-                    available = { imageId: tagged.id, version: versionOf(tagged), link: linkFor(imageRef, tagged.labels) };
+                    const label = tagged.labels["org.opencontainers.image.version"]?.trim() ?? null;
+                    available = {
+                        imageId: tagged.id,
+                        version: versionOf(tagged),
+                        link: linkFor(imageRef, tagged.labels),
+                        releaseVersion: label,
+                        repoDigests: tagged.repoDigests,
+                    };
                 }
             }
         } catch { /* no information, never an invented update */ }
-        return { support, current, available, lastRun };
+        const checked = available && this.checked?.imageId === available.imageId ? this.checked.lookup : null;
+        // Re-evaluated on every render: the waiting period depends on the clock.
+        const verdict = available && checked
+            ? evaluateRelease({ version: available.releaseVersion, repoDigests: available.repoDigests, lookup: checked, now: this.now() })
+            : null;
+        return { support, current, available, verdict, lastRun };
+    }
+
+    /** Ask the release source about `available` (one request), remember and evaluate the answer. */
+    async verifyRelease(available: AvailableUpdate): Promise<ReleaseVerdict> {
+        const version = available.releaseVersion;
+        const lookup: ReleaseLookup = version !== null && RELEASE_VERSION.test(version)
+            ? await this.releases(version)
+            : { kind: "missing" };
+        this.checked = { imageId: available.imageId, lookup };
+        return evaluateRelease({ version, repoDigests: available.repoDigests, lookup, now: this.now() });
     }
 
     /** Download the panel's own tag. Touches no container. */
@@ -410,8 +628,8 @@ export class SelfUpdater {
      * Remove a finished updater of the panel, then start a new one. Refuses a
      * running updater and never touches a same-named foreign container.
      */
-    async launch(identity: SelfIdentity, targetImageId: string): Promise<void> {
-        const args = updaterRunArgs(identity, targetImageId);
+    async launch(identity: SelfIdentity, plan: UpdatePlan): Promise<void> {
+        const args = updaterRunArgs(identity, plan);
         const previous = await this.lookup();
         if (previous.kind === "foreign") {
             throw new SelfUpdateError(`A container named ${UPDATER_NAME} exists and was not created by the panel. Remove or rename it on the host, then try again.`);

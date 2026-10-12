@@ -310,37 +310,59 @@ Two layers, both plain files:
 
 ### Updating from the browser
 
-With a published image, **About** (`/about`) updates the panel itself
-([ADR 0018](adr/0018-self-update.md)):
+With the official image (`ghcr.io/lekoala/compose-panel`), **About**
+(`/about`) updates the panel itself ([ADR 0018](adr/0018-self-update.md)):
 
-1. **Check for updates** pulls the image tag the panel runs from. Nothing
-   restarts. Use `image: ghcr.io/lekoala/compose-panel:latest` in
+1. **Check & download update** pulls the image tag the panel runs from.
+   Nothing restarts. Use `image: ghcr.io/lekoala/compose-panel:latest` in
    `deploy/compose.yaml` to follow releases: a version tag such as `0.3.0`
    never moves, so a check finds nothing newer.
-2. When the tag points to a newer image, **Update Compose Panel…** shows both
-   versions and asks for a confirmation. It is refused while a stack action or
-   save is running.
-3. The panel starts a one-shot container, `compose-panel-updater`, from the
+2. For a newer image, the panel asks GitHub for the release of that exact
+   version (one request, no token). The image is installable only when the
+   release is published (not a draft, not a prerelease), at least **72 hours**
+   old, and records the image digest the download carries. Otherwise **About**
+   says why, or when the release becomes installable. There is no bypass in
+   the panel: to update sooner, use the host commands below.
+3. **Install update…** asks for a confirmation and checks everything again.
+   It is refused while a stack action or save is running.
+4. The panel starts a one-shot container, `compose-panel-updater`, from the
    image it runs now, with no network, the Docker socket and the deployment
-   directory (read-only). The updater checks that the tag and the Compose file
-   still match, runs `docker compose up -d --no-deps --no-build --pull never panel`,
-   then waits until the new container is healthy. Managed stacks are not
-   touched.
-4. The page reloads by itself when the panel is back. Sign in again (sessions
-   live in memory). **About** shows the result and the updater output, read
-   from the finished updater container. It stays in Docker until the next update
+   directory (read-only). The updater checks that the tag still resolves to
+   the approved image with the release digest and that the Compose file still
+   matches, tags the current image as `compose-panel:rollback`, runs
+   `docker compose up -d --no-deps --no-build --pull never panel` (nothing is
+   downloaded or built), then waits until the new container is healthy.
+   Managed stacks are not touched.
+5. The page reloads by itself when the panel is back. Sign in again (sessions
+   live in memory). **About** shows the result, the previous and target images,
+   the updater output and the rollback commands, read from the finished
+   updater container. It stays in Docker until the next update
    (`docker logs compose-panel-updater` works from the host too).
 
 Requirements, all read from Docker (no setting): the panel runs in a container
-started by `docker compose`, from a pulled image tag (not a local build, not
-pinned by digest), with the socket bind-mounted at `/var/run/docker.sock`, and
-all its Compose and env files inside the deployment directory. If one is
-missing, **About** says which and the update is done from the host as below.
-The updater applies the deployment files as they are on disk, like a manual
-`compose up`. It does not depend on the panel process: if the panel is stopped
-or restarted during an update, the updater keeps going, and the next panel
-start shows its outcome. It never rolls back by itself: if it fails, **About** shows the
-commands to run on the host.
+started by `docker compose`, from a pulled tag of the official image (not a
+local build, not pinned by digest), with the socket bind-mounted at
+`/var/run/docker.sock`, and all its Compose and env files inside the
+deployment directory. If one is missing, **About** says which and the update is
+done from the host as below. The panel reaches `api.github.com` only on Check
+and Install. The updater applies the deployment files as they are on disk, like
+a manual `compose up`. It does not depend on the panel process: if the panel is
+stopped or restarted during an update, the updater keeps going, and the next
+panel start shows its outcome. The 72-hour delay is a panel policy only: the
+downloaded image stays usable from the host CLI.
+
+**Rollback** to the exact image the panel ran before the last update (shown on
+**About**, with the project's own `-p`/`-f` options filled in):
+
+```sh
+docker image tag compose-panel:rollback ghcr.io/lekoala/compose-panel:latest
+cd /path/to/compose-panel/deploy
+docker compose -p compose-panel -f /path/to/compose-panel/deploy/compose.yaml up -d --no-deps --no-build --pull never panel
+```
+
+Nothing is downloaded and no file is edited. The next Check downloads the newer
+image again. `docker image prune -a` removes `compose-panel:rollback` once no
+container uses it.
 
 ### Upgrade and rollback
 
@@ -462,9 +484,13 @@ release. Verified 2026-10-10 against image `compose-panel:local`
 - [ ] Same check on the target host with its real Caddy and a real stack.
 - [x] Self-update logic ([ADR 0018](adr/0018-self-update.md)) on the disposable
       lab daemon (`bun run test:docker-lab:wsl`, 2026-10-12, Docker 29.9.0):
-      real Compose labels are read, a stale target is refused with nothing
-      changed, the retagged service is recreated and verified healthy, and a
-      second service keeps its container.
+      real Compose labels are read; a stale target or a digest the image does not
+      carry is refused with nothing changed; with a registry inside the lab, the
+      approved image is installed and verified healthy, a second service keeps
+      its container, `compose-panel:rollback` holds the previous image and the
+      documented rollback brings it back. Pulling multi-platform `alpine` by tag
+      records the index digest from `buildx imagetools inspect` in `RepoDigests`
+      (amd64, containerd image store of the lab daemon).
 - [x] Targeted operations, filtered logs and pull policy ([ADR 0019](adr/0019-start-action.md),
       [ADR 0020](adr/0020-filtered-service-logs.md),
       [ADR 0021](adr/0021-targeted-service-operations.md),
@@ -476,11 +502,15 @@ release. Verified 2026-10-10 against image `compose-panel:local`
       `config --services` discovery and refusals work, and `pull` succeeds on a
       stack mixing registry, build-only and image+build services (the local
       ones are skipped, then built by `up`).
-- [ ] Self-update end to end with the published image on a disposable host:
-      deploy `ghcr.io/lekoala/compose-panel:latest` at the previous version,
-      publish the new one, Check, Update; the panel comes back on the new
-      version, `compose-panel-updater` exited 0, managed stacks untouched. Then
-      make it fail (for example change `image:` in `deploy/compose.yaml`) and
+- [ ] Self-update end to end with the published image on a disposable host,
+      on amd64 **and** arm64, and with the classic image store as well as the
+      containerd one: deploy `ghcr.io/lekoala/compose-panel:latest` at the
+      previous version, publish the new one (the GitHub Release carries the
+      digest line), Check: the release shows a waiting period, then (72 hours
+      later, or with a release old enough) Install; the panel comes back on the
+      new version, `compose-panel-updater` exited 0, managed stacks untouched,
+      the rollback commands from About bring the previous image back. Then make
+      it fail (for example change `image:` in `deploy/compose.yaml`) and
       confirm "Refused, nothing changed" with the panel still running.
 
 ## Audit correction verification

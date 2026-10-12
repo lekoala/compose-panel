@@ -44,10 +44,15 @@ need a separate host component and its own ADR. See
 ## Self-update
 `src/self-update.ts` finds the panel's own container (`/proc/self/mountinfo`,
 then `container inspect`) and validates its Compose labels, image reference and
-socket mount. **Check** pulls that tag; **Update** starts a one-shot
-`compose-panel-updater` container from the image the panel runs now, with fixed
-arguments. Inside it, `src/scripts/self-update.ts` (logic in
-`src/self-update-run.ts`) re-verifies the tag and the config, recreates the
+socket mount. **Check** pulls that tag, then asks the fixed GitHub repository
+for the release of the image's version (one bounded `fetch`, the panel's only
+outbound request): a published, non-prerelease release at least 72 hours old
+whose recorded index digest is in the image's `RepoDigests`. The answer is kept
+in memory for that image ID. **Install** re-checks the release, then starts a
+one-shot `compose-panel-updater` container from the image the panel runs now,
+with fixed arguments. Inside it, `src/scripts/self-update.ts` (logic in
+`src/self-update-run.ts`) re-verifies the tag, the digest and the config, tags the previous image
+`compose-panel:rollback`, recreates the
 panel service through the `ComposeProvider` (`serviceImage`, `recreateService`)
 and waits for it to be healthy. The finished updater container is the record of
 the outcome: the next panel reads its exit code and output from Docker, and

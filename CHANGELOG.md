@@ -3,22 +3,30 @@
 ## Unreleased (0.3.0)
 
 - Self-update (ADR 0018): a new **About** page (`/about`, in the sidebar) shows
-  the panel version and, for the documented Docker deployment with a published
-  image, updates the panel itself. **Check for updates** pulls the panel's own
-  image tag (`POST /about/check`, touches no container). **Update Compose
-  Panel…** (`POST /about/update`, confirmed) starts a one-shot
-  `compose-panel-updater` container from the current image, with no network,
-  the Docker socket and the deployment directory read-only. The updater checks
-  that the tag and the Compose file still match, runs
+  the panel version and updates the panel itself when it runs from the
+  official image (`ghcr.io/lekoala/compose-panel`). **Check & download
+  update** (`POST /about/check`) pulls the panel's own tag, touches no
+  container, then asks GitHub for the release of that exact version: the image
+  is installable only if the release is published (no draft or prerelease), at
+  least 72 hours old, and records the image index digest found in the image's
+  `RepoDigests`. **Install update…** (`POST /about/update`, confirmed)
+  re-checks the release, then starts a one-shot `compose-panel-updater`
+  container from the current image, with no network, the Docker socket and the
+  deployment directory read-only. The updater checks that the tag still
+  resolves to the approved image with that digest and that the Compose file
+  still matches, keeps the previous image as `compose-panel:rollback`, runs
   `compose up -d --no-deps --no-build --pull never` on the panel service only,
-  and waits for the new container to be healthy. The result and output are read
-  back from the finished updater container after the restart, with host
-  recovery commands on failure. The deployment is read from Docker (own
+  and waits for the new container to be healthy. The result, previous and
+  target images, output and rollback commands are read back from the finished
+  updater container after the restart. The deployment is read from Docker (own
   container labels), with no new setting. Refused while a stack action or save
   runs; actions, saves and purges are refused while an update runs. Activity log
   events `self-update-check` and `self-update`. New provider calls
   `serviceImage` and `recreateService`; new image entry point
   `src/scripts/self-update.ts`.
+- Release workflow: after the multi-platform push, creates the GitHub Release
+  for the tag with the pushed index digest (`compose-panel-image-digest:`
+  line), which self-update requires.
 - Docs: the upgrade procedure covers the published image as well as local
   builds, and is the recovery path for a failed self-update.
 - Stack actions need an honest state (ADR follow-up): `unknown` offers no

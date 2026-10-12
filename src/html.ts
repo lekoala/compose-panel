@@ -3,7 +3,7 @@ import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
 import type { ImageVersion, ServiceUpdate } from "./updates.ts";
 import type { AccessReport, AccessStatus } from "./access.ts";
-import { UPDATER_NAME, recoveryCommands, type SelfIdentity, type SelfUpdateStatus, type UpdaterOutcome } from "./self-update.ts";
+import { ROLLBACK_TAG, UPDATER_NAME, recoveryCommands, rollbackCommands, type SelfIdentity, type SelfUpdateStatus, type UpdaterOutcome } from "./self-update.ts";
 import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerDetails, type ContainerFilter } from "./container-state.ts";
 import type { AttentionItem, AttentionReason, ClassifiedStat, DiskUsage, DiskUsageRow, EngineInfo, Insights, StackUsage } from "./insights.ts";
 import packageJson from "../package.json";
@@ -1077,16 +1077,29 @@ export function aboutPage(options: AboutPageOptions): string {
                 const link = available.link
                     ? ` · <a href="${escapeHtml(available.link.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(available.link.label)}</a>`
                     : "";
-                const warning = note("warn", "Compose Panel restarts during the update: the page is unavailable for a moment and you sign in again afterwards. Your stacks keep running. Wait for running actions and saves to finish first. Click the button above again to cancel.");
-                ready = `<p><span class="state state-update">Update ready</span> <span class="version">${escapeHtml(from)}</span> → <span class="version">${escapeHtml(versionText(available.version))}</span>${link}</p>
-<details class="confirm"><summary><span class="btn btn-primary">Update Compose Panel…</span></summary>
-<div class="confirm-panel">${warning}<form method="post" action="/about/update"><input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}"><input type="hidden" name="target" value="${escapeHtml(available.imageId)}"><button type="submit" class="btn btn-primary" data-busy-label="Starting…">Yes, update now</button></form></div>
+                const sides = `<p><span class="state state-update">Newer image downloaded</span> <span class="version">${escapeHtml(from)}</span> → <span class="version">${escapeHtml(versionText(available.version))}</span>${link}</p>`;
+                const verdict = status.verdict;
+                let install: string;
+                if (verdict === null) {
+                    install = note("info", "Check again to verify this image against its published release before installing it.");
+                } else if (verdict.kind === "refused") {
+                    install = note("warn", verdict.reason, { title: "Not installable." });
+                } else if (verdict.kind === "waiting") {
+                    const at = new Date(verdict.installableAt).toISOString();
+                    install = `<div class="note note-info"><strong>Waiting period.</strong> Release ${escapeHtml(verdict.version)} was published ${timeTag(verdict.publishedAt)}. New releases can be installed from the panel 72 hours after publication, from ${timeTag(at)}. To update sooner, use the host commands in docs/deployment.md.</div>`;
+                } else {
+                    const warning = note("warn", "Compose Panel restarts during the update: the page is unavailable for a moment and you sign in again afterwards. Your stacks keep running. Wait for running actions and saves to finish first. Click the button above again to cancel.");
+                    install = `<p class="muted">Release ${escapeHtml(verdict.version)}, published ${timeTag(verdict.publishedAt)}. The downloaded image matches its published digest.</p>
+<details class="confirm"><summary><span class="btn btn-primary">Install update…</span></summary>
+<div class="confirm-panel">${warning}<form method="post" action="/about/update"><input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}"><input type="hidden" name="target" value="${escapeHtml(available.imageId)}"><button type="submit" class="btn btn-primary" data-busy-label="Starting…">Yes, install now</button></form></div>
 </details>`;
+                }
+                ready = `${sides}${install}`;
             } else {
                 ready = `<p class="muted">No newer image of <code>${escapeHtml(identity.imageRef)}</code> has been downloaded. A version tag such as <code>0.2.0</code> never changes: use the <code>latest</code> tag on the host to follow new releases.</p>`;
             }
             body = `${ready}
-<form method="post" action="/about/check" class="op-row"><input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}"><button type="submit" class="btn" data-busy-label="Checking…">Check for updates</button><p class="op-help">Downloads <code>${escapeHtml(identity.imageRef)}</code> if a newer image was published. Nothing restarts.</p></form>`;
+<form method="post" action="/about/check" class="op-row"><input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}"><button type="submit" class="btn" data-busy-label="Checking…">Check &amp; download update</button><p class="op-help">Downloads <code>${escapeHtml(identity.imageRef)}</code> if a newer image was published, then checks its release on GitHub. Nothing restarts.</p></form>`;
         }
         updatesCard = `<section class="card"><h2>Updates</h2>${body}</section>`;
     }
@@ -1104,10 +1117,19 @@ export function aboutPage(options: AboutPageOptions): string {
         const recovery = run.outcome === "failed" && identity
             ? `${note("error", "The panel container may not be in the expected state. Run these commands on the host to finish or redo the update.", { title: "Update failed." })}<pre class="output">${escapeHtml(recoveryText(identity))}</pre>`
             : "";
+        // The updater kept the exact previous image; offer the way back after
+        // any update that reached the recreate.
+        const rollback = (run.outcome === "failed" || run.outcome === "updated") && identity && run.previousImage
+            ? `<details${run.outcome === "failed" ? " open" : ""}><summary>Roll back to the previous image</summary><p class="muted">The previous image is kept locally as <code>${escapeHtml(ROLLBACK_TAG)}</code>. These host commands recreate the panel from it, without downloading anything or editing a file.</p><pre class="output">${escapeHtml(rollbackCommands(identity).join("\n"))}</pre></details>`
+            : "";
+        const imageRow = (label: string, version: string | null, id: string | null): string =>
+            id ? detailRow(label, `${version ? `<span class="version">${escapeHtml(version)}</span> ` : ""}<code>${escapeHtml(id)}</code>`) : "";
+        const images = imageRow("Previous image", run.previousVersion, run.previousImage) + imageRow("Target image", run.targetVersion, run.targetImage);
+        const imagesTable = images ? `<div class="table-wrap"><table class="table"><tbody>${images}</tbody></table></div>` : "";
         const ended = run.finishedAt ? `<span class="muted">ended ${timeTag(run.finishedAt)}</span>` : "";
         lastCard = `<section class="card"><h2>Last update</h2>
 <p class="meta"><span class="state ${outcome.cls}">${escapeHtml(outcome.label)}</span><span class="muted">started ${timeTag(run.startedAt)}</span>${ended}</p>
-${recovery}${output}</section>`;
+${imagesTable}${recovery}${rollback}${output}</section>`;
     }
 
     const body = `<p class="crumbs"><a href="/">← All stacks</a></p>

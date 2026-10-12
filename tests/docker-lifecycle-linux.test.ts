@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { hashPassword } from "../src/auth.ts";
 import { createComposeProvider } from "../src/compose-provider.ts";
 import { createDockerRunner } from "../src/docker.ts";
-import { UPDATER_EXIT, parseSelfInspect, updaterCommand } from "../src/self-update.ts";
+import { ROLLBACK_TAG, UPDATER_EXIT, parseSelfInspect, rollbackCommands, updaterCommand } from "../src/self-update.ts";
 import { parseUpdaterArgs, runSelfUpdate } from "../src/self-update-run.ts";
 
 // Opt-in lifecycle check against a REAL but DISPOSABLE Docker Engine: project
@@ -308,11 +308,34 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(await projectServices("cp-qa-shared")).toEqual(["witness"]);
     }, 90_000);
 
-    test("self-update recreates only the panel service from the retagged image and verifies it (ADR 0018)", async () => {
-        // Clearly marked fixture: a stand-in "panel" service with a health
-        // check and the lab socket mounted like the real deployment, next to
-        // another service that must not be touched. The updater logic runs
-        // in this process (not in its container) against the lab daemon.
+    test("pulling by tag records the multi-platform index digest in RepoDigests (ADR 0018)", async () => {
+        // The release publishes the index digest; the panel compares it with
+        // RepoDigests, never with the local image ID. IMAGE is multi-platform.
+        const index = JSON.parse((await dockerOk(["buildx", "imagetools", "inspect", IMAGE, "--format", "{{json .Manifest.Digest}}"], 60_000)).trim()) as string;
+        expect(index).toMatch(/^sha256:[0-9a-f]{64}$/);
+        const repoDigests = JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .RepoDigests}}", IMAGE])).trim()) as string[];
+        expect(repoDigests).toContain(`alpine@${index}`);
+    }, 90_000);
+
+    test("self-update installs only the approved image, keeps the previous one for rollback, and touches nothing else (ADR 0018)", async () => {
+        // Clearly marked fixture: a registry inside the lab daemon gives real
+        // RepoDigests; a stand-in "panel" service with a health check and the
+        // lab socket mounted like the real deployment, next to another service
+        // that must not be touched. The updater logic runs in this process
+        // (not in its container) against the lab daemon.
+        await dockerOk(["run", "-d", "--name", "cp-qa-registry", "-p", "127.0.0.1:5000:5000", "registry:2"], 180_000);
+        const repo = "localhost:5000/cp-qa-self";
+        const ref = `${repo}:current`;
+        const digestOf = async (image: string) => {
+            const digests = JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .RepoDigests}}", image])).trim()) as string[];
+            const found = digests.find(value => value.startsWith(`${repo}@`));
+            if (!found) throw new Error(`No ${repo} digest for ${image}.`);
+            return found;
+        };
+        const imageIdOf = async (image: string) => JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .Id}}", image])).trim()) as string;
+        await dockerOk(["tag", IMAGE, ref]);
+        await waitFor(async () => (await docker(["push", ref])).code === 0, 30_000, "the lab registry to accept a push");
+
         const dir = join(lab, "self");
         await mkdir(dir, { recursive: true });
         const command = `["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`;
@@ -320,7 +343,7 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             "name: cp-qa-self",
             "services:",
             "  panel:",
-            "    image: cp-qa-self:current",
+            `    image: ${ref}`,
             `    command: ${command}`,
             "    volumes: [\"/lab/docker.sock:/var/run/docker.sock\"]",
             "    healthcheck: { test: [\"CMD\", \"true\"], interval: 1s, timeout: 1s, retries: 3 }",
@@ -329,21 +352,25 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             `    command: ${command}`,
             "",
         ].join("\n"));
-        await dockerOk(["tag", IMAGE, "cp-qa-self:current"]);
         await dockerOk(["compose", "-f", join(dir, "compose.yaml"), "up", "-d"]);
         const idOf = async (service: string) => (await dockerOk(["ps", "-q", "--no-trunc", "--filter", "label=com.docker.compose.project=cp-qa-self", "--filter", `label=com.docker.compose.service=${service}`])).trim();
         const oldPanel = await idOf("panel");
         const other = await idOf("other");
+        const previous = await imageIdOf(ref);
 
-        // A new image behind the same tag, as after a pull.
+        // A new release behind the same tag, pushed then present locally with its digest.
         await dockerOk(["container", "create", "--name", "cp-qa-self-src", IMAGE]);
-        await dockerOk(["commit", "--change", "LABEL org.opencontainers.image.version=9.9.9", "cp-qa-self-src", "cp-qa-self:current"]);
+        await dockerOk(["commit", "--change", "LABEL org.opencontainers.image.version=9.9.9", "cp-qa-self-src", ref]);
         await dockerOk(["container", "rm", "cp-qa-self-src"]);
-        const target = JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .Id}}", "cp-qa-self:current"])).trim()) as string;
+        await dockerOk(["push", ref]);
+        const target = await imageIdOf(ref);
+        const digest = await digestOf(ref);
+        expect(target).not.toBe(previous);
 
         const support = parseSelfInspect(await dockerOk(["container", "inspect", oldPanel]), oldPanel);
         if (support.kind !== "ready") throw new Error(support.reason);
         expect(support.identity.workingDir).toBe(dir);
+        expect(support.identity.imageId).toBe(previous);
 
         const runner = createDockerRunner({ timeoutMs: 60_000 });
         const deps = {
@@ -357,17 +384,30 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             pollMs: 500,
             readyTimeoutMs: 60_000,
         };
-        // A target the tag no longer points to is refused before anything changes.
-        const stale = parseUpdaterArgs(updaterCommand(support.identity, support.identity.imageId));
-        expect(await runSelfUpdate(stale, deps)).toBe(UPDATER_EXIT.refused);
+        const argsFor = (targetImageId: string, expectedDigest: string) => parseUpdaterArgs(updaterCommand(support.identity, { targetImageId, expectedDigest }));
+        // Refused before anything changes: a target the tag no longer points
+        // to, and a digest the image does not carry.
+        expect(await runSelfUpdate(argsFor(previous, digest), deps)).toBe(UPDATER_EXIT.refused);
+        expect(await runSelfUpdate(argsFor(target, `${repo}@sha256:${"0".repeat(64)}`), deps)).toBe(UPDATER_EXIT.refused);
         expect(await idOf("panel")).toBe(oldPanel);
 
-        expect(await runSelfUpdate(parseUpdaterArgs(updaterCommand(support.identity, target)), deps)).toBe(UPDATER_EXIT.updated);
+        expect(await runSelfUpdate(argsFor(target, digest), deps)).toBe(UPDATER_EXIT.updated);
         const newPanel = await idOf("panel");
         expect(newPanel).not.toBe(oldPanel);
         expect(JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .Image}}", newPanel])).trim())).toBe(target);
         expect(await idOf("other")).toBe(other);
-    }, 120_000);
+        expect(await imageIdOf(ROLLBACK_TAG)).toBe(previous);
+
+        // The documented rollback, without download or file edit, brings the
+        // previous image back.
+        const [retag, , up] = rollbackCommands(support.identity);
+        expect(retag).toBe(`docker image tag ${ROLLBACK_TAG} ${ref}`);
+        expect(up).toContain("up -d --no-deps --no-build --pull never panel");
+        await dockerOk(["image", "tag", ROLLBACK_TAG, ref]);
+        await dockerOk(["compose", "-p", "cp-qa-self", "-f", join(dir, "compose.yaml"), "up", "-d", "--no-deps", "--no-build", "--pull", "never", "panel"]);
+        expect(JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .Image}}", await idOf("panel")])).trim())).toBe(previous);
+        await docker(["rm", "-f", "cp-qa-registry"]);
+    }, 240_000);
 
     test("scoped restart/up, start and filtered logs against real Compose (ADR 0019-0021)", async () => {
         const p = panel!;

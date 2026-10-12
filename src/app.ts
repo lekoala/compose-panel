@@ -1047,7 +1047,11 @@ export function createApp(options: AppOptions): App {
                 await recordAudit({ event: "self-update-check", result: "failure", actor, detail: pulled.timedOut ? "timed out" : `exit code ${pulled.code}` });
                 return renderAbout(csrf, { error: { title: "Check failed.", message: `Docker could not download ${support.identity.imageRef}${reason ? `: ${reason}` : "."}` }, status: 502 });
             }
-            await recordAudit({ event: "self-update-check", result: "success", actor });
+            // A newer image is downloaded: ask its release whether it may be
+            // installed (ADR 0018). The verdict is shown on the About page.
+            const status = await selfUpdater.status();
+            const verdict = status.available ? await selfUpdater.verifyRelease(status.available) : null;
+            await recordAudit({ event: "self-update-check", result: "success", actor, detail: verdict ? `release ${verdict.kind}` : "nothing newer" });
             return redirect("/about?checked=1", 303);
         } finally {
             selfUpdateChecking = false;
@@ -1083,15 +1087,26 @@ export function createApp(options: AppOptions): App {
             if (status.support.kind !== "ready") return await refuse(status.support.reason);
             if (!status.available) return await refuse("No newer image is ready. Check for updates first.");
             if (status.available.imageId !== target) return await refuse("The image changed since this page was loaded. Review the update again.");
-            // Status awaited Docker: re-check right before the mutation. Once the
-            // updater runs it is not cancelled, like an accepted stack action.
+            // Fresh release check, never the cached one: the 72-hour period and
+            // the digest are enforced here, with no bypass (ADR 0018).
+            const verdict = await selfUpdater.verifyRelease(status.available);
+            if (verdict.kind === "refused") return await refuse(verdict.reason);
+            if (verdict.kind === "waiting") return await refuse(`Release ${verdict.version} becomes installable on ${new Date(verdict.installableAt).toISOString().slice(0, 16).replace("T", " ")} UTC.`);
+            // Status awaited Docker and GitHub: re-check right before the
+            // mutation. Once the updater runs it is not cancelled, like an
+            // accepted stack action.
             if (!sessions.isActive(session.id)) {
                 await recordAudit({ event: "self-update", result: "refused", actor, detail: "session ended" });
                 return sessionEnded();
             }
-            await selfUpdater.launch(status.support.identity, target);
+            await selfUpdater.launch(status.support.identity, {
+                targetImageId: target,
+                expectedDigest: verdict.expectedDigest,
+                targetVersion: verdict.version,
+                previousVersion: status.current?.version ?? null,
+            });
             started = true;
-            await recordAudit({ event: "self-update", result: "started", actor, detail: `${status.support.identity.imageRef} ${target.slice(0, 19)}` });
+            await recordAudit({ event: "self-update", result: "started", actor, detail: `${status.support.identity.imageRef} ${verdict.version}` });
             // Unblock if the updater ends while this process is still alive
             // (a refusal, or a failure before the recreate).
             void selfUpdater.wait().finally(() => { selfUpdatePending = false; });

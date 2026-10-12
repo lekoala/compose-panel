@@ -9,7 +9,11 @@ import {
     isSafePath,
     isServiceName,
     isTagReference,
+    imageRepository,
+    isRepoDigest,
     isUpdaterContainerId,
+    ROLLBACK_TAG,
+    rollbackCommands,
     recoveryCommands,
 } from "./self-update.ts";
 
@@ -24,6 +28,10 @@ export interface UpdaterArgs {
     panelContainer: string;
     imageRef: string;
     targetImage: string;
+    /** `repository@sha256:…` the release published; must be in the target's RepoDigests. */
+    expectedDigest: string;
+    /** Image the panel ran before the update, kept as `ROLLBACK_TAG`. */
+    previousImage: string;
     project: string;
     service: string;
     workingDir: string;
@@ -33,7 +41,7 @@ export interface UpdaterArgs {
 
 export class UpdaterArgsError extends Error {}
 
-const SINGLE = ["--panel-container", "--image-ref", "--target-image", "--project", "--service", "--working-dir"] as const;
+const SINGLE = ["--panel-container", "--image-ref", "--target-image", "--expected-digest", "--previous-image", "--project", "--service", "--working-dir"] as const;
 
 /** Strict argv parsing: every value validated, unknown or repeated flags refused. */
 export function parseUpdaterArgs(argv: string[]): UpdaterArgs {
@@ -58,6 +66,8 @@ export function parseUpdaterArgs(argv: string[]): UpdaterArgs {
         panelContainer: get("--panel-container"),
         imageRef: get("--image-ref"),
         targetImage: get("--target-image"),
+        expectedDigest: get("--expected-digest"),
+        previousImage: get("--previous-image"),
         project: get("--project"),
         service: get("--service"),
         workingDir: get("--working-dir"),
@@ -67,6 +77,10 @@ export function parseUpdaterArgs(argv: string[]): UpdaterArgs {
     if (!isUpdaterContainerId(args.panelContainer)) throw new UpdaterArgsError("Invalid --panel-container.");
     if (!isTagReference(args.imageRef)) throw new UpdaterArgsError("Invalid --image-ref.");
     if (!isImageId(args.targetImage)) throw new UpdaterArgsError("Invalid --target-image.");
+    if (!isRepoDigest(args.expectedDigest) || imageRepository(args.expectedDigest) !== imageRepository(args.imageRef)) {
+        throw new UpdaterArgsError("Invalid --expected-digest.");
+    }
+    if (!isImageId(args.previousImage)) throw new UpdaterArgsError("Invalid --previous-image.");
     if (!isProjectName(args.project)) throw new UpdaterArgsError("Invalid --project.");
     if (!isServiceName(args.service)) throw new UpdaterArgsError("Invalid --service.");
     if (!isSafePath(args.workingDir)) throw new UpdaterArgsError("Invalid --working-dir.");
@@ -134,21 +148,31 @@ export async function runSelfUpdate(args: UpdaterArgs, deps: UpdaterDeps): Promi
         log(`Refused: ${reason} Nothing was changed.`);
         return UPDATER_EXIT.refused;
     };
+    const rollback = (): void => {
+        log(`Roll back to the previous image (${ROLLBACK_TAG}) from the host:`);
+        for (const line of rollbackCommands(args)) log(`  ${line}`);
+    };
     const fail = (reason: string): number => {
         log(`Failed: ${reason}`);
-        log("Recover from the host:");
+        log("Redo the update from the host:");
         for (const line of recoveryCommands(args)) log(`  ${line}`);
+        rollback();
         return UPDATER_EXIT.failed;
     };
     const files: ComposeProjectFiles = { project: args.project, cwd: args.workingDir, composeFiles: args.composeFiles, envFiles: args.envFiles };
 
-    log(`Updating Compose project ${args.project}, service ${args.service}, to image ${args.targetImage.slice(0, 19)}.`);
+    log(`Updating Compose project ${args.project}, service ${args.service}.`);
+    log(`Previous image: ${args.previousImage}`);
+    log(`Target image:   ${args.targetImage} (${args.expectedDigest})`);
 
-    // 1. The tag must still point to the image the administrator confirmed.
-    const tag = await runner(["image", "inspect", "--format", "{{json .Id}}", "--", args.imageRef]);
-    let tagged: unknown = null;
-    try { tagged = tag.code === 0 ? JSON.parse(tag.stdout.trim()) : null; } catch { tagged = null; }
-    if (tagged !== args.targetImage) return refuse(`${args.imageRef} no longer points to the confirmed image. Check for updates again.`);
+    // 1. The tag must still resolve locally to the approved image, and that
+    //    image must carry the digest its release published.
+    const tag = await runner(["image", "inspect", "--", args.imageRef]);
+    let tagged: { Id?: unknown; RepoDigests?: unknown } | null = null;
+    try { tagged = tag.code === 0 ? (JSON.parse(tag.stdout) as { Id?: unknown; RepoDigests?: unknown }[])[0] ?? null : null; } catch { tagged = null; }
+    if (tagged?.Id !== args.targetImage) return refuse(`${args.imageRef} no longer points to the approved image. Check for updates again.`);
+    const digests = Array.isArray(tagged.RepoDigests) ? tagged.RepoDigests : [];
+    if (!digests.includes(args.expectedDigest)) return refuse(`The approved image does not carry the release digest ${args.expectedDigest}.`);
 
     // 2. Interpolation must be explicit: an unrecorded .env would be read implicitly.
     if (args.envFiles.length === 0 && await deps.fileExists(join(args.workingDir, ".env"))) {
@@ -160,13 +184,17 @@ export async function runSelfUpdate(args: UpdaterArgs, deps: UpdaterDeps): Promi
     if (image === null) return refuse("docker compose config failed for the panel deployment.");
     if (image !== args.imageRef) return refuse(`The Compose file now sets image ${image} for ${args.service}, not ${args.imageRef}. Apply that change from the host.`);
 
-    // 4. Recreate the panel service from the local image only.
+    // 4. Keep the exact previous image reachable for a rollback.
+    const kept = await runner(["image", "tag", "--", args.previousImage, ROLLBACK_TAG]);
+    if (kept.code !== 0 || kept.timedOut) return refuse(`Docker could not tag the previous image as ${ROLLBACK_TAG}, so a rollback would not be possible.`);
+
+    // 5. Recreate the panel service from the local image only.
     log("Recreating the panel container. The panel stops now.");
     const up = await provider.recreateService({ ...files, service: args.service, timeoutMs: deps.upTimeoutMs ?? 5 * 60 * 1000, onOutput: deps.write });
     if (up.timedOut) return fail("docker compose up did not finish in time.");
     if (up.code !== 0) return fail(`docker compose up exited with code ${up.code}.`);
 
-    // 5. Wait for the new container: a different one, on the target image,
+    // 6. Wait for the new container: a different one, on the target image,
     //    healthy (or still running when the image has no health check).
     const deadline = deps.now() + (deps.readyTimeoutMs ?? 3 * 60 * 1000);
     const stableMs = deps.stableMs ?? 10_000;
@@ -199,6 +227,7 @@ export async function runSelfUpdate(args: UpdaterArgs, deps: UpdaterDeps): Promi
         }
         if (ready) {
             log(`Updated${state.version ? ` to ${state.version}` : ""}. The new panel container is running.`);
+            rollback();
             return UPDATER_EXIT.updated;
         }
     }

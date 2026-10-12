@@ -11,7 +11,8 @@ on:
       - "[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
-  contents: read
+  # contents: write only to create the GitHub Release (last step).
+  contents: write
   packages: write
 
 env:
@@ -69,7 +70,22 @@ jobs:
       - name: Push multi-platform version tag and latest
         run: |
           docker buildx build --platform linux/amd64,linux/arm64 --push \
+            --metadata-file "$RUNNER_TEMP/image-metadata.json" \
             --build-arg VERSION="$GITHUB_REF_NAME" \
             --build-arg REVISION="${GITHUB_SHA}" \
             -t "$IMAGE:$GITHUB_REF_NAME" \
             -t "$IMAGE:latest" .
+      # ADR 0018: the release records the pushed image index digest; the panel
+      # installs a pulled image only if its RepoDigests carries this digest and
+      # the release is 72 hours old. Created last, so published_at is the
+      # moment everything above succeeded.
+      - name: Create the GitHub Release with the image digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          digest="$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/image-metadata.json")"
+          echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          printf 'Image: `%s:%s`\n\ncompose-panel-image-digest: %s\n\nCommit: %s\n' \
+            "$IMAGE" "$GITHUB_REF_NAME" "$digest" "$GITHUB_SHA" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md"

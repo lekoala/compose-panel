@@ -10,7 +10,7 @@ import type { ComposeCapabilities, ComposeProvider, ComposeTarget } from "../src
 import type { ContainerInspector } from "../src/containers.ts";
 import { resolveRoot } from "../src/stacks.ts";
 import type { SelfUpdater } from "../src/self-update.ts";
-import { IMAGE_REF, NEW_IMAGE, fakeDocker, fakeSelfUpdater } from "./helpers/self-update.ts";
+import { IMAGE_REF, MOUNTINFO, NEW_DIGEST, NEW_IMAGE, fakeDocker, fakeReleases, fakeSelfUpdater, releaseJson, type FakeReleases } from "./helpers/self-update.ts";
 
 const PASSWORD = "correct horse battery staple";
 const ORIGIN = "http://localhost";
@@ -2662,7 +2662,8 @@ describe("self-update (ADR 0018)", () => {
 
     test("check pulls the panel tag, then update starts the updater and pauses mutations", async () => {
         const docker = fakeDocker();
-        const app = makeApp({}, undefined, controllableProvider().provider, undefined, root, undefined, fakeSelfUpdater(docker));
+        const releases = fakeReleases();
+        const app = makeApp({}, undefined, controllableProvider().provider, undefined, root, undefined, fakeSelfUpdater(docker, MOUNTINFO, releases));
         const session = await login(app);
         expect(await (await authed(app, "/about", session)).text()).not.toContain(`action="/about/update"`);
 
@@ -2670,6 +2671,7 @@ describe("self-update (ADR 0018)", () => {
         expect(checked.status).toBe(303);
         expect(checked.headers.get("location")).toBe("/about?checked=1");
         expect(docker.calls).toContainEqual(["image", "pull", "--quiet", "--", IMAGE_REF]);
+        expect(releases.calls).toEqual(["0.3.0"]);
 
         const page = await (await authed(app, "/about", session)).text();
         expect(page).toContain(`action="/about/update"`);
@@ -2680,6 +2682,9 @@ describe("self-update (ADR 0018)", () => {
         const run = docker.calls.find(args => args[0] === "container" && args[1] === "run");
         expect(run).toBeDefined();
         expect(run).toContain(NEW_IMAGE);
+        expect(run!.slice(run!.indexOf("--expected-digest"), run!.indexOf("--expected-digest") + 2)).toEqual(["--expected-digest", NEW_DIGEST]);
+        // Install re-reads the release instead of trusting the check.
+        expect(releases.calls).toEqual(["0.3.0", "0.3.0"]);
 
         // While the updater runs, the page waits and no stack action may start.
         const waiting = await (await authed(app, "/about", session)).text();
@@ -2709,6 +2714,25 @@ describe("self-update (ADR 0018)", () => {
         expect((await authed(app, "/about/update", session)).status).toBe(405);
         expect(docker.calls.some(args => args[1] === "run" || args[1] === "pull")).toBe(false);
     });
+
+    const notInstallable: [string, () => FakeReleases][] = [
+        ["a release still in its waiting period", () => fakeReleases({ kind: "found", release: releaseJson({ published_at: "2026-10-11T12:00:00Z" }) })],
+        ["a release whose digest does not match", () => fakeReleases({ kind: "found", release: releaseJson({ body: `compose-panel-image-digest: sha256:${"8".repeat(64)}` }) })],
+        ["a prerelease", () => fakeReleases({ kind: "found", release: releaseJson({ prerelease: true }) })],
+        ["GitHub being unreachable", () => fakeReleases({ kind: "unavailable" })],
+    ];
+    for (const [name, releasesFor] of notInstallable) {
+        test(`no install is offered or accepted for ${name}`, async () => {
+            const docker = fakeDocker();
+            const app = makeApp({}, undefined, undefined, undefined, root, undefined, fakeSelfUpdater(docker, MOUNTINFO, releasesFor()));
+            const session = await login(app);
+            expect((await post(app, session, "/about/check", { csrf: await csrfOf(app, session) })).status).toBe(303);
+            expect(await (await authed(app, "/about", session)).text()).not.toContain(`action="/about/update"`);
+            const refused = await post(app, session, "/about/update", { csrf: await csrfOf(app, session), target: NEW_IMAGE });
+            expect(refused.status).toBe(409);
+            expect(docker.calls.some(args => args[1] === "run")).toBe(false);
+        });
+    }
 
     test("update waits for running stack actions", async () => {
         const docker = fakeDocker();

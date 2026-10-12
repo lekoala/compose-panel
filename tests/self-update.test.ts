@@ -9,14 +9,20 @@ import {
     containerIdFromMountinfo,
     parseSelfInspect,
     parseUpdaterInspect,
+    ROLLBACK_TAG,
+    evaluateRelease,
+    githubReleaseSource,
     recoveryCommands,
+    rollbackCommands,
     shellQuote,
     updaterCommand,
     updaterRunArgs,
     type SelfIdentity,
 } from "../src/self-update.ts";
 import { parseUpdaterArgs, runSelfUpdate, type UpdaterDeps } from "../src/self-update-run.ts";
-import { COMPOSE_FILE, IMAGE_REF, MOUNTINFO, NEW_IMAGE, OLD_IMAGE, PANEL_ID, WORKING_DIR, fakeDocker, fakeSelfUpdater, panelInspect } from "./helpers/self-update.ts";
+import { COMPOSE_FILE, IMAGE_REF, MOUNTINFO, NEW_DIGEST, NEW_IMAGE, NOW, OLD_IMAGE, PANEL_ID, WORKING_DIR, fakeDocker, fakeReleases, fakeSelfUpdater, panelInspect, releaseJson } from "./helpers/self-update.ts";
+
+const PLAN = { targetImageId: NEW_IMAGE, expectedDigest: NEW_DIGEST, targetVersion: "0.3.0", previousVersion: "0.2.0" };
 
 function identityOf(stdout = panelInspect()): SelfIdentity {
     const support = parseSelfInspect(stdout, PANEL_ID);
@@ -101,14 +107,21 @@ describe("parseSelfInspect", () => {
 describe("updater container arguments", () => {
     test("runs the current image with no network, the socket and a read-only deployment", () => {
         const identity = identityOf(panelInspect({ config: { User: "1000" }, hostConfig: { GroupAdd: ["998"] } }));
-        const args = updaterRunArgs(identity, NEW_IMAGE);
+        const args = updaterRunArgs(identity, PLAN);
         expect(args.slice(0, 3)).toEqual(["container", "run", "--detach"]);
         const pairs = new Map<string, string[]>();
         for (let index = 3; index < args.indexOf(OLD_IMAGE); index += 2) {
             pairs.set(args[index]!, [...pairs.get(args[index]!) ?? [], args[index + 1]!]);
         }
         expect(pairs.get("--name")).toEqual([UPDATER_NAME]);
-        expect(pairs.get("--label")).toEqual([`${UPDATER_LABEL}=1`]);
+        // The previous and target identities travel as labels, read back after the restart.
+        expect(pairs.get("--label")).toEqual([
+            `${UPDATER_LABEL}=1`,
+            `${UPDATER_LABEL}.previous-image=${OLD_IMAGE}`,
+            `${UPDATER_LABEL}.previous-version=0.2.0`,
+            `${UPDATER_LABEL}.target-image=${NEW_IMAGE}`,
+            `${UPDATER_LABEL}.target-version=0.3.0`,
+        ]);
         expect(pairs.get("--network")).toEqual(["none"]);
         expect(pairs.get("--mount")).toEqual([
             "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock",
@@ -119,20 +132,23 @@ describe("updater container arguments", () => {
         expect(pairs.get("--group-add")).toEqual(["998"]);
         // The image the panel runs now starts the updater, never the target.
         const imageAt = args.indexOf(OLD_IMAGE);
-        expect(args.slice(imageAt + 1)).toEqual(["src/scripts/self-update.ts", ...updaterCommand(identity, NEW_IMAGE)]);
+        expect(args.slice(imageAt + 1)).toEqual(["src/scripts/self-update.ts", ...updaterCommand(identity, PLAN)]);
         expect(args.some(arg => /^(sh|bash)$/.test(arg) || arg === "-c")).toBe(false);
     });
 
     test("refuses a target that is not an image ID", () => {
-        expect(() => updaterRunArgs(identityOf(), "latest")).toThrow(SelfUpdateError);
+        expect(() => updaterRunArgs(identityOf(), { ...PLAN, targetImageId: "latest" })).toThrow(SelfUpdateError);
+        expect(() => updaterRunArgs(identityOf(), { ...PLAN, expectedDigest: "ghcr.io/x:latest" })).toThrow(SelfUpdateError);
     });
 
     test("the updater parses exactly what the panel builds", () => {
         const identity = identityOf(panelInspect({ labels: { "com.docker.compose.project.environment_file": `${WORKING_DIR}/.env` } }));
-        expect(parseUpdaterArgs(updaterCommand(identity, NEW_IMAGE))).toEqual({
+        expect(parseUpdaterArgs(updaterCommand(identity, PLAN))).toEqual({
             panelContainer: PANEL_ID,
             imageRef: IMAGE_REF,
             targetImage: NEW_IMAGE,
+            expectedDigest: NEW_DIGEST,
+            previousImage: OLD_IMAGE,
             project: "compose-panel",
             service: "panel",
             workingDir: WORKING_DIR,
@@ -142,7 +158,7 @@ describe("updater container arguments", () => {
     });
 
     test("the updater refuses unknown, repeated or invalid arguments", () => {
-        const good = updaterCommand(identityOf(), NEW_IMAGE);
+        const good = updaterCommand(identityOf(), PLAN);
         expect(() => parseUpdaterArgs([...good, "--privileged", "1"])).toThrow();
         expect(() => parseUpdaterArgs([...good, "--project", "other"])).toThrow();
         expect(() => parseUpdaterArgs(good.slice(0, -1))).toThrow();
@@ -160,6 +176,7 @@ describe("updater container arguments", () => {
 
 describe("recovery commands", () => {
     const target = {
+        imageRef: IMAGE_REF,
         workingDir: "/srv/my panel/deploy",
         project: "compose-panel",
         service: "panel",
@@ -182,11 +199,11 @@ describe("recovery commands", () => {
                 "com.docker.compose.project.working_dir": target.workingDir,
                 "com.docker.compose.project.config_files": target.composeFiles[0]!,
             },
-        })), NEW_IMAGE));
+        })), PLAN));
         const lines: string[] = [];
         const provider = { serviceImage: async () => IMAGE_REF, recreateService: async () => ({ code: 1, stdout: "", stderr: "", timedOut: false, truncated: false }) } as unknown as ComposeProvider;
         const code = await runSelfUpdate(args, {
-            runner: async () => ({ code: 0, stdout: JSON.stringify(NEW_IMAGE), stderr: "", timedOut: false, truncated: false }),
+            runner: async command => ({ code: 0, stdout: command[1] === "inspect" ? JSON.stringify([{ Id: NEW_IMAGE, RepoDigests: [NEW_DIGEST] }]) : "", stderr: "", timedOut: false, truncated: false }),
             provider,
             log: line => lines.push(line.trim()),
             write: () => {},
@@ -195,7 +212,9 @@ describe("recovery commands", () => {
             now: () => 0,
         });
         expect(code).toBe(UPDATER_EXIT.failed);
-        expect(lines.slice(-3)).toEqual(recoveryCommands(target));
+        const at = (commands: string[]) => lines.indexOf(commands[0]!);
+        expect(lines.slice(at(recoveryCommands(target)), at(recoveryCommands(target)) + 3)).toEqual(recoveryCommands(target));
+        expect(lines.slice(at(rollbackCommands(target)), at(rollbackCommands(target)) + 3)).toEqual(rollbackCommands(target));
     });
 });
 
@@ -267,7 +286,7 @@ describe("SelfUpdater", () => {
     test("launch removes a finished updater first", async () => {
         const docker = fakeDocker();
         docker.updater = { status: "exited", exitCode: 0 };
-        await fakeSelfUpdater(docker).launch(identityOf(), NEW_IMAGE);
+        await fakeSelfUpdater(docker).launch(identityOf(), PLAN);
         const verbs = docker.calls.map(args => args.slice(0, 2).join(" "));
         expect(verbs).toEqual(["container inspect", "container rm", "container run"]);
         expect(docker.calls[1]).toEqual(["container", "rm", "--", UPDATER_NAME]);
@@ -276,16 +295,16 @@ describe("SelfUpdater", () => {
     test("launch refuses a running updater and never touches a foreign container", async () => {
         const docker = fakeDocker();
         docker.updater = { status: "running", exitCode: 0 };
-        await expect(fakeSelfUpdater(docker).launch(identityOf(), NEW_IMAGE)).rejects.toThrow(SelfUpdateError);
+        await expect(fakeSelfUpdater(docker).launch(identityOf(), PLAN)).rejects.toThrow(SelfUpdateError);
         docker.updater = { status: "exited", exitCode: 0, foreign: true };
-        await expect(fakeSelfUpdater(docker).launch(identityOf(), NEW_IMAGE)).rejects.toThrow(SelfUpdateError);
+        await expect(fakeSelfUpdater(docker).launch(identityOf(), PLAN)).rejects.toThrow(SelfUpdateError);
         expect(docker.calls.some(args => args[1] === "rm" || args[1] === "run")).toBe(false);
     });
 
     test("launch reports a Docker refusal", async () => {
         const docker = fakeDocker();
         docker.runResult = { code: 125, stdout: "", stderr: "docker: Error response from daemon: Conflict.\n", timedOut: false, truncated: false };
-        await expect(fakeSelfUpdater(docker).launch(identityOf(), NEW_IMAGE)).rejects.toThrow(/could not start the updater/);
+        await expect(fakeSelfUpdater(docker).launch(identityOf(), PLAN)).rejects.toThrow(/could not start the updater/);
     });
 });
 
@@ -318,7 +337,7 @@ describe("compose calls for the self-update", () => {
 });
 
 describe("runSelfUpdate", () => {
-    const args = parseUpdaterArgs(updaterCommand(identityOf(), NEW_IMAGE));
+    const args = parseUpdaterArgs(updaterCommand(identityOf(), PLAN));
     const NEW_ID = "c".repeat(64);
     const ok = (stdout = ""): CommandResult => ({ code: 0, stdout, stderr: "", timedOut: false, truncated: false });
 
@@ -330,15 +349,19 @@ describe("runSelfUpdate", () => {
         containers?: string[];
         state?: { Status: string; Health?: { Status: string }; StartedAt?: string };
         image?: string;
+        digests?: string[];
+        tagCode?: number;
     }
 
     function setup(scenario: Scenario = {}) {
         const lines: string[] = [];
         let clock = 0;
+        const tagged: string[][] = [];
         let ups = 0;
         const runner: DockerRunner = async command => {
             const key = command.slice(0, 2).join(" ");
-            if (key === "image inspect") return ok(JSON.stringify(scenario.tag ?? NEW_IMAGE));
+            if (key === "image inspect") return ok(JSON.stringify([{ Id: scenario.tag ?? NEW_IMAGE, RepoDigests: scenario.digests ?? [NEW_DIGEST] }]));
+            if (key === "image tag") { tagged.push(command); return { ...ok(), code: scenario.tagCode ?? 0 }; }
             if (key === "container ls") return ok(`${(scenario.containers ?? [NEW_ID]).join("\n")}\n`);
             if (key === "container inspect") {
                 return ok(JSON.stringify([{
@@ -365,14 +388,17 @@ describe("runSelfUpdate", () => {
             stableMs: 10_000,
             readyTimeoutMs: 60_000,
         };
-        return { deps, lines, ups: () => ups };
+        return { deps, lines, tagged, ups: () => ups };
     }
 
     test("succeeds once the new container is healthy on the target image", async () => {
         const run = setup();
         expect(await runSelfUpdate(args, run.deps)).toBe(UPDATER_EXIT.updated);
         expect(run.ups()).toBe(1);
-        expect(run.lines.at(-1)).toContain("0.3.0");
+        // The exact previous image is kept for a rollback before the recreate.
+        expect(run.tagged).toEqual([["image", "tag", "--", OLD_IMAGE, ROLLBACK_TAG]]);
+        expect(run.lines.some(line => line.includes("0.3.0"))).toBe(true);
+        expect(run.lines.some(line => line.includes(`docker image tag ${ROLLBACK_TAG} ${IMAGE_REF}`))).toBe(true);
     });
 
     test("without a health check, the new container must keep running", async () => {
@@ -385,6 +411,8 @@ describe("runSelfUpdate", () => {
         ["an implicit .env would be read", { envOnDisk: true }],
         ["the Compose file now uses another image", { composeImage: "ghcr.io/lekoala/compose-panel:0.1.0" }],
         ["compose config failed", { composeImage: null }],
+        ["the approved image lacks the release digest", { digests: [`ghcr.io/lekoala/compose-panel@sha256:${"8".repeat(64)}`] }],
+        ["the previous image cannot be kept for a rollback", { tagCode: 1 }],
     ];
     for (const [name, scenario] of refusals) {
         test(`refuses without recreating when ${name}`, async () => {
@@ -409,4 +437,104 @@ describe("runSelfUpdate", () => {
             expect(run.lines.some(line => line.includes(`cd ${WORKING_DIR}`))).toBe(true);
         });
     }
+});
+
+describe("release policy (ADR 0018)", () => {
+    const found = (overrides: Record<string, unknown> = {}) => ({ kind: "found" as const, release: releaseJson(overrides) });
+    const verdict = (input: Partial<Parameters<typeof evaluateRelease>[0]> = {}) =>
+        evaluateRelease({ version: "0.3.0", repoDigests: [NEW_DIGEST], lookup: found(), now: NOW, ...input });
+
+    test("a stable release older than 72 hours whose digest matches is installable", () => {
+        expect(verdict()).toEqual({ kind: "installable", version: "0.3.0", expectedDigest: NEW_DIGEST, publishedAt: "2026-10-08T12:00:00Z" });
+    });
+
+    test("a younger release waits, counted from published_at", () => {
+        const published = "2026-10-11T12:00:00Z";
+        const result = verdict({ lookup: found({ published_at: published, created_at: "2026-09-01T00:00:00Z" }) });
+        expect(result.kind).toBe("waiting");
+        expect(result.kind === "waiting" && result.installableAt).toBe(Date.parse(published) + 72 * 3600 * 1000);
+        expect(verdict({ lookup: found({ published_at: published }), now: Date.parse(published) + 72 * 3600 * 1000 }).kind).toBe("installable");
+    });
+
+    const refusals: [string, Partial<Parameters<typeof evaluateRelease>[0]>][] = [
+        ["no version label", { version: null }],
+        ["a non-semver version", { version: "latest" }],
+        ["GitHub unreachable", { lookup: { kind: "unavailable" } }],
+        ["no such release", { lookup: { kind: "missing" } }],
+        ["a prerelease", { lookup: found({ prerelease: true }) }],
+        ["a draft", { lookup: found({ draft: true }) }],
+        ["another tag", { lookup: found({ tag_name: "0.3.1" }) }],
+        ["no publication date", { lookup: found({ published_at: null }) }],
+        ["no digest line", { lookup: found({ body: "Release notes only." }) }],
+        ["a digest of another image", { repoDigests: [`ghcr.io/lekoala/compose-panel@sha256:${"8".repeat(64)}`] }],
+        ["the digest under another repository", { repoDigests: [`ghcr.io/evil/compose-panel@sha256:${"2".repeat(64)}`] }],
+    ];
+    for (const [name, input] of refusals) {
+        test(`refuses ${name}`, () => {
+            expect(verdict(input).kind).toBe("refused");
+        });
+    }
+
+    test("the GitHub source asks the fixed repository, without following redirects", async () => {
+        const requests: { url: string; init?: RequestInit }[] = [];
+        const reply = (status: number, body = "{}") => async (url: string | URL | Request, init?: RequestInit) => {
+            requests.push({ url: String(url), init });
+            return new Response(body, { status });
+        };
+        expect(await githubReleaseSource(reply(200, JSON.stringify(releaseJson())) as typeof fetch)("0.3.0")).toMatchObject({ kind: "found" });
+        expect(requests[0]!.url).toBe("https://api.github.com/repos/lekoala/compose-panel/releases/tags/0.3.0");
+        expect(requests[0]!.init?.redirect).toBe("error");
+        expect(await githubReleaseSource(reply(404) as typeof fetch)("0.3.0")).toEqual({ kind: "missing" });
+        expect(await githubReleaseSource(reply(403) as typeof fetch)("0.3.0")).toEqual({ kind: "unavailable" });
+        expect(await githubReleaseSource(reply(200, "not json") as typeof fetch)("0.3.0")).toEqual({ kind: "unavailable" });
+        const failing = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+        expect(await githubReleaseSource(failing)("0.3.0")).toEqual({ kind: "unavailable" });
+        // A version that is not plain semver never reaches the network.
+        const before = requests.length;
+        expect(await githubReleaseSource(reply(200) as typeof fetch)("../../evil")).toEqual({ kind: "missing" });
+        expect(requests.length).toBe(before);
+    });
+
+    test("status never asks GitHub; the verdict comes from the last check of that image", async () => {
+        const docker = fakeDocker();
+        docker.pulled = true;
+        const releases = fakeReleases();
+        const updater = fakeSelfUpdater(docker, MOUNTINFO, releases);
+        const before = await updater.status();
+        expect(before.available?.imageId).toBe(NEW_IMAGE);
+        expect(before.verdict).toBeNull();
+        expect(releases.calls).toEqual([]);
+
+        expect((await updater.verifyRelease(before.available!)).kind).toBe("installable");
+        expect(releases.calls).toEqual(["0.3.0"]);
+        expect((await updater.status()).verdict?.kind).toBe("installable");
+        expect(releases.calls).toEqual(["0.3.0"]);
+    });
+
+    test("only the official image is offered", async () => {
+        const docker = fakeDocker();
+        docker.inspectOutput = panelInspect({ config: { Image: "ghcr.io/someone/compose-panel:latest" } });
+        expect((await fakeSelfUpdater(docker).identify()).kind).toBe("unsupported");
+    });
+
+    test("the updater labels are read back, and invalid values dropped", () => {
+        const lookup = parseUpdaterInspect(JSON.stringify([{
+            Config: { Labels: {
+                [UPDATER_LABEL]: "1",
+                [`${UPDATER_LABEL}.previous-image`]: OLD_IMAGE,
+                [`${UPDATER_LABEL}.previous-version`]: "0.2.0",
+                [`${UPDATER_LABEL}.target-image`]: "not-an-id",
+                [`${UPDATER_LABEL}.target-version`]: "<b>",
+            } },
+            State: { Status: "exited", ExitCode: 0 },
+        }]));
+        expect(lookup.kind === "run" && lookup.run).toMatchObject({ previousImage: OLD_IMAGE, previousVersion: "0.2.0", targetImage: null, targetVersion: null });
+    });
+
+    test("rollback commands re-tag the kept image and never download or build", () => {
+        const commands = rollbackCommands(identityOf());
+        expect(commands[0]).toBe(`docker image tag ${ROLLBACK_TAG} ${IMAGE_REF}`);
+        expect(commands.at(-1)).toContain("up -d --no-deps --no-build --pull never panel");
+        expect(commands.some(line => line.includes(" pull "))).toBe(false);
+    });
 });

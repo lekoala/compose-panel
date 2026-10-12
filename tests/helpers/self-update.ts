@@ -1,6 +1,6 @@
 import type { CommandResult, DockerRunner } from "../../src/docker.ts";
 import { createComposeProvider } from "../../src/compose-provider.ts";
-import { SelfUpdater, UPDATER_LABEL, UPDATER_NAME } from "../../src/self-update.ts";
+import { SelfUpdater, UPDATER_LABEL, UPDATER_NAME, type ReleaseLookup, type ReleaseSource } from "../../src/self-update.ts";
 
 /**
  * A scripted Docker for the self-update (ADR 0018): the panel container, its
@@ -53,7 +53,7 @@ export interface FakeDocker {
     /** The tag points to the new image (as after a successful pull). */
     pulled: boolean;
     /** Updater container state, or null when none exists. */
-    updater: { status: string; exitCode: number; foreign?: boolean } | null;
+    updater: { status: string; exitCode: number; foreign?: boolean; labels?: Record<string, string> } | null;
     pullResult: CommandResult;
     runResult: CommandResult;
     inspectOutput: string;
@@ -84,7 +84,7 @@ export function fakeDocker(): FakeDocker {
             if (key === "container inspect" && args[3] === PANEL_ID) return ok(docker.inspectOutput);
             if (key === "container inspect" && args[3] === UPDATER_NAME) {
                 if (!docker.updater) return { code: 1, stdout: "[]", stderr: `Error: No such container: ${UPDATER_NAME}`, timedOut: false, truncated: false };
-                const labels = docker.updater.foreign ? {} : { [UPDATER_LABEL]: "1" };
+                const labels = docker.updater.foreign ? {} : { [UPDATER_LABEL]: "1", ...docker.updater.labels };
                 return ok(JSON.stringify([{
                     Config: { Labels: labels },
                     State: { Status: docker.updater.status, ExitCode: docker.updater.exitCode, StartedAt: "2026-10-12T08:00:00Z", FinishedAt: "2026-10-12T08:01:00Z" },
@@ -101,6 +101,7 @@ export function fakeDocker(): FakeDocker {
                 if (docker.pullResult.code === 0) docker.pulled = true;
                 return docker.pullResult;
             }
+            if (key === "image tag") return ok();
             if (key === "container rm") { docker.updater = null; return ok(); }
             if (key === "container run") {
                 if (docker.runResult.code === 0) docker.updater = { status: "running", exitCode: 0 };
@@ -114,11 +115,50 @@ export function fakeDocker(): FakeDocker {
     return docker;
 }
 
-export function fakeSelfUpdater(docker: FakeDocker, mountinfo: string | null = MOUNTINFO): SelfUpdater {
+/** Fixed clock for the 72-hour waiting period. */
+export const NOW = Date.parse("2026-10-12T12:00:00Z");
+/** What the release of NEW_IMAGE publishes, as found in its RepoDigests. */
+export const NEW_DIGEST = `ghcr.io/lekoala/compose-panel@sha256:${"2".repeat(64)}`;
+
+/** A GitHub release of 0.3.0 published four days before NOW, recording NEW_DIGEST. */
+export function releaseJson(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+        tag_name: "0.3.0",
+        draft: false,
+        prerelease: false,
+        created_at: "2026-10-01T00:00:00Z",
+        published_at: "2026-10-08T12:00:00Z",
+        body: `Image: \`ghcr.io/lekoala/compose-panel:0.3.0\`\n\ncompose-panel-image-digest: sha256:${"2".repeat(64)}\n\nCommit: abc\n`,
+        ...overrides,
+    };
+}
+
+export interface FakeReleases {
+    source: ReleaseSource;
+    /** Versions asked, in order. */
+    calls: string[];
+    lookup: ReleaseLookup;
+}
+
+export function fakeReleases(lookup: ReleaseLookup = { kind: "found", release: releaseJson() }): FakeReleases {
+    const releases: FakeReleases = {
+        calls: [],
+        lookup,
+        source: async version => {
+            releases.calls.push(version);
+            return releases.lookup;
+        },
+    };
+    return releases;
+}
+
+export function fakeSelfUpdater(docker: FakeDocker, mountinfo: string | null = MOUNTINFO, releases: FakeReleases = fakeReleases()): SelfUpdater {
     return new SelfUpdater({
         runner: docker.runner,
         provider: createComposeProvider({ runner: docker.runner }),
         readMountinfo: async () => mountinfo,
+        releases: releases.source,
+        now: () => NOW,
         pullTimeoutMs: 1000,
         maxBytes: 1024 * 1024,
     });
