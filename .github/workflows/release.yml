@@ -79,13 +79,23 @@ jobs:
       # installs a pulled image only if its RepoDigests carries this digest and
       # the release is 72 hours old. Created last, so published_at is the
       # moment everything above succeeded.
-      - name: Create the GitHub Release with the image digest
+      # A release created by hand (GitHub UI) or a re-run already has one: keep
+      # its notes and set the digest line to the image pushed above.
+      - name: Create or update the GitHub Release with the image digest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           digest="$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/image-metadata.json")"
           echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
-          printf 'Image: `%s:%s`\n\ncompose-panel-image-digest: %s\n\nCommit: %s\n' \
-            "$IMAGE" "$GITHUB_REF_NAME" "$digest" "$GITHUB_SHA" > "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-            --notes-file "$RUNNER_TEMP/notes.md"
+          line="compose-panel-image-digest: $digest"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release view "$GITHUB_REF_NAME" --json body --jq .body \
+              | grep -v '^compose-panel-image-digest:' > "$RUNNER_TEMP/notes.md" || true
+            printf '\n%s\n' "$line" >> "$RUNNER_TEMP/notes.md"
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            printf 'Image: `%s:%s`\n\n%s\n\nCommit: %s\n' \
+              "$IMAGE" "$GITHUB_REF_NAME" "$line" "$GITHUB_SHA" > "$RUNNER_TEMP/notes.md"
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi

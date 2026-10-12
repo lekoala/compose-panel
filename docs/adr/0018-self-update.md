@@ -41,7 +41,11 @@ brings it into scope, in a deliberately narrow form.
   creates the GitHub Release for the tag, with the line
   `compose-panel-image-digest: sha256:<64 hex>` in its body. Creating the
   release is the last step, so `published_at` is the moment everything else
-  succeeded.
+  succeeded. If the release already exists (created by hand from the GitHub
+  interface, or a re-run), the workflow keeps its notes and sets the digest
+  line to the image it just pushed; the waiting period then counts from that
+  earlier publication. A release stays not installable while it has no
+  digest line.
 - **Check & download update = pull the panel's own tag, then verify the
   release.** It runs `docker image pull -- <reference>` with the reference the
   panel runs from and touches no container. When the tag now points to another
