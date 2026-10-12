@@ -3,7 +3,7 @@ import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
 import type { ImageVersion, ServiceUpdate } from "./updates.ts";
 import type { AccessReport, AccessStatus } from "./access.ts";
-import { UPDATER_NAME, type SelfIdentity, type SelfUpdateStatus, type UpdaterOutcome } from "./self-update.ts";
+import { UPDATER_NAME, recoveryCommands, type SelfIdentity, type SelfUpdateStatus, type UpdaterOutcome } from "./self-update.ts";
 import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerDetails, type ContainerFilter } from "./container-state.ts";
 import type { AttentionItem, AttentionReason, ClassifiedStat, DiskUsage, DiskUsageRow, EngineInfo, Insights, StackUsage } from "./insights.ts";
 import packageJson from "../package.json";
@@ -986,18 +986,9 @@ const UPDATER_OUTCOMES: Record<UpdaterOutcome, { label: string; cls: string }> =
     failed: { label: "Failed", cls: "state-failed" },
 };
 
-/** Host commands that redo the update by hand. Values come from validated Docker labels. */
-function recoveryCommands(identity: SelfIdentity): string {
-    const quote = (value: string) => (/\s/.test(value) ? `'${value}'` : value);
-    const compose = [
-        "docker compose", "-p", identity.project,
-        ...identity.envFiles.flatMap(file => ["--env-file", quote(file)]),
-        ...identity.composeFiles.flatMap(file => ["-f", quote(file)]),
-    ].join(" ");
-    return `cd ${quote(identity.workingDir)}
-${compose} pull ${identity.service}
-${compose} up -d --no-deps ${identity.service}
-docker logs ${UPDATER_NAME}`;
+/** The shared recovery commands, plus where to read the updater output. */
+function recoveryText(identity: SelfIdentity): string {
+    return [...recoveryCommands(identity), `docker logs ${UPDATER_NAME}`].join("\n");
 }
 
 /**
@@ -1071,7 +1062,7 @@ export function aboutPage(options: AboutPageOptions): string {
             ? `<p class="muted">Docker could not read the updater output. Run <code>docker logs ${UPDATER_NAME}</code> on the host.</p>`
             : `<details${open}><summary>Updater output</summary><pre class="output">${escapeHtml(options.output.replace(/\s+$/, "") || "(no output)")}</pre></details>`;
         const recovery = run.outcome === "failed" && identity
-            ? `${note("error", "The panel container may not be in the expected state. Run these commands on the host to finish or redo the update.", { title: "Update failed." })}<pre class="output">${escapeHtml(recoveryCommands(identity))}</pre>`
+            ? `${note("error", "The panel container may not be in the expected state. Run these commands on the host to finish or redo the update.", { title: "Update failed." })}<pre class="output">${escapeHtml(recoveryText(identity))}</pre>`
             : "";
         const ended = run.finishedAt ? `<span class="muted">ended ${timeTag(run.finishedAt)}</span>` : "";
         lastCard = `<section class="card"><h2>Last update</h2>

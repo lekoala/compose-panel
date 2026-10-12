@@ -177,6 +177,29 @@ export function parseSelfInspect(stdout: string, expectedId: string): SelfSuppor
     };
 }
 
+/** POSIX single-quoting for copy-paste: plain words stay bare, anything else is quoted. */
+export function shellQuote(value: string): string {
+    return /^[A-Za-z0-9._/@:+=-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Host commands that redo the update by hand, shown both in the updater output
+ * and on the About page so the two never disagree. A manual `pull` + `up` is
+ * the documented recovery (docs/deployment.md, "Upgrade and rollback").
+ */
+export function recoveryCommands(target: { workingDir: string; project: string; service: string; composeFiles: string[]; envFiles: string[] }): string[] {
+    const compose = [
+        "docker", "compose", "-p", target.project,
+        ...target.envFiles.flatMap(file => ["--env-file", file]),
+        ...target.composeFiles.flatMap(file => ["-f", file]),
+    ].map(shellQuote).join(" ");
+    return [
+        `cd ${shellQuote(target.workingDir)}`,
+        `${compose} pull ${shellQuote(target.service)}`,
+        `${compose} up -d --no-deps ${shellQuote(target.service)}`,
+    ];
+}
+
 /** Arguments of the updater script, in the order `parseUpdaterArgs` reads them. */
 export function updaterCommand(identity: SelfIdentity, targetImageId: string): string[] {
     const args = [
@@ -321,10 +344,15 @@ export class SelfUpdater {
             const support = parseSelfInspect(result.stdout, id);
             if (support.kind !== "ready") return support;
             const images = await this.options.provider.inspectImages([support.identity.imageId]);
-            const current = parseImageInspect(images.stdout).find(detail => detail.id === support.identity.imageId);
+            const current = images.timedOut || images.truncated
+                ? undefined
+                : parseImageInspect(images.stdout).find(detail => detail.id === support.identity.imageId);
+            // Fail closed: without the image description the panel cannot tell
+            // a pulled image from a local build.
+            if (!current) return unsupported("Docker could not describe the image the panel runs.");
             // An image with no registry digest was built locally: pulling the tag
             // cannot bring a newer build.
-            if (current && current.repoDigests.length === 0) {
+            if (current.repoDigests.length === 0) {
                 return unsupported("The panel runs a locally built image. Rebuild it from the host to update.");
             }
             return support;

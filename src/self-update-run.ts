@@ -10,6 +10,7 @@ import {
     isServiceName,
     isTagReference,
     isUpdaterContainerId,
+    recoveryCommands,
 } from "./self-update.ts";
 
 /**
@@ -135,7 +136,8 @@ export async function runSelfUpdate(args: UpdaterArgs, deps: UpdaterDeps): Promi
     };
     const fail = (reason: string): number => {
         log(`Failed: ${reason}`);
-        log(`Recover from the host: cd ${args.workingDir} && docker compose ${recoveryArgs(args)} up -d --no-deps ${args.service}`);
+        log("Recover from the host:");
+        for (const line of recoveryCommands(args)) log(`  ${line}`);
         return UPDATER_EXIT.failed;
     };
     const files: ComposeProjectFiles = { project: args.project, cwd: args.workingDir, composeFiles: args.composeFiles, envFiles: args.envFiles };
@@ -201,12 +203,4 @@ export async function runSelfUpdate(args: UpdaterArgs, deps: UpdaterDeps): Promi
         }
     }
     return fail("The new panel container did not become ready in time.");
-}
-
-/** The same Compose identity as text for the recovery hint (values are validated). */
-function recoveryArgs(args: UpdaterArgs): string {
-    const parts = ["-p", args.project];
-    for (const file of args.envFiles) parts.push("--env-file", file);
-    for (const file of args.composeFiles) parts.push("-f", file);
-    return parts.map(part => (/\s/.test(part) ? `'${part}'` : part)).join(" ");
 }

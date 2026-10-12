@@ -58,6 +58,7 @@ export interface FakeDocker {
     runResult: CommandResult;
     inspectOutput: string;
     localBuild: boolean;
+    imageInspectFails: boolean;
     /** Resolves pending `container wait` calls. */
     finishWait: () => void;
 }
@@ -75,6 +76,7 @@ export function fakeDocker(): FakeDocker {
         runResult: ok("f".repeat(64)),
         inspectOutput: panelInspect(),
         localBuild: false,
+        imageInspectFails: false,
         finishWait: () => release(),
         runner: async args => {
             docker.calls.push(args);
@@ -89,6 +91,7 @@ export function fakeDocker(): FakeDocker {
                 }]));
             }
             if (key === "image inspect") {
+                if (docker.imageInspectFails) return { code: 1, stdout: "[]", stderr: "Error: daemon unavailable", timedOut: false, truncated: false };
                 const digests = docker.localBuild ? [] : undefined;
                 const old = image(OLD_IMAGE, docker.pulled ? [] : [IMAGE_REF], "0.2.0", digests);
                 const next = image(NEW_IMAGE, [IMAGE_REF], "0.3.0", digests);

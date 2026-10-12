@@ -332,7 +332,9 @@ pinned by digest), with the socket bind-mounted at `/var/run/docker.sock`, and
 all its Compose and env files inside the deployment directory. If one is
 missing, **About** says which and the update is done from the host as below.
 The updater applies the deployment files as they are on disk, like a manual
-`compose up`. It never rolls back by itself: if it fails, **About** shows the
+`compose up`. It does not depend on the panel process: if the panel is stopped
+or restarted during an update, the updater keeps going, and the next panel
+start shows its outcome. It never rolls back by itself: if it fails, **About** shows the
 commands to run on the host.
 
 ### Upgrade and rollback

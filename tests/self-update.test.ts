@@ -9,6 +9,8 @@ import {
     containerIdFromMountinfo,
     parseSelfInspect,
     parseUpdaterInspect,
+    recoveryCommands,
+    shellQuote,
     updaterCommand,
     updaterRunArgs,
     type SelfIdentity,
@@ -156,6 +158,47 @@ describe("updater container arguments", () => {
     });
 });
 
+describe("recovery commands", () => {
+    const target = {
+        workingDir: "/srv/my panel/deploy",
+        project: "compose-panel",
+        service: "panel",
+        composeFiles: ["/srv/my panel/deploy/compose.yaml"],
+        envFiles: [],
+    };
+
+    test("quote paths with spaces so they can be pasted", () => {
+        expect(recoveryCommands(target)).toEqual([
+            "cd '/srv/my panel/deploy'",
+            "docker compose -p compose-panel -f '/srv/my panel/deploy/compose.yaml' pull panel",
+            "docker compose -p compose-panel -f '/srv/my panel/deploy/compose.yaml' up -d --no-deps panel",
+        ]);
+        expect(shellQuote("it's")).toBe(`'it'\\''s'`);
+    });
+
+    test("the updater logs the same commands as the About page", async () => {
+        const args = parseUpdaterArgs(updaterCommand(identityOf(panelInspect({
+            labels: {
+                "com.docker.compose.project.working_dir": target.workingDir,
+                "com.docker.compose.project.config_files": target.composeFiles[0]!,
+            },
+        })), NEW_IMAGE));
+        const lines: string[] = [];
+        const provider = { serviceImage: async () => IMAGE_REF, recreateService: async () => ({ code: 1, stdout: "", stderr: "", timedOut: false, truncated: false }) } as unknown as ComposeProvider;
+        const code = await runSelfUpdate(args, {
+            runner: async () => ({ code: 0, stdout: JSON.stringify(NEW_IMAGE), stderr: "", timedOut: false, truncated: false }),
+            provider,
+            log: line => lines.push(line.trim()),
+            write: () => {},
+            fileExists: async () => false,
+            sleep: async () => {},
+            now: () => 0,
+        });
+        expect(code).toBe(UPDATER_EXIT.failed);
+        expect(lines.slice(-3)).toEqual(recoveryCommands(target));
+    });
+});
+
 describe("parseUpdaterInspect", () => {
     const inspect = (state: Record<string, unknown>, labels: Record<string, string> = { [UPDATER_LABEL]: "1" }) =>
         JSON.stringify([{ Config: { Labels: labels }, State: { StartedAt: "2026-10-12T08:00:00Z", FinishedAt: "2026-10-12T08:01:00Z", ...state } }]);
@@ -190,6 +233,12 @@ describe("SelfUpdater", () => {
         const support = await fakeSelfUpdater(docker, null).identify();
         expect(support.kind).toBe("unsupported");
         expect(docker.calls).toEqual([]);
+    });
+
+    test("fails closed when Docker cannot describe the panel image", async () => {
+        const docker = fakeDocker();
+        docker.imageInspectFails = true;
+        expect((await fakeSelfUpdater(docker).identify()).kind).toBe("unsupported");
     });
 
     test("is unavailable for a locally built image", async () => {

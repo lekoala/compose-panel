@@ -69,6 +69,20 @@ brings it into scope, in a deliberately narrow form.
   backup purges until the updater ends (`docker container wait`) or the panel
   is replaced. The form carries the target image ID shown to the
   administrator, and the panel re-checks it before starting.
+- **Bounded wait.** The pause relies on `docker container wait`, itself bounded
+  at 20 minutes. The updater ends well before that (5 minutes at most for
+  `compose up`, then 3 minutes at most for the new container to become ready),
+  so the bound is only reached if Docker stops answering. If it is reached,
+  actions are allowed again even though the updater may still be running. This
+  is accepted: it needs a stuck daemon, and a second update stays refused while
+  the updater container runs.
+- **Shutdown during an update.** `SIGTERM` (normally `compose up` replacing the
+  panel) drains actions, saves and log follows as usual, but does not wait for
+  the updater: it is a separate container and keeps running. The pause is
+  in-memory and ends with the process. The new panel shows "running" while the
+  updater container runs, refuses a second update meanwhile, then shows the
+  outcome read from Docker. The same holds if the panel is stopped or crashes
+  during an update.
 - **Security.** Both endpoints are mutations: session, allowed Origin and CSRF
   token, refused during shutdown, recorded in the activity log
   (`self-update-check`, `self-update`). The updater gets the same Docker socket

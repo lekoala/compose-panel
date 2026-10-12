@@ -1003,6 +1003,11 @@ export function createApp(options: AppOptions): App {
                 await recordAudit({ event: "self-update-check", result: "refused", actor, detail: "self-update unavailable" });
                 return renderAbout(csrf, { status: 409 });
             }
+            // Identification awaited Docker: re-check right before the pull.
+            if (!sessions.isActive(session.id)) {
+                await recordAudit({ event: "self-update-check", result: "refused", actor, detail: "session ended" });
+                return sessionEnded();
+            }
             const pulled = await selfUpdater.pull(support.identity);
             if (pulled.code !== 0 || pulled.timedOut) {
                 const reason = pulled.timedOut ? "the download did not finish in time" : (pulled.stderr.split("\n").map(line => line.trim()).find(Boolean) ?? "").slice(0, 300);
@@ -1045,7 +1050,12 @@ export function createApp(options: AppOptions): App {
             if (status.support.kind !== "ready") return await refuse(status.support.reason);
             if (!status.available) return await refuse("No newer image is ready. Check for updates first.");
             if (status.available.imageId !== target) return await refuse("The image changed since this page was loaded. Review the update again.");
-            if (!sessions.isActive(session.id)) return sessionEnded();
+            // Status awaited Docker: re-check right before the mutation. Once the
+            // updater runs it is not cancelled, like an accepted stack action.
+            if (!sessions.isActive(session.id)) {
+                await recordAudit({ event: "self-update", result: "refused", actor, detail: "session ended" });
+                return sessionEnded();
+            }
             await selfUpdater.launch(status.support.identity, target);
             started = true;
             await recordAudit({ event: "self-update", result: "started", actor, detail: `${status.support.identity.imageRef} ${target.slice(0, 19)}` });
