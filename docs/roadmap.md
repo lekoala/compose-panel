@@ -14,6 +14,7 @@ After V1 the direction is to understand the host the stacks run on, not only the
 - **Server health page (later).** Fold the access diagnostics into a broader host view: external containers, systemd services and exposed ports, still read-only and without becoming a general Linux administration panel.
 
 ## Usability
+- **Controlled stack creation.** Done ([ADR 0024](adr/0024-controlled-stack-creation.md)): name, raw Compose and optional `.env`, validated in the final directory and published without overwrite or deployment. No templates or catalogue.
 - **Move between stacks without returning to the list.** Done in 0.2.0 ([ADR 0016](adr/0016-navigation-sidebar.md)): a persistent sidebar carries the section links, the stack list with the current stack highlighted, a local search filter, and a native mobile disclosure. Names only: no status, counter, badge or Docker call in the navigation.
 - **Per-stack network options** from a fixed allow-list, instead of editing raw YAML for common cases (see Dockge's edit screen).
 

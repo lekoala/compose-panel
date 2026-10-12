@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Controlled stack creation (ADR 0024): New stack accepts a name, raw Compose
+  and optional `.env`, validates the exact directory and project context, and
+  creates private files without starting containers. Existing paths and
+  deployed project collisions are refused. Auth, Origin, CSRF, stack locking,
+  safe rollback, audit and shutdown drain apply. Available in simulated preview.
+
 - Stack deployment metadata (ADR 0023): OCI version, revision and source from
   each container's actual image, full repository digests and a separate image
   ID. Resolved `stack.*` labels show declared environment, branch, version,

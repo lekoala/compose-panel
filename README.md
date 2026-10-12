@@ -12,6 +12,7 @@ A small, self-hosted web panel for the Docker Compose stacks of **one Linux serv
 ## What it does
 
 - **Lists your stacks**: each folder in the stacks directory that contains exactly one Compose file, with its real state as reported by Docker (`unknown` when Docker cannot tell, never a guess).
+- **Creates a stack** from a name, raw Compose text and optional `.env`: validates in the new folder, refuses existing paths and deployed project collisions, and creates the files without pulling or starting anything ([ADR 0024](docs/adr/0024-controlled-stack-creation.md)).
 - **Edits `compose.yaml` and `.env` as raw text**: comments and formatting are kept. Every change is checked with `docker compose config` before anything is written, each save keeps a backup, and a file changed elsewhere in the meantime is detected instead of overwritten.
 - **Runs a fixed set of actions**: Up, Pull + up, Restart, Start, Stop and Down, one at a time per stack — Restart and Up can also target a single service from the Services table. An action keeps running if you close the page, and its output streams live.
 - **Follows logs** live (`docker compose logs --follow`), for the whole stack or one service, with a choice of line counts.
@@ -73,7 +74,7 @@ bun install
 bun run preview          # http://127.0.0.1:5081, sign in as admin / preview
 ```
 
-The preview runs the real panel on demo stacks (in `.preview/`, git-ignored) with a **simulated** Docker: listing, editing and validation, actions with live output, logs and the activity log all work, and no Docker command ever runs. `bun run preview --reset` recreates the demo stacks.
+The preview runs the real panel on demo stacks (in `.preview/`, git-ignored) with a **simulated** Docker: listing, stack creation, editing and validation, actions with live output, logs and the activity log all work, and no Docker command ever runs. **New stack** writes only demo files; validation is simulated. `bun run preview --reset` recreates the demo stacks.
 
 To run it against your own stacks and the real Docker CLI, you need Bun 1.4.3+, a stacks directory, and optionally the Docker CLI with Compose v2. Without Docker, stacks are simply listed as `unknown`.
 

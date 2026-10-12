@@ -5,12 +5,33 @@ import { join } from "node:path";
 import { createComposeProvider } from "../src/compose-provider.ts";
 import { createDockerRunner } from "../src/docker.ts";
 import { resolveProjectContext } from "../src/status.ts";
+import { createStack } from "../src/create-stack.ts";
 
 // Real Compose CLI, config only. Discovery is a fixture; no command is allowed
 // to connect to a daemon or create/change Docker resources. Opt in explicitly.
 // The test makes six sequential Compose calls, each bounded by the runner's own
 // 5 s timeout, so Bun's default 5 s per-test limit is too short by design.
 const TEST_TIMEOUT_MS = 40_000;
+test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPOSE_CONFIG !== "1")("real Compose validates stack creation in its final directory without deployment", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cp-create-config-"));
+    const runner = createDockerRunner();
+    const provider = createComposeProvider({ runner: (args, options) => {
+        if (args.includes("ls")) return Promise.resolve({ code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false });
+        expect(args).toContain("config");
+        return runner(args, options);
+    } });
+    try {
+        const composeSource = '# raw draft\nname: ${STACK_ID}\nservices:\n  app:\n    image: busybox:latest\n    env_file: .env\n';
+        const envSource = 'STACK_ID=cp-created-project\n';
+        await createStack(root, { name: "created", composeSource, envSource }, provider, 10000);
+        const cwd = join(root, "created");
+        expect(await provider.projectName({ cwd, composeFile: join(cwd, "compose.yaml"), envFile: join(cwd, ".env") })).toBe("cp-created-project");
+        // Without a supplied .env, relative env_file: .env must fail rather
+        // than pass against a temporary .env that disappears after creation.
+        await expect(createStack(root, { name: "no-env", composeSource: 'services:\n  app:\n    image: busybox:latest\n    env_file: .env\n', envSource: "" }, provider, 10000)).rejects.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
+}, TEST_TIMEOUT_MS);
+
 test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPOSE_CONFIG !== "1")("real Compose resolves environment/name precedence and rejects conflicting project ownership", async () => {
     const root = await mkdtemp(join(tmpdir(), "compose-panel-config-"));
     const cwd = join(root, "demo");

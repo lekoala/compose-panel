@@ -404,7 +404,11 @@ const runner: DockerRunner = async (args, options) => {
         if (services.length === 0) {
             return fail(`validating ${basename(dirname(composeFile))}: services must be a mapping with at least one service (simulated check)`);
         }
-        return args.includes("--quiet") ? ok() : ok(JSON.stringify({ name: basename(dirname(composeFile)) || project, services: Object.fromEntries(services.map(service => [service.name, { image: service.image, labels: service.labels }])) }));
+        // Preview supports a literal top-level name; real Compose handles the
+        // full interpolation and YAML syntax in production.
+        const source = await readFile(composeFile, "utf8");
+        const explicitName = /^name:\s*["']?([a-z0-9][a-z0-9_-]*)["']?\s*$/m.exec(source)?.[1];
+        return args.includes("--quiet") ? ok() : ok(JSON.stringify({ name: explicitName ?? (basename(dirname(composeFile)) || project), services: Object.fromEntries(services.map(service => [service.name, { image: service.image, labels: service.labels }])) }));
     }
     const wanted = (await servicesOf(composeFile)).map(service => ({ name: service.name, image: service.image ?? "busybox" }));
     if (args.includes("pull")) {
@@ -502,6 +506,8 @@ console.info(`
   Demo stacks: ${stacksRoot}  (bun run preview --reset to recreate)
   Open release: deployed version + commit, declared staging/build/application links.
   Try Pull, then Up: the deployed version changes only after Up (all simulated).
+  Try New stack: name scratch; paste services: / app: / image: busybox (YAML).
+  Creation writes only demo files; deploying remains a separate Up action.
   Ctrl+C to stop.
 `);
 

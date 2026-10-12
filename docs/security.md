@@ -1,6 +1,16 @@
 # Security — mandatory boundaries
 
 ## Main risk
+Stack creation (`POST /new-stack`, ADR 0024) requires an active session, valid
+Origin and CSRF, bounded inputs and a validated stack name before path use.
+Existing paths are refused by exclusive mkdir. Validation uses the exact new
+directory and explicit `.env`; project collisions and failed discovery refuse
+publication. Files are 0600 in a 0700 directory. Linux writes and cleanup use
+pinned directories and inode checks; cleanup never recursively deletes a
+user-named directory. Failed cleanup reports a partial outcome. Provider errors
+are replaced with fixed messages and the audit records only name and result.
+Authorization, shutdown and self-update state are rechecked before publication.
+
 Deployment metadata is authenticated and `no-store` like the stack detail.
 Resolved Compose config is projected inside the provider onto an explicit
 label allow-list; other labels, environment and stderr are never returned.

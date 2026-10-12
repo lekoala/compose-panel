@@ -8,7 +8,7 @@ export type AuditRotation = "day" | "month";
 
 /** Fields an audit line may carry. Never contains passwords, hashes or .env values. */
 export interface AuditEvent {
-    /** Stable event name: "login", "logout", "save", "backup-purge", "operation", "self-update-check", "self-update" or "audit" (the log itself). */
+    /** Stable event name: "login", "logout", "create", "save", "backup-purge", "operation", "self-update-check", "self-update" or "audit" (the log itself). */
     event: string;
     /** Outcome, e.g. "success", "failure", "refused", "unknown". */
     result: string;

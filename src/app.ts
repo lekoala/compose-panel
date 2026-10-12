@@ -1,8 +1,10 @@
 import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, type NavSection, type NavigationOptions, type NoteKind } from "./html.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { deploymentSection } from "./html.ts";
+import { createStackPage } from "./html.ts";
+import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
 import { dirname, join } from "node:path";
-import { listStacks, locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
+import { listStacks, locateComposeFile, readStackCompose, StackError, validateStackName } from "./stacks.ts";
 import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
 import { loadContainerDetail, loadContainers } from "./container-status.ts";
 import { parseContainerFilter, type ContainerFilter } from "./container-state.ts";
@@ -552,7 +554,7 @@ export function createApp(options: AppOptions): App {
         let content: string;
         if (stacks.length === 0) {
             content = `<section class="card empty"><h2>No stacks found</h2>`
-                + `<p>Create a folder in <code>${escapeHtml(stacksRoot)}</code> with a <code>compose.yaml</code> (or <code>compose.yml</code>, <code>docker-compose.yaml</code>, <code>docker-compose.yml</code>) and reload this page.</p>`
+                + `<p><a href="/new-stack">Create a stack</a>, or add a folder in <code>${escapeHtml(stacksRoot)}</code> with a <code>compose.yaml</code> and reload this page.</p>`
                 + `<p class="muted">Folder names may use lowercase letters, digits, <code>-</code> and <code>_</code>.</p>`
                 + `<p class="muted">The panel never takes ownership of your stacks: the Compose files stay where they are, and every stack can still be managed with the <code>docker compose</code> CLI.</p></section>`;
         } else {
@@ -579,7 +581,7 @@ export function createApp(options: AppOptions): App {
         const { containers, note: containerNote } = await loadContainers(stacksRoot, provider, inspector, config.hostStacksPathAliases, discovery);
         return htmlResponse(documentHtml(
             "Stacks",
-            `<h1>Stacks</h1>${intro}${warning}${content}${otherContainersSection(containers, "running", containerNote)}`,
+            `<div class="page-head"><h1>Stacks</h1><a href="/new-stack" class="btn btn-primary">New stack</a></div>${intro}${warning}${content}${otherContainersSection(containers, "running", containerNote)}`,
             { ...pageChrome(csrf), nav: { stacks: stacks.map(stack => stack.name), section: "stacks" } },
         ));
     }
@@ -837,6 +839,53 @@ export function createApp(options: AppOptions): App {
                 return renderEdit(name, csrf, { error: { title: "Backups not deleted.", message: error.message }, status: 500 });
             }
             throw error;
+        }
+    }
+
+    async function renderCreate(csrf: string, draft?: CreateStackRequest, error?: string, status = 200): Promise<Response> {
+        return htmlResponse(createStackPage({
+            ...pageChrome(csrf), csrf, root: stacksRoot, name: draft?.name,
+            composeSource: draft?.composeSource, envSource: draft?.envSource, error,
+            nav: await sidebarNav("stacks"),
+        }), status);
+    }
+
+    async function handleCreate(request: Request, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, "/new-stack");
+        const form = await readForm(request, config.maxEditBytes);
+        if (form === null) return tooLarge(csrf, "/new-stack");
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, "/new-stack");
+        if (!sessions.isActive(session.id)) return sessionEnded();
+        const draft = { name: form.get("name") ?? "", composeSource: form.get("compose") ?? "", envSource: form.get("env") ?? "" };
+        let validName = false;
+        try {
+            validateStackName(draft.name);
+            validName = true;
+            const checkAuthorization = () => {
+                if (!sessions.isActive(session.id)) throw new SessionEndedError();
+                if (shuttingDown) throw new OperationsDisabledError();
+                if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+            };
+            const task = locks.run(draft.name, async () => {
+                checkAuthorization();
+                await createStack(stacksRoot, draft, provider, config.maxEditBytes, checkAuthorization);
+            });
+            saves.add(task);
+            try { await task; }
+            finally { saves.delete(task); }
+            await recordAudit({ event: "create", result: "success", actor: clientKey(request, config), stack: draft.name });
+            return redirect(`/stacks/${encodeURIComponent(draft.name)}?created=1`, 303);
+        } catch (error) {
+            if (error instanceof SessionEndedError) {
+                await recordAudit({ event: "create", result: "refused", actor: clientKey(request, config), stack: validName ? draft.name : undefined });
+                return sessionEnded();
+            }
+            const status = error instanceof StackError ? error.status : error instanceof StackBusyError || error instanceof OperationsDisabledError ? 409 : 500;
+            const message = error instanceof StackError || error instanceof StackBusyError || error instanceof OperationsDisabledError
+                ? error.message : "The stack could not be created. Check directory permissions and Docker availability.";
+            await recordAudit({ event: "create", result: error instanceof StackCreationPartialError ? "partial" : "refused", actor: clientKey(request, config), stack: validName ? draft.name : undefined });
+            return renderCreate(csrf, draft, message, status);
         }
     }
 
@@ -1516,6 +1565,11 @@ export function createApp(options: AppOptions): App {
             return response;
         }
 
+        if (url.pathname === "/new-stack") {
+            if (method === "POST") return handleCreate(request, session);
+            if (method === "GET") return renderCreate(session.csrf);
+            return methodNotAllowed("GET, POST");
+        }
         const editMatch = /^\/stacks\/([^/]+)\/edit$/.exec(url.pathname);
         if (editMatch && method === "POST") {
             try { return await handleSave(request, decodeName(editMatch[1]!), session); }
@@ -1579,7 +1633,9 @@ export function createApp(options: AppOptions): App {
             if (detailMatch) {
                 // Fixed messages only: the query flag is never reflected.
                 const saved = url.searchParams.get("saved");
-                const notice = saved === "1"
+                const notice = url.searchParams.get("created") === "1"
+                    ? { kind: "success" as const, text: "Stack created. No containers were started. Use Up when you are ready to deploy." }
+                    : saved === "1"
                     ? { kind: "success" as const, text: "Saved. The running containers are unchanged: use Up to apply the new configuration." }
                     : saved === "0" ? { kind: "info" as const, text: "No changes to save: the files on disk already match." } : undefined;
                 return await renderStackDetail(decodeName(detailMatch[1]!), session.csrf, notice);

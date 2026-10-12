@@ -1,6 +1,17 @@
 # Operations and validation
 
 ## Local development
+Use **New stack** on the Stacks page to submit a name, `compose.yaml` text and
+optional `.env`. Creation validates the files and the effective project name,
+then redirects to the stack; use **Up** separately when ready to deploy. Existing
+folders are never replaced. Relative paths resolve in the new stack folder.
+Configurations requiring additional files at validation time must be prepared
+through the CLI; this form creates only Compose and `.env`.
+On validation failure the authenticated form retains your draft. If cleanup is
+reported incomplete, inspect the named folder manually before retrying. A crash
+may leave a private unfinished directory; the panel does not recover it.
+See [ADR 0024](adr/0024-controlled-stack-creation.md) for manual verification.
+
 The panel runs real Docker commands for state, validation, operations and log follows. On Windows, developing HTML and pure logic is possible without Docker. Process, signal and Docker tests must pass on Linux (CI).
 
 ## Safety of future commands

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp, type App } from "../src/app.ts";
+import { createComposeProvider } from "../src/compose-provider.ts";
 import { AuditLog } from "../src/audit.ts";
 import type { AppConfig } from "../src/config.ts";
 import type { CommandResult, DockerRunner } from "../src/docker.ts";
@@ -166,6 +167,112 @@ async function login(app: App): Promise<string> {
     const response = await postLogin(app, cookie, csrf, "admin", PASSWORD);
     return cookieValue(setCookies(response), "cp_session")!;
 }
+
+describe("controlled stack creation", () => {
+    async function fixture(work: (app: App, dir: string, calls: string[][]) => Promise<void>, overrides: Partial<AppConfig> = {}, custom?: (args: string[]) => Promise<CommandResult>) {
+        const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "cp-create-route-")));
+        const calls: string[][] = [];
+        const runner: DockerRunner = async args => {
+            calls.push(args);
+            if (custom) return custom(args);
+            return { code: 0, stdout: args.includes("ls") || args.includes("images") || args.includes("ps") ? "[]" : args.includes("--quiet") ? "" : '{"name":"fresh-project","services":{}}', stderr: "", timedOut: false, truncated: false };
+        };
+        const app = makeApp({ audit: { enabled: false, dir: null, rotation: "day", retainFiles: 1, maxReadLines: 10, maxFileBytes: 10000 }, ...overrides }, runner, undefined, undefined, dir);
+        try { await work(app, dir, calls); }
+        finally { await app.beginShutdown(100); await rm(dir, { recursive: true, force: true }); }
+    }
+    const compose = "# keep this\nservices:\n  app:\n    image: busybox\n";
+    async function form(app: App, session: string) {
+        const response = await authed(app, "/new-stack", session);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        const html = await response.text();
+        expect(html).toContain('method="post"');
+        expect(html).toContain('action="/new-stack"');
+        return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+    }
+    const post = (app: App, session: string, fields: Record<string, string>, origin = ORIGIN) => authed(app, "/new-stack", session, {
+        method: "POST", headers: { origin, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields).toString(),
+    });
+
+    test("requires authentication, CSRF and same origin before any creation or Docker call", async () => fixture(async (app, dir, calls) => {
+        expect((await app.fetch(new Request(`${ORIGIN}/new-stack`))).status).toBe(302);
+        expect((await app.fetch(new Request(`${ORIGIN}/new-stack`, { method: "POST" }))).status).toBe(401);
+        const session = await login(app);
+        const csrf = await form(app, session);
+        for (const [token, origin] of [["wrong", ORIGIN], [csrf, "https://evil.example"]]) {
+            expect((await post(app, session, { csrf: token!, name: "fresh", compose }, origin)).status).toBe(403);
+        }
+        expect(calls).toEqual([]);
+        expect(await readdir(dir)).toEqual([]);
+    }));
+
+    test("creates raw files and redirects without running a Docker mutation", async () => fixture(async (app, dir, calls) => {
+        const session = await login(app);
+        const csrf = await form(app, session);
+        const env = "TOKEN='private-value'\n";
+        const response = await post(app, session, { csrf, name: "fresh", compose, env });
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/stacks/fresh?created=1");
+        expect(await readFile(join(dir, "fresh/compose.yaml"), "utf8")).toBe(compose);
+        expect(await readFile(join(dir, "fresh/.env"), "utf8")).toBe(env);
+        expect(calls.every(args => args.includes("config") || args.includes("ls"))).toBe(true);
+        expect(calls.some(args => args.includes("up") || args.includes("pull"))).toBe(false);
+    }));
+
+    test("keeps escaped drafts on validation failure without exposing provider errors", async () => fixture(async (app, dir) => {
+        const session = await login(app);
+        const csrf = await form(app, session);
+        const response = await post(app, session, { csrf, name: "fresh", compose: `${compose}# </textarea><script>bad</script>`, env: "SECRET=private-value" });
+        expect(response.status).toBe(400);
+        const html = await response.text();
+        expect(html).toContain("&lt;/textarea&gt;&lt;script&gt;bad&lt;/script&gt;");
+        expect(html).not.toContain("<script>bad</script>");
+        expect(html).not.toContain("provider-error-secret");
+        // The supplied secret stays only in its authenticated draft textarea.
+        expect(html).toContain('data-sensitive');
+        expect(await readdir(dir)).toEqual([]);
+    }, {}, async () => ({ code: 1, stdout: "", stderr: "provider-error-secret", timedOut: false, truncated: false })));
+
+    test("invalid names and oversized bodies never reach Docker", async () => fixture(async (app, dir, calls) => {
+        const session = await login(app);
+        const csrf = await form(app, session);
+        expect((await post(app, session, { csrf, name: "../bad", compose })).status).toBe(400);
+        expect((await post(app, session, { csrf, name: "fresh", compose: "x".repeat(300) })).status).toBe(413);
+        expect(calls).toEqual([]);
+        expect(await readdir(dir)).toEqual([]);
+    }, { maxEditBytes: 200 }));
+
+    test("shutdown refuses creation", async () => fixture(async (app, dir, calls) => {
+        const session = await login(app);
+        const csrf = await form(app, session);
+        await app.beginShutdown(0);
+        expect((await post(app, session, { csrf, name: "fresh", compose })).status).toBe(409);
+        expect(calls).toEqual([]);
+        expect(await readdir(dir)).toEqual([]);
+    }));
+
+    test("revoked authorization during validation removes the unpublished stack", async () => fixture(async (app, dir) => {
+        const session = await login(app);
+        const csrf = await form(app, session);
+        const original = createComposeProvider({ runner: async args => ({ code: 0, stdout: args.includes("ls") ? "[]" : '{"name":"fresh-project"}', stderr: "", timedOut: false, truncated: false }) });
+        // A separate app with the same filesystem exercises the production
+        // session check after an awaited validation call.
+        let current!: App;
+        let currentSession = "";
+        let token = "";
+        original.validateConfig = async () => {
+            await authed(current, "/logout", currentSession, { method: "POST", headers: { origin: ORIGIN }, body: new URLSearchParams({ csrf: token }).toString() });
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+        current = makeApp({}, undefined, original, undefined, dir);
+        currentSession = await login(current);
+        token = await form(current, currentSession);
+        expect((await post(current, currentSession, { csrf: token, name: "fresh", compose })).status).toBe(401);
+        expect((await readdir(dir)).includes("fresh")).toBe(false);
+        await current.beginShutdown(100);
+    }));
+});
 
 function authed(app: App, path: string, session: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers);

@@ -194,6 +194,27 @@ export interface EditPageOptions {
     backups: { count: number; bytes: number; retain: number } | null;
 }
 
+export function createStackPage(options: {
+    csrf: string; root: string; name?: string; composeSource?: string; envSource?: string;
+    error?: string; access?: string; timezone?: string; nav?: NavigationOptions;
+}): string {
+    return documentHtml("New stack", `<p class="crumbs"><a href="/">← All stacks</a></p>
+<h1>New stack</h1>
+<p class="lead">Create a folder under <code>${escapeHtml(options.root)}</code> with your Compose file and optional variables. The files are checked before the stack becomes available. Creating a stack does not pull images or start containers.</p>
+${options.error ? note("error", options.error) : ""}
+<form method="post" action="/new-stack" class="form edit-form" data-edit-form>
+  <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
+  <label>Stack name <span class="hint">Lowercase letters, digits, hyphens and underscores; up to 63 characters. An existing folder cannot be replaced.</span>
+    <input type="text" name="name" value="${escapeHtml(options.name ?? "")}" pattern="[a-z0-9][a-z0-9_-]{0,62}" maxlength="63" autocapitalize="none" spellcheck="false" required autofocus>
+  </label>
+  <label>compose.yaml <textarea name="compose" rows="24" spellcheck="false" autocapitalize="none" required data-code>${escapeHtml(options.composeSource ?? "")}</textarea></label>
+  <label>.env <span class="hint">Optional. Leave empty to create only the Compose file. Do not paste secrets into Compose labels.</span>
+    <textarea name="env" rows="10" spellcheck="false" autocapitalize="none" data-sensitive data-code>${escapeHtml(options.envSource ?? "")}</textarea>
+  </label>
+  <div class="form-actions"><button type="submit" class="btn btn-primary" data-busy-label="Checking and creating…">Check and create stack</button><a href="/" class="btn">Cancel</a></div>
+</form>`, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, nav: options.nav, scripts: ["/app.js"] });
+}
+
 function backupsSection(name: string, csrf: string, backups: EditPageOptions["backups"]): string {
     const head = `<section class="card"><h2>Backups</h2>`;
     if (backups === null) return `${head}${note("warn", "The backup folder could not be read, so backups are not listed. Saving still makes a backup or reports why it cannot.")}</section>`;

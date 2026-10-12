@@ -85,6 +85,15 @@ Three classes, without a generic framework:
 - Docker must not be started or stopped because of the panel. The panel may disappear without stopping containers already started.
 
 ## Compose context
+Stack creation (`src/create-stack.ts`, [ADR 0024](adr/0024-controlled-stack-creation.md))
+reserves a new owner-only directory with exclusive mkdir under the shared stack
+lock. Validation and effective project-name resolution use private files in
+that final directory, with explicit interpolation. Docker discovery is checked
+twice for an existing project. Compose is published last with an exclusive hard
+link, so stack discovery sees only the completed pair. Linux descriptor-pinned
+writes and inode-checked, non-recursive cleanup protect against path substitution.
+Creation joins the save drain and audit trail; it never deploys Docker resources.
+
 A stack is defined by the paths of its files, its `--project-directory`, its variable sources and its Compose identity. The **folder name is not necessarily the Docker project**. Do not automatically inject `-p <folder>`.
 
 Stacks that contain implicit override files are not displayed or edited: multi-file Compose remains rejected rather than guessed. See [ADR 0004](adr/0004-single-file-editing.md).

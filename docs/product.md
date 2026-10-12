@@ -7,6 +7,7 @@ Administer a small number of Docker Compose stacks on **a single host**, from th
 A trusted technical administrator. No multi-tenancy, no access for untrusted users. Mounting the Docker socket is equivalent to granting very high privileges on the host.
 
 ## V1 (acceptance criteria)
+- Create a named stack directory from raw Compose and optional `.env`, validating before publication without deployment ([ADR 0024](adr/0024-controlled-stack-creation.md)).
 - Read-only deployed image metadata per container and separately declared Compose labels ([ADR 0023](adr/0023-deployment-metadata.md)).
 - Display valid Compose directories and the **real** state of projects/services.
 - Read/edit the raw Compose file and `.env`, without automatic rewriting of comments.
@@ -20,7 +21,7 @@ A trusted technical administrator. No multi-tenancy, no access for untrusted use
 - Update the panel itself from the browser, for the documented Docker deployment of the official image: pull its own image tag, install it only when its release is at least 72 hours old and matches the published digest, then recreate its container through an independent one-shot updater that keeps the previous image for rollback, with the outcome read back from Docker ([ADR 0018](adr/0018-self-update.md)).
 
 ## Out of scope (do not implement without an ADR)
-Agents, remote control, terminal / PTY, graphical Compose editor, file generation, general-purpose file manager, Restic backups, encrypted secrets editor, scheduler, public API, multi-user, monitoring with retained history or alerts, registry UI, plugins, Kubernetes, notifications. A read-only resource snapshot is now in scope (ADR 0015); a time-series dashboard, alerting and host-level health remain out of scope until a new ADR.
+Agents, remote control, terminal / PTY, graphical Compose editor, generated templates/catalogues, general-purpose file manager, Restic backups, encrypted secrets editor, scheduler, public API, multi-user, monitoring with retained history or alerts, registry UI, plugins, Kubernetes, notifications. Raw single-directory stack creation is in scope (ADR 0024); broader file generation remains out of scope. A read-only resource snapshot is now in scope (ADR 0015); a time-series dashboard, alerting and host-level health remain out of scope until a new ADR.
 
 ## Assumed non-goals
 - No guaranteed operation outcome after a panel crash: the outcome may be unknown.
