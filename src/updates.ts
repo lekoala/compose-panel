@@ -1,5 +1,5 @@
 import type { ComposeProvider } from "./compose-provider.ts";
-import { parseComposeImages, parseImageInspect, type ComposeService, type ImageDetails } from "./compose-state.ts";
+import { parseComposeImages, parseContainerImages, parseImageInspect, type ComposeService, type ImageDetails, type RecoveredImage } from "./compose-state.ts";
 import { deployedImage, type DeployedImage } from "./deployment.ts";
 
 /** What the panel shows about one side of an update. */
@@ -31,8 +31,9 @@ export interface ServiceUpdate {
  * from `Up`: the tag was updated locally (by Pull, or by a pull outside the
  * panel) but the container still runs the previous image.
  *
- * Read-only: `compose images` and `image inspect` only. Never throws: any
- * failure means "no information", never an invented update.
+ * Read-only: `compose images`, `image inspect` and, for an image that is gone,
+ * `container inspect`. Never throws: any failure means "no information", never
+ * an invented update.
  */
 export async function loadImageUpdates(
     provider: ComposeProvider,
@@ -42,7 +43,9 @@ export async function loadImageUpdates(
 ): Promise<Record<string, ServiceUpdate>> {
     const updates: Record<string, ServiceUpdate> = {};
     try {
-        const candidates = services.filter(service => service.container && (deployed || (service.image && isTagReference(service.image))));
+        // A service whose `ps` image is a bare image ID most likely lost its tag
+        // (see below), so it stays a candidate: its reference is recovered.
+        const candidates = services.filter(service => service.container && (deployed || (service.image && (isTagReference(service.image) || isImageId(service.image)))));
         if (candidates.length === 0) return updates;
 
         const images = await provider.projectImages(input);
@@ -58,18 +61,44 @@ export async function loadImageUpdates(
         const details = parseImageInspect(inspected.stdout);
         const byId = new Map(details.map(detail => [detail.id, detail]));
 
+        // With the containerd image store, an image disappears once its tag
+        // moves, even while a container still runs it, and `compose ps` then
+        // reports the bare image ID instead of the configured reference. The
+        // container keeps both the OCI labels it inherited and that reference,
+        // so read them from it, and only while it still reports the same image.
+        const orphaned = candidates.filter(service => {
+            const id = running.get(service.container!);
+            return id !== undefined && !byId.has(id);
+        });
+        const fromContainers = orphaned.length > 0 ? await containerImages(provider, orphaned.map(service => service.container!)) : new Map<string, RecoveredImage>();
+        const recover = (service: ComposeService): RecoveredImage | undefined => {
+            const recovered = fromContainers.get(service.container!);
+            return recovered && recovered.detail.id === running.get(service.container!) ? recovered : undefined;
+        };
+
+        const recoveredRefs = orphaned
+            .filter(service => !service.image || !isTagReference(service.image))
+            .map(service => recover(service)?.reference)
+            .filter((ref): ref is string => Boolean(ref && isTagReference(ref) && !refs.includes(ref)));
+        if (recoveredRefs.length > 0) {
+            const more = await provider.inspectImages(recoveredRefs);
+            if (!more.timedOut && !more.truncated) details.push(...parseImageInspect(more.stdout));
+        }
+
         for (const service of candidates) {
             const runningId = running.get(service.container!);
-            const previous = runningId ? byId.get(runningId) : undefined;
+            const recovered = recover(service);
+            const previous = runningId ? byId.get(runningId) ?? recovered?.detail : undefined;
             if (previous && deployed) deployed.push(deployedImage(service.name, service.container!, previous));
-            if (!service.image || !isTagReference(service.image)) continue;
-            const tagged = findByTag(details, service.image!);
+            const image = service.image && isTagReference(service.image) ? service.image : recovered?.reference;
+            if (!image || !isTagReference(image)) continue;
+            const tagged = findByTag(details, image);
             if (!runningId || !tagged || tagged.id === runningId) continue;
             updates[service.name] = {
-                image: service.image!,
+                image,
                 from: versionOf(previous),
                 to: versionOf(tagged),
-                link: linkFor(service.image!, tagged.labels),
+                link: linkFor(image, tagged.labels),
             };
         }
     } catch {
@@ -78,9 +107,20 @@ export async function loadImageUpdates(
     return updates;
 }
 
+/** Best effort: a failed or partial read only means no recovered metadata. */
+async function containerImages(provider: ComposeProvider, names: string[]): Promise<Map<string, RecoveredImage>> {
+    const result = await provider.inspectContainers(names);
+    if (result.timedOut || result.truncated) return new Map();
+    return parseContainerImages(result.stdout);
+}
+
 /** A pullable tag, not an image pinned by digest or ID (those never "update"). */
 function isTagReference(image: string): boolean {
     return !image.includes("@") && !image.startsWith("sha256:");
+}
+
+function isImageId(image: string): boolean {
+    return /^sha256:[0-9a-f]{64}$/.test(image);
 }
 
 /** `nginx` → `nginx:latest`; registry prefixes for Docker Hub are dropped like Docker does. */

@@ -56,6 +56,54 @@ test("deployed metadata uses each container's image ID after a tag changes, incl
     expect(calls).toHaveLength(2);
 });
 
+test("an image dropped by the containerd store is read from its container's inherited OCI labels", async () => {
+    const calls: string[][] = [];
+    const provider = createComposeProvider({ runner: async args => {
+        calls.push(args);
+        if (args.includes("images")) return ok(JSON.stringify([{ ContainerName: "app-1", ID: oldId }]));
+        if (args[0] === "container") {
+            return ok(JSON.stringify([{ Name: "/app-1", Image: oldId, Config: { Image: "app:latest", Labels: {
+                "org.opencontainers.image.version": "1",
+                "org.opencontainers.image.revision": "commit-1",
+                "com.docker.compose.project": "actual-project",
+            } } }]));
+        }
+        // The old image ID is gone; only the retagged image remains.
+        const found = args.includes("app:latest") ? [{ Id: newId, RepoTags: ["app:latest"], RepoDigests: [], Config: { Labels: { "org.opencontainers.image.version": "2" } } }] : [];
+        return { ...ok(JSON.stringify(found)), code: args.includes(oldId) ? 1 : 0 };
+    } });
+    const deployed: DeployedImage[] = [];
+    // Compose then reports the bare image ID instead of the configured tag.
+    const updates = await loadImageUpdates(provider, input, [{ name: "app", container: "app-1", image: oldId, state: "running", health: null, exitCode: 0 }], deployed);
+    expect(deployed).toHaveLength(1);
+    expect(deployed[0]).toMatchObject({ imageId: oldId, version: "1", revision: "commit-1", digests: [] });
+    expect(updates.app?.image).toBe("app:latest");
+    expect(updates.app?.from.version).toBe("1");
+    expect(updates.app?.to.version).toBe("2");
+    expect(calls.slice(2)).toEqual([["container", "inspect", "--", "app-1"], ["image", "inspect", "--", "app:latest"]]);
+});
+
+test("container labels are not used when the container reports a different image", async () => {
+    const provider = createComposeProvider({ runner: async args => {
+        if (args.includes("images")) return ok(JSON.stringify([{ ContainerName: "app-1", ID: oldId }]));
+        if (args[0] === "container") return ok(JSON.stringify([{ Name: "/app-1", Image: newId, Config: { Labels: { "org.opencontainers.image.version": "2" } } }]));
+        return { ...ok("[]"), code: 1 };
+    } });
+    const deployed: DeployedImage[] = [];
+    await loadImageUpdates(provider, input, [{ name: "app", container: "app-1", image: "app:latest", state: "running", health: null, exitCode: 0 }], deployed);
+    expect(deployed).toEqual([]);
+});
+
+test("container inspect drops names that are not container names", async () => {
+    const calls: string[][] = [];
+    const provider = createComposeProvider({ runner: async args => { calls.push(args); return ok("[]"); } });
+    await provider.inspectContainers(["-v", "../x", "app-1", "app-1"]);
+    expect(calls).toEqual([["container", "inspect", "--", "app-1"]]);
+    calls.length = 0;
+    await provider.inspectContainers(["--format"]);
+    expect(calls).toEqual([]);
+});
+
 test("escapes metadata and refuses active or credential-bearing links", () => {
     const image = deployedImage("<app>", "app-1", { id: oldId, repoTags: [], repoDigests: [], created: null, labels: { "org.opencontainers.image.version": "<script>x</script>", "org.opencontainers.image.source": "javascript:alert(1)" } });
     expect(image.source).toBeNull();

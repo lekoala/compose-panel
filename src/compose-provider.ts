@@ -84,6 +84,14 @@ export interface ComposeProvider {
      * reference or ID are dropped, never passed to the CLI.
      */
     inspectImages(refs: string[]): Promise<CommandResult>;
+    /**
+     * Read-only: `container inspect` of containers named by `compose ps`. Used
+     * only when a running container's image can no longer be inspected (the
+     * containerd image store drops an image once its tag moves), to read the
+     * OCI labels the container inherited from it (ADR 0023). Names that do not
+     * look like container names are dropped, never passed to the CLI.
+     */
+    inspectContainers(names: string[]): Promise<CommandResult>;
     /** Allow-listed resolved labels only; raw config and stderr remain private. */
     stackMetadata(target: ComposeTarget): Promise<DeclaredMetadata | null>;
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult>;
@@ -216,6 +224,12 @@ class DockerComposeProvider implements ComposeProvider {
         if (safe.length === 0) return Promise.resolve({ code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false });
         // `--` ends option parsing: a reference can never be read as a flag.
         return this.runner(["image", "inspect", "--", ...safe]);
+    }
+
+    inspectContainers(names: string[]): Promise<CommandResult> {
+        const safe = [...new Set(names)].filter(isContainerName);
+        if (safe.length === 0) return Promise.resolve({ code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false });
+        return this.runner(["container", "inspect", "--", ...safe]);
     }
 
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult> {
@@ -379,6 +393,7 @@ class DockerComposeProvider implements ComposeProvider {
 
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
 const IMAGE_REFERENCE = /^[a-z0-9][a-z0-9._/:@-]{0,254}$/i;
+const CONTAINER_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/;
 
 /** Choices offered for stack log history. Anything else falls back to configuration. */
 export const COMPOSE_LOG_TAIL_OPTIONS = [100, 200, 500, 1000] as const;
@@ -399,6 +414,11 @@ const COMPOSE_LOG_TAIL_MAX = 5000;
 function sanitizeComposeTailLines(value: number | undefined): number {
     if (typeof value !== "number" || !Number.isFinite(value)) return COMPOSE_LOG_TAIL_DEFAULT;
     return Math.min(Math.max(Math.floor(value), 1), COMPOSE_LOG_TAIL_MAX);
+}
+
+/** Docker's own container name grammar (`[a-zA-Z0-9][a-zA-Z0-9_.-]+`), bounded. */
+export function isContainerName(value: string): boolean {
+    return CONTAINER_NAME.test(value);
 }
 
 /** An image ID, or a reference like `registry:5000/ns/name:tag@sha256:…`. */

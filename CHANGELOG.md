@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Deployed metadata on the containerd image store (ADR 0023 amendment): when a
+  retag or pull removes the image a container still runs, its OCI version and
+  revision are read from the labels the container inherited, instead of
+  disappearing. The Docker lab now pins `docker:29.9.0-dind`.
+
 - Application actions toolbox (ADR 0026): a stack declares, in an
   `x-compose-panel` Compose extension, the services whose Composer/npm/Bun
   scripts are exposed from each project's own manifest (`extra["compose-panel"]`

@@ -18,8 +18,7 @@ bespoke automation engine.
 This ADR defines the contract and the security boundary. `src/toolbox.ts` holds
 the pure parsing, validation, catalog and revision; `src/action-runner.ts` is
 the Docker adapter that reads a manifest (`docker cp`) and launches an action
-(`docker exec`). The exploration that led here is in `private/toolbox.md`,
-which is historical and not normative.
+(`docker exec`).
 
 ## Decision
 

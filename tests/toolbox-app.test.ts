@@ -72,6 +72,7 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
         projectImages: async () => ok,
         stackMetadata: async () => ({}),
         inspectImages: async () => ok,
+        inspectContainers: async () => ok,
         validateConfig: async () => ok,
         listServices: async () => [],
         runningContainerIds: async () => {

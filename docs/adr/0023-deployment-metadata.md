@@ -26,6 +26,19 @@ Config and service inspection run concurrently on the detail page. A failed
 config read shows a fixed warning outside the disclosure; no labels omits the
 disclosure entirely. Undeployed stacks omit the deployed-image card.
 
+With the containerd image store (the Docker 29 default), an image is removed
+once its tag moves, even while a container still runs it, so `image inspect`
+on the running image ID fails, and `compose ps` reports the bare image ID
+instead of the configured reference. In that case only, the panel reads
+`container inspect` for that container and, when it still reports the same
+image ID, uses the `org.opencontainers.image.*` labels the container inherited
+from the image and its configured `Config.Image` reference, which keeps the
+local update check working. There is no repository digest or build date to
+recover. A
+Compose service label with the same key overrides the inherited one, so this
+fallback reflects the container's effective label. (Amended in Unreleased; the
+deployed version was missing on such daemons before.)
+
 ## Verification
 
 Unit fixtures cover updated tags, pinned images, replicas, missing labels,

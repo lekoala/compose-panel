@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import { isImageReference } from "./compose-provider.ts";
 
 export class ComposeStateError extends Error {
     constructor(message: string) {
@@ -147,6 +148,41 @@ export function parseImageInspect(stdout: string): ImageDetails[] {
         });
     }
     return details;
+}
+
+/** What a container still knows about an image that is gone. */
+export interface RecoveredImage {
+    detail: ImageDetails;
+    /** The configured image reference (`Config.Image`), when it looks like one. */
+    reference: string | null;
+}
+
+/**
+ * Image details recovered from `container inspect` when the image itself is
+ * gone: the container keeps its image ID, its configured reference and the
+ * labels it inherited from the image. Only `org.opencontainers.image.*` labels
+ * are kept; there is no repository digest or creation date to recover.
+ */
+export function parseContainerImages(stdout: string): Map<string, RecoveredImage> {
+    const byContainer = new Map<string, RecoveredImage>();
+    for (const row of parseJsonRows(stdout)) {
+        if (!row || typeof row !== "object") continue;
+        const record = row as Record<string, unknown>;
+        if (typeof record.Name !== "string" || typeof record.Image !== "string" || !record.Image) continue;
+        const config = record.Config && typeof record.Config === "object" ? record.Config as Record<string, unknown> : {};
+        const labels: Record<string, string> = {};
+        if (config.Labels && typeof config.Labels === "object") {
+            for (const [key, value] of Object.entries(config.Labels as Record<string, unknown>)) {
+                if (key.startsWith("org.opencontainers.image.") && typeof value === "string") labels[key] = value;
+            }
+        }
+        const reference = typeof config.Image === "string" && isImageReference(config.Image) ? config.Image : null;
+        byContainer.set(record.Name.replace(/^\//, ""), {
+            detail: { id: record.Image, repoTags: [], repoDigests: [], created: null, labels },
+            reference,
+        });
+    }
+    return byContainer;
 }
 
 export function summarizeServices(services: ComposeService[]): StackState {

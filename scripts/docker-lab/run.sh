@@ -15,7 +15,7 @@ set -euo pipefail
 
 SRC="$(pwd)"
 BUN="${BUN_INSTALL:-$HOME/.bun}/bin/bun"
-IMAGE="${COMPOSE_PANEL_LAB_IMAGE:-docker:29-dind}"
+IMAGE="${COMPOSE_PANEL_LAB_IMAGE:-docker:29.9.0-dind}"
 NAME="compose-panel-lab-$$"
 
 if [ ! -x "$BUN" ]; then
