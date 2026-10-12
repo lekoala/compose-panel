@@ -170,6 +170,10 @@ details[open] > summary{margin-bottom:.75rem}
 
 /* Small screens and touch: admin on the go */
 .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.deployment dl{display:grid;grid-template-columns:minmax(6rem,9rem) minmax(0,1fr);gap:.4rem 1rem}
+.deployment dt{color:var(--muted)}
+.deployment dd{margin:0;overflow-wrap:anywhere}
+.deployment h3 small{font-weight:400;color:var(--muted);overflow-wrap:anywhere}
 .op-row > *,.card,.form label{min-width:0}
 @media (pointer:coarse){
   .btn{min-height:2.75rem}

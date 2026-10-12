@@ -2,6 +2,7 @@ import type { ComposeService, StackState } from "./compose-state.ts";
 import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
 import type { ImageVersion, ServiceUpdate } from "./updates.ts";
+import { metadataUrl, type DeclaredMetadata, type DeployedImage } from "./deployment.ts";
 import type { AccessReport, AccessStatus } from "./access.ts";
 import { ROLLBACK_TAG, UPDATER_NAME, recoveryCommands, rollbackCommands, type SelfIdentity, type SelfUpdateStatus, type UpdaterOutcome } from "./self-update.ts";
 import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerDetails, type ContainerFilter } from "./container-state.ts";
@@ -290,6 +291,21 @@ export function healthSummaryBadge(services: ComposeService[]): string {
 
 function versionText(version: ImageVersion): string {
     return version.version ?? (version.created ? `built ${version.created}` : version.digest ?? "unknown version");
+}
+
+export function deploymentSection(deployed: DeployedImage[] = [], declared?: DeclaredMetadata | null): string {
+    const link = (value: string): string => {
+        const href = metadataUrl(value);
+        return href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(value)} ↗</a>` : escapeHtml(value);
+    };
+    const field = (label: string, value: string | null, url = false): string => value
+        ? `<dt>${escapeHtml(label)}</dt><dd>${url ? link(value) : `<code>${escapeHtml(value)}</code>`}</dd>` : "";
+    const images = deployed.map(image => `<article><h3>${escapeHtml(image.service)} <small>${escapeHtml(image.container)}</small></h3><dl>
+${field("Version", image.version)}${field("Revision", image.revision)}${field("Source", image.source, true)}${field("Image ID", image.imageId)}
+${image.digests.map(digest => field("Repository digest", digest)).join("")}</dl></article>`).join("");
+    const labels = Object.entries(declared ?? {}).map(([service, values]) => `<article><h3>${escapeHtml(service)}</h3><dl>${Object.entries(values).map(([key, value]) => field(key.slice(6), value, key.endsWith(".url") || key === "stack.source")).join("")}</dl></article>`).join("");
+    return `<section class="card deployment"><h2>Deployed version</h2>${images || `<p class="muted">Deployed image metadata is unavailable. No version is inferred from an image tag.</p>`}
+<details><summary>Declared Compose metadata</summary><p class="muted">Resolved labels from the current Compose file. These may differ from the deployed containers.</p>${labels || `<p class="muted">${declared == null ? "Compose metadata is unavailable." : "No stack.* metadata declared."}</p>`}</details></section>`;
 }
 
 /** "1.27.1 → 1.27.2"; when both sides read the same, the digests tell them apart. */

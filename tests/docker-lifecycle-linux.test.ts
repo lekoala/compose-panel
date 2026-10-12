@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { hashPassword } from "../src/auth.ts";
 import { createComposeProvider } from "../src/compose-provider.ts";
 import { createDockerRunner } from "../src/docker.ts";
+import { loadStackDetail } from "../src/status.ts";
 import { ROLLBACK_TAG, UPDATER_EXIT, UPDATER_NAME, parseSelfInspect, parseUpdaterInspect, rollbackCommands, updaterCommand, updaterRunArgs } from "../src/self-update.ts";
 import { parseUpdaterArgs, runSelfUpdate, updaterEnvironment } from "../src/self-update-run.ts";
 
@@ -26,7 +27,7 @@ const PASSWORD = "temporary-lab-password";
 const USER = "cplaboperator";
 const GRACE_MS = 15_000;
 const DELAY_S = 6;
-const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed", "cp-qa-self", "cp-qa-scoped", "cp-qa-pull", "cp-qa-panel"];
+const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed", "cp-qa-self", "cp-qa-scoped", "cp-qa-pull", "cp-qa-panel", "cp-qa-metadata"];
 // A PID 1 that exits on SIGTERM, so `down` does not wait for the kill timeout.
 const SERVICE = (name: string) => `  ${name}:\n    image: ${IMAGE}\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]\n`;
 
@@ -474,6 +475,28 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect((await p.action("scoped", "down", { service: "web" })).status).toBe(400);
         expect(await runningServices("cp-qa-scoped")).toEqual(["web"]);
     }, 180_000);
+
+    test("deployed OCI metadata stays on the running image after a local tag changes (ADR 0023)", async () => {
+        const dir = join(stacks, "metadata");
+        await mkdir(dir);
+        const composeFile = join(dir, "compose.yaml");
+        await writeFile(join(dir, ".env"), "APP_VERSION=declared-version\n");
+        await writeFile(composeFile, 'name: cp-qa-metadata\nservices:\n  app:\n    image: cp-qa-metadata:local\n    labels:\n      stack.version: ${APP_VERSION}\n');
+        const build = async (version: string) => {
+            await writeFile(join(dir, "Dockerfile"), `FROM ${IMAGE}\nLABEL org.opencontainers.image.version="${version}" org.opencontainers.image.revision="commit-${version}"\nCMD ["sleep", "3600"]\n`);
+            await dockerOk(["build", "-t", "cp-qa-metadata:local", dir], 120_000);
+        };
+        await build("1");
+        await dockerOk(["compose", "-f", composeFile, "up", "-d"]);
+        await build("2");
+        const detail = await loadStackDetail(stacks, "metadata", createComposeProvider({ runner: createDockerRunner() }));
+        expect(detail.declared).toEqual({ app: { "stack.version": "declared-version" } });
+        expect(detail.deployed).toHaveLength(1);
+        expect(detail.deployed![0]!.version).toBe("1");
+        expect(detail.deployed![0]!.revision).toBe("commit-1");
+        expect(detail.deployed![0]!.digests).toEqual([]);
+        expect(detail.updates?.app?.to.version).toBe("2");
+    }, 240_000);
 
     test("pull skips locally built services, including image + build (ADR 0022)", async () => {
         const p = panel!;

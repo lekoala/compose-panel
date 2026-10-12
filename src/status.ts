@@ -13,6 +13,7 @@ import {
 } from "./compose-state.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
 import { loadImageUpdates, type ServiceUpdate } from "./updates.ts";
+import type { DeclaredMetadata, DeployedImage } from "./deployment.ts";
 
 export const DOCKER_UNAVAILABLE = "Docker is not reachable, so statuses are shown as unknown. Check that the Docker daemon is running and its socket is available to the panel.";
 export const DOCKER_SLOW = "Docker did not respond in time, so statuses are shown as unknown. Reload the page to try again.";
@@ -40,6 +41,8 @@ export interface StackDetailStatus {
     services: ComposeService[];
     /** Services whose tag points to a newer local image than the container runs. */
     updates?: Record<string, ServiceUpdate>;
+    deployed?: DeployedImage[];
+    declared?: DeclaredMetadata | null;
 }
 
 export interface ProjectDiscovery {
@@ -178,7 +181,15 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
     if (match.ambiguous) {
         return { project: null, state: "unknown", note: SEVERAL_PROJECTS, services: [] };
     }
-    if (!match.project) return { project: null, state: "not-created", note: null, services: [] };
+    // Config interpolation must never read an unsafe .env. Failure only makes
+    // metadata unavailable; Docker remains authoritative for service state.
+    let declared: DeclaredMetadata | null = null;
+    try {
+        const cwd = dirname(location.path);
+        const env = await readFileSafe(join(cwd, ENV_FILENAME), MAX_ENV_BYTES);
+        declared = await provider.stackMetadata({ project: match.project?.name, composeFile: location.path, cwd, envFile: env?.path });
+    } catch { /* Never expose config errors or secrets. */ }
+    if (!match.project) return { project: null, state: "not-created", note: null, services: [], declared };
 
     const project = match.project;
     try {
@@ -193,8 +204,9 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
         if (result.truncated) return { project: project.name, state: "unknown", note: DOCKER_TRUNCATED, services: [] };
         if (result.code !== 0) return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
         const services = parseComposePs(result.stdout);
-        const updates = await loadImageUpdates(provider, { project: project.name, composeFile: location.filename, cwd: dirname(location.path) }, services);
-        return { project: project.name, state: summarizeServices(services), note: null, services, updates };
+        const deployed: DeployedImage[] = [];
+        const updates = await loadImageUpdates(provider, { project: project.name, composeFile: location.filename, cwd: dirname(location.path) }, services, deployed);
+        return { project: project.name, state: summarizeServices(services), note: null, services, updates, deployed, declared };
     } catch {
         return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
     }

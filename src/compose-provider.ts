@@ -1,4 +1,5 @@
 import { runCommand, type CommandResult, type DockerRunner } from "./docker.ts";
+import { projectMetadata, type DeclaredMetadata } from "./deployment.ts";
 
 export class ComposeUnsupportedError extends Error {
     constructor(operation: string) {
@@ -75,6 +76,8 @@ export interface ComposeProvider {
      * reference or ID are dropped, never passed to the CLI.
      */
     inspectImages(refs: string[]): Promise<CommandResult>;
+    /** Allow-listed resolved labels only; raw config and stderr remain private. */
+    stackMetadata(target: ComposeTarget): Promise<DeclaredMetadata | null>;
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult>;
     /**
      * Read-only service names from the effective config (`config --services`),
@@ -198,6 +201,14 @@ class DockerComposeProvider implements ComposeProvider {
         if (input.envFile) args.push("--env-file", input.envFile);
         args.push("--project-directory", input.directory, "-f", input.composeFile, "config", "--quiet");
         return this.runner(args, { cwd: input.directory });
+    }
+
+    async stackMetadata(target: ComposeTarget): Promise<DeclaredMetadata | null> {
+        if (!this.caps.operations.config) throw new ComposeUnsupportedError("config");
+        const result = await this.mutation(target, ["config", "--format", "json"]);
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        try { return projectMetadata(JSON.parse(result.stdout)); }
+        catch { return null; }
     }
 
     private mutation(target: ComposeTarget, command: string[]): Promise<CommandResult> {

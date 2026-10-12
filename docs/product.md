@@ -7,6 +7,7 @@ Administer a small number of Docker Compose stacks on **a single host**, from th
 A trusted technical administrator. No multi-tenancy, no access for untrusted users. Mounting the Docker socket is equivalent to granting very high privileges on the host.
 
 ## V1 (acceptance criteria)
+- Read-only deployed image metadata per container and separately declared Compose labels ([ADR 0023](adr/0023-deployment-metadata.md)).
 - Display valid Compose directories and the **real** state of projects/services.
 - Read/edit the raw Compose file and `.env`, without automatic rewriting of comments.
 - Validate a change against the effective directory, files and project identity.

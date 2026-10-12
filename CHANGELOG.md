@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Stack deployment metadata (ADR 0023): OCI version, revision and source from
+  each container's actual image, full repository digests and a separate image
+  ID. Resolved `stack.*` labels show declared environment, branch, version,
+  commit and build/application links. No registry or CI request. Preview adds
+  a simulated `release` stack to try Pull then Up.
+
 - Server page readability (presentation only, same Docker calls):
   - Containers show their real name (from the container list, then `docker
     stats`, then a 12-character ID), never the full 64-character ID that

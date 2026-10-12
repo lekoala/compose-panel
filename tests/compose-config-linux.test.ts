@@ -38,6 +38,8 @@ test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPO
             throw new Error(`docker compose config failed after ${Date.now() - started} ms: code=${probe.code} timedOut=${probe.timedOut} stderr=${probe.stderr.trim()} (${version.stdout.trim() || version.stderr.trim()})`);
         }
         expect(await provider.projectName({ cwd, composeFile })).toBe("env-stack");
+        await writeFile(composeFile, 'name: ${STACK_ID}\nservices:\n  app:\n    image: busybox:latest\n    labels:\n      stack.version: ${STACK_ID}\n      private.secret: do-not-display\n');
+        expect(await provider.stackMetadata({ project: "env-stack", cwd, composeFile, envFile: join(cwd, ".env") })).toEqual({ app: { "stack.version": "yaml-stack" } });
         projects = [{ Name: "env-stack", Status: "running(1)", ConfigFiles: "/another/compose.yaml" }];
         expect((await resolveProjectContext(root, "demo", provider, true)).kind).toBe("ambiguous");
         projects = [];

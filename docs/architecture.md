@@ -62,6 +62,12 @@ the panel persists nothing. See [ADR 0018](adr/0018-self-update.md).
 Auth and action events are written by `src/audit.ts` as append-only NDJSON files, one per day under `<stacksRoot>/.compose-panel/audit/` (overridable), with a bounded number of retained files, a per-file size cap and bounded tail reads. It is not a database and holds no in-memory history: the files on disk are the record (see [ADR 0009](adr/0009-audit-log-and-login-backoff.md)). The same module backs the read-only `/audit` page and the change that replaces per-client login lockout with a bounded delay and one attempt in progress per client, so a single source cannot lock the administrator out.
 
 ## Compose provider
+Deployment metadata uses the same provider: `stackMetadata` reads resolved
+config but returns only allow-listed `stack.*` service labels. Image inspection
+is shared with update detection; `src/deployment.ts` projects OCI labels and
+full repository digests from the container's actual image ID. Declared metadata
+is separate from deployed metadata; neither is stored. See [ADR 0023](adr/0023-deployment-metadata.md).
+
 Engine-specific CLI calls are encapsulated in `src/compose-provider.ts` (see [ADR 0005](adr/0005-compose-provider-boundary.md)). The rest of the code depends on three operations — `listProjects`, `projectServices`, `validateConfig` — never on the concrete executable or its argument layout. V1 implements Docker only; Podman is rejected explicitly rather than emulated. The provider detects its capabilities at startup, and an unsupported operation fails loudly instead of producing a silently wrong result.
 
 ## Operations

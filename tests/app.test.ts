@@ -86,6 +86,7 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         projectName: async () => "demo-proj",
         projectServices: async () => empty,
         projectImages: async () => empty,
+        stackMetadata: async () => ({}),
         inspectImages: async () => empty,
         validateConfig: async () => empty,
         listServices: async () => [],

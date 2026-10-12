@@ -19,6 +19,7 @@ function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "start" 
         projectName: async () => "demo-proj",
         projectServices: async () => ok,
         projectImages: async () => ok,
+        stackMetadata: async () => ({}),
         inspectImages: async () => ok,
         validateConfig: async () => ok,
         listServices: async () => [],

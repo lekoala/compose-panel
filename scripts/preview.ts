@@ -26,6 +26,20 @@ const root = join(import.meta.dir, "..", ".preview");
 const stacksDir = join(root, "stacks");
 
 const DEMO: Record<string, string> = {
+    release: `# Simulated application deployment metadata (ADR 0023).
+services:
+  app:
+    image: ghcr.io/example/demo-app:stable
+    labels:
+      stack.environment: staging
+      stack.version: "2.4.0"
+      stack.revision: a83f29c
+      stack.branch: main
+      stack.build: "428"
+      stack.build.url: https://ci.example.com/builds/428
+      stack.source: https://git.example.com/demo-app
+      stack.url: https://staging.example.com
+`,
     web: `# Public website: a web server, a cache and a one-shot migration job.
 services:
   app:
@@ -70,7 +84,7 @@ const stacksRoot = await resolveRoot(stacksDir);
 // newer images; Up recreates containers whose tag changed. That is enough to
 // show "Update ready: from → to" with a release notes link.
 
-interface Image { id: string; created: string; labels: Record<string, string> }
+interface Image { id: string; created: string; labels: Record<string, string>; repository?: string }
 interface Service { name: string; image: string; imageId: string; state: "running" | "exited"; exitCode: number; health: string }
 
 const images = new Map<string, Image>();
@@ -81,12 +95,14 @@ function image(fill: string, version: string | null, created: string, labels: Re
 }
 const NGINX_SOURCE = { "org.opencontainers.image.source": "https://github.com/nginxinc/docker-nginx" };
 const localTags = new Map<string, string>([
+    ["ghcr.io/example/demo-app:stable", image("1", "2.4.0", "2026-09-20T09:00:00Z", { "org.opencontainers.image.revision": "a83f29c", "org.opencontainers.image.source": "https://git.example.com/demo-app" })],
     ["nginx:1.27-alpine", image("a", "1.27.1", "2026-08-14T09:00:00Z", NGINX_SOURCE)],
     ["redis:7", image("c", null, "2026-08-02T12:00:00Z")],
     ["alpine:3.20", image("e", "3.20.3", "2026-07-20T08:00:00Z")],
     ["postgres:16", image("f", "16.4", "2026-08-08T10:00:00Z")],
 ]);
 const registry = new Map<string, string>([
+    ["ghcr.io/example/demo-app:stable", image("2", "2.5.0", "2026-10-10T09:00:00Z", { "org.opencontainers.image.revision": "b94e30d", "org.opencontainers.image.source": "https://git.example.com/demo-app" })],
     ["nginx:1.27-alpine", image("b", "1.27.2", "2026-10-02T09:00:00Z", NGINX_SOURCE)],
     ["redis:7", image("d", null, "2026-09-28T12:00:00Z")],
     ["alpine:3.20", localTags.get("alpine:3.20")!],
@@ -94,10 +110,14 @@ const registry = new Map<string, string>([
     ["busybox", image("9", "1.37.0", "2026-09-01T00:00:00Z")],
 ]);
 
+// Preserve repository digests after Pull moves a tag away from its old image.
+for (const [ref, id] of [...localTags, ...registry]) images.get(id)!.repository = ref.replace(/:[^/]*$/, "");
+
 function container(ref: string, name: string, state: Service["state"] = "running", exitCode = 0, health = ""): Service {
     return { name, image: ref, imageId: localTags.get(ref)!, state, exitCode, health };
 }
 const projects = new Map<string, Service[]>([
+    ["release", [container("ghcr.io/example/demo-app:stable", "app", "running", 0, "healthy")]],
     ["web", [
         container("nginx:1.27-alpine", "app", "running", 0, "healthy"),
         container("redis:7", "cache"),
@@ -174,15 +194,19 @@ function arg(args: string[], flag: string): string | undefined {
 }
 
 /** Services and their `image:` from the top-level `services:` block (two-space indent). */
-async function servicesOf(composeFile: string): Promise<{ name: string; image: string | null }[]> {
+async function servicesOf(composeFile: string): Promise<{ name: string; image: string | null; labels: Record<string, string> }[]> {
     const text = await readFile(composeFile, "utf8").catch(() => "");
     const block = text.split(/^services:\s*$/m)[1] ?? "";
-    const result: { name: string; image: string | null }[] = [];
+    const result: { name: string; image: string | null; labels: Record<string, string> }[] = [];
+    let inLabels = false;
     for (const line of block.split(/\r?\n/)) {
         const service = /^ {2}([A-Za-z0-9_.-]+):/.exec(line);
-        if (service) result.push({ name: service[1]!, image: null });
+        if (service) result.push({ name: service[1]!, image: null, labels: {} });
+        if (/^ {2,4}\S/.test(line)) inLabels = /^ {4}labels:\s*$/.test(line);
         const ref = /^ {4}image:\s*["']?([^"'\s]+)/.exec(line);
         if (ref && result.length > 0) result[result.length - 1]!.image = ref[1]!;
+        const label = inLabels ? /^ {6}(stack\.[a-z.]+):\s*(.*?)\s*$/.exec(line) : null;
+        if (label && result.length > 0) result[result.length - 1]!.labels[label[1]!] = label[2]!.replace(/^["']|["']$/g, "");
     }
     return result;
 }
@@ -219,9 +243,9 @@ function inspect(ref: string): object | null {
     const found = images.get(ref) ?? images.get(localTags.get(ref) ?? "");
     if (!found) return null;
     const tags = [...localTags].filter(([, id]) => id === found.id).map(([tag]) => tag);
-    const repo = (tags[0] ?? ref).replace(/:[^/]*$/, "");
+    const repo = found.repository;
     const digest = found.id.slice(7).split("").reverse().join("");
-    return { Id: found.id, RepoTags: tags, RepoDigests: [`${repo}@sha256:${digest}`], Created: found.created, Config: { Labels: found.labels } };
+    return { Id: found.id, RepoTags: tags, RepoDigests: repo ? [`${repo}@sha256:${digest}`] : [], Created: found.created, Config: { Labels: found.labels } };
 }
 
 async function stream(options: RunOptions | undefined, lines: string[]): Promise<void> {
@@ -380,7 +404,7 @@ const runner: DockerRunner = async (args, options) => {
         if (services.length === 0) {
             return fail(`validating ${basename(dirname(composeFile))}: services must be a mapping with at least one service (simulated check)`);
         }
-        return args.includes("--quiet") ? ok() : ok(JSON.stringify({ name: basename(dirname(composeFile)) || project }));
+        return args.includes("--quiet") ? ok() : ok(JSON.stringify({ name: basename(dirname(composeFile)) || project, services: Object.fromEntries(services.map(service => [service.name, { image: service.image, labels: service.labels }])) }));
     }
     const wanted = (await servicesOf(composeFile)).map(service => ({ name: service.name, image: service.image ?? "busybox" }));
     if (args.includes("pull")) {
@@ -476,6 +500,8 @@ console.info(`
 
   Docker is SIMULATED: no command runs, nothing real is touched.
   Demo stacks: ${stacksRoot}  (bun run preview --reset to recreate)
+  Open release: deployed version + commit, declared staging/build/application links.
+  Try Pull, then Up: the deployed version changes only after Up (all simulated).
   Ctrl+C to stop.
 `);
 

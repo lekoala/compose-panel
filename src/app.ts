@@ -1,5 +1,6 @@
 import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, type NavSection, type NavigationOptions, type NoteKind } from "./html.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
+import { deploymentSection } from "./html.ts";
 import { dirname, join } from "node:path";
 import { listStacks, locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
@@ -748,6 +749,7 @@ export function createApp(options: AppOptions): App {
             + operationControls(stack.name, csrf, { busy: operation?.status === "running", state: status.state, updatesReady: Object.keys(status.updates ?? {}) })
             + operationPanel(operation, stack.name)
             + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" })
+            + deploymentSection(status.deployed, status.declared)
             + logsPanel(stack.name, config.logTailLines, config.timeZone, status.services.map(service => service.name))
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
             { ...pageChrome(csrf), scripts: ["/app.js"], nav: await sidebarNav("stacks", stack.name) },

@@ -27,3 +27,39 @@ An `unknown` means a command failed or the project identity could not be establi
 - [Bun HTTP server, SSE, timeout](https://bun.com/docs/runtime/http/server)
 - [Docker Compose, project options and files](https://docs.docker.com/reference/cli/docker/compose/)
 - [Docker Compose config](https://docs.docker.com/reference/cli/docker/compose/config/)
+## Deployment metadata
+
+The stack detail page reads the actual image ID of every container, including
+stopped containers, pinned images and local builds. OCI labels
+`org.opencontainers.image.version`, `.revision` and `.source` describe that
+image. Repository digests are shown in full when Docker has them; the image ID
+is separate and is not a registry manifest digest. Replicas may differ.
+
+Declare optional metadata under each service's `labels` using the generic
+`stack.*` convention:
+
+```yaml
+services:
+  app:
+    image: registry.example.com/app:stable
+    labels:
+      stack.environment: staging
+      stack.version: "${APP_VERSION}"
+      stack.revision: "${APP_COMMIT}"
+      stack.branch: main
+      stack.build: "428"
+      stack.build.url: https://ci.example.com/builds/428
+      stack.source: https://git.example.com/app
+      stack.url: https://staging.example.com
+```
+
+Only these eight labels are read. Resolved values are displayed as **declared
+Compose metadata**, separately from the deployed image: editing a file does not
+change a running container. Put no secrets in these labels. Links allow HTTP(S)
+only and do not prove reachability. No URL is fetched by the panel.
+
+`bun run preview` includes a simulated `release` stack: open it, try **Pull**
+and then **Up**. The deployed version stays at 2.4.0 until Up changes it to
+2.5.0; declared metadata stays as written in the file. All preview metadata and
+links are fictional. See [ADR 0023](adr/0023-deployment-metadata.md) for the
+isolated Linux test and manual verification procedure.

@@ -1,5 +1,6 @@
 import type { ComposeProvider } from "./compose-provider.ts";
 import { parseComposeImages, parseImageInspect, type ComposeService, type ImageDetails } from "./compose-state.ts";
+import { deployedImage, type DeployedImage } from "./deployment.ts";
 
 /** What the panel shows about one side of an update. */
 export interface ImageVersion {
@@ -37,17 +38,18 @@ export async function loadImageUpdates(
     provider: ComposeProvider,
     input: { project: string; composeFile: string; cwd: string },
     services: ComposeService[],
+    deployed?: DeployedImage[],
 ): Promise<Record<string, ServiceUpdate>> {
     const updates: Record<string, ServiceUpdate> = {};
     try {
-        const candidates = services.filter(service => service.container && service.image && isTagReference(service.image));
+        const candidates = services.filter(service => service.container && (deployed || (service.image && isTagReference(service.image))));
         if (candidates.length === 0) return updates;
 
         const images = await provider.projectImages(input);
         if (images.code !== 0 || images.timedOut || images.truncated) return updates;
         const running = new Map(parseComposeImages(images.stdout).map(row => [row.container, row.imageId]));
 
-        const refs = candidates.map(service => service.image!);
+        const refs = candidates.filter(service => service.image && isTagReference(service.image)).map(service => service.image!);
         const ids = candidates.map(service => running.get(service.container!)).filter((id): id is string => Boolean(id));
         // Missing references make the CLI exit non-zero while still printing
         // the others, so parse whatever came back.
@@ -58,9 +60,11 @@ export async function loadImageUpdates(
 
         for (const service of candidates) {
             const runningId = running.get(service.container!);
+            const previous = runningId ? byId.get(runningId) : undefined;
+            if (previous && deployed) deployed.push(deployedImage(service.name, service.container!, previous));
+            if (!service.image || !isTagReference(service.image)) continue;
             const tagged = findByTag(details, service.image!);
             if (!runningId || !tagged || tagged.id === runningId) continue;
-            const previous = byId.get(runningId);
             updates[service.name] = {
                 image: service.image!,
                 from: versionOf(previous),
