@@ -3,7 +3,7 @@
 import { createComposeProvider } from "../compose-provider.ts";
 import { createDockerRunner } from "../docker.ts";
 import { UPDATER_EXIT } from "../self-update.ts";
-import { UpdaterArgsError, parseUpdaterArgs, runSelfUpdate } from "../self-update-run.ts";
+import { UpdaterArgsError, parseUpdaterArgs, runSelfUpdate, updaterEnvironment } from "../self-update-run.ts";
 
 let args: ReturnType<typeof parseUpdaterArgs>;
 try {
@@ -13,7 +13,8 @@ try {
     process.exit(UPDATER_EXIT.refused);
 }
 
-const runner = createDockerRunner({ timeoutMs: 30_000, maxBytes: 1024 * 1024 });
+// Interpolation must match the deployment, not the image: no inherited ENV.
+const runner = createDockerRunner({ timeoutMs: 30_000, maxBytes: 1024 * 1024, env: updaterEnvironment(process.env) });
 const provider = createComposeProvider({ runner });
 const stamp = () => new Date().toISOString().slice(0, 19).replace("T", " ");
 let code: number;

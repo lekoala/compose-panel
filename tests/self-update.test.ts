@@ -19,7 +19,7 @@ import {
     updaterRunArgs,
     type SelfIdentity,
 } from "../src/self-update.ts";
-import { parseUpdaterArgs, runSelfUpdate, type UpdaterDeps } from "../src/self-update-run.ts";
+import { parseUpdaterArgs, runSelfUpdate, updaterEnvironment, type UpdaterDeps } from "../src/self-update-run.ts";
 import { COMPOSE_FILE, IMAGE_REF, MOUNTINFO, NEW_DIGEST, NEW_IMAGE, NOW, OLD_IMAGE, PANEL_ID, WORKING_DIR, fakeDocker, fakeReleases, fakeSelfUpdater, panelInspect, releaseJson } from "./helpers/self-update.ts";
 
 const PLAN = { targetImageId: NEW_IMAGE, expectedDigest: NEW_DIGEST, targetVersion: "0.3.0", previousVersion: "0.2.0" };
@@ -536,5 +536,54 @@ describe("release policy (ADR 0018)", () => {
         expect(commands[0]).toBe(`docker image tag ${ROLLBACK_TAG} ${IMAGE_REF}`);
         expect(commands.at(-1)).toContain("up -d --no-deps --no-build --pull never panel");
         expect(commands.some(line => line.includes(" pull "))).toBe(false);
+    });
+});
+
+describe("review regressions", () => {
+    test("the updater's Docker calls never inherit the image ENV", () => {
+        const env = updaterEnvironment({ PATH: "/usr/bin", HOME: "/root", STACKS_DIR: "/stacks", PORT: "5081", COMPOSE_PROJECT_NAME: "x", COMPOSE_FILE: "/x.yaml" });
+        expect(env).toEqual({ PATH: "/usr/bin", HOME: "/root" });
+        // Which daemon to use is kept when set, never a value for interpolation.
+        expect(updaterEnvironment({ PATH: "/usr/bin", DOCKER_HOST: "unix:///lab/docker.sock" })).toEqual({ PATH: "/usr/bin", DOCKER_HOST: "unix:///lab/docker.sock" });
+    });
+
+    const TIMED_OUT = { code: -1, stdout: "", stderr: "", timedOut: true, truncated: false };
+
+    test("a start that timed out but shows up in Docker counts as started", async () => {
+        const docker = fakeDocker();
+        docker.runResult = TIMED_OUT;
+        docker.startsOnFailure = true;
+        expect(await fakeSelfUpdater(docker).launch(identityOf(), PLAN)).toBe("started");
+    });
+
+    test("a start Docker cannot confirm is unconfirmed, never 'nothing changed'", async () => {
+        const docker = fakeDocker();
+        docker.runResult = TIMED_OUT;
+        docker.inspectFailsAfterRun = true;
+        expect(await fakeSelfUpdater(docker).launch(identityOf(), PLAN)).toBe("unconfirmed");
+        // A timeout with no updater yet may still be in flight: not a refusal either.
+        const quiet = fakeDocker();
+        quiet.runResult = TIMED_OUT;
+        expect(await fakeSelfUpdater(quiet).launch(identityOf(), PLAN)).toBe("unconfirmed");
+    });
+
+    test("a clear refusal with no updater in Docker throws", async () => {
+        const docker = fakeDocker();
+        docker.runResult = { code: 125, stdout: "", stderr: "Error: conflict", timedOut: false, truncated: false };
+        await expect(fakeSelfUpdater(docker).launch(identityOf(), PLAN)).rejects.toThrow(SelfUpdateError);
+    });
+
+    test("settle ends when the updater never appears, or once it has ended", async () => {
+        await fakeSelfUpdater(fakeDocker()).settle();
+        const docker = fakeDocker();
+        docker.updater = { status: "running", exitCode: 0 };
+        let settled = false;
+        const settling = fakeSelfUpdater(docker).settle().then(() => { settled = true; });
+        await Bun.sleep(5);
+        expect(settled).toBe(false);
+        docker.updater = { status: "exited", exitCode: 0 };
+        docker.finishWait();
+        await settling;
+        expect(settled).toBe(true);
     });
 });

@@ -91,6 +91,23 @@ export function parseUpdaterArgs(argv: string[]): UpdaterArgs {
     return args;
 }
 
+/**
+ * Environment of the updater's Docker and Compose calls: `PATH`, `HOME` and,
+ * when set, `DOCKER_HOST` (which daemon to talk to; unset in the updater
+ * container, which uses the mounted socket). The updater runs in the panel
+ * image, whose `ENV` (`STACKS_DIR`, `PORT`, …) would otherwise take
+ * precedence over `--env-file` during interpolation and silently change the
+ * recreated deployment.
+ */
+export function updaterEnvironment(env: Record<string, string | undefined>): Record<string, string> {
+    const kept: Record<string, string> = {};
+    for (const key of ["PATH", "HOME", "DOCKER_HOST"]) {
+        const value = env[key];
+        if (value !== undefined) kept[key] = value;
+    }
+    return kept;
+}
+
 export interface UpdaterDeps {
     runner: DockerRunner;
     provider: ComposeProvider;

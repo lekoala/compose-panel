@@ -2734,6 +2734,48 @@ describe("self-update (ADR 0018)", () => {
         });
     }
 
+    test("an updater start Docker cannot confirm keeps actions paused", async () => {
+        const docker = fakeDocker();
+        docker.pulled = true;
+        docker.runResult = { code: -1, stdout: "", stderr: "", timedOut: true, truncated: false };
+        docker.inspectFailsAfterRun = true;
+        const app = makeApp({}, undefined, controllableProvider().provider, undefined, root, undefined, fakeSelfUpdater(docker));
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        await post(app, session, "/about/check", { csrf });
+        const response = await post(app, session, "/about/update", { csrf, target: NEW_IMAGE });
+        expect(response.status).toBe(503);
+        expect((await post(app, session, "/stacks/demo/operations", { csrf, action: "up" })).status).toBe(409);
+    });
+
+    test("a shutdown during the release check stops the install before the updater starts", async () => {
+        const docker = fakeDocker();
+        docker.pulled = true;
+        let answer!: () => void;
+        const releases = fakeReleases();
+        const source = releases.source;
+        let held = false;
+        releases.source = async version => {
+            // The check answers at once; the install's fresh re-check is held.
+            if (releases.calls.length >= 1 && !held) {
+                held = true;
+                await new Promise<void>(resolve => { answer = resolve; });
+            }
+            return source(version);
+        };
+        const app = makeApp({}, undefined, undefined, undefined, root, undefined, fakeSelfUpdater(docker, MOUNTINFO, releases));
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        await post(app, session, "/about/check", { csrf });
+        const install = post(app, session, "/about/update", { csrf, target: NEW_IMAGE });
+        while (!held) await Bun.sleep(1);
+        const shutdown = app.beginShutdown(50);
+        answer();
+        expect((await install).status).toBe(503);
+        await shutdown;
+        expect(docker.calls.some(args => args[1] === "run")).toBe(false);
+    });
+
     test("update waits for running stack actions", async () => {
         const docker = fakeDocker();
         docker.pulled = true;

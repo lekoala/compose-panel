@@ -7,7 +7,7 @@ import { hashPassword } from "../src/auth.ts";
 import { createComposeProvider } from "../src/compose-provider.ts";
 import { createDockerRunner } from "../src/docker.ts";
 import { ROLLBACK_TAG, UPDATER_EXIT, parseSelfInspect, rollbackCommands, updaterCommand } from "../src/self-update.ts";
-import { parseUpdaterArgs, runSelfUpdate } from "../src/self-update-run.ts";
+import { parseUpdaterArgs, runSelfUpdate, updaterEnvironment } from "../src/self-update-run.ts";
 
 // Opt-in lifecycle check against a REAL but DISPOSABLE Docker Engine: project
 // collisions by `name:` and `.env`, and SIGTERM during a deterministically
@@ -345,6 +345,7 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             "  panel:",
             `    image: ${ref}`,
             `    command: ${command}`,
+            "    environment: [\"MARKER=${CP_QA_MARKER}\"]",
             "    volumes: [\"/lab/docker.sock:/var/run/docker.sock\"]",
             "    healthcheck: { test: [\"CMD\", \"true\"], interval: 1s, timeout: 1s, retries: 3 }",
             "  other:",
@@ -352,7 +353,9 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             `    command: ${command}`,
             "",
         ].join("\n"));
-        await dockerOk(["compose", "-f", join(dir, "compose.yaml"), "up", "-d"]);
+        // Interpolation comes from an explicit env file, recorded by Compose.
+        await writeFile(join(dir, "deploy.env"), "CP_QA_MARKER=from-env-file\n");
+        await dockerOk(["compose", "--env-file", join(dir, "deploy.env"), "-f", join(dir, "compose.yaml"), "up", "-d"]);
         const idOf = async (service: string) => (await dockerOk(["ps", "-q", "--no-trunc", "--filter", "label=com.docker.compose.project=cp-qa-self", "--filter", `label=com.docker.compose.service=${service}`])).trim();
         const oldPanel = await idOf("panel");
         const other = await idOf("other");
@@ -372,7 +375,9 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(support.identity.workingDir).toBe(dir);
         expect(support.identity.imageId).toBe(previous);
 
-        const runner = createDockerRunner({ timeoutMs: 60_000 });
+        expect(support.identity.envFiles).toEqual([join(dir, "deploy.env")]);
+        // The updater image's ENV (simulated here) must not win over --env-file.
+        const runner = createDockerRunner({ timeoutMs: 60_000, env: updaterEnvironment({ ...process.env, CP_QA_MARKER: "from-image-env" }) });
         const deps = {
             runner,
             provider: createComposeProvider({ runner }),
@@ -396,6 +401,8 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(newPanel).not.toBe(oldPanel);
         expect(JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .Image}}", newPanel])).trim())).toBe(target);
         expect(await idOf("other")).toBe(other);
+        const env = JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .Config.Env}}", newPanel])).trim()) as string[];
+        expect(env).toContain("MARKER=from-env-file");
         expect(await imageIdOf(ROLLBACK_TAG)).toBe(previous);
 
         // The documented rollback, without download or file edit, brings the
@@ -404,7 +411,7 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(retag).toBe(`docker image tag ${ROLLBACK_TAG} ${ref}`);
         expect(up).toContain("up -d --no-deps --no-build --pull never panel");
         await dockerOk(["image", "tag", ROLLBACK_TAG, ref]);
-        await dockerOk(["compose", "-p", "cp-qa-self", "-f", join(dir, "compose.yaml"), "up", "-d", "--no-deps", "--no-build", "--pull", "never", "panel"]);
+        await dockerOk(["compose", "-p", "cp-qa-self", "--env-file", join(dir, "deploy.env"), "-f", join(dir, "compose.yaml"), "up", "-d", "--no-deps", "--no-build", "--pull", "never", "panel"]);
         expect(JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .Image}}", await idOf("panel")])).trim())).toBe(previous);
         await docker(["rm", "-f", "cp-qa-registry"]);
     }, 240_000);

@@ -78,7 +78,10 @@ brings it into scope, in a deliberately narrow form.
   the panel container ID, the image reference, the approved target image ID and
   its expected `repository@digest`, the previous image ID, project, service,
   working directory, Compose files and env files. No shell. Its labels record
-  the previous and target image IDs and versions. The updater:
+  the previous and target image IDs and versions. Its Docker and Compose calls
+  run with `PATH`, `HOME` and `DOCKER_HOST` (when set) only: the panel image's `ENV` (`STACKS_DIR`,
+  `PORT`) would otherwise take precedence over `--env-file` during
+  interpolation and change the recreated deployment. The updater:
   1. refuses (exit 2, nothing changed) if the tag no longer resolves locally to
      the approved image ID, if that image's `RepoDigests` lacks the expected
      digest, if `compose config` no longer resolves the service to the same
@@ -107,9 +110,13 @@ brings it into scope, in a deliberately narrow form.
 - **One update, with nothing else running.** The update is refused while any
   stack action or save runs, while an updater container is running, or during
   shutdown. From the moment it starts, the panel refuses new actions, saves and
-  backup purges until the updater ends (`docker container wait`) or the panel
-  is replaced. The form carries the target image ID shown to the
-  administrator, and the panel re-checks it before starting.
+  backup purges until Docker confirms the updater ended or never started, or
+  the panel is replaced. If the start command fails or times out, the panel
+  asks Docker whether the updater exists before calling it a non-start; when
+  Docker cannot tell, the outcome is shown as unknown and mutations stay
+  paused. Shutdown and the session are re-checked after the Docker and GitHub
+  calls, right before the updater starts. The form carries the target image ID
+  shown to the administrator, and the panel re-checks it before starting.
 - **Bounded wait.** The pause relies on `docker container wait`, itself bounded
   at 20 minutes. The updater ends well before that (5 minutes at most for
   `compose up`, then 3 minutes at most for the new container to become ready),

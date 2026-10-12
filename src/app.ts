@@ -1043,6 +1043,10 @@ export function createApp(options: AppOptions): App {
                 await recordAudit({ event: "self-update-check", result: "refused", actor, detail: "session ended" });
                 return sessionEnded();
             }
+            if (shuttingDown) {
+                await recordAudit({ event: "self-update-check", result: "refused", actor, detail: "shutting down" });
+                return renderAbout(csrf, { error: { title: "Nothing was checked.", message: "The panel is shutting down." }, status: 503 });
+            }
             const pulled = await selfUpdater.pull(support.identity);
             if (pulled.code !== 0 || pulled.timedOut) {
                 const reason = pulled.timedOut ? "the download did not finish in time" : (pulled.stderr.split("\n").map(line => line.trim()).find(Boolean) ?? "").slice(0, 300);
@@ -1101,17 +1105,28 @@ export function createApp(options: AppOptions): App {
                 await recordAudit({ event: "self-update", result: "refused", actor, detail: "session ended" });
                 return sessionEnded();
             }
-            await selfUpdater.launch(status.support.identity, {
+            // A shutdown may have begun while Docker and GitHub were awaited.
+            if (shuttingDown) return await refuse("The panel is shutting down.", 503);
+            const launched = await selfUpdater.launch(status.support.identity, {
                 targetImageId: target,
                 expectedDigest: verdict.expectedDigest,
                 targetVersion: verdict.version,
                 previousVersion: status.current?.version ?? null,
             });
+            // From here the updater may be running: mutations stay paused until
+            // Docker confirms it ended or never started, even if the start
+            // command itself failed or timed out.
             started = true;
-            await recordAudit({ event: "self-update", result: "started", actor, detail: `${status.support.identity.imageRef} ${verdict.version}` });
-            // Unblock if the updater ends while this process is still alive
-            // (a refusal, or a failure before the recreate).
-            void selfUpdater.wait().finally(() => { selfUpdatePending = false; });
+            void selfUpdater.settle().finally(() => { selfUpdatePending = false; });
+            const detail = `${status.support.identity.imageRef} ${verdict.version}`;
+            if (launched === "unconfirmed") {
+                await recordAudit({ event: "self-update", result: "unknown", actor, detail: `${detail}, start not confirmed` });
+                return renderAbout(csrf, {
+                    error: { title: "Update outcome unknown.", message: "Docker did not confirm whether the updater started. Actions stay paused until Docker shows it ended or never started. Check docker ps on the host if this lasts." },
+                    status: 503,
+                });
+            }
+            await recordAudit({ event: "self-update", result: "started", actor, detail });
             return redirect("/about", 303);
         } catch (error) {
             if (error instanceof SelfUpdateError) return await refuse(error.message.replace(/ Nothing was changed\.$/, ""), error.status);

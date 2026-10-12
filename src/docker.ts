@@ -15,6 +15,8 @@ export interface RunOptions {
     /** Forwarded every pipe chunk as it arrives; retention stays capped. */
     onChunk?: (chunk: string) => void;
     signal?: AbortSignal;
+    /** Exact subprocess environment. Defaults to `composeEnvironment()`. */
+    env?: Record<string, string>;
 }
 
 export type DockerRunner = (args: string[], options?: RunOptions) => Promise<CommandResult>;
@@ -96,10 +98,10 @@ export function composeEnvironment(env: NodeJS.ProcessEnv = process.env): Record
     return filtered;
 }
 
-function spawnPipe(file: string, args: string[], cwd?: string) {
+function spawnPipe(file: string, args: string[], cwd?: string, env: Record<string, string> = composeEnvironment()) {
     return Bun.spawn([file, ...args], {
         cwd,
-        env: composeEnvironment(),
+        env,
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
@@ -121,7 +123,7 @@ export async function runCommand(file: string, args: string[], options: RunOptio
     if (options.signal?.aborted) return { code: -1, stdout: "", stderr: "", timedOut: true, truncated: false };
     let proc: ReturnType<typeof spawnPipe>;
     try {
-        proc = spawnPipe(file, args, options.cwd);
+        proc = spawnPipe(file, args, options.cwd, options.env);
     } catch {
         return { code: SPAWN_FAILURE_CODE, stdout: "", stderr: "", timedOut: false, truncated: false };
     }
@@ -178,12 +180,13 @@ export async function runCommand(file: string, args: string[], options: RunOptio
     }
 }
 
-export function createDockerRunner(options: { dockerPath?: string; timeoutMs?: number; maxBytes?: number } = {}): DockerRunner {
+export function createDockerRunner(options: { dockerPath?: string; timeoutMs?: number; maxBytes?: number; env?: Record<string, string> } = {}): DockerRunner {
     const dockerPath = options.dockerPath ?? "docker";
     const timeoutMs = options.timeoutMs ?? 5000;
     const maxBytes = options.maxBytes ?? 1024 * 1024;
+    const env = options.env;
     return (args, overrides = {}) =>
-        runCommand(dockerPath, args, { timeoutMs, maxBytes, ...overrides });
+        runCommand(dockerPath, args, { timeoutMs, maxBytes, env, ...overrides });
 }
 
 export const SPAWN_FAILURE = SPAWN_FAILURE_CODE;

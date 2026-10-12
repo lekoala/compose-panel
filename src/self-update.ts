@@ -488,8 +488,10 @@ export interface SelfUpdaterOptions {
     now?: () => number;
     /** Bound for the image pull. */
     pullTimeoutMs: number;
-    /** Bound for one updater run, used by `wait`. */
+    /** Bound for one updater run, used by `wait` and `settle`. */
     updaterTimeoutMs?: number;
+    /** Pause between Docker polls in `settle`. */
+    sleep?: (ms: number) => Promise<void>;
     /** Cap on captured output. */
     maxBytes: number;
 }
@@ -627,8 +629,14 @@ export class SelfUpdater {
     /**
      * Remove a finished updater of the panel, then start a new one. Refuses a
      * running updater and never touches a same-named foreign container.
+     *
+     * Resolves `started` once Docker shows the updater, `unconfirmed` when
+     * the start command failed or timed out and Docker cannot tell yet: the
+     * daemon may have started it anyway, so the caller must keep mutations
+     * paused (see `settle`). Throws only when the updater certainly did not
+     * start.
      */
-    async launch(identity: SelfIdentity, plan: UpdatePlan): Promise<void> {
+    async launch(identity: SelfIdentity, plan: UpdatePlan): Promise<"started" | "unconfirmed"> {
         const args = updaterRunArgs(identity, plan);
         const previous = await this.lookup();
         if (previous.kind === "foreign") {
@@ -642,14 +650,48 @@ export class SelfUpdater {
             if (removed.code !== 0 || removed.timedOut) throw new SelfUpdateError("Docker could not remove the previous updater container. Nothing was changed.", 503);
         }
         const started = await this.run(args);
-        if (started.code !== 0 || started.timedOut) {
+        if (started.code === 0 && !started.timedOut) return "started";
+        // The client gave up, but the daemon may still have created and
+        // started the updater: ask Docker before calling it a non-start.
+        let after: UpdaterLookup | null;
+        try { after = await this.lookup(); }
+        catch { after = null; }
+        if (after?.kind === "run") return "started";
+        if (after?.kind === "none" && !started.timedOut) {
             const reason = firstLine(started.stderr);
             throw new SelfUpdateError(`Docker could not start the updater${reason ? `: ${reason}` : "."} Nothing was changed.`, 503);
         }
+        return "unconfirmed";
     }
 
     /** Resolves when the updater container stops (or the bound elapses). */
     async wait(): Promise<void> {
         await this.run(["container", "wait", "--", UPDATER_NAME], { timeoutMs: this.options.updaterTimeoutMs ?? 20 * 60 * 1000 }).catch(() => undefined);
+    }
+
+    /**
+     * Resolves once Docker confirms no updater is running: it ended, or it
+     * never appeared. Until then the caller keeps mutations paused. Bounded by
+     * `updaterTimeoutMs` (ADR 0018, "Bounded wait").
+     */
+    async settle(): Promise<void> {
+        const sleep = this.options.sleep ?? ((ms: number) => Bun.sleep(ms));
+        const end = Date.now() + (this.options.updaterTimeoutMs ?? 20 * 60 * 1000);
+        let absent = 0;
+        while (Date.now() < end) {
+            let lookup: UpdaterLookup;
+            try { lookup = await this.lookup(); }
+            catch { await sleep(5000); continue; }
+            if (lookup.kind !== "run") {
+                // A start still in flight shows up within seconds; absent
+                // several times in a row means it never started.
+                if (++absent >= 3) return;
+                await sleep(2000);
+                continue;
+            }
+            absent = 0;
+            if (lookup.run.outcome !== "running") return;
+            await this.wait();
+        }
     }
 }

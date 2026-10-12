@@ -59,6 +59,10 @@ export interface FakeDocker {
     inspectOutput: string;
     localBuild: boolean;
     imageInspectFails: boolean;
+    /** The daemon starts the updater even though `container run` fails (client timeout). */
+    startsOnFailure: boolean;
+    /** `container inspect` of the updater fails once `container run` was called. */
+    inspectFailsAfterRun: boolean;
     /** Resolves pending `container wait` calls. */
     finishWait: () => void;
 }
@@ -77,12 +81,17 @@ export function fakeDocker(): FakeDocker {
         inspectOutput: panelInspect(),
         localBuild: false,
         imageInspectFails: false,
+        startsOnFailure: false,
+        inspectFailsAfterRun: false,
         finishWait: () => release(),
         runner: async args => {
             docker.calls.push(args);
             const key = args.slice(0, 2).join(" ");
             if (key === "container inspect" && args[3] === PANEL_ID) return ok(docker.inspectOutput);
             if (key === "container inspect" && args[3] === UPDATER_NAME) {
+                if (docker.inspectFailsAfterRun && docker.calls.some(call => call[1] === "run")) {
+                    return { code: 1, stdout: "", stderr: "Cannot connect to the Docker daemon", timedOut: false, truncated: false };
+                }
                 if (!docker.updater) return { code: 1, stdout: "[]", stderr: `Error: No such container: ${UPDATER_NAME}`, timedOut: false, truncated: false };
                 const labels = docker.updater.foreign ? {} : { [UPDATER_LABEL]: "1", ...docker.updater.labels };
                 return ok(JSON.stringify([{
@@ -104,7 +113,7 @@ export function fakeDocker(): FakeDocker {
             if (key === "image tag") return ok();
             if (key === "container rm") { docker.updater = null; return ok(); }
             if (key === "container run") {
-                if (docker.runResult.code === 0) docker.updater = { status: "running", exitCode: 0 };
+                if (docker.runResult.code === 0 || docker.startsOnFailure) docker.updater = { status: "running", exitCode: 0 };
                 return docker.runResult;
             }
             if (key === "container wait") { await waiting; return ok("0"); }
@@ -159,6 +168,7 @@ export function fakeSelfUpdater(docker: FakeDocker, mountinfo: string | null = M
         readMountinfo: async () => mountinfo,
         releases: releases.source,
         now: () => NOW,
+        sleep: () => Bun.sleep(1),
         pullTimeoutMs: 1000,
         maxBytes: 1024 * 1024,
     });
