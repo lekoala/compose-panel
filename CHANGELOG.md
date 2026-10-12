@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.1
+
+- Fix: the production entry point (`src/server.ts`) gave the container
+  inspector and self-update no Docker runner, so they used the unavailable
+  fallback while Compose calls worked. Other containers, Containers and Server
+  reported Docker as unreachable, and About could not check for updates. The
+  wiring now lives in `src/bootstrap.ts`, shared by the server and a test
+  that proves every Docker boundary reaches the same runner; the Linux lab
+  also checks that the real server lists a container outside any stack.
+  Upgrade from 0.3.0 on the host (`pull panel`, then
+  `up -d --no-deps panel`): 0.3.0 cannot check for updates itself.
+- Release workflow: a release that already exists (created in the GitHub
+  interface, or a re-run) keeps its notes and gets the image digest line,
+  instead of failing.
+- CI: Docker and Pages actions moved to releases running on Node.js 24, and
+  runners are pinned to `ubuntu-24.04` instead of `ubuntu-latest`.
+- Tab icon: a plate that follows the color scheme (dark by default, light when
+  the scheme says light), legible on any tab bar.
+
 ## 0.3.0
 
 - Self-update (ADR 0018): a new **About** page (`/about`, in the sidebar) shows

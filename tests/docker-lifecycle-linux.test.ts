@@ -308,6 +308,19 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(await projectServices("cp-qa-shared")).toEqual(["witness"]);
     }, 90_000);
 
+    test("the real server lists a container outside any stack (production wiring)", async () => {
+        // Regression: src/server.ts once gave the container inspector no runner,
+        // so Other containers reported Docker as unreachable.
+        await dockerOk(["run", "-d", "--name", "cp-qa-standalone", IMAGE, "sleep", "3600"]);
+        try {
+            const page = await panel!.get("/containers?state=all");
+            expect(page.status).toBe(200);
+            expect(await page.text()).toContain("cp-qa-standalone");
+        } finally {
+            await docker(["rm", "-f", "cp-qa-standalone"]);
+        }
+    }, 60_000);
+
     test("pulling by tag records the multi-platform index digest in RepoDigests (ADR 0018)", async () => {
         // The release publishes the index digest; the panel compares it with
         // RepoDigests, never with the local image ID. IMAGE is multi-platform.

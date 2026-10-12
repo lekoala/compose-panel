@@ -1,22 +1,11 @@
-import { createApp } from "./app.ts";
-import { createComposeProvider } from "./compose-provider.ts";
+import { bootstrap } from "./bootstrap.ts";
 import { loadConfig } from "./config.ts";
-import { createDockerRunner } from "./docker.ts";
-import { resolveRoot } from "./stacks.ts";
 
 const config = loadConfig();
-const stacksRoot = await resolveRoot(config.stacksDir);
-const runner = createDockerRunner({
-    dockerPath: config.dockerPath,
-    timeoutMs: config.dockerTimeoutMs,
-    maxBytes: config.dockerMaxBytes,
-});
-const provider = createComposeProvider({ runner, engine: config.composeEngine, dockerPath: config.dockerPath });
-const capabilities = await provider.detect();
+const { app, capabilities } = await bootstrap(config);
 if (!capabilities.available) {
     console.warn(`Compose provider "${capabilities.engine}" did not answer; stack status will be reported as unknown.`);
 }
-const app = createApp({ config, stacksRoot, provider });
 
 // IMPORTANT: hardcoded loopback bind, never configurable (ADR 0010 / 0012).
 // Remote access goes through an SSH tunnel or a TLS reverse proxy on the same
