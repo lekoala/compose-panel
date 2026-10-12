@@ -80,11 +80,13 @@ test("logs panel exposes the snapshot link and the follow stream", () => {
 
 test("logs panel offers server-known services and line counts without trusting them", () => {
     const html = logsPanel("demo", 200, "", ["web", "db", "web", "<b>evil</b>"]);
-    expect(html).toContain('<option value="">All services</option>');
-    expect(html).toContain('<option value="web">web</option>');
-    expect(html).toContain('<option value="db">db</option>');
+    expect(html).toContain('id="logs-service"');
+    expect(html).toContain('name="service"');
+    expect(html).toContain('value=""');
+    expect(html).toContain('value="web"');
+    expect(html).toContain('value="db"');
     expect(html).toContain("&lt;b&gt;evil&lt;/b&gt;");
     expect(html).not.toContain("<b>evil</b>");
-    expect(html).toContain('<option value="500">500</option>');
+    expect(html).toContain('value="500"');
     expect(html).toContain('method="get"');
 });

@@ -22,9 +22,11 @@
 - Docs: the upgrade procedure covers the published image as well as local
   builds, and is the recovery path for a failed self-update.
 - Stack actions need an honest state (ADR follow-up): `unknown` offers no
-  action at all (the server already refused every mutation there through its
-  fail-closed project check); the Actions card takes the full state instead of
-  a `deployed` boolean.
+  action at all. The server refuses every mutation whose project identity is
+  uncertain (unreadable `.env`, ambiguous or unreachable project list); when
+  only the container readout fails, the verified `-p` identity still holds,
+  so the block is UI-only until the state is re-read. The Actions card takes
+  the full state instead of a `deployed` boolean.
 - New `Start` action (ADR 0019): `docker compose start` on deployed stacks,
   for stopped containers, without recreating anything. `Up` stays the only
   action that creates containers or applies file changes.

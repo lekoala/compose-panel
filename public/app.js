@@ -271,6 +271,13 @@
 
         follow.addEventListener("click", openFollow);
         if (refresh) refresh.addEventListener("click", function () { if (!source) loadSnapshot(); });
+        /* In-place refresh like Refresh: without JavaScript the form submits
+         * natively to the plain-text snapshot. */
+        var form = document.getElementById("logs-form");
+        if (form) form.addEventListener("submit", function (e) {
+            e.preventDefault();
+            if (!source) loadSnapshot();
+        });
         stop.addEventListener("click", function () {
             setStatus("Stopped following.");
             shutdown(false);

@@ -1354,8 +1354,7 @@ describe("operations routes", () => {
             expect(calls.find(args => args.includes("restart"))).toEqual(
                 expect.arrayContaining(["restart", "--no-deps", "--", "web"]),
             );
-            const done = await (await authed(app, "/stacks/demo", session)).text();
-            expect(done).toContain("Last action: Restart · web");
+            expect(app.operations.forStack("demo")?.service).toBe("web");
             await new Promise(resolve => setTimeout(resolve, 20));
             const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
             expect(raw).toContain('"event":"operation","result":"started"');

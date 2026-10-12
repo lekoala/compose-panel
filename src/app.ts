@@ -1274,7 +1274,7 @@ export function createApp(options: AppOptions): App {
             }, guard);
         }
         const selection = await resolveLogSelection(
-            { composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
+            { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
             query.get("service"),
             query.get("tail"),
         );
@@ -1357,7 +1357,7 @@ export function createApp(options: AppOptions): App {
         let selection: Awaited<ReturnType<typeof resolveLogSelection>>;
         try {
             selection = await resolveLogSelection(
-                { composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
+                { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
                 query.get("service"),
                 query.get("tail"),
             );
