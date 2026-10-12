@@ -63,6 +63,9 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         logTailLines: 200,
         logMaxBytes: 262_144,
         logTimeoutMs: 1_800_000,
+        toolboxMaxManifestBytes: 262_144,
+        toolboxMaxActions: 50,
+        toolboxMaxTimeoutMs: 900_000,
         ...overrides,
     };
     return createApp({ config, stacksRoot, runner, provider, audit, inspector, selfUpdater });
@@ -91,6 +94,7 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         inspectImages: async () => empty,
         validateConfig: async () => empty,
         listServices: async () => [],
+        runningContainerIds: async () => [],
         readLogs: async () => empty,
         pull: async () => empty,
         up: async () => empty,

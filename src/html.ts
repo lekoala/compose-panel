@@ -7,6 +7,7 @@ import type { AccessReport, AccessStatus } from "./access.ts";
 import { ROLLBACK_TAG, UPDATER_NAME, recoveryCommands, rollbackCommands, type SelfIdentity, type SelfUpdateStatus, type UpdaterOutcome } from "./self-update.ts";
 import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerDetails, type ContainerFilter } from "./container-state.ts";
 import { statDisplayName, type AttentionItem, type AttentionReason, type ClassifiedStat, type DiskUsage, type DiskUsageRow, type EngineInfo, type Insights, type StackUsage } from "./insights.ts";
+import type { ToolboxAction, ToolboxRunner } from "./toolbox.ts";
 import packageJson from "../package.json";
 
 const VERSION = packageJson.version;
@@ -472,6 +473,7 @@ const OPERATION_STATUS_LABELS: Record<string, string> = {
     succeeded: "Succeeded",
     failed: "Failed",
     unknown: "Outcome unknown",
+    refused: "Refused",
 };
 
 export function operationStatusLabel(status: string): string {
@@ -486,11 +488,15 @@ function formatDuration(ms: number): string {
 }
 
 /** Plain-language details for an operation; shared by the server render and app.js. */
-export function operationDetails(operation: Pick<OperationView, "exitCode" | "timedOut" | "truncated" | "startedAt" | "endedAt">): string {
+export function operationDetails(operation: Pick<OperationView, "exitCode" | "timedOut" | "truncated" | "startedAt" | "endedAt" | "source">): string {
     const parts: string[] = [];
     if (operation.endedAt !== null) parts.push(`took ${formatDuration(operation.endedAt - operation.startedAt)}`);
     if (operation.exitCode !== null) parts.push(`exit code ${operation.exitCode}`);
-    if (operation.timedOut) parts.push("stopped at the time limit — check the services to see what actually happened");
+    // An app action runs inside a container; a Compose operation may still be
+    // applying changes to the stack. Same behaviour, different wording.
+    if (operation.timedOut) parts.push(operation.source
+        ? "stopped waiting at the time limit — the action may still be running in the container, so check it before retrying"
+        : "stopped at the time limit — the operation may still be applying changes, so check the stack before retrying");
     if (operation.truncated) parts.push("output shortened (only the most recent part is kept)");
     return parts.join(" · ");
 }
@@ -501,8 +507,16 @@ export function operationPanel(operation: OperationView | null, stack?: string):
     const stream = stack !== undefined ? ` data-op-stream="${stackHref}/operations/events"` : "";
     const started = new Date(operation.startedAt).toISOString();
     const details = operationDetails(operation);
+    // An application action uses its own label: a script named `start` must not
+    // be shown as the Compose "Start". `Object.hasOwn` keeps an app script named
+    // `constructor`/`toString` from resolving to an inherited member.
+    const title = operation.source
+        ? operation.label
+        : Object.hasOwn(OPERATION_LABELS, operation.action)
+            ? OPERATION_LABELS[operation.action as OperationAction]
+            : operation.label;
     return `<section class="card operation"${stream} data-op-status="${escapeHtml(operation.status)}" data-op-started="${operation.startedAt}">`
-        + `<h2>Last action: ${escapeHtml(OPERATION_LABELS[operation.action] ?? operation.action)}${operation.service ? ` · ${escapeHtml(operation.service)}` : ""}</h2>`
+        + `<h2>Last action: ${escapeHtml(title)}${operation.service ? ` · ${escapeHtml(operation.service)}` : ""}</h2>`
         + `<p class="op-summary"><span class="state state-${escapeHtml(operation.status)}" id="op-status" aria-live="polite">${escapeHtml(operationStatusLabel(operation.status))}</span>`
         + ` <span class="muted">started <time datetime="${escapeHtml(started)}" data-local-time>${started.slice(11, 19)} UTC</time></span>`
         + `<span class="muted" id="op-meta">${details ? ` · ${escapeHtml(details)}` : ""}</span></p>`
@@ -534,6 +548,99 @@ export function logsPanel(name: string, tailLines: number, timezone = "", servic
         + `<p id="logs-status" class="muted" role="status">Not following.</p>`
         + `<pre class="output" id="logs-output"></pre>`
         + `</section>`;
+}
+
+export interface ToolboxSourceView {
+    id: string;
+    service: string;
+    runner: ToolboxRunner;
+    workdir: string | null;
+    user: string | null;
+    /** Catalog revision captured at render time; null when unavailable. */
+    revision: string | null;
+    actions: ToolboxAction[];
+    /** Reason the source cannot be used right now (service down, replicas…). */
+    unavailable: string | null;
+}
+
+export interface ToolboxPageOptions {
+    csrf: string;
+    access?: string;
+    timezone?: string;
+    nav?: NavigationOptions;
+    stack: string;
+    sources: ToolboxSourceView[];
+    operation?: OperationView | null;
+    notice?: { kind: NoteKind; text: string };
+    error?: { title: string; message: string };
+}
+
+const RUNNER_LABELS: Record<ToolboxRunner, string> = { composer: "Composer", npm: "npm", bun: "Bun" };
+
+function toolboxActionForm(stack: string, source: ToolboxSourceView, action: ToolboxAction, csrf: string, busy: boolean): string {
+    const actionUrl = `/stacks/${encodeURIComponent(stack)}/actions`;
+    const disabled = busy ? " disabled" : "";
+    const form = `<form method="post" action="${actionUrl}" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">`
+        + `<input type="hidden" name="source" value="${escapeHtml(source.id)}">`
+        + `<input type="hidden" name="action" value="${escapeHtml(action.name)}">`
+        + `<input type="hidden" name="revision" value="${escapeHtml(source.revision ?? "")}">`
+        + `<button type="submit" class="btn"${disabled} data-op-button data-busy-label="Starting…">${escapeHtml(action.label)}</button></form>`;
+    if (action.confirmation) {
+        // Irreversible: a disclosure asks for a second, explicit click. Works without JS.
+        return `<details class="op-confirm"><summary class="op-row"><span class="btn">${escapeHtml(action.label)}…</span><span class="op-help"><code>${escapeHtml(action.name)}</code></span></summary>`
+            + `<div class="op-confirm-panel">${note("warn", action.confirmation)}<div class="op-row">${form}</div></div></details>`;
+    }
+    return `<div class="op-row">${form}<p class="op-help"><code>${escapeHtml(action.name)}</code>${action.group ? ` · ${escapeHtml(action.group)}` : ""}</p></div>`;
+}
+
+function toolboxSourceCard(stack: string, source: ToolboxSourceView, csrf: string, busy: boolean): string {
+    const context = [
+        source.workdir ? `workdir <code>${escapeHtml(source.workdir)}</code>` : "",
+        source.user ? `user <code>${escapeHtml(source.user)}</code>` : "",
+    ].filter(Boolean).join(" · ");
+    const head = `<h2><code>${escapeHtml(source.service)}</code> <small>${escapeHtml(RUNNER_LABELS[source.runner])}</small></h2>`;
+    const meta = context ? `<p class="meta">${context}</p>` : "";
+    if (source.unavailable) {
+        return `<section class="card">${head}${meta}${note("warn", source.unavailable)}</section>`;
+    }
+    if (source.actions.length === 0) {
+        return `<section class="card">${head}${meta}<p class="muted">No action is declared for this source.</p></section>`;
+    }
+    const rows = source.actions.map(action => toolboxActionForm(stack, source, action, csrf, busy)).join("");
+    return `<section class="card">${head}${meta}<div class="op-list">${rows}</div></section>`;
+}
+
+/**
+ * Application actions page (ADR 0026). HTML-first: every action is a plain POST
+ * form and a confirmation is a native `<details>`, so the page works without
+ * JavaScript. Keeping it a dedicated page avoids reading container manifests on
+ * every stack view.
+ */
+export function toolboxPage(options: ToolboxPageOptions): string {
+    const href = `/stacks/${encodeURIComponent(options.stack)}`;
+    const busy = options.operation?.status === "running";
+    const intro = `<p class="lead">Run this stack's declared application actions (Composer, npm or Bun scripts). Each action runs non-interactively inside its container and is logged like any other operation.</p>`;
+    const notice = options.notice ? note(options.notice.kind, options.notice.text) : "";
+    const error = options.error ? note("error", options.error.message, { title: options.error.title }) : "";
+    const body = options.sources.length > 0
+        ? options.sources.map(source => toolboxSourceCard(options.stack, source, options.csrf, busy)).join("")
+        : `<section class="card"><h2>No application actions</h2>`
+            + `<p class="muted">This stack declares no actions. Add an <code>x-compose-panel</code> section to its Compose file and a <code>compose-panel.actions</code> block to the project's manifest:</p>`
+            + `<pre class="output">x-compose-panel:
+  toolbox:
+    sources:
+      - id: backend
+        service: app
+        runner: composer</pre>`
+            + `<p class="muted">The extension only says <em>where</em> to run. Each action must also be declared in the project's <code>composer.json</code> (<code>extra["compose-panel"]</code>) or <code>package.json</code> (<code>"compose-panel"</code>).</p></section>`;
+    const operation = operationPanel(options.operation ?? null, options.stack);
+    return documentHtml(
+        `${options.stack} · Actions`,
+        `<p class="crumbs"><a href="${href}">← Back to ${escapeHtml(options.stack)}</a></p>`
+        + `<div class="page-head"><h1>Application actions</h1><a href="${href}" class="btn">Stack</a></div>`
+        + intro + notice + error + operation + body,
+        { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, nav: options.nav, scripts: ["/app.js"] },
+    );
 }
 
 export interface AuditPageOptions {

@@ -62,9 +62,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - On `SIGTERM`/`SIGINT`, new operations, saves and log follows are refused synchronously before anything is awaited, then running work drains under one shared deadline. There is no persistence and no automatic replay: after a crash the outcome may be unknown and the UI re-reads Docker.
 - Operation output is captured from both streams and bounded; pipe chunks stream to observers while the command runs (retention stays head-capped with a truncation flag). Output is HTML-escaped before display and never written to application logs.
 
-## Application toolbox (planned, ADR 0026)
-Not implemented. Accepted by [ADR 0026](adr/0026-application-toolbox.md); this
-records the boundary the future feature must respect, not current behavior.
+## Application toolbox (ADR 0026)
 
 - The panel may execute only **explicitly declared, non-interactive application
   actions** inside a running stack service. There is still no arbitrary command
@@ -81,18 +79,28 @@ records the boundary the future feature must respect, not current behavior.
   catalog, validates the name against a strict grammar that refuses option-like
   names (a leading `-`) for all runners, and never builds the argument array from
   the transmitted name.
-- Discovery resolves exactly one running container per service and reads the
-  manifest from that container via `docker cp` (the Engine archive API),
-  size-capped, never by running the runner. Several running containers make the
-  action unavailable in V1 (no `--index`, no fan-out).
-- Execution acquires the per-stack lock before revalidating, pins the same
-  container id, and runs a fixed `docker exec` argument array with no shell, no
-  TTY, no stdin and no `--privileged`; the optional `user`/`workdir` override the
+- Discovery resolves exactly one running container per service (`compose ps
+  --status running -q`) and reads the manifest from that container via
+  `docker cp -- <id>:<path> <private temp dir>`, never by running the runner.
+  The **read** is capped (`COMPOSE_PANEL_TOOLBOX_MAX_MANIFEST_BYTES`); the
+  transfer itself is **not** size-bounded, so directories and symlinks are
+  refused, the temp directory is private, the copy has a timeout and cleanup
+  always runs. Several running containers make the action unavailable (no
+  `--index`, no fan-out).
+- Execution acquires the per-stack lock before revalidating (container,
+  manifest and revision are re-resolved under the lock), pins the same container
+  id, and runs a fixed `docker exec` argument array with no shell, no TTY, no
+  stdin and no `--privileged`; the optional `user`/`workdir` override the
   container defaults, and a supplied `workdir` must be absolute. Mutations stay
   authenticated, Origin- and CSRF-protected and recorded in the activity log
-  (action, source, container id, image id, catalog revision, exit code, bounded
-  output).
-- Success is exit 0; a timeout is `unknown`. The lock does not protect against
+  (`toolbox`: action, source, container id, image id, catalog revision, exit
+  code; never the output). Output is HTML-escaped before display and never
+  written to application logs.
+- Success is exit 0; a timeout is `unknown`. A confirmed termination releases
+  the lock, but the action may still be running in the container; the panel does
+  not claim it stopped the work. An under-lock revalidation mismatch (a changed
+  declaration, project or catalog) ends the operation as `refused` with nothing
+  executed, distinct from a failed run. The lock does not protect against
   external Docker writers, and the container is pinned so an action is never run
   on a container other than the one discovered.
 

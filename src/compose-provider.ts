@@ -68,6 +68,14 @@ export interface ComposeProvider {
     /** Resolve only the effective name; never return or publish interpolated config. */
     projectName(input: { composeFile: string; cwd: string; envFile?: string }): Promise<string | null>;
     projectServices(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult>;
+    /**
+     * Read-only: IDs of the currently running containers of one service, from
+     * `compose ps --status running -q`. `null` when Compose fails, times out or
+     * truncates, or the service name is invalid: callers must refuse, never
+     * guess a container. Used to pin one container for the application toolbox
+     * ([ADR 0026]).
+     */
+    runningContainerIds(input: { project: string; composeFile: string; cwd: string; service: string; envFile?: string }): Promise<string[] | null>;
     /** Read-only: which image ID each container of the project runs. */
     projectImages(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult>;
     /**
@@ -185,6 +193,22 @@ class DockerComposeProvider implements ComposeProvider {
             ["compose", "-p", input.project, "-f", input.composeFile, "images", "--format", "json"],
             { cwd: input.cwd },
         );
+    }
+
+    async runningContainerIds(input: { project: string; composeFile: string; cwd: string; service: string; envFile?: string }): Promise<string[] | null> {
+        if (!this.caps.operations.ps) return null;
+        if (!isComposeServiceName(input.service)) return null;
+        const args = ["compose", "-p", input.project];
+        // The verified `.env` is passed explicitly, exactly like a mutation, so
+        // Compose cannot read one implicitly (COMPOSE_ENV_FILES or a local file).
+        if (input.envFile) args.push("--env-file", input.envFile);
+        args.push("-f", input.composeFile, "ps", "--status", "running", "-q", input.service);
+        const result = await this.runner(args, { cwd: input.cwd });
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        const ids = result.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+        // A partial or surprising answer must never be used to pick a container.
+        if (!ids.every(id => /^[0-9a-f]{12,64}$/.test(id))) return null;
+        return [...new Set(ids)];
     }
 
     inspectImages(refs: string[]): Promise<CommandResult> {

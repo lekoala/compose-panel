@@ -121,6 +121,7 @@ footer{border-top:1px solid var(--border);padding-block:1rem;color:var(--muted);
 .state{display:inline-block;padding:.1rem .55rem;border-radius:1rem;font-size:.8rem;font-weight:600;border:1px solid var(--border);color:var(--muted);white-space:nowrap}
 .state-running{border-color:var(--accent);color:var(--accent)}
 .state-stopped{border-color:var(--warn);color:var(--warn)}
+.state-refused{border-color:var(--warn);color:var(--warn)}
 .state-not-created{border-style:dashed}
 .state-managed{border-style:dotted}
 .state-unknown,.state-failed{border-color:var(--danger);color:var(--danger)}

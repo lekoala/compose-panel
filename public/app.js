@@ -73,7 +73,7 @@
         document.title = busy ? "● " + BASE_TITLE : BASE_TITLE;
     }
 
-    var STATUS_LABELS = { running: "Running", succeeded: "Succeeded", failed: "Failed", unknown: "Outcome unknown" };
+    var STATUS_LABELS = { running: "Running", succeeded: "Succeeded", failed: "Failed", unknown: "Outcome unknown", refused: "Refused" };
 
     function duration(ms) {
         var s = Math.max(0, Math.round(ms / 1000));
@@ -85,7 +85,9 @@
         var parts = [];
         if (typeof snap.endedAt === "number" && typeof snap.startedAt === "number") parts.push("took " + duration(snap.endedAt - snap.startedAt));
         if (snap.exitCode !== null && snap.exitCode !== undefined) parts.push("exit code " + snap.exitCode);
-        if (snap.timedOut) parts.push("stopped at the time limit — check the services to see what actually happened");
+        if (snap.timedOut) parts.push(snap.source
+            ? "stopped waiting at the time limit — the action may still be running in the container, so check it before retrying"
+            : "stopped at the time limit — the operation may still be applying changes, so check the stack before retrying");
         if (snap.truncated) parts.push("output shortened (only the most recent part is kept)");
         return parts.join(" · ");
     }

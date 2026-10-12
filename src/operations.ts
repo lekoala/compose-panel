@@ -10,14 +10,30 @@ export function isOperationAction(value: string): value is OperationAction {
     return (OPERATION_ACTIONS as readonly string[]).includes(value);
 }
 
-export type OperationStatus = "running" | "succeeded" | "failed" | "unknown";
+export type OperationStatus = "running" | "succeeded" | "failed" | "unknown" | "refused";
+
+/** A declared app action either produces a command result or is refused before running. */
+export type AppActionOutcome = CommandResult | { refused: string };
 
 export interface OperationView {
     id: string;
     stack: string;
-    action: OperationAction;
+    /** Compose action, or the application script name for a toolbox action. */
+    action: string;
+    /** Human label for display (compose action name, or the declared label). */
+    label: string;
     /** Service the action was scoped to, if any (ADR 0021). */
     service?: string;
+    /** Application toolbox source id, when this is a declared app action. */
+    source?: string;
+    /** Application toolbox script name, when this is a declared app action. */
+    script?: string;
+    /** Pinned container the app action ran in, for the audit record. */
+    containerId?: string;
+    /** Image ID of that container, for the audit record. */
+    imageId?: string;
+    /** Catalog revision revalidated under the lock, for the audit record. */
+    revision?: string;
     status: OperationStatus;
     startedAt: number;
     endedAt: number | null;
@@ -100,29 +116,13 @@ export class OperationManager {
     }
 
     start(input: { stack: string; action: OperationAction; target: ComposeTarget }): OperationView {
-        if (this.shuttingDown) throw new OperationsDisabledError();
-        const release = this.locks.tryAcquire(input.stack);
-        if (!release) throw new StackBusyError();
-        if (input.target.project && this.projects.has(input.target.project)) {
-            release();
-            throw new StackBusyError("Another action is already running for the same Compose project. Wait for it to finish, then try again.");
-        }
-        if (input.target.project) this.projects.add(input.target.project);
-
-        const operation: OperationView = {
-            id: randomSuffix(),
+        const { operation, release } = this.begin({
             stack: input.stack,
             action: input.action,
+            label: input.action,
             service: input.target.service,
-            status: "running",
-            startedAt: Date.now(),
-            endedAt: null,
-            exitCode: null,
-            output: "",
-            truncated: false,
-            timedOut: false,
-        };
-        this.last.set(input.stack, operation);
+            project: input.target.project,
+        });
 
         const target: ComposeTarget = {
             ...input.target,
@@ -133,6 +133,78 @@ export class OperationManager {
         this.tasks.add(task);
         void task.finally(() => this.tasks.delete(task));
         return operation;
+    }
+
+    /**
+     * Run a declared, non-interactive application action (ADR 0026). The `run`
+     * closure performs the container resolution, the manifest re-read and the
+     * exec; it is invoked from inside the operation, after the per-stack lock is
+     * held, so validation and execution share the same critical section. It may
+     * call `record` with the identity it actually resolved, so the final audit
+     * line names the exact definition that ran.
+     */
+    startApp(input: {
+        stack: string;
+        source: string;
+        script: string;
+        label: string;
+        project?: string;
+        run: (context: {
+            onOutput: (chunk: string) => void;
+            record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+        }) => Promise<AppActionOutcome>;
+    }): OperationView {
+        const { operation, release } = this.begin({
+            stack: input.stack,
+            action: input.script,
+            label: input.label,
+            source: input.source,
+            script: input.script,
+            project: input.project,
+        });
+        const task = this.executeApp(operation, input.run, release, input.project);
+        this.tasks.add(task);
+        void task.finally(() => this.tasks.delete(task));
+        return operation;
+    }
+
+    /** Shared acquisition: per-stack lock, project reservation, operation record. */
+    private begin(input: {
+        stack: string;
+        action: string;
+        label: string;
+        service?: string;
+        source?: string;
+        script?: string;
+        project?: string;
+    }): { operation: OperationView; release: () => void } {
+        if (this.shuttingDown) throw new OperationsDisabledError();
+        const release = this.locks.tryAcquire(input.stack);
+        if (!release) throw new StackBusyError();
+        if (input.project && this.projects.has(input.project)) {
+            release();
+            throw new StackBusyError("Another action is already running for the same Compose project. Wait for it to finish, then try again.");
+        }
+        if (input.project) this.projects.add(input.project);
+
+        const operation: OperationView = {
+            id: randomSuffix(),
+            stack: input.stack,
+            action: input.action,
+            label: input.label,
+            service: input.service,
+            source: input.source,
+            script: input.script,
+            status: "running",
+            startedAt: Date.now(),
+            endedAt: null,
+            exitCode: null,
+            output: "",
+            truncated: false,
+            timedOut: false,
+        };
+        this.last.set(input.stack, operation);
+        return { operation, release };
     }
 
     /** Refuse new operations synchronously. Running ones keep going. */
@@ -204,6 +276,64 @@ export class OperationManager {
             // The UI reports unknown; restarting loses this in-memory lock.
             if (!terminationUnconfirmed) {
                 if (target.project) this.projects.delete(target.project);
+                release();
+            }
+        }
+    }
+
+    /**
+     * Runs a single app-action command. The caller's closure owns the Docker
+     * work (resolution, manifest re-read, exec); this method only streams,
+     * finalizes and releases the lock, keeping the same lock/unknown semantics
+     * as a Compose operation.
+     */
+    private async executeApp(
+        operation: OperationView,
+        run: (context: {
+            onOutput: (chunk: string) => void;
+            record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+        }) => Promise<AppActionOutcome>,
+        release: () => void,
+        project: string | undefined,
+    ): Promise<void> {
+        let live = false;
+        // Same rule as a Compose mutation: the lock is kept only when the process
+        // exit could not be confirmed. A timeout whose termination is confirmed
+        // releases the lock; the operation is still reported as unknown, because
+        // the work inside the container may continue.
+        let hold = false;
+        const onOutput = (chunk: string) => {
+            live = true;
+            this.appendText(operation, chunk);
+        };
+        const record = (detail: { containerId?: string; imageId?: string; revision?: string }) => {
+            if (detail.containerId) operation.containerId = detail.containerId;
+            if (detail.imageId) operation.imageId = detail.imageId;
+            if (detail.revision) operation.revision = detail.revision;
+        };
+        try {
+            const outcome = await run({ onOutput, record });
+            if ("refused" in outcome) {
+                // Nothing ran: the locked revalidation found a changed declaration.
+                // Append while still "running" (no final notification yet), then set
+                // the terminal status and notify exactly once.
+                this.appendText(operation, outcome.refused);
+                operation.status = "refused";
+                operation.endedAt = Date.now();
+                this.emit(operation);
+                return;
+            }
+            hold = outcome.terminationUnconfirmed === true;
+            if (!live) this.append(operation, outcome);
+            this.finalize(operation, outcome);
+        } catch (error) {
+            operation.status = "unknown";
+            operation.endedAt = Date.now();
+            this.appendText(operation, error instanceof Error ? error.message : "action failed");
+            this.emit(operation);
+        } finally {
+            if (!hold) {
+                if (project) this.projects.delete(project);
                 release();
             }
         }

@@ -1,13 +1,15 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, type NavSection, type NavigationOptions, type NoteKind } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, toolboxPage, type NavSection, type NavigationOptions, type NoteKind, type ToolboxSourceView } from "./html.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { managedBy } from "./deployment.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { listStacks, locateComposeFile, readStackCompose, StackError, validateStackName } from "./stacks.ts";
-import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
+import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, type ProjectContext, type StackDetailStatus } from "./status.ts";
 import { loadContainerDetail, loadContainers } from "./container-status.ts";
 import { parseContainerFilter, type ContainerFilter } from "./container-state.ts";
 import { createContainerInspector, isContainerId, sanitizeTailLines, type ContainerInspector } from "./containers.ts";
+import { createActionRunner, type ActionRunner } from "./action-runner.ts";
+import { buildCatalog, buildRunnerArgv, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
 import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
@@ -68,6 +70,8 @@ export interface AppOptions {
     provider?: ComposeProvider;
     /** Read-only Docker container inspector. Built from `runner` when omitted. */
     inspector?: ContainerInspector;
+    /** Application toolbox Docker adapter (ADR 0026). Built from `runner` when omitted. */
+    actionRunner?: ActionRunner;
     /** Per-stack modifying-operation lock. */
     locks?: StackLocks;
     /** Activity log. Built from `config` and `stacksRoot` when omitted. */
@@ -280,6 +284,8 @@ export function createApp(options: AppOptions): App {
         ?? createComposeProvider({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
     const inspector = options.inspector
         ?? createContainerInspector({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
+    const actionRunner = options.actionRunner
+        ?? createActionRunner({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
     const audit = options.audit ?? new AuditLog({
         dir: config.audit.dir ?? join(stacksRoot, ".compose-panel", "audit"),
         // The default layout is checked from the stacks root down, so a
@@ -296,12 +302,18 @@ export function createApp(options: AppOptions): App {
         maxBytes: config.dockerMaxBytes,
         // The outcome is recorded when the action ends, even if nobody watches it.
         onFinish: operation => void audit.record({
-            event: "operation",
+            event: operation.source ? "toolbox" : "operation",
             result: operation.status,
             stack: operation.stack,
             action: operation.action,
             service: operation.service,
+            // Identity of what actually ran, for an app action; never the output
+            // (log lines may carry secrets). Exit code and timeout stay explicit.
             detail: [
+                operation.source ? `source ${operation.source}` : "",
+                operation.containerId ? `container ${operation.containerId}` : "",
+                operation.imageId ? `image ${operation.imageId}` : "",
+                operation.revision ? `revision ${operation.revision}` : "",
                 operation.exitCode !== null ? `exit code ${operation.exitCode}` : "",
                 operation.timedOut ? "timed out" : "",
             ].filter(Boolean).join(", ") || undefined,
@@ -744,7 +756,7 @@ export function createApp(options: AppOptions): App {
         return htmlResponse(documentHtml(
             stack.name,
             `<p class="crumbs"><a href="/">← All stacks</a></p>`
-            + `<div class="page-head"><h1>${escapeHtml(stack.name)}</h1><a href="${href}/edit" class="btn">Edit files</a></div>`
+            + `<div class="page-head"><h1>${escapeHtml(stack.name)}</h1><span class="row-actions"><a href="${href}/actions" class="btn">App actions</a><a href="${href}/edit" class="btn">Edit files</a></span></div>`
             + `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}${healthSummaryBadge(status.services)}${managedByBadge(owner)}</p>`
             + (notice ? note(notice.kind, notice.text) : "")
             + (status.note ? note("warn", status.note) : "")
@@ -1203,6 +1215,7 @@ export function createApp(options: AppOptions): App {
             truncated: operation.truncated,
             startedAt: operation.startedAt,
             endedAt: operation.endedAt,
+            source: operation.source ?? null,
             output: operation.output,
         });
     }
@@ -1215,6 +1228,7 @@ export function createApp(options: AppOptions): App {
             truncated: operation.truncated,
             startedAt: operation.startedAt,
             endedAt: operation.endedAt,
+            source: operation.source ?? null,
         });
     }
 
@@ -1481,6 +1495,227 @@ export function createApp(options: AppOptions): App {
         return plain(result.truncated ? `${text}\n\n[Output shortened: only the most recent part is kept.]` : text, 200);
     }
 
+    const TOOLBOX_OFFLINE = "Docker did not respond, so the panel could not check this source.";
+
+    interface ToolboxRuntime {
+        imageId: string;
+        workdir: string | null;
+    }
+
+    /** Minimal, fixed projection of one container: image ID and working dir. */
+    async function containerRuntime(id: string): Promise<ToolboxRuntime | null> {
+        let result: Awaited<ReturnType<ContainerInspector["inspect"]>>;
+        try { result = await inspector.inspect(id); }
+        catch { return null; }
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        try {
+            const rows = JSON.parse(result.stdout) as unknown;
+            const row = Array.isArray(rows) ? rows[0] as Record<string, unknown> : null;
+            const imageId = row && typeof row["Image"] === "string" ? row["Image"] : null;
+            if (!imageId) return null;
+            const config = row && typeof row["Config"] === "object" && row["Config"] !== null ? row["Config"] as Record<string, unknown> : null;
+            const configured = config ? config["WorkingDir"] : undefined;
+            const workdir = typeof configured === "string" && configured !== "" ? configured : null;
+            return { imageId, workdir };
+        } catch {
+            return null;
+        }
+    }
+
+    function toolboxLimits(): { maxActions: number; maxTimeoutMs: number } {
+        return { maxActions: config.toolboxMaxActions, maxTimeoutMs: config.toolboxMaxTimeoutMs };
+    }
+
+    function toolboxManifestPath(source: ToolboxSource, runtime: ToolboxRuntime): string {
+        return posix.join(source.workdir ?? runtime.workdir ?? "/", source.manifestFile);
+    }
+
+    function toolboxFileFailure(kind: "too-large" | "not-file" | "error", filename: string): string {
+        if (kind === "too-large") return `The ${filename} is larger than the panel reads.`;
+        if (kind === "not-file") return `The ${filename} is not a regular file (a directory or symbolic link is refused).`;
+        return `The panel could not read the ${filename} from the container.`;
+    }
+
+    /** One source's catalog, or the reason it cannot be used right now. */
+    async function discoverToolboxSource(source: ToolboxSource, context: ProjectContext): Promise<ToolboxSourceView> {
+        const base = { id: source.id, service: source.service, runner: source.runner, workdir: source.workdir, user: source.user };
+        const off = (unavailable: string): ToolboxSourceView => ({ ...base, revision: null, actions: [], unavailable });
+        if (context.kind === "invalid") return off(ENV_NOT_REGULAR);
+        if (context.kind === "ambiguous") return off("Several Docker Compose projects match this stack, so the panel will not choose one.");
+        if (context.kind === "unavailable") return off(TOOLBOX_OFFLINE);
+        if (context.kind === "absent") return off("This stack is not deployed yet, so there is no container to run actions in.");
+        const ids = await provider.runningContainerIds({ project: context.project!, composeFile: context.composeFile, cwd: context.cwd, service: source.service, envFile: context.envFile ?? undefined });
+        if (ids === null) return off(TOOLBOX_OFFLINE);
+        if (ids.length === 0) return off(`Service "${source.service}" is not running, so its actions are unavailable.`);
+        if (ids.length > 1) return off(`Service "${source.service}" has several running containers; the toolbox needs exactly one.`);
+        const id = ids[0]!;
+        const runtime = await containerRuntime(id);
+        if (!runtime) return off("The panel could not read this container's details from Docker.");
+        const file = await actionRunner.readFile(id, toolboxManifestPath(source, runtime), { timeoutMs: config.dockerTimeoutMs, maxBytes: config.toolboxMaxManifestBytes });
+        if (file.kind !== "ok") return off(toolboxFileFailure(file.kind, source.manifestFile));
+        const catalog = buildCatalog(source, file.content, { containerId: id, imageId: runtime.imageId }, toolboxLimits());
+        if (!catalog.ok) return off(catalog.error);
+        return { ...base, revision: catalog.value.revision, actions: catalog.value.actions, unavailable: null };
+    }
+
+    async function renderToolbox(
+        name: string,
+        csrf: string,
+        options: { notice?: { kind: NoteKind; text: string }; error?: { title: string; message: string }; status?: number } = {},
+    ): Promise<Response> {
+        const stack = await readStackCompose(stacksRoot, name);
+        const parsed = parseToolboxSources(stack.source);
+        if (!parsed.ok) throw new StackError(`${parsed.error} Fix the x-compose-panel section of ${stack.filename}.`, 400);
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        const sources: ToolboxSourceView[] = await Promise.all(
+            parsed.value.map(source => discoverToolboxSource(source, context)),
+        );
+        return htmlResponse(toolboxPage({
+            csrf,
+            access,
+            timezone: config.timeZone || undefined,
+            stack: name,
+            sources,
+            operation: operations.forStack(name),
+            notice: options.notice,
+            error: options.error,
+            nav: await sidebarNav("stacks", name),
+        }), options.status ?? 200);
+    }
+
+    type ToolboxPrepare =
+        | { kind: "ok"; containerId: string; imageId: string; manifestWorkdir: string; action: ToolboxAction; revision: string }
+        | { kind: "refused"; message: string };
+
+    /**
+     * Resolve the pinned container, re-read the manifest and revalidate the
+     * revision. Called once for a friendly pre-check and again inside the
+     * operation, under the per-stack lock (ADR 0026).
+     */
+    async function prepareToolboxAction(source: ToolboxSource, context: ProjectContext, actionName: string, expectedRevision: string): Promise<ToolboxPrepare> {
+        if (context.kind !== "resolved") return { kind: "refused", message: "This stack is not deployed with a single Compose project, so no action can run." };
+        const ids = await provider.runningContainerIds({ project: context.project!, composeFile: context.composeFile, cwd: context.cwd, service: source.service, envFile: context.envFile ?? undefined });
+        if (ids === null) return { kind: "refused", message: TOOLBOX_OFFLINE };
+        if (ids.length === 0) return { kind: "refused", message: `Service "${source.service}" is not running.` };
+        if (ids.length > 1) return { kind: "refused", message: `Service "${source.service}" has several running containers; the toolbox needs exactly one.` };
+        const id = ids[0]!;
+        const runtime = await containerRuntime(id);
+        if (!runtime) return { kind: "refused", message: "The panel could not read this container's details from Docker." };
+        const manifestWorkdir = source.workdir ?? runtime.workdir ?? "/";
+        const file = await actionRunner.readFile(id, posix.join(manifestWorkdir, source.manifestFile), { timeoutMs: config.dockerTimeoutMs, maxBytes: config.toolboxMaxManifestBytes });
+        if (file.kind !== "ok") return { kind: "refused", message: toolboxFileFailure(file.kind, source.manifestFile) };
+        const catalog = buildCatalog(source, file.content, { containerId: id, imageId: runtime.imageId }, toolboxLimits());
+        if (!catalog.ok) return { kind: "refused", message: catalog.error };
+        const found = catalog.value.actions.find(action => action.name === actionName);
+        if (!found) return { kind: "refused", message: `This source does not declare the action "${actionName}".` };
+        if (catalog.value.revision !== expectedRevision) {
+            return { kind: "refused", message: "The action definition changed since this page was loaded. Reload the page and try again." };
+        }
+        return { kind: "ok", containerId: id, imageId: runtime.imageId, manifestWorkdir, action: found, revision: catalog.value.revision };
+    }
+
+    /**
+     * Full revalidation under the lock: the Compose declaration, the project
+     * context and the catalog are all re-read, so a save or a redeploy during
+     * the awaited Docker calls cannot make the action run with a stale source
+     * (ADR 0026). The project reserved by the caller is rechecked too.
+     */
+    async function revalidateToolboxAction(name: string, sourceId: string, actionName: string, expectedRevision: string, expectedProject: string | undefined): Promise<ToolboxPrepare> {
+        let stack: Awaited<ReturnType<typeof readStackCompose>>;
+        try { stack = await readStackCompose(stacksRoot, name); }
+        catch { return { kind: "refused", message: "This stack could no longer be read." }; }
+        const parsed = parseToolboxSources(stack.source);
+        if (!parsed.ok) return { kind: "refused", message: parsed.error };
+        const source = parsed.value.find(entry => entry.id === sourceId);
+        if (!source) return { kind: "refused", message: "This action's source is no longer declared by this stack." };
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind !== "resolved") return { kind: "refused", message: "This stack's Compose project can no longer be resolved." };
+        if (expectedProject !== undefined && context.project !== expectedProject) {
+            return { kind: "refused", message: "This stack now belongs to another Compose project." };
+        }
+        return prepareToolboxAction(source, context, actionName, expectedRevision);
+    }
+
+    async function handleToolboxAction(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}/actions`;
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+
+        const sourceId = (form.get("source") ?? "").trim();
+        const actionName = (form.get("action") ?? "").trim();
+        const revision = (form.get("revision") ?? "").trim();
+
+        const stack = await readStackCompose(stacksRoot, name);
+        const parsed = parseToolboxSources(stack.source);
+        if (!parsed.ok) throw new StackError(parsed.error, 400);
+        const source = parsed.value.find(entry => entry.id === sourceId) ?? null;
+        if (!source) throw new StackError("This action's source is not declared by this stack. Nothing was run.", 404);
+        if (!isActionName(actionName)) throw new StackError("This action name is not valid. Nothing was run.", 400);
+        // The revision is always sent by the rendered page; a request without a
+        // valid one cannot have come from a current page, so it is refused.
+        if (!/^[0-9a-f]{64}$/.test(revision)) {
+            return renderToolbox(name, csrf, { error: { title: "Nothing was run.", message: "This page is out of date. Reload the page and try again. Nothing was run." }, status: 409 });
+        }
+
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind === "invalid") throw new StackError(ENV_NOT_REGULAR, 409);
+        if (context.kind === "ambiguous") throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack. Nothing was run.", 409);
+        if (context.kind === "unavailable") throw new StackError("Docker did not respond, so the panel could not check this stack. Nothing was run.", 503);
+        if (context.kind === "absent") throw new StackError("This stack is not deployed yet, so there is nothing to run actions in.", 409);
+
+        // A friendly pre-check without the lock; the authoritative revalidation
+        // runs again inside the operation, under the per-stack lock.
+        const prepared = await prepareToolboxAction(source, context, actionName, revision);
+        if (prepared.kind === "refused") {
+            await recordAudit({ event: "toolbox", result: "refused", actor: clientKey(request, config), stack: name, action: actionName, detail: prepared.message });
+            return renderToolbox(name, csrf, { error: { title: "Nothing was run.", message: prepared.message }, status: 409 });
+        }
+
+        if (!sessions.isActive(session.id)) {
+            await recordAudit({ event: "toolbox", result: "refused", actor: clientKey(request, config), stack: name, action: actionName, detail: "session ended" });
+            return sessionEnded();
+        }
+        try {
+            if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+            operations.startApp({
+                stack: name,
+                source: source.id,
+                script: actionName,
+                label: prepared.action.label,
+                project: context.project ?? undefined,
+                run: async ({ onOutput, record }) => {
+                    // Same critical section as the lock: re-read the Compose
+                    // declaration, re-resolve the context, re-read the manifest,
+                    // revalidate the revision, then exec.
+                    const check = await revalidateToolboxAction(name, source.id, actionName, revision, context.project ?? undefined);
+                    if (check.kind === "refused") return { refused: `${check.message} Nothing was run.` };
+                    record({ containerId: check.containerId, imageId: check.imageId, revision: check.revision });
+                    return actionRunner.exec({
+                        id: check.containerId,
+                        argv: buildRunnerArgv(source.runner, actionName),
+                        user: source.user,
+                        workdir: source.workdir,
+                        timeoutMs: check.action.timeoutMs ?? config.operationTimeoutMs,
+                        maxBytes: config.dockerMaxBytes,
+                        onOutput,
+                    });
+                },
+            });
+            await recordAudit({ event: "toolbox", result: "started", actor: clientKey(request, config), stack: name, action: actionName, detail: `source ${source.id}` });
+            return redirect(back, 303);
+        } catch (error) {
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({ event: "toolbox", result: "refused", actor: clientKey(request, config), stack: name, action: actionName, detail: error.message });
+                return renderToolbox(name, csrf, { error: { title: "Nothing was run.", message: `${error.message} Nothing was run.` }, status: 409 });
+            }
+            throw error;
+        }
+    }
+
     function sseError(error: unknown): Response {
         if (error instanceof StackError) return plain(error.message, error.status);
         console.error("Internal error", error);
@@ -1588,6 +1823,11 @@ export function createApp(options: AppOptions): App {
             try { return await handleOperation(request, decodeName(operationsMatch[1]!), session); }
             catch (error) { return routeError(error, session.csrf, safeName(operationsMatch[1]!)); }
         }
+        const toolboxMatch = /^\/stacks\/([^/]+)\/actions$/.exec(url.pathname);
+        if (toolboxMatch && method === "POST") {
+            try { return await handleToolboxAction(request, decodeName(toolboxMatch[1]!), session); }
+            catch (error) { return routeError(error, session.csrf, safeName(toolboxMatch[1]!)); }
+        }
         if (url.pathname === "/about/check" || url.pathname === "/about/update") {
             if (method !== "POST") return methodNotAllowed("POST");
             try {
@@ -1630,6 +1870,7 @@ export function createApp(options: AppOptions): App {
                 const response = await handleLogsSnapshot(decodeName(logSnapshotMatch[1]!), session.id, url.searchParams);
                 return method === "HEAD" ? withoutBody(response) : response;
             }
+            if (toolboxMatch) return await renderToolbox(decodeName(toolboxMatch[1]!), session.csrf);
             const detailMatch = /^\/stacks\/([^/]+)$/.exec(url.pathname);
             if (detailMatch) {
                 // Fixed messages only: the query flag is never reflected.

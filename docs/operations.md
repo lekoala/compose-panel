@@ -46,6 +46,8 @@ Coming from Dockge: follow [migrating-from-dockge.md](migrating-from-dockge.md).
 ## Diagnostics
 An `unknown` means a command failed or the project identity could not be established, not that the stack is stopped. An operation interrupted by a crash may have partially acted on Docker; re-read the state before retrying.
 
+If a command is stopped at its time limit, the panel reports an **unknown** outcome and does not claim the work stopped. When the process exit could not be confirmed, the stack's lock is kept on purpose: no new action, save or deployment starts for that stack until the panel restarts. This guard is in memory only (it is not persisted), so a panel restart releases it. Inspect the stack on the host (for example with `docker compose ps` and the panel's own logs) before restarting the panel and retrying.
+
 ## Technical references
 - [Bun.spawn — official documentation](https://bun.com/docs/runtime/child-process)
 - [Bun HTTP server, SSE, timeout](https://bun.com/docs/runtime/http/server)
@@ -91,3 +93,66 @@ and then **Up**. The deployed version stays at 2.4.0 until Up changes it to
 2.5.0; declared metadata stays as written in the file. All preview metadata and
 links are fictional. See [ADR 0023](adr/0023-deployment-metadata.md) for the
 isolated Linux test and manual verification procedure.
+
+## Application actions
+
+A stack can offer non-interactive maintenance actions (clear a cache, apply
+migrations, run a health check) through the **App actions** page. Two files
+declare them, and the split is deliberate:
+
+- The Compose file says **where** to run, through an `x-compose-panel` extension
+  that Compose ignores at deploy time:
+
+  ```yaml
+  x-compose-panel:
+    toolbox:
+      sources:
+        - id: backend
+          service: app
+          runner: composer
+          workdir: /app
+          user: www-data
+  ```
+
+  `service` and `runner` (`composer`, `npm` or `bun`) are required; `workdir` and
+  `user` are optional and otherwise use the container's own defaults. A `workdir`
+  must be an absolute path inside the container.
+
+- The project manifest says **what** may run, only through declared actions:
+
+  ```json
+  {
+    "scripts": { "cache:clear": "php bin/console cache:clear" },
+    "extra": {
+      "compose-panel": {
+        "version": 1,
+        "actions": { "cache:clear": { "label": "Clear the cache", "timeout": 120 } }
+      }
+    }
+  }
+  ```
+
+  For `package.json`, use a root `"compose-panel"` property instead of
+  `extra`. Only the listed actions are exposed; every key must name an existing
+  entry of `scripts`. The panel launches the runner (`composer run-script`,
+  `npm run`, `bun run`), never the extracted command, so `pre`/`post` hooks keep
+  working.
+
+The panel reads the manifest from the running container, launches the action
+with a fixed argument array (no shell, no TTY, no free arguments) under the
+per-stack lock, and streams the bounded output like any other operation. The
+service must be running, with exactly one container; a stopped service or a
+service with several replicas is unavailable. If the manifest changes between
+loading the page and clicking, the run is refused and asks you to reload.
+
+The manifest is trusted code, like the Compose file: a deployment can change an
+action's behavior. The tool's timeout is honest — a run stopped at the limit is
+reported as an unknown outcome, and the panel cannot guarantee that the work
+inside the container stopped. The image must provide the runner on its `PATH`;
+the panel never installs Composer, npm or Bun.
+
+Composer applies its own `config.process-timeout` (300 s by default) to a
+script, so a larger `timeout` in the manifest has no effect until that setting is
+raised. The panel passes `--no-interaction`, so a prompt such as "Continue as
+root?" never blocks the action. See
+[ADR 0026](adr/0026-application-toolbox.md).

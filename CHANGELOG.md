@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Application actions toolbox (ADR 0026): a stack declares, in an
+  `x-compose-panel` Compose extension, the services whose Composer/npm/Bun
+  scripts are exposed from each project's own manifest (`extra["compose-panel"]`
+  or `"compose-panel"`). A dedicated **App actions** page runs one action at a
+  time under the per-stack lock, with a fixed `docker exec` argument array (no
+  shell, no TTY, no free arguments), a bounded manifest read, a catalog revision
+  that refuses a stale page, and the existing operations/SSE output. No terminal,
+  no arbitrary command, no host toolbox; the runner must exist in the image.
+
 - Declared deployment owner (ADR 0025): a `stack.managed-by` label shared by
   the stack's services shows a "Managed by" badge on the detail page and warns
   in Actions that an external deployment may overwrite panel changes.

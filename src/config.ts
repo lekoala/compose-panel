@@ -110,6 +110,12 @@ export interface AppConfig {
     logMaxBytes: number;
     /** Maximum lifetime of a `logs --follow` subprocess. */
     logTimeoutMs: number;
+    /** Cap on a project manifest read for the application toolbox. */
+    toolboxMaxManifestBytes: number;
+    /** Maximum number of declared actions per toolbox manifest. */
+    toolboxMaxActions: number;
+    /** Upper bound for a declared action timeout (the manifest value is clamped). */
+    toolboxMaxTimeoutMs: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -351,5 +357,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
         logTailLines: parsePositiveInt(env, "COMPOSE_PANEL_LOG_TAIL_LINES", 200),
         logMaxBytes: parsePositiveInt(env, "COMPOSE_PANEL_LOG_MAX_BYTES", 256 * 1024),
         logTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_LOG_TIMEOUT_MS", 30 * 60 * 1000),
+        toolboxMaxManifestBytes: parsePositiveInt(env, "COMPOSE_PANEL_TOOLBOX_MAX_MANIFEST_BYTES", 256 * 1024),
+        toolboxMaxActions: parsePositiveInt(env, "COMPOSE_PANEL_TOOLBOX_MAX_ACTIONS", 50),
+        toolboxMaxTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_TOOLBOX_MAX_TIMEOUT_MS", 15 * 60 * 1000),
     };
 }

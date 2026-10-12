@@ -23,6 +23,7 @@ function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "start" 
         inspectImages: async () => ok,
         validateConfig: async () => ok,
         listServices: async () => [],
+        runningContainerIds: async () => [],
         readLogs: async () => ok,
         pull: run("pull"),
         up: run("up"),
@@ -250,4 +251,77 @@ test("different stacks cannot mutate the same project concurrently", async () =>
     await settle(manager);
     expect(() => manager.start({ stack: "two", action: "stop", target: shared })).not.toThrow();
     await settle(manager);
+});
+
+test("startApp runs an application action under the same stack lock", async () => {
+    let finish!: (result: CommandResult) => void;
+    const manager = new OperationManager(new StackLocks(), fakeProvider(), { timeoutMs: 1000, maxBytes: 10_000 });
+    const seen: string[] = [];
+    manager.subscribe("demo", operation => seen.push(operation.status));
+    const run = (context: { onOutput: (chunk: string) => void }) => {
+        context.onOutput("working\n");
+        return new Promise<CommandResult>(resolve => { finish = resolve; });
+    };
+    const started = manager.startApp({ stack: "demo", source: "backend", script: "db:migrate", label: "Apply migrations", run });
+    expect(started.status).toBe("running");
+    expect(started.label).toBe("Apply migrations");
+    expect(started.script).toBe("db:migrate");
+    // The app action holds the per-stack lock: a Compose action is refused.
+    expect(() => manager.start({ stack: "demo", action: "up", target })).toThrow(StackBusyError);
+    expect(started.output).toContain("working");
+    finish(ok);
+    await settle(manager);
+    expect(manager.forStack("demo")!.status).toBe("succeeded");
+    expect(seen).toContain("running");
+    expect(seen).toContain("succeeded");
+});
+
+test("startApp reports a timeout as unknown and keeps the lock when unconfirmed", async () => {
+    const locks = new StackLocks();
+    const manager = new OperationManager(locks, fakeProvider(), { timeoutMs: 1000, maxBytes: 10_000 });
+    const run = async (): Promise<CommandResult> => ({ ...ok, code: -1, timedOut: true, terminationUnconfirmed: true });
+    manager.startApp({ stack: "demo", source: "backend", script: "db:migrate", label: "Apply migrations", run });
+    await settle(manager);
+    expect(manager.forStack("demo")!.status).toBe("unknown");
+    expect(manager.forStack("demo")!.timedOut).toBe(true);
+    expect(locks.isLocked("demo")).toBe(true);
+});
+
+test("startApp releases the lock on a timeout whose termination is confirmed", async () => {
+    // Same rule as a Compose mutation: a confirmed CLI exit releases the lock.
+    // The operation is still unknown, because the container work may continue.
+    const locks = new StackLocks();
+    const manager = new OperationManager(locks, fakeProvider(), { timeoutMs: 1000, maxBytes: 10_000 });
+    const run = async (): Promise<CommandResult> => ({ ...ok, code: 137, timedOut: true, terminationUnconfirmed: false });
+    manager.startApp({ stack: "demo", source: "backend", script: "db:migrate", label: "Apply migrations", run });
+    await settle(manager);
+    expect(manager.forStack("demo")!.status).toBe("unknown");
+    expect(locks.isLocked("demo")).toBe(false);
+    expect(() => manager.startApp({ stack: "demo", source: "backend", script: "db:migrate", label: "again", run })).not.toThrow();
+    await settle(manager);
+});
+
+test("startApp marks a locked revalidation refusal as refused and frees the lock", async () => {
+    const locks = new StackLocks();
+    const manager = new OperationManager(locks, fakeProvider(), { timeoutMs: 1000, maxBytes: 10_000 });
+    const run = async () => ({ refused: "The action definition changed. Nothing was run." });
+    manager.startApp({ stack: "demo", source: "backend", script: "db:migrate", label: "Apply migrations", run });
+    await settle(manager);
+    const operation = manager.forStack("demo")!;
+    expect(operation.status).toBe("refused");
+    expect(operation.output).toContain("Nothing was run");
+    expect(locks.isLocked("demo")).toBe(false);
+});
+
+test("startApp notifies the finish callback exactly once for a refusal", async () => {
+    // The refusal text is appended while still running, then the terminal status
+    // is emitted once: a double emit would write two audit lines for one refusal.
+    const finished: string[] = [];
+    const manager = new OperationManager(new StackLocks(), fakeProvider(), {
+        timeoutMs: 1000, maxBytes: 10_000, onFinish: operation => { finished.push(operation.status); },
+    });
+    const run = async () => ({ refused: "changed" });
+    manager.startApp({ stack: "demo", source: "backend", script: "db:migrate", label: "x", run });
+    await settle(manager);
+    expect(finished).toEqual(["refused"]);
 });

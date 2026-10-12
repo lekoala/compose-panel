@@ -26,7 +26,9 @@ listing and classification are pure and unit-tested in `src/container-state.ts`
 (the `src/container-status.ts` loader joins discovery and the inspector). The
 panel exposes no start/stop/remove/exec: the read-only guarantee is
 application-level, not enforced by the socket mount. See
-[ADR 0014](adr/0014-docker-container-inspection.md).
+[ADR 0014](adr/0014-docker-container-inspection.md). The application toolbox
+adds a separate `ActionRunner` boundary (`src/action-runner.ts`) for
+`docker cp`/`docker exec`; this boundary stays read-only ([ADR 0026](adr/0026-application-toolbox.md)).
 
 ## Engine and resource insights (read-only)
 `GET /server` renders Docker's own diagnostics: engine facts (`docker info`,
@@ -76,9 +78,9 @@ Three classes, without a generic framework:
 2. **Long mutations**: allow-listed `up`/`pull`/`stop`/`start`/`restart`/`down`/`pull-up`, built by the provider (`up -d`, detached); one per stack via the lock; the operation is kept in memory and its output is consumed even without a client. Success only on exit 0, timeout reported as unknown. `up` and `restart` take one optional validated service (`--no-deps -- <service>`); scoped `up` never creates.
 3. **Subscriptions**: `logs --follow`; stop the subprocess when the last reader has left. One subprocess per (stack, service, tail) selection, two selections per stack at most.
 
-A fourth class — declared, non-interactive application actions — is accepted but
-not implemented ([ADR 0026](adr/0026-application-toolbox.md)); see *Application
-actions* below.
+A fourth class — declared, non-interactive application actions — runs a
+declared Composer/npm/Bun script inside a stack service ([ADR 0026](adr/0026-application-toolbox.md));
+see *Application actions* below.
 
 ## Restart semantics
 - Browser disconnect ≠ cancellation.
@@ -88,31 +90,32 @@ actions* below.
 - V1: no operation persistence. Add an ADR if a durable history requirement is demonstrated.
 - Docker must not be started or stopped because of the panel. The panel may disappear without stopping containers already started.
 
-## Application actions (planned)
-Accepted by [ADR 0026](adr/0026-application-toolbox.md), **not implemented**.
-This section describes the accepted future behavior, not the current build.
-
+## Application actions
 A stack may declare an `x-compose-panel.toolbox.sources` extension in its
 canonical Compose file, naming the services, runners (Composer/npm/Bun) and
 optional `user`/`workdir` where non-interactive application actions run. Compose
 ignores `x-*` fields at deploy time. The extension only says **where**; the
 exposed actions come solely from each project's own manifest
 (`extra["compose-panel"]` in `composer.json`, `"compose-panel"` in
-`package.json`), intersected with its `scripts`. The panel reads the extension
-from the raw Compose file and never rewrites it; multi-file Compose stays
+`package.json`), intersected with its `scripts`. `src/toolbox.ts` holds the pure
+parsing, catalog and revision; `src/action-runner.ts` is the Docker adapter
+(`docker cp`/`docker exec`). The panel reads the extension from the raw Compose
+file with Bun's YAML parser and never rewrites it; multi-file Compose stays
 rejected ([ADR 0004](adr/0004-single-file-editing.md)).
 
-Discovery resolves **one** running container per service and reads the manifest
-from that container through `docker cp` (bounded), never by running the runner.
-A service with several running containers is unavailable in V1. A forged or
+Discovery resolves **one** running container per service (`compose ps --status
+running -q`) and reads the manifest from that container through `docker cp`
+(bounded read; the transfer itself is not size-bounded), never by running the
+runner. A service with several running containers is unavailable. A forged or
 undeclared action is refused, and the argument array is never built from the
 identifier the browser sends. Execution pins the same container id, holds the
-per-stack lock before revalidating, and runs a fixed `docker exec` argument array
-with no shell, no TTY, no stdin and no `--privileged`. `docker cp` and
-`docker exec` join the fixed Docker boundary; output reuses the operations/SSE
-machinery and success is exit 0. The catalog revision hashes the container id,
-the image id and the normalized catalog read from the container, and does not
-guarantee the immutability of the executed code.
+per-stack lock before revalidating the manifest under it, and runs a fixed
+`docker exec` argument array with no shell, no TTY, no stdin and no
+`--privileged`; output reuses the operations/SSE machinery and success is exit 0.
+The catalog revision hashes the container id, the image id, the execution
+context and the referenced script definitions (including `pre*`/`post*` hooks),
+and does not guarantee the immutability of the executed code. See
+[ADR 0026](adr/0026-application-toolbox.md).
 
 ## Compose context
 Stack creation (`src/create-stack.ts`, [ADR 0024](adr/0024-controlled-stack-creation.md))

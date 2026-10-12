@@ -1,6 +1,6 @@
 # ADR 0026 — Application actions toolbox
 
-Status: Accepted (planned, not implemented)
+Status: Accepted
 
 ## Context
 
@@ -15,10 +15,11 @@ scripts in `composer.json`, scripts in `package.json` run by npm or Bun.
 Reusing those conventions avoids a second list of commands to maintain and a
 bespoke automation engine.
 
-This ADR accepts the **architecture** of that feature. It is a decision, not an
-implementation: the commands, endpoints and UI below are planned. The
-exploration that led here is in `private/toolbox.md`, which is historical and
-not normative.
+This ADR defines the contract and the security boundary. `src/toolbox.ts` holds
+the pure parsing, validation, catalog and revision; `src/action-runner.ts` is
+the Docker adapter that reads a manifest (`docker cp`) and launches an action
+(`docker exec`). The exploration that led here is in `private/toolbox.md`,
+which is historical and not normative.
 
 ## Decision
 
@@ -105,7 +106,8 @@ exposed actions remain exactly those declared in the application manifest.
 `service` and `runner` are required. `workdir` and `user` are optional: when
 absent, the container's own default is used, which is usually more reliable for
 npm and Composer than forcing a user. A supplied `workdir` must be an absolute
-path inside the container.
+path inside the container; `user` accepts a name, a uid, or `uid:gid` as
+`docker exec -u` does, but never a value that looks like an option.
 
 The panel reads this field from the raw Compose file and never rewrites the
 file. Multi-file Compose stays rejected ([ADR 0004](0004-single-file-editing.md)),
@@ -128,10 +130,13 @@ On opening the Actions view or on refresh:
 2. Verify the target service has **exactly one running container**. Several
    running containers (replicas) make the action explicitly unavailable in V1:
    no arbitrary pick, no `--index`, no fan-out.
-3. Read the manifest from that container's filesystem (`docker cp
-   <id>:<path> -`, the Engine archive API) rather than from a host copy, which
-   may not match what is deployed. The read is size-capped. The panel does not
-   run Composer, npm or Bun to discover actions.
+3. Read the manifest from that container's filesystem
+   (`docker cp -- <id>:<path> <private temp dir>`) rather than from a host
+   copy, which may not match what is deployed. The **read** is size-capped; the
+   **transfer is not**: Docker `cp` copies the whole object, so a directory or a
+   symlink is refused, the temp directory is private, the copy has a timeout and
+   cleanup always runs. The panel does not run Composer, npm or Bun to discover
+   actions.
 4. Parse the JSON, validate the `compose-panel` section and intersect the
    declared actions with `scripts`.
 5. Build the displayable catalog and a `catalogRevision`.
@@ -145,34 +150,48 @@ The browser sends only identifiers, for example
 `{ source, action, catalogRevision }`. The backend:
 
 1. Rechecks authorization and CSRF.
-2. Acquires the per-stack lock (the same lock as deployments and saves).
-3. Re-reads the manifest from the pinned container and revalidates that the
-   action is still exposed and the catalog revision is unchanged. A mismatch or a
-   replaced container is a `409`.
-4. Builds a fixed argument array from the resolved action, with no shell
+2. Makes a friendly pre-check **without** the lock; a missing source, a changed
+   catalog or an unreachable service is answered as an error (`400`/`404`/`409`)
+   and nothing starts.
+3. Acquires the per-stack lock (the same lock as deployments and saves).
+4. **Under the lock**, re-reads the Compose declaration, re-resolves the project
+   context (and verifies it is still the reserved project), re-reads the manifest
+   from the pinned container and revalidates that the action is still exposed and
+   the catalog revision is unchanged. A mismatch here is not an HTTP `409`: the
+   operation was already accepted, so it ends as **`refused`** — nothing runs and
+   the audit line says so.
+5. Builds a fixed argument array from the resolved action, with no shell
    interpolation.
-5. Runs `docker exec <id>` on the **same container** that was read, with no TTY
+6. Runs `docker exec <id>` on the **same container** that was read, with no TTY
    and no interactive stdin, no `--privileged`, and only the configured
-   user/workdir.
-6. Streams bounded stdout/stderr through the existing operations/SSE machinery
+   user/workdir. Composer is launched with `--no-interaction`.
+7. Streams bounded stdout/stderr through the existing operations/SSE machinery
    and records the operation.
 
 Success is reported only on exit 0. A timeout is reported as an unknown outcome,
 never as cancelled: stopping the CLI does not guarantee the work inside the
-container stopped.
+container stopped. As for a Compose operation, the lock is released only when the
+process exit is confirmed; an unconfirmed termination keeps it held. A
+confirmed exit releases the lock even though the in-container work may continue,
+which the UI states honestly rather than presenting the action as stopped.
 
 ### Catalog revision
 
-`catalogRevision` is the hash of the pinned container id, the image id and the
-**normalized catalog read from the container**. It detects a manifest changed
-between display and launch, including a manifest or code changed by a bind mount
-while the container and image ids stay the same. It is not a permanent approval:
-a new deployment may change the behavior of an action, exactly as it changes the
-application. The revision does not prove that all executed code is immutable.
+`catalogRevision` is the hash of the pinned container id, the image id, the
+execution context (runner, workdir, user) and **every script definition in the
+manifest**, not only the declared actions. A Composer `@other` reference, an
+npm/Bun `pre<name>`/`post<name>` hook or any volume-mounted edit that leaves
+`extra.compose-panel` untouched therefore still yields a different revision. It
+detects a manifest changed between display and launch, including a script body
+changed by a bind mount while the container and image ids stay the same. It is
+not a permanent approval: a new deployment may change the behavior of an action,
+exactly as it changes the application. The revision does not prove that all
+executed code is immutable.
 
-The audit record stores the action id, the source id, the container id, the
-image id, the catalog revision, start/end times, the exit code and bounded
-output.
+The audit record names what actually ran: the action id, the source id, the
+pinned container id, the image id, the catalog revision, the start/end times and
+the exit code (or a timeout). Output is bounded in the operation view but is
+never written to the activity log, which may hold no secrets.
 
 ### Security boundary
 
@@ -191,10 +210,8 @@ on another. Confirmation is a UI safeguard; the backend always revalidates.
 
 ## Consequences
 
-- Documentation gains a planned "Application actions" section in
-  `architecture.md`, a planned "Application toolbox" subsection in
-  `security.md`, scope wording in `product.md` and a planned entry in
-  `roadmap.md`.
+- `architecture.md`, `security.md`, `product.md` and `roadmap.md` carry the
+  feature; `docs/operations.md` documents it for operators.
 - No new dependency: Bun's YAML parser reads the Compose extension, and the
   Compose file is never re-serialized.
 - An action is bound to the deployed image; a new deployment may change its
@@ -216,13 +233,29 @@ on another. Confirmation is a UI safeguard; the backend always revalidates.
 
 ## Verification
 
-Planned regression tests: a forged request for an undeclared script is refused;
-an action name absent from `scripts` (including the `bun run` file-resolution
-case) is refused; an identifier interpreted as a CLI option is refused; a
-manifest or container changed between display and launch yields `409`; a service
-with several running containers is unavailable; a stopped service is unavailable;
-manifest and output reads are size-capped; success is exit 0 and a timeout is
-`unknown`.
+Unit tests (`tests/toolbox.test.ts`, `tests/action-runner.test.ts`) cover the
+source and manifest parsing (including a cyclic YAML alias, a relative/escaping
+`workdir`, a duplicate id, an unsupported version, a `uid:gid` user), the
+action-name grammar (option-like names refused), a per-runner runnable script
+definition, the `bun run` file-resolution case (own membership in `scripts`), the
+runner argv (Composer `--no-interaction`), the timeout clamp, and a revision that
+changes with the script body, a referenced Composer script, the runner, the user,
+the workdir or the container — and stays stable otherwise.
+`tests/toolbox-app.test.ts` covers auth, CSRF, an unknown source, an undeclared
+action, a forged request and unpublished changes (`409`), a stopped service,
+replicas, the fixed `exec` argv on success, the `refused` outcome of an under-lock
+revalidation, and the audit identity line. `tests/action-runner.test.ts` also
+covers a refused directory and (where the platform allows creating one) a refused
+symlink, a size-capped read and a temporary-directory cleanup. `tests/html.test.ts`
+covers the `constructor`-named action label regression.
+
+Manual verification on a Linux host with a disposable stack: declare a source
+and a manifest, confirm the Actions page lists the action, run it and watch the
+live output and final state, then change the script and confirm a stale page is
+refused. `tests/toolbox-linux.test.ts` automates the Docker boundary (a manifest
+read and a real `npm run`) against the disposable daemon from
+`scripts/docker-lab/run.sh`; it mutates Docker, so it is opt-in and never runs in
+unattended CI.
 
 ## Out of scope
 

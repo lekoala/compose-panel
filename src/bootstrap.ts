@@ -6,10 +6,10 @@ import { resolveRoot } from "./stacks.ts";
 
 /**
  * Production wiring of the panel, shared by `src/server.ts` and its tests.
- * Every Docker boundary (Compose provider, container inspector, self-update)
- * gets the same real runner: `createApp` falls back to an unavailable runner
- * for anything not given, which once made Docker look unreachable outside
- * Compose calls.
+ * Every Docker boundary (Compose provider, container inspector, self-update,
+ * application action runner) gets the same real runner: `createApp` falls back
+ * to an unavailable runner for anything not given, which once made Docker look
+ * unreachable outside Compose calls.
  */
 export async function bootstrap(
     config: AppConfig,

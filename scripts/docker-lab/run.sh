@@ -74,4 +74,8 @@ mkdir "$LAB/app"
 rsync -a --exclude node_modules --exclude .git --exclude private "$SRC/" "$LAB/app/"
 cd "$LAB/app"
 "$BUN" install --frozen-lockfile >/dev/null
+# Run the two lab suites in separate, sequential processes: the toolbox test
+# pulls an image, and overlapping it with the lifecycle suite can slow the
+# latter's short-timeout Docker reads (a flaky "deployed" metadata read).
 COMPOSE_PANEL_TEST_DOCKER_LAB=1 COMPOSE_PANEL_LAB_SHARED="$SHARED" "$BUN" test tests/docker-lifecycle-linux.test.ts
+COMPOSE_PANEL_TEST_DOCKER_LAB=1 COMPOSE_PANEL_LAB_SHARED="$SHARED" "$BUN" test tests/toolbox-linux.test.ts

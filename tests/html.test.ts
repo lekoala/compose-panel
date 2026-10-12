@@ -1,6 +1,34 @@
 import { expect, test } from "bun:test";
-import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, renderSidebar, servicesSection, usageBar } from "../src/html.ts";
+import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, operationPanel, renderSidebar, servicesSection, usageBar } from "../src/html.ts";
 import type { ComposeService } from "../src/compose-state.ts";
+import type { OperationView } from "../src/operations.ts";
+
+function operation(overrides: Partial<OperationView>): OperationView {
+    return {
+        id: "op1", stack: "demo", action: "up", label: "up", status: "succeeded",
+        startedAt: 0, endedAt: 1, exitCode: 0, output: "", truncated: false, timedOut: false,
+        ...overrides,
+    };
+}
+
+test("operationPanel uses its own label for a script named like an Object property", () => {
+    // `constructor`/`toString` resolve to inherited `OPERATION_LABELS` members;
+    // escaping that function used to throw and break every page showing it.
+    const html = operationPanel(operation({ action: "constructor", label: "Self test", source: "backend", script: "constructor" }));
+    expect(html).toContain("Self test");
+    expect(html).not.toContain("function");
+});
+
+test("operationPanel keeps the friendly Compose action label", () => {
+    expect(operationPanel(operation({ action: "pull-up", label: "pull-up" }))).toContain("Pull + up");
+});
+
+test("operationPanel shows an application action's own label, not the Compose name", () => {
+    // A script named `start` must not collide with the Compose "Start" action.
+    const html = operationPanel(operation({ action: "start", label: "Start application worker", source: "backend", script: "start" }));
+    expect(html).toContain("Start application worker");
+    expect(html).not.toContain("Last action: Start<");
+});
 
 function service(name: string, health: string | null): ComposeService {
     return { name, state: "running", health, exitCode: 0, container: `demo-${name}-1`, image: "nginx:1" };
