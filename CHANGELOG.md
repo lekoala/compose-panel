@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.3.0)
+## 0.3.0
 
 - Self-update (ADR 0018): a new **About** page (`/about`, in the sidebar) shows
   the panel version and updates the panel itself when it runs from the
@@ -24,6 +24,8 @@
   events `self-update-check` and `self-update`. New provider calls
   `serviceImage` and `recreateService`; new image entry point
   `src/scripts/self-update.ts`.
+- Fix: the image health check probes the configured `PORT` instead of a
+  fixed 5081, so a panel on another port is no longer reported unhealthy.
 - Release workflow: after the multi-platform push, creates the GitHub Release
   for the tag with the pushed index digest (`compose-panel-image-digest:`
   line), which self-update requires.

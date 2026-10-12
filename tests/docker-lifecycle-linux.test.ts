@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { hashPassword } from "../src/auth.ts";
 import { createComposeProvider } from "../src/compose-provider.ts";
 import { createDockerRunner } from "../src/docker.ts";
-import { ROLLBACK_TAG, UPDATER_EXIT, parseSelfInspect, rollbackCommands, updaterCommand } from "../src/self-update.ts";
+import { ROLLBACK_TAG, UPDATER_EXIT, UPDATER_NAME, parseSelfInspect, parseUpdaterInspect, rollbackCommands, updaterCommand, updaterRunArgs } from "../src/self-update.ts";
 import { parseUpdaterArgs, runSelfUpdate, updaterEnvironment } from "../src/self-update-run.ts";
 
 // Opt-in lifecycle check against a REAL but DISPOSABLE Docker Engine: project
@@ -26,7 +26,7 @@ const PASSWORD = "temporary-lab-password";
 const USER = "cplaboperator";
 const GRACE_MS = 15_000;
 const DELAY_S = 6;
-const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed", "cp-qa-self", "cp-qa-scoped", "cp-qa-pull"];
+const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed", "cp-qa-self", "cp-qa-scoped", "cp-qa-pull", "cp-qa-panel"];
 // A PID 1 that exits on SIGTERM, so `down` does not wait for the kill timeout.
 const SERVICE = (name: string) => `  ${name}:\n    image: ${IMAGE}\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]\n`;
 
@@ -474,6 +474,72 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(await p.operationResult("pullable", 180_000)).toBe("succeeded");
         expect(await runningServices("cp-qa-pull")).toEqual(["both", "local", "remote"]);
     }, 300_000);
+
+    test("the real updater container updates a panel deployed on a custom PORT (ADR 0018)", async () => {
+        // End to end with the panel image itself: built here, deployed by
+        // Compose on PORT 5199 (the image health check must follow PORT), a
+        // newer release pushed to a lab registry, then the updater container
+        // started with exactly the arguments the panel builds.
+        const shared = process.env.COMPOSE_PANEL_LAB_SHARED;
+        if (!shared) throw new Error("COMPOSE_PANEL_LAB_SHARED is not set; run scripts/docker-lab/run.sh.");
+        await dockerOk(["run", "-d", "--name", "cp-qa-registry-e2e", "-p", "127.0.0.1:5001:5000", "registry:2"], 180_000);
+        const repo = "localhost:5001/cp-qa-panel";
+        const ref = `${repo}:latest`;
+        await dockerOk(["build", "--build-arg", "VERSION=0.0.1", "-t", ref, join(import.meta.dir, "..")], 900_000);
+        await waitFor(async () => (await docker(["push", ref])).code === 0, 30_000, "the lab registry to accept a push");
+        const imageIdOf = async (image: string) => JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .Id}}", image])).trim()) as string;
+        const previous = await imageIdOf(ref);
+
+        const dir = join(shared, "panel-deploy");
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, "panel.env"), [
+            `COMPOSE_PANEL_ADMIN_USER=${USER}`,
+            `COMPOSE_PANEL_ADMIN_PASSWORD_HASH='${await hashPassword(PASSWORD)}'`,
+            "STACKS_DIR=/tmp",
+            "PORT=5199",
+            "",
+        ].join("\n"));
+        await writeFile(join(dir, "compose.yaml"), [
+            "name: cp-qa-panel",
+            "services:",
+            "  panel:",
+            `    image: ${ref}`,
+            "    env_file: [panel.env]",
+            "    volumes: [\"/lab/docker.sock:/var/run/docker.sock\"]",
+            "    healthcheck: { interval: 1s, start_period: 1s, timeout: 2s, retries: 30 }",
+            "",
+        ].join("\n"));
+        await dockerOk(["compose", "-f", join(dir, "compose.yaml"), "up", "-d", "--wait"], 120_000);
+        const panelId = (await dockerOk(["ps", "-q", "--no-trunc", "--filter", "label=com.docker.compose.project=cp-qa-panel"])).trim();
+        const healthOf = async (id: string) => JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .State.Health.Status}}", id])).trim()) as string;
+        expect(await healthOf(panelId)).toBe("healthy");
+
+        // A newer release behind the same tag.
+        await dockerOk(["container", "create", "--name", "cp-qa-panel-src", ref]);
+        await dockerOk(["commit", "--change", "LABEL org.opencontainers.image.version=0.0.2", "cp-qa-panel-src", ref]);
+        await dockerOk(["container", "rm", "cp-qa-panel-src"]);
+        await dockerOk(["push", ref]);
+        const target = await imageIdOf(ref);
+        const digests = JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .RepoDigests}}", ref])).trim()) as string[];
+        const digest = digests.find(value => value.startsWith(`${repo}@`))!;
+
+        const support = parseSelfInspect(await dockerOk(["container", "inspect", panelId]), panelId);
+        if (support.kind !== "ready") throw new Error(support.reason);
+        expect(support.identity.workingDir).toBe(dir);
+        await dockerOk(updaterRunArgs(support.identity, { targetImageId: target, expectedDigest: digest, targetVersion: "0.0.2", previousVersion: "0.0.1" }));
+        const exit = Number((await dockerOk(["container", "wait", UPDATER_NAME], 300_000)).trim());
+        if (exit !== UPDATER_EXIT.updated) throw new Error(`The updater exited ${exit}:\n${(await docker(["logs", UPDATER_NAME])).stdout}`);
+
+        const newId = (await dockerOk(["ps", "-q", "--no-trunc", "--filter", "label=com.docker.compose.project=cp-qa-panel"])).trim();
+        expect(newId).not.toBe(panelId);
+        expect(JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .Image}}", newId])).trim())).toBe(target);
+        expect(await healthOf(newId)).toBe("healthy");
+        expect(await imageIdOf(ROLLBACK_TAG)).toBe(previous);
+        // The updater's labels carry the identities the next panel shows.
+        const lookup = parseUpdaterInspect(await dockerOk(["container", "inspect", UPDATER_NAME]));
+        expect(lookup.kind === "run" && lookup.run).toMatchObject({ outcome: "updated", previousImage: previous, targetImage: target, targetVersion: "0.0.2" });
+        await docker(["rm", "-f", UPDATER_NAME, "cp-qa-registry-e2e"]);
+    }, 1_200_000);
 
     test("SIGTERM refuses new actions, drains the running one within the grace period and keeps containers", async () => {
         const p = panel!;

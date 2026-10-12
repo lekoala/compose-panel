@@ -61,6 +61,10 @@ export interface FakeDocker {
     imageInspectFails: boolean;
     /** The daemon starts the updater even though `container run` fails (client timeout). */
     startsOnFailure: boolean;
+    /** `State.Error` of the updater (a failed start leaves it `created`). */
+    updaterError: string;
+    /** `container wait` fails at once instead of blocking. */
+    waitFails: boolean;
     /** `container inspect` of the updater fails once `container run` was called. */
     inspectFailsAfterRun: boolean;
     /** Resolves pending `container wait` calls. */
@@ -82,6 +86,8 @@ export function fakeDocker(): FakeDocker {
         localBuild: false,
         imageInspectFails: false,
         startsOnFailure: false,
+        updaterError: "",
+        waitFails: false,
         inspectFailsAfterRun: false,
         finishWait: () => release(),
         runner: async args => {
@@ -96,7 +102,7 @@ export function fakeDocker(): FakeDocker {
                 const labels = docker.updater.foreign ? {} : { [UPDATER_LABEL]: "1", ...docker.updater.labels };
                 return ok(JSON.stringify([{
                     Config: { Labels: labels },
-                    State: { Status: docker.updater.status, ExitCode: docker.updater.exitCode, StartedAt: "2026-10-12T08:00:00Z", FinishedAt: "2026-10-12T08:01:00Z" },
+                    State: { Status: docker.updater.status, Error: docker.updaterError, ExitCode: docker.updater.exitCode, StartedAt: "2026-10-12T08:00:00Z", FinishedAt: "2026-10-12T08:01:00Z" },
                 }]));
             }
             if (key === "image inspect") {
@@ -116,7 +122,11 @@ export function fakeDocker(): FakeDocker {
                 if (docker.runResult.code === 0 || docker.startsOnFailure) docker.updater = { status: "running", exitCode: 0 };
                 return docker.runResult;
             }
-            if (key === "container wait") { await waiting; return ok("0"); }
+            if (key === "container wait") {
+                if (docker.waitFails) return { code: 1, stdout: "", stderr: "Error response from daemon", timedOut: false, truncated: false };
+                await waiting;
+                return ok("0");
+            }
             if (key === "container logs") return ok("08:00 Updating Compose project compose-panel\n<b>not markup</b>\n");
             return { code: 1, stdout: "", stderr: `unexpected call: ${args.join(" ")}`, timedOut: false, truncated: false };
         },

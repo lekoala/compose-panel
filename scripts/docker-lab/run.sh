@@ -27,11 +27,18 @@ fi
 # The outer daemon only hosts the lab container; nothing else is sent to it.
 unset DOCKER_HOST COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROFILES
 LAB="$(mktemp -d /tmp/compose-panel-lab.XXXXXX)"
+# Shared at the same path on both sides, like the real deployment (host path ==
+# container path), so the self-update test can bind-mount a deployment folder
+# into containers of the lab daemon. Not under /tmp: the dind entrypoint mounts
+# a tmpfs over /tmp, which would hide it from the lab daemon.
+mkdir -p "$HOME/.cache"
+SHARED="$(mktemp -d "$HOME/.cache/compose-panel-lab-shared.XXXXXX")"
 cleanup() {
     # DOCKER_HOST points to the lab by now; the container lives on the outer daemon.
     env -u DOCKER_HOST docker rm -fv "$NAME" >/dev/null 2>&1 || true
-    # Only the directory created above.
+    # Only the directories created above.
     case "$LAB" in /tmp/compose-panel-lab.*) rm -rf -- "$LAB" ;; esac
+    case "$SHARED" in "$HOME"/.cache/compose-panel-lab-shared.*) rm -rf -- "$SHARED" ;; esac
 }
 trap cleanup EXIT
 mkdir -m 700 "$LAB/socket"
@@ -39,6 +46,7 @@ mkdir -m 700 "$LAB/socket"
 # `dind` prepares cgroups for a nested daemon, then runs dockerd as given.
 docker run -d --name "$NAME" --privileged \
     -v "$LAB/socket:/lab" \
+    -v "$SHARED:$SHARED" \
     --entrypoint dind "$IMAGE" \
     dockerd -H unix:///lab/docker.sock --label compose-panel-lab=1 >/dev/null
 
@@ -66,4 +74,4 @@ mkdir "$LAB/app"
 rsync -a --exclude node_modules --exclude .git --exclude private "$SRC/" "$LAB/app/"
 cd "$LAB/app"
 "$BUN" install --frozen-lockfile >/dev/null
-COMPOSE_PANEL_TEST_DOCKER_LAB=1 "$BUN" test tests/docker-lifecycle-linux.test.ts
+COMPOSE_PANEL_TEST_DOCKER_LAB=1 COMPOSE_PANEL_LAB_SHARED="$SHARED" "$BUN" test tests/docker-lifecycle-linux.test.ts

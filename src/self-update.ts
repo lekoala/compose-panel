@@ -352,7 +352,10 @@ function isoTime(value: unknown): string | null {
 }
 
 /** `docker container inspect` of the updater name. A container without the label is foreign. */
-export function parseUpdaterInspect(stdout: string): UpdaterLookup {
+/** A `created` updater older than this never started: Docker reports no further change. */
+const CREATED_GRACE_MS = 2 * 60 * 1000;
+
+export function parseUpdaterInspect(stdout: string, now: number = Date.now()): UpdaterLookup {
     let rows: unknown;
     try { rows = JSON.parse(stdout); }
     catch { return { kind: "none" }; }
@@ -364,7 +367,12 @@ export function parseUpdaterInspect(stdout: string): UpdaterLookup {
     const status = typeof state.Status === "string" ? state.Status : "";
     const exitCode = typeof state.ExitCode === "number" ? state.ExitCode : null;
     let outcome: UpdaterOutcome;
-    if (status === "running" || status === "restarting" || status === "created") outcome = "running";
+    // `created` is a start still in flight, unless Docker recorded a start
+    // error (the container stays `created`) or it has been waiting too long.
+    const startError = typeof state.Error === "string" && state.Error.trim() !== "";
+    const created = Date.parse(typeof row.Created === "string" ? row.Created : "");
+    const stale = Number.isFinite(created) && now - created > CREATED_GRACE_MS;
+    if (status === "running" || status === "restarting" || (status === "created" && !startError && !stale)) outcome = "running";
     else if (status === "exited" && exitCode === UPDATER_EXIT.updated) outcome = "updated";
     else if (status === "exited" && exitCode === UPDATER_EXIT.refused) outcome = "refused";
     else outcome = "failed";
@@ -664,9 +672,10 @@ export class SelfUpdater {
         return "unconfirmed";
     }
 
-    /** Resolves when the updater container stops (or the bound elapses). */
-    async wait(): Promise<void> {
-        await this.run(["container", "wait", "--", UPDATER_NAME], { timeoutMs: this.options.updaterTimeoutMs ?? 20 * 60 * 1000 }).catch(() => undefined);
+    /** Resolves when the updater container stops (or the bound elapses). False when `wait` itself failed. */
+    async wait(): Promise<boolean> {
+        const result = await this.run(["container", "wait", "--", UPDATER_NAME], { timeoutMs: this.options.updaterTimeoutMs ?? 20 * 60 * 1000 }).catch(() => null);
+        return result !== null && result.code === 0 && !result.timedOut;
     }
 
     /**
@@ -691,7 +700,9 @@ export class SelfUpdater {
             }
             absent = 0;
             if (lookup.run.outcome !== "running") return;
-            await this.wait();
+            // A failing `wait` (Docker unreachable, container gone) must not
+            // turn this into a tight inspect/wait loop.
+            if (!await this.wait()) await sleep(5000);
         }
     }
 }

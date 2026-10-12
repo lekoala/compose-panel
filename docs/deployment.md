@@ -502,6 +502,13 @@ release. Verified 2026-10-10 against image `compose-panel:local`
       `config --services` discovery and refusals work, and `pull` succeeds on a
       stack mixing registry, build-only and image+build services (the local
       ones are skipped, then built by `up`).
+- [x] Real updater container on the disposable lab daemon (2026-10-12,
+      Docker 29.9.0, amd64): the panel image built in the lab, deployed by
+      Compose on `PORT=5199` (healthy: the image health check follows `PORT`),
+      a newer image pushed to a lab registry, then `compose-panel-updater`
+      started with the arguments the panel builds: exit 0, new container on the
+      target image and healthy, `compose-panel:rollback` on the previous image,
+      updater labels read back.
 - [ ] Self-update end to end with the published image on a disposable host,
       on amd64 **and** arm64, and with the classic image store as well as the
       containerd one: deploy `ghcr.io/lekoala/compose-panel:latest` at the

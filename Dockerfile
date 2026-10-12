@@ -64,5 +64,5 @@ LABEL org.opencontainers.image.title="Compose Panel" \
     org.opencontainers.image.revision="${REVISION}" \
     org.opencontainers.image.base.name="docker.io/oven/bun:1.4.3-slim"
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:5081/health/live || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT:-5081}/health/live" || exit 1
 ENTRYPOINT ["bun", "src/server.ts"]

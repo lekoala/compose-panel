@@ -3,6 +3,7 @@ import type { CommandResult, DockerRunner } from "../src/docker.ts";
 import { createComposeProvider, type ComposeProvider } from "../src/compose-provider.ts";
 import {
     SelfUpdateError,
+    SelfUpdater,
     UPDATER_EXIT,
     UPDATER_LABEL,
     UPDATER_NAME,
@@ -585,5 +586,51 @@ describe("review regressions", () => {
         docker.finishWait();
         await settling;
         expect(settled).toBe(true);
+    });
+});
+
+describe("review regressions, round 2", () => {
+    const updater = (state: Record<string, unknown>, created?: string) => JSON.stringify([{
+        Created: created,
+        Config: { Labels: { [UPDATER_LABEL]: "1" } },
+        State: { StartedAt: "0001-01-01T00:00:00Z", FinishedAt: "0001-01-01T00:00:00Z", ExitCode: 0, ...state },
+    }]);
+    const outcome = (stdout: string, now = Date.parse("2026-10-12T12:00:00Z")) => {
+        const lookup = parseUpdaterInspect(stdout, now);
+        return lookup.kind === "run" ? lookup.run.outcome : lookup.kind;
+    };
+
+    test("a created updater is a start in flight, unless Docker recorded a start error or it is stale", () => {
+        expect(outcome(updater({ Status: "created", Error: "" }, "2026-10-12T11:59:30Z"))).toBe("running");
+        expect(outcome(updater({ Status: "created", Error: "OCI runtime create failed" }, "2026-10-12T11:59:30Z"))).toBe("failed");
+        expect(outcome(updater({ Status: "created", Error: "" }, "2026-10-12T11:00:00Z"))).toBe("failed");
+    });
+
+    test("a failed start does not block the next install", async () => {
+        const docker = fakeDocker();
+        docker.updater = { status: "created", exitCode: 128 };
+        docker.updaterError = "OCI runtime create failed";
+        await fakeSelfUpdater(docker).launch(identityOf(), PLAN);
+        expect(docker.calls.some(args => args[1] === "rm")).toBe(true);
+        expect(docker.calls.some(args => args[1] === "run")).toBe(true);
+    });
+
+    test("settle pauses between polls when docker wait keeps failing", async () => {
+        const docker = fakeDocker();
+        docker.updater = { status: "running", exitCode: 0 };
+        docker.waitFails = true;
+        const pauses: number[] = [];
+        const updater = new SelfUpdater({
+            runner: docker.runner,
+            provider: createComposeProvider({ runner: docker.runner }),
+            readMountinfo: async () => MOUNTINFO,
+            sleep: async ms => { pauses.push(ms); if (pauses.length >= 3) docker.updater = { status: "exited", exitCode: 0 }; },
+            updaterTimeoutMs: 60_000,
+            pullTimeoutMs: 1000,
+            maxBytes: 1024 * 1024,
+        });
+        await updater.settle();
+        expect(pauses).toEqual([5000, 5000, 5000]);
+        expect(docker.calls.filter(args => args[1] === "wait").length).toBe(3);
     });
 });
