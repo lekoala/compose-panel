@@ -87,12 +87,12 @@ export function normalizeReference(ref: string): string {
     return value;
 }
 
-function findByTag(details: ImageDetails[], ref: string): ImageDetails | undefined {
+export function findByTag(details: ImageDetails[], ref: string): ImageDetails | undefined {
     const wanted = normalizeReference(ref);
     return details.find(detail => detail.repoTags.some(tag => normalizeReference(tag) === wanted));
 }
 
-function versionOf(detail: ImageDetails | undefined): ImageVersion {
+export function versionOf(detail: ImageDetails | undefined): ImageVersion {
     if (!detail) return { version: null, created: null, digest: null };
     const label = detail.labels["org.opencontainers.image.version"]?.trim();
     const digest = detail.repoDigests[0]?.split("@")[1] ?? detail.id;

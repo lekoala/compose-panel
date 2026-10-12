@@ -4,6 +4,10 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashPassword } from "../src/auth.ts";
+import { createComposeProvider } from "../src/compose-provider.ts";
+import { createDockerRunner } from "../src/docker.ts";
+import { UPDATER_EXIT, parseSelfInspect, updaterCommand } from "../src/self-update.ts";
+import { parseUpdaterArgs, runSelfUpdate } from "../src/self-update-run.ts";
 
 // Opt-in lifecycle check against a REAL but DISPOSABLE Docker Engine: project
 // collisions by `name:` and `.env`, and SIGTERM during a deterministically
@@ -22,7 +26,7 @@ const PASSWORD = "temporary-lab-password";
 const USER = "cplaboperator";
 const GRACE_MS = 15_000;
 const DELAY_S = 6;
-const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed"];
+const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed", "cp-qa-self"];
 // A PID 1 that exits on SIGTERM, so `down` does not wait for the kill timeout.
 const SERVICE = (name: string) => `  ${name}:\n    image: ${IMAGE}\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]\n`;
 
@@ -286,6 +290,67 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(cli.trim()).not.toBe("");
         expect(await projectServices("cp-qa-shared")).toEqual(["witness"]);
     }, 90_000);
+
+    test("self-update recreates only the panel service from the retagged image and verifies it (ADR 0018)", async () => {
+        // Clearly marked fixture: a stand-in "panel" service with a health
+        // check and the lab socket mounted like the real deployment, next to
+        // another service that must not be touched. The updater logic runs
+        // in this process (not in its container) against the lab daemon.
+        const dir = join(lab, "self");
+        await mkdir(dir, { recursive: true });
+        const command = `["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`;
+        await writeFile(join(dir, "compose.yaml"), [
+            "name: cp-qa-self",
+            "services:",
+            "  panel:",
+            "    image: cp-qa-self:current",
+            `    command: ${command}`,
+            "    volumes: [\"/lab/docker.sock:/var/run/docker.sock\"]",
+            "    healthcheck: { test: [\"CMD\", \"true\"], interval: 1s, timeout: 1s, retries: 3 }",
+            "  other:",
+            `    image: ${IMAGE}`,
+            `    command: ${command}`,
+            "",
+        ].join("\n"));
+        await dockerOk(["tag", IMAGE, "cp-qa-self:current"]);
+        await dockerOk(["compose", "-f", join(dir, "compose.yaml"), "up", "-d"]);
+        const idOf = async (service: string) => (await dockerOk(["ps", "-q", "--no-trunc", "--filter", "label=com.docker.compose.project=cp-qa-self", "--filter", `label=com.docker.compose.service=${service}`])).trim();
+        const oldPanel = await idOf("panel");
+        const other = await idOf("other");
+
+        // A new image behind the same tag, as after a pull.
+        await dockerOk(["container", "create", "--name", "cp-qa-self-src", IMAGE]);
+        await dockerOk(["commit", "--change", "LABEL org.opencontainers.image.version=9.9.9", "cp-qa-self-src", "cp-qa-self:current"]);
+        await dockerOk(["container", "rm", "cp-qa-self-src"]);
+        const target = JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .Id}}", "cp-qa-self:current"])).trim()) as string;
+
+        const support = parseSelfInspect(await dockerOk(["container", "inspect", oldPanel]), oldPanel);
+        if (support.kind !== "ready") throw new Error(support.reason);
+        expect(support.identity.workingDir).toBe(dir);
+
+        const runner = createDockerRunner({ timeoutMs: 60_000 });
+        const deps = {
+            runner,
+            provider: createComposeProvider({ runner }),
+            log: () => {},
+            write: () => {},
+            fileExists: (path: string) => Bun.file(path).exists(),
+            sleep: (ms: number) => Bun.sleep(ms),
+            now: () => Date.now(),
+            pollMs: 500,
+            readyTimeoutMs: 60_000,
+        };
+        // A target the tag no longer points to is refused before anything changes.
+        const stale = parseUpdaterArgs(updaterCommand(support.identity, support.identity.imageId));
+        expect(await runSelfUpdate(stale, deps)).toBe(UPDATER_EXIT.refused);
+        expect(await idOf("panel")).toBe(oldPanel);
+
+        expect(await runSelfUpdate(parseUpdaterArgs(updaterCommand(support.identity, target)), deps)).toBe(UPDATER_EXIT.updated);
+        const newPanel = await idOf("panel");
+        expect(newPanel).not.toBe(oldPanel);
+        expect(JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .Image}}", newPanel])).trim())).toBe(target);
+        expect(await idOf("other")).toBe(other);
+    }, 120_000);
 
     test("SIGTERM refuses new actions, drains the running one within the grace period and keeps containers", async () => {
         const p = panel!;

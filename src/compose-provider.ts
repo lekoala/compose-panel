@@ -35,6 +35,21 @@ export interface ComposeTarget {
 }
 
 /**
+ * A deployed project addressed by the exact files Compose recorded in its
+ * container labels: several `-f` files and `--env-file`s, in order. Used by the
+ * self-update only (ADR 0018); stacks keep the single-file `ComposeTarget`.
+ */
+export interface ComposeProjectFiles {
+    project: string;
+    /** Absolute project directory. */
+    cwd: string;
+    /** Absolute Compose files, in their original order. */
+    composeFiles: string[];
+    /** Absolute interpolation files, in their original order. */
+    envFiles: string[];
+}
+
+/**
  * Boundary around the Compose CLI. The rest of the application depends on these
  * business operations, never on the concrete executable or its argument layout,
  * so a second engine can be added later without scattering engine checks.
@@ -64,6 +79,18 @@ export interface ComposeProvider {
     stop(target: ComposeTarget): Promise<CommandResult>;
     restart(target: ComposeTarget): Promise<CommandResult>;
     down(target: ComposeTarget): Promise<CommandResult>;
+    /**
+     * The image reference one service resolves to in the effective config.
+     * Only that string is returned: the interpolated config never leaves the
+     * provider. `null` when Compose fails or the service is absent.
+     */
+    serviceImage(input: ComposeProjectFiles & { service: string }): Promise<string | null>;
+    /**
+     * Recreate one service from the local image only:
+     * `up -d --no-deps --no-build --pull never <service>`. Nothing is pulled or
+     * built, and no other service is touched.
+     */
+    recreateService(input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void }): Promise<CommandResult>;
     /**
      * One-shot history read: `compose logs --tail N --timestamps --no-color`,
      * bounded by the runner timeout and output cap and without following.
@@ -188,6 +215,36 @@ class DockerComposeProvider implements ComposeProvider {
 
     down(target: ComposeTarget): Promise<CommandResult> {
         return this.mutation(target, ["down"]);
+    }
+
+    private projectArgs(input: ComposeProjectFiles): string[] {
+        const args = ["compose", "-p", input.project];
+        for (const envFile of input.envFiles) args.push("--env-file", envFile);
+        args.push("--project-directory", input.cwd);
+        for (const file of input.composeFiles) args.push("-f", file);
+        return args;
+    }
+
+    async serviceImage(input: ComposeProjectFiles & { service: string }): Promise<string | null> {
+        if (!this.caps.operations.config) throw new ComposeUnsupportedError("config");
+        const result = await this.runner([...this.projectArgs(input), "config", "--format", "json"], { cwd: input.cwd });
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        try {
+            const value = JSON.parse(result.stdout) as { services?: Record<string, { image?: unknown }> } | null;
+            const image = value?.services?.[input.service]?.image;
+            return typeof image === "string" ? image : null;
+        } catch {
+            // Config and stderr may contain secrets; expose neither.
+            return null;
+        }
+    }
+
+    recreateService(input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void }): Promise<CommandResult> {
+        // `--` ends option parsing: the service name can never be read as a flag.
+        return this.runner(
+            [...this.projectArgs(input), "up", "-d", "--no-deps", "--no-build", "--pull", "never", "--", input.service],
+            { cwd: input.cwd, timeoutMs: input.timeoutMs, onChunk: input.onOutput },
+        );
     }
 
     readLogs(target: ComposeTarget & { tailLines?: number }): Promise<CommandResult> {

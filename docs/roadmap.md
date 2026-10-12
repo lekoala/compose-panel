@@ -31,5 +31,8 @@ After V1 the direction is to understand the host the stacks run on, not only the
 - **Targeted maintenance** using the distribution's own mechanism (for example `unattended-upgrades`): check, review and apply updates, then a controlled reboot with a separate confirmation. One package transaction at a time, audited, never a distribution upgrade. A single failing third-party repository should be identifiable and offered for temporary disable without blocking the rest.
 - Out of scope, even here: users, firewall, package repositories, arbitrary services and distribution upgrades. Compose Panel must not be marketed as a general server management panel.
 
+## Self-update
+- **Update Compose Panel from the browser.** Done in 0.3.0 ([ADR 0018](adr/0018-self-update.md)): About pulls the panel's own tag, then a one-shot updater container recreates only the panel service and waits for it to be healthy; the outcome is read back from Docker. Remaining: choosing a specific version (it would mean rewriting the image reference in the Compose file), and noticing a newer image without pulling it (see *Check a registry without pulling* above).
+
 ## Compose
 - **Compose override files.** Stacks with `compose.override.yaml`, or several primary files, are refused today. Supporting them means editing and validating several files as one project (see ADR 0004).

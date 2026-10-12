@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased (0.3.0)
+
+- Self-update (ADR 0018): a new **About** page (`/about`, in the sidebar) shows
+  the panel version and, for the documented Docker deployment with a published
+  image, updates the panel itself. **Check for updates** pulls the panel's own
+  image tag (`POST /about/check`, touches no container). **Update Compose
+  Panel…** (`POST /about/update`, confirmed) starts a one-shot
+  `compose-panel-updater` container from the current image, with no network,
+  the Docker socket and the deployment directory read-only. The updater checks
+  that the tag and the Compose file still match, runs
+  `compose up -d --no-deps --no-build --pull never` on the panel service only,
+  and waits for the new container to be healthy. The result and output are read
+  back from the finished updater container after the restart, with host
+  recovery commands on failure. The deployment is read from Docker (own
+  container labels), with no new setting. Refused while a stack action or save
+  runs; actions, saves and purges are refused while an update runs. Activity log
+  events `self-update-check` and `self-update`. New provider calls
+  `serviceImage` and `recreateService`; new image entry point
+  `src/scripts/self-update.ts`.
+- Docs: the upgrade procedure covers the published image as well as local
+  builds, and is the recovery path for a failed self-update.
+
 ## 0.2.0
 
 - Backup retention and purge (ADR 0017): after each save the panel keeps the

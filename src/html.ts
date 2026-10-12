@@ -3,6 +3,7 @@ import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
 import type { ImageVersion, ServiceUpdate } from "./updates.ts";
 import type { AccessReport, AccessStatus } from "./access.ts";
+import { UPDATER_NAME, type SelfIdentity, type SelfUpdateStatus, type UpdaterOutcome } from "./self-update.ts";
 import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategory, type ContainerDetails, type ContainerFilter } from "./container-state.ts";
 import type { AttentionItem, AttentionReason, ClassifiedStat, DiskUsage, DiskUsageRow, EngineInfo, Insights, StackUsage } from "./insights.ts";
 import packageJson from "../package.json";
@@ -33,7 +34,7 @@ export function note(kind: NoteKind, text: string, options: { title?: string; id
 }
 
 /** The primary sections of the panel, in navigation order. */
-export type NavSection = "stacks" | "containers" | "server" | "audit" | "access";
+export type NavSection = "stacks" | "containers" | "server" | "audit" | "access" | "about";
 
 export interface NavigationOptions {
     /** Valid stack names (from `listStacks`), shown as a switcher. Names only, no state. */
@@ -68,6 +69,7 @@ const NAV_SECTIONS: readonly [NavSection, string, string][] = [
     ["server", "/server", "Server"],
     ["audit", "/audit", "Activity log"],
     ["access", "/access", "Access"],
+    ["about", "/about", "About"],
 ];
 
 /**
@@ -961,4 +963,125 @@ export function htmlResponse(body: string, status = 200): Response {
             "Content-Security-Policy": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
         },
     });
+}
+
+export interface AboutPageOptions {
+    csrf: string;
+    access?: string;
+    timezone?: string;
+    nav?: NavigationOptions;
+    status: SelfUpdateStatus;
+    /** Bounded output of the last updater container, when Docker can read it. */
+    output: string | null;
+    /** This panel started an updater that has not ended yet. */
+    pending: boolean;
+    notice?: { kind: NoteKind; text: string };
+    error?: { title: string; message: string };
+}
+
+const UPDATER_OUTCOMES: Record<UpdaterOutcome, { label: string; cls: string }> = {
+    running: { label: "Running", cls: "state-running" },
+    updated: { label: "Succeeded", cls: "state-succeeded" },
+    refused: { label: "Refused, nothing changed", cls: "state-stopped" },
+    failed: { label: "Failed", cls: "state-failed" },
+};
+
+/** Host commands that redo the update by hand. Values come from validated Docker labels. */
+function recoveryCommands(identity: SelfIdentity): string {
+    const quote = (value: string) => (/\s/.test(value) ? `'${value}'` : value);
+    const compose = [
+        "docker compose", "-p", identity.project,
+        ...identity.envFiles.flatMap(file => ["--env-file", quote(file)]),
+        ...identity.composeFiles.flatMap(file => ["-f", quote(file)]),
+    ].join(" ");
+    return `cd ${quote(identity.workingDir)}
+${compose} pull ${identity.service}
+${compose} up -d --no-deps ${identity.service}
+docker logs ${UPDATER_NAME}`;
+}
+
+/**
+ * Version and self-update (ADR 0018). Check pulls the panel's own tag; Update
+ * starts the one-shot updater after an explicit confirmation. Both are plain
+ * forms; app.js only waits for the panel to come back after a restart.
+ */
+export function aboutPage(options: AboutPageOptions): string {
+    const { status } = options;
+    const timeTag = (iso: string | null): string => iso
+        ? `<time datetime="${escapeHtml(iso)}" data-local-time="full">${escapeHtml(iso.slice(0, 19).replace("T", " "))} UTC</time>`
+        : `<span class="muted">—</span>`;
+    const error = options.error ? note("error", options.error.message, { title: options.error.title }) : "";
+    const notice = options.notice ? note(options.notice.kind, options.notice.text) : "";
+    const support = status.support;
+    const identity = support.kind === "ready" ? support.identity : null;
+
+    const rows = [detailRow("Version", `<code>${escapeHtml(VERSION)}</code>`)];
+    if (identity) {
+        const running = status.current ? `<span class="version">${escapeHtml(versionText(status.current))}</span>` : `<span class="muted">unknown</span>`;
+        rows.push(
+            detailRow("Image", `<code>${escapeHtml(identity.imageRef)}</code>`),
+            detailRow("Running image", running),
+            detailRow("Compose project", `<code>${escapeHtml(identity.project)}</code> · service <code>${escapeHtml(identity.service)}</code>`),
+            detailRow("Deployment directory", `<code>${escapeHtml(identity.workingDir)}</code>`),
+        );
+    }
+    const unsupported = support.kind === "unsupported"
+        ? note("warn", `${support.reason} The steps are in docs/deployment.md, under "Upgrade and rollback".`, { title: "Self-update unavailable." })
+        : "";
+    const panelCard = `<section class="card"><h2>This panel</h2><div class="table-wrap"><table class="table"><tbody>${rows.join("")}</tbody></table></div>${unsupported}</section>`;
+
+    const lastRun = status.lastRun;
+    const updating = options.pending || (lastRun.kind === "run" && lastRun.run.outcome === "running");
+    let updatesCard = "";
+    if (identity) {
+        let body: string;
+        if (updating) {
+            const waiting = note("info", "Compose Panel restarts during the update, so this page is unavailable for a moment. It reloads by itself when the panel is back; sign in again then. Your stacks keep running.", { title: "An update is running." });
+            body = `<div data-self-update-wait>${waiting}</div>`;
+        } else {
+            const available = status.available;
+            let ready: string;
+            if (available) {
+                const from = status.current ? versionText(status.current) : "current";
+                const link = available.link
+                    ? ` · <a href="${escapeHtml(available.link.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(available.link.label)}</a>`
+                    : "";
+                const warning = note("warn", "Compose Panel restarts during the update: the page is unavailable for a moment and you sign in again afterwards. Your stacks keep running. Wait for running actions and saves to finish first. Click the button above again to cancel.");
+                ready = `<p><span class="state state-update">Update ready</span> <span class="version">${escapeHtml(from)}</span> → <span class="version">${escapeHtml(versionText(available.version))}</span>${link}</p>
+<details class="confirm"><summary><span class="btn btn-primary">Update Compose Panel…</span></summary>
+<div class="confirm-panel">${warning}<form method="post" action="/about/update"><input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}"><input type="hidden" name="target" value="${escapeHtml(available.imageId)}"><button type="submit" class="btn btn-primary" data-busy-label="Starting…">Yes, update now</button></form></div>
+</details>`;
+            } else {
+                ready = `<p class="muted">No newer image of <code>${escapeHtml(identity.imageRef)}</code> has been downloaded. A version tag such as <code>0.2.0</code> never changes: use the <code>latest</code> tag on the host to follow new releases.</p>`;
+            }
+            body = `${ready}
+<form method="post" action="/about/check" class="op-row"><input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}"><button type="submit" class="btn" data-busy-label="Checking…">Check for updates</button><p class="op-help">Downloads <code>${escapeHtml(identity.imageRef)}</code> if a newer image was published. Nothing restarts.</p></form>`;
+        }
+        updatesCard = `<section class="card"><h2>Updates</h2>${body}</section>`;
+    }
+
+    let lastCard = "";
+    if (lastRun.kind === "foreign") {
+        lastCard = `<section class="card"><h2>Last update</h2>${note("warn", `A container named ${UPDATER_NAME} exists but was not created by the panel. The panel does not read or remove it.`)}</section>`;
+    } else if (lastRun.kind === "run") {
+        const run = lastRun.run;
+        const outcome = UPDATER_OUTCOMES[run.outcome];
+        const open = run.outcome === "failed" || run.outcome === "refused" ? " open" : "";
+        const output = options.output === null
+            ? `<p class="muted">Docker could not read the updater output. Run <code>docker logs ${UPDATER_NAME}</code> on the host.</p>`
+            : `<details${open}><summary>Updater output</summary><pre class="output">${escapeHtml(options.output.replace(/\s+$/, "") || "(no output)")}</pre></details>`;
+        const recovery = run.outcome === "failed" && identity
+            ? `${note("error", "The panel container may not be in the expected state. Run these commands on the host to finish or redo the update.", { title: "Update failed." })}<pre class="output">${escapeHtml(recoveryCommands(identity))}</pre>`
+            : "";
+        const ended = run.finishedAt ? `<span class="muted">ended ${timeTag(run.finishedAt)}</span>` : "";
+        lastCard = `<section class="card"><h2>Last update</h2>
+<p class="meta"><span class="state ${outcome.cls}">${escapeHtml(outcome.label)}</span><span class="muted">started ${timeTag(run.startedAt)}</span>${ended}</p>
+${recovery}${output}</section>`;
+    }
+
+    const body = `<p class="crumbs"><a href="/">← All stacks</a></p>
+<div class="page-head"><h1>About</h1></div>
+<p class="lead">Compose Panel ${escapeHtml(VERSION)}. Updating replaces only the panel container; your stacks keep running.</p>
+${error}${notice}${panelCard}${updatesCard}${lastCard}`;
+    return documentHtml("About", body, { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, scripts: ["/app.js"], nav: options.nav });
 }

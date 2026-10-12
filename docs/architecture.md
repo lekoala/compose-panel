@@ -41,6 +41,18 @@ and a stack's CPU is a cumulative figure that may exceed 100 %. Host-level healt
 need a separate host component and its own ADR. See
 [ADR 0015](adr/0015-readonly-engine-insights.md).
 
+## Self-update
+`src/self-update.ts` finds the panel's own container (`/proc/self/mountinfo`,
+then `container inspect`) and validates its Compose labels, image reference and
+socket mount. **Check** pulls that tag; **Update** starts a one-shot
+`compose-panel-updater` container from the image the panel runs now, with fixed
+arguments. Inside it, `src/scripts/self-update.ts` (logic in
+`src/self-update-run.ts`) re-verifies the tag and the config, recreates the
+panel service through the `ComposeProvider` (`serviceImage`, `recreateService`)
+and waits for it to be healthy. The finished updater container is the record of
+the outcome: the next panel reads its exit code and output from Docker, and
+the panel persists nothing. See [ADR 0018](adr/0018-self-update.md).
+
 ## Audit log
 Auth and action events are written by `src/audit.ts` as append-only NDJSON files, one per day under `<stacksRoot>/.compose-panel/audit/` (overridable), with a bounded number of retained files, a per-file size cap and bounded tail reads. It is not a database and holds no in-memory history: the files on disk are the record (see [ADR 0009](adr/0009-audit-log-and-login-backoff.md)). The same module backs the read-only `/audit` page and the change that replaces per-client login lockout with a bounded delay and one attempt in progress per client, so a single source cannot lock the administrator out.
 

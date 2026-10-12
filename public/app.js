@@ -677,6 +677,28 @@
         window.addEventListener("pagehide", stop);
     }
 
+    /* Self-update (ADR 0018): the panel goes away while its container is
+     * recreated. Poll the health probe and reload once it answers again after
+     * an outage, or after a while if it never went down (the updater is still
+     * verifying, or it refused). Without JS, reload the page by hand. */
+    function wireSelfUpdateWait() {
+        var startedAt = Date.now();
+        var wentDown = false;
+        function tick() {
+            fetch("/health/live", { cache: "no-store" })
+                .then(function (response) {
+                    if (!response.ok) throw new Error("status " + response.status);
+                    if (wentDown || Date.now() - startedAt > 20000) { window.location.reload(); return; }
+                    setTimeout(tick, 2000);
+                })
+                .catch(function () {
+                    wentDown = true;
+                    setTimeout(tick, 2000);
+                });
+        }
+        setTimeout(tick, 2000);
+    }
+
     document.addEventListener("DOMContentLoaded", function () {
         var op = document.querySelector("[data-op-stream]");
         var logs = document.querySelector("[data-logs-stream]");
@@ -692,5 +714,6 @@
         if (containerLogs) wireContainerLogs(containerLogs);
         if (editor) wireEditor(editor);
         if (serverLive) wireServerLive(serverLive);
+        if (document.querySelector("[data-self-update-wait]")) wireSelfUpdateWait();
     });
 })();

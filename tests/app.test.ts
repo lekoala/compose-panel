@@ -9,6 +9,8 @@ import type { CommandResult, DockerRunner } from "../src/docker.ts";
 import type { ComposeCapabilities, ComposeProvider, ComposeTarget } from "../src/compose-provider.ts";
 import type { ContainerInspector } from "../src/containers.ts";
 import { resolveRoot } from "../src/stacks.ts";
+import type { SelfUpdater } from "../src/self-update.ts";
+import { IMAGE_REF, NEW_IMAGE, fakeDocker, fakeSelfUpdater } from "./helpers/self-update.ts";
 
 const PASSWORD = "correct horse battery staple";
 const ORIGIN = "http://localhost";
@@ -26,7 +28,7 @@ afterAll(async () => {
     await rm(root, { recursive: true, force: true });
 });
 
-function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, provider?: ComposeProvider, audit?: AuditLog, stacksRoot: string = root, inspector?: ContainerInspector): App {
+function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, provider?: ComposeProvider, audit?: AuditLog, stacksRoot: string = root, inspector?: ContainerInspector, selfUpdater?: SelfUpdater): App {
     const config: AppConfig = {
         stacksDir: stacksRoot,
         port: 5081,
@@ -62,7 +64,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         logTimeoutMs: 1_800_000,
         ...overrides,
     };
-    return createApp({ config, stacksRoot, runner, provider, audit, inspector });
+    return createApp({ config, stacksRoot, runner, provider, audit, inspector, selfUpdater });
 }
 
 interface FollowCall {
@@ -92,6 +94,8 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         stop: async () => empty,
         restart: async () => empty,
         down: async () => empty,
+        serviceImage: async () => null,
+        recreateService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
         followLogs: (followTarget, onChunk, signal) => new Promise(resolve => {
             calls.push({ target: followTarget, onChunk, signal });
             signal.addEventListener("abort", () => resolve({ code: 137, timedOut: false }), { once: true });
@@ -2463,5 +2467,116 @@ describe("server stats endpoint", () => {
         expect(payload.runningContainers).toBeGreaterThan(0);
         expect(Array.isArray(payload.attention)).toBe(true);
         expect(payload.notes.length).toBeGreaterThan(0);
+    });
+});
+
+describe("self-update (ADR 0018)", () => {
+    async function csrfOf(app: App, session: string): Promise<string> {
+        return /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/about", session)).text())![1]!;
+    }
+
+    function post(app: App, session: string, path: string, fields: Record<string, string>, origin = ORIGIN): Promise<Response> {
+        return authed(app, path, session, {
+            method: "POST",
+            headers: { origin, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(fields).toString(),
+        });
+    }
+
+    function hangingProvider(): ComposeProvider {
+        const { provider } = controllableProvider();
+        return { ...provider, up: () => new Promise(() => {}) };
+    }
+
+    test("the About page works outside a container and offers no update", async () => {
+        const docker = fakeDocker();
+        const app = makeApp({}, undefined, undefined, undefined, root, undefined, fakeSelfUpdater(docker, null));
+        const session = await login(app);
+        const response = await authed(app, "/about", session);
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        expect(html).toContain(`href="/about" aria-current="page"`);
+        expect(html).not.toContain(`action="/about/update"`);
+        expect(html).not.toContain(`action="/about/check"`);
+        expect(docker.calls.every(args => args[3] === "compose-panel-updater")).toBe(true);
+    });
+
+    test("check pulls the panel tag, then update starts the updater and pauses mutations", async () => {
+        const docker = fakeDocker();
+        const app = makeApp({}, undefined, controllableProvider().provider, undefined, root, undefined, fakeSelfUpdater(docker));
+        const session = await login(app);
+        expect(await (await authed(app, "/about", session)).text()).not.toContain(`action="/about/update"`);
+
+        const checked = await post(app, session, "/about/check", { csrf: await csrfOf(app, session) });
+        expect(checked.status).toBe(303);
+        expect(checked.headers.get("location")).toBe("/about?checked=1");
+        expect(docker.calls).toContainEqual(["image", "pull", "--quiet", "--", IMAGE_REF]);
+
+        const page = await (await authed(app, "/about", session)).text();
+        expect(page).toContain(`action="/about/update"`);
+        expect(page).toContain(`name="target" value="${NEW_IMAGE}"`);
+
+        const started = await post(app, session, "/about/update", { csrf: await csrfOf(app, session), target: NEW_IMAGE });
+        expect(started.status).toBe(303);
+        const run = docker.calls.find(args => args[0] === "container" && args[1] === "run");
+        expect(run).toBeDefined();
+        expect(run).toContain(NEW_IMAGE);
+
+        // While the updater runs, the page waits and no stack action may start.
+        const waiting = await (await authed(app, "/about", session)).text();
+        expect(waiting).toContain("data-self-update-wait");
+        const csrf = await csrfOf(app, session);
+        expect((await post(app, session, "/stacks/demo/operations", { csrf, action: "up" })).status).toBe(409);
+        expect((await post(app, session, "/about/update", { csrf, target: NEW_IMAGE })).status).toBe(409);
+
+        // The updater ended while this panel is still alive: mutations resume.
+        docker.updater = { status: "exited", exitCode: 2 };
+        docker.finishWait();
+        await Bun.sleep(5);
+        expect((await post(app, session, "/stacks/demo/operations", { csrf, action: "up" })).status).toBe(303);
+    });
+
+    test("update refuses a stale target, a foreign origin and a missing token", async () => {
+        const docker = fakeDocker();
+        docker.pulled = true;
+        const app = makeApp({}, undefined, undefined, undefined, root, undefined, fakeSelfUpdater(docker));
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await post(app, session, "/about/update", { csrf, target: `sha256:${"9".repeat(64)}` })).status).toBe(409);
+        expect((await post(app, session, "/about/update", { csrf, target: "latest" })).status).toBe(400);
+        expect((await post(app, session, "/about/update", { csrf: "wrong", target: NEW_IMAGE })).status).toBe(403);
+        expect((await post(app, session, "/about/update", { csrf, target: NEW_IMAGE }, "http://evil.example")).status).toBe(403);
+        expect((await post(app, session, "/about/check", { csrf: "wrong" })).status).toBe(403);
+        expect((await authed(app, "/about/update", session)).status).toBe(405);
+        expect(docker.calls.some(args => args[1] === "run" || args[1] === "pull")).toBe(false);
+    });
+
+    test("update waits for running stack actions", async () => {
+        const docker = fakeDocker();
+        docker.pulled = true;
+        const app = makeApp({}, undefined, hangingProvider(), undefined, root, undefined, fakeSelfUpdater(docker));
+        const session = await login(app);
+        app.operations.start({ stack: "demo", action: "up", target: { composeFile: join(root, "demo", "compose.yaml"), cwd: join(root, "demo") } });
+        const response = await post(app, session, "/about/update", { csrf: await csrfOf(app, session), target: NEW_IMAGE });
+        expect(response.status).toBe(409);
+        expect(docker.calls.some(args => args[1] === "run")).toBe(false);
+    });
+
+    test("a failed update shows the escaped updater output", async () => {
+        const docker = fakeDocker();
+        docker.updater = { status: "exited", exitCode: 1 };
+        const app = makeApp({}, undefined, undefined, undefined, root, undefined, fakeSelfUpdater(docker));
+        const session = await login(app);
+        const html = await (await authed(app, "/about", session)).text();
+        expect(html).toContain("&lt;b&gt;not markup&lt;/b&gt;");
+        expect(html).not.toContain("<b>not markup</b>");
+        expect(html).toContain("state-failed");
+    });
+
+    test("both endpoints require a session", async () => {
+        const app = makeApp({}, undefined, undefined, undefined, root, undefined, fakeSelfUpdater(fakeDocker()));
+        const response = await app.fetch(new Request(`${ORIGIN}/about/update`, { method: "POST", headers: { origin: ORIGIN } }));
+        expect(response.status).toBe(401);
+        expect((await app.fetch(new Request(`${ORIGIN}/about`))).status).toBe(302);
     });
 });

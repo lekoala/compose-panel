@@ -303,10 +303,56 @@ Two layers, both plain files:
    `tar -czf /root/stacks-backup-$(date +%F).tar.gz -C /opt stacks`.
    Restore with `tar -xzf`, then re-read state in the panel.
 
-Upgrade procedure: back up (layer 2), `docker compose -f deploy/compose.yaml
-build && docker compose -f deploy/compose.yaml up -d`, run the smoke checks
-below. Rollback: check out the previous tag/commit, rebuild, `up -d` again;
-stack files are untouched by either direction.
+### Updating from the browser
+
+With a published image, **About** (`/about`) updates the panel itself
+([ADR 0018](adr/0018-self-update.md)):
+
+1. **Check for updates** pulls the image tag the panel runs from. Nothing
+   restarts. Use `image: ghcr.io/lekoala/compose-panel:latest` in
+   `deploy/compose.yaml` to follow releases: a version tag such as `0.3.0`
+   never moves, so a check finds nothing newer.
+2. When the tag points to a newer image, **Update Compose Panel…** shows both
+   versions and asks for a confirmation. It is refused while a stack action or
+   save is running.
+3. The panel starts a one-shot container, `compose-panel-updater`, from the
+   image it runs now, with no network, the Docker socket and the deployment
+   directory (read-only). The updater checks that the tag and the Compose file
+   still match, runs `docker compose up -d --no-deps --no-build --pull never panel`,
+   then waits until the new container is healthy. Managed stacks are not
+   touched.
+4. The page reloads by itself when the panel is back. Sign in again (sessions
+   live in memory). **About** shows the result and the updater output, read
+   from the finished updater container. It stays in Docker until the next update
+   (`docker logs compose-panel-updater` works from the host too).
+
+Requirements, all read from Docker (no setting): the panel runs in a container
+started by `docker compose`, from a pulled image tag (not a local build, not
+pinned by digest), with the socket bind-mounted at `/var/run/docker.sock`, and
+all its Compose and env files inside the deployment directory. If one is
+missing, **About** says which and the update is done from the host as below.
+The updater applies the deployment files as they are on disk, like a manual
+`compose up`. It never rolls back by itself: if it fails, **About** shows the
+commands to run on the host.
+
+### Upgrade and rollback
+
+Run these commands **on the host**, from the repository checkout, never from
+inside the panel: recreating the panel container stops the process that would
+run them. This is also the recovery path when an update from the browser fails.
+
+1. Back up (layer 2).
+2. Built locally: `git pull` (or check out the new tag), then
+   `docker compose -f deploy/compose.yaml build`.
+   Published image: set `image: ghcr.io/lekoala/compose-panel:<version>` in
+   `deploy/compose.yaml`, then `docker compose -f deploy/compose.yaml pull panel`.
+3. `docker compose -f deploy/compose.yaml up -d --no-deps panel`, then run the
+   smoke checks below.
+
+Rollback: check out the previous tag/commit and rebuild, or put the previous
+version tag back in `image:` and pull, then `up -d --no-deps panel` again.
+Stack files are untouched in either direction, and managed stacks keep running
+while the panel restarts.
 
 Removal without impact: `docker compose -f deploy/compose.yaml down`
 removes only the panel container. Running services, networks and volumes are
@@ -407,6 +453,17 @@ release. Verified 2026-10-10 against image `compose-panel:local`
       origins accepted with Secure cookies, loopback non-Secure, a cross-path
       Origin refused.
 - [ ] Same check on the target host with its real Caddy and a real stack.
+- [x] Self-update logic ([ADR 0018](adr/0018-self-update.md)) on the disposable
+      lab daemon (`bun run test:docker-lab:wsl`, 2026-10-12, Docker 29.9.0):
+      real Compose labels are read, a stale target is refused with nothing
+      changed, the retagged service is recreated and verified healthy, and a
+      second service keeps its container.
+- [ ] Self-update end to end with the published image on a disposable host:
+      deploy `ghcr.io/lekoala/compose-panel:latest` at the previous version,
+      publish the new one, Check, Update; the panel comes back on the new
+      version, `compose-panel-updater` exited 0, managed stacks untouched. Then
+      make it fail (for example change `image:` in `deploy/compose.yaml`) and
+      confirm "Refused, nothing changed" with the panel still running.
 
 ## Audit correction verification
 

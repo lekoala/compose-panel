@@ -16,6 +16,7 @@ A small, self-hosted web panel for the Docker Compose stacks of **one Linux serv
 - **Runs a fixed set of actions**: Up, Pull + up, Restart, Stop and Down, one at a time per stack. An action keeps running if you close the page, and its output streams live.
 - **Follows logs** live (`docker compose logs --follow`).
 - **Shows Docker diagnostics** on a read-only **Server** page (`/server`): engine facts from `docker info`, per-container and per-stack CPU/memory from `docker stats`, a current-state "Needs attention" list, and Docker-managed disk usage read on demand. It uses only the Docker API: no host agent, no history, and the host view (load, memory, uptime, filesystems, system updates) is not covered.
+- **Updates itself** from the **About** page when it runs from a published image: it downloads its own image tag, then a short-lived updater container recreates only the panel container and checks that it comes back healthy. Your stacks keep running, and the result stays visible after the restart ([docs/deployment.md](docs/deployment.md#updating-from-the-browser)).
 - **Works on a phone**, in light or dark mode, with server-rendered pages and a few lines of plain JavaScript.
 
 It deliberately has no terminal, no file browser, no arbitrary Docker command, no database and no multi-user support. Stacks that use Compose override files are refused rather than half-managed.

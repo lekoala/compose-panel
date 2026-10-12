@@ -1,4 +1,5 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, type NavSection, type NavigationOptions, type NoteKind } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, type NavSection, type NavigationOptions, type NoteKind } from "./html.ts";
+import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { dirname, join } from "node:path";
 import { listStacks, locateComposeFile, readStackCompose, StackError } from "./stacks.ts";
 import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, type StackDetailStatus } from "./status.ts";
@@ -67,6 +68,8 @@ export interface AppOptions {
     locks?: StackLocks;
     /** Activity log. Built from `config` and `stacksRoot` when omitted. */
     audit?: AuditLog;
+    /** Panel self-update (ADR 0018). Built from `runner` when omitted. */
+    selfUpdater?: SelfUpdater;
 }
 
 export interface App {
@@ -306,6 +309,17 @@ export function createApp(options: AppOptions): App {
     });
     // `docker system df` is expensive, so it is read on demand and cached (ADR 0015).
     const diskCache = createDiskUsageCache();
+    const selfUpdater = options.selfUpdater ?? new SelfUpdater({
+        runner: options.runner ?? unavailableRunner,
+        provider,
+        pullTimeoutMs: config.operationTimeoutMs,
+        maxBytes: config.dockerMaxBytes,
+    });
+    // Set from the moment an update is accepted until its updater ends (or
+    // this process is replaced): no action, save or purge may start meanwhile.
+    let selfUpdatePending = false;
+    let selfUpdateChecking = false;
+    const SELF_UPDATE_RUNNING = "Compose Panel is updating itself. Wait for it to restart, then try again.";
     let activeSse = 0;
     let shuttingDown = false;
     const saves = new Set<Promise<unknown>>();
@@ -797,6 +811,7 @@ export function createApp(options: AppOptions): App {
         try {
             const task = locks.run(name, async () => {
                 if (shuttingDown) throw new OperationsDisabledError();
+                if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
                 return pruneBackups(stacksRoot, name, 0);
             });
             saves.add(task);
@@ -839,6 +854,7 @@ export function createApp(options: AppOptions): App {
         try {
             const task = locks.run(name, async () => {
                 if (shuttingDown) throw new OperationsDisabledError();
+                if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
                 const saved = await saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes, {
                     // Validation awaits a subprocess: re-check right before writing.
                     beforeCommit: () => { if (!sessions.isActive(session.id)) throw new SessionEndedError(); },
@@ -922,6 +938,7 @@ export function createApp(options: AppOptions): App {
             return sessionEnded();
         }
         try {
+            if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
             operations.start({
                 stack: name,
                 action,
@@ -935,6 +952,112 @@ export function createApp(options: AppOptions): App {
                 return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
             }
             throw error;
+        }
+    }
+
+    async function renderAbout(
+        csrf: string,
+        options: { notice?: { kind: NoteKind; text: string }; error?: { title: string; message: string }; status?: number } = {},
+    ): Promise<Response> {
+        const status = await selfUpdater.status();
+        const output = status.lastRun.kind === "run" ? await selfUpdater.output() : null;
+        return htmlResponse(aboutPage({
+            csrf,
+            access,
+            timezone: config.timeZone || undefined,
+            status,
+            output: output === null ? null : stripAnsi(output),
+            pending: selfUpdatePending,
+            notice: options.notice,
+            error: options.error,
+            nav: await sidebarNav("about"),
+        }), options.status ?? 200);
+    }
+
+    /** Refusal shared by both self-update forms, or null when the panel is idle. */
+    function selfUpdateBusy(): string | null {
+        if (shuttingDown) return "The panel is shutting down.";
+        if (selfUpdatePending) return "An update is already running.";
+        if (selfUpdateChecking) return "A check for updates is already running.";
+        return null;
+    }
+
+    /** Pull the panel's own tag (ADR 0018). Touches no container. */
+    async function handleSelfUpdateCheck(request: Request, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, "/about");
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, "/about");
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, "/about");
+        if (!sessions.isActive(session.id)) return sessionEnded();
+        const actor = clientKey(request, config);
+        const busy = selfUpdateBusy();
+        if (busy) {
+            await recordAudit({ event: "self-update-check", result: "refused", actor, detail: busy });
+            return renderAbout(csrf, { error: { title: "Nothing was checked.", message: busy }, status: 409 });
+        }
+        selfUpdateChecking = true;
+        try {
+            const support = await selfUpdater.identify();
+            if (support.kind !== "ready") {
+                await recordAudit({ event: "self-update-check", result: "refused", actor, detail: "self-update unavailable" });
+                return renderAbout(csrf, { status: 409 });
+            }
+            const pulled = await selfUpdater.pull(support.identity);
+            if (pulled.code !== 0 || pulled.timedOut) {
+                const reason = pulled.timedOut ? "the download did not finish in time" : (pulled.stderr.split("\n").map(line => line.trim()).find(Boolean) ?? "").slice(0, 300);
+                await recordAudit({ event: "self-update-check", result: "failure", actor, detail: pulled.timedOut ? "timed out" : `exit code ${pulled.code}` });
+                return renderAbout(csrf, { error: { title: "Check failed.", message: `Docker could not download ${support.identity.imageRef}${reason ? `: ${reason}` : "."}` }, status: 502 });
+            }
+            await recordAudit({ event: "self-update-check", result: "success", actor });
+            return redirect("/about?checked=1", 303);
+        } finally {
+            selfUpdateChecking = false;
+        }
+    }
+
+    /** Start the one-shot updater (ADR 0018) once nothing else is running. */
+    async function handleSelfUpdateStart(request: Request, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, "/about");
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, "/about");
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, "/about");
+        if (!sessions.isActive(session.id)) return sessionEnded();
+        const actor = clientKey(request, config);
+        const target = form.get("target") ?? "";
+        const refuse = async (message: string, status = 409): Promise<Response> => {
+            await recordAudit({ event: "self-update", result: "refused", actor, detail: message });
+            return renderAbout(csrf, { error: { title: "Not updated.", message: `${message} Nothing was changed.` }, status });
+        };
+        if (!isImageId(target)) return refuse("The update form is not valid. Reload the page and try again.", 400);
+        const busy = selfUpdateBusy();
+        if (busy) return refuse(busy);
+        if (operations.activeCount() > 0 || saves.size > 0) {
+            return refuse("An action or a save is still running. Wait for it to finish, then update.");
+        }
+        // Synchronously, before any await: from here on no action, save or
+        // purge can start until the updater ends or the panel is replaced.
+        selfUpdatePending = true;
+        let started = false;
+        try {
+            const status = await selfUpdater.status();
+            if (status.support.kind !== "ready") return await refuse(status.support.reason);
+            if (!status.available) return await refuse("No newer image is ready. Check for updates first.");
+            if (status.available.imageId !== target) return await refuse("The image changed since this page was loaded. Review the update again.");
+            if (!sessions.isActive(session.id)) return sessionEnded();
+            await selfUpdater.launch(status.support.identity, target);
+            started = true;
+            await recordAudit({ event: "self-update", result: "started", actor, detail: `${status.support.identity.imageRef} ${target.slice(0, 19)}` });
+            // Unblock if the updater ends while this process is still alive
+            // (a refusal, or a failure before the recreate).
+            void selfUpdater.wait().finally(() => { selfUpdatePending = false; });
+            return redirect("/about", 303);
+        } catch (error) {
+            if (error instanceof SelfUpdateError) return await refuse(error.message.replace(/ Nothing was changed\.$/, ""), error.status);
+            throw error;
+        } finally {
+            if (!started) selfUpdatePending = false;
         }
     }
 
@@ -1275,10 +1398,23 @@ export function createApp(options: AppOptions): App {
             try { return await handleOperation(request, decodeName(operationsMatch[1]!), session); }
             catch (error) { return routeError(error, session.csrf, safeName(operationsMatch[1]!)); }
         }
+        if (url.pathname === "/about/check" || url.pathname === "/about/update") {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return url.pathname === "/about/check"
+                    ? await handleSelfUpdateCheck(request, session)
+                    : await handleSelfUpdateStart(request, session);
+            } catch (error) { return routeError(error, session.csrf); }
+        }
         if (method !== "GET" && method !== "HEAD") return methodNotAllowed("GET");
 
         try {
             if (url.pathname === "/") return await renderStackList(session.csrf);
+            if (url.pathname === "/about") {
+                // Fixed message only: the query flag is never reflected.
+                const notice = url.searchParams.get("checked") === "1" ? { kind: "success" as const, text: "Checked: the latest image of this tag is downloaded." } : undefined;
+                return await renderAbout(session.csrf, { notice });
+            }
             if (url.pathname === "/server/stats") {
                 const response = await handleServerStats();
                 return method === "HEAD" ? withoutBody(response) : response;
