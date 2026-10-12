@@ -1,4 +1,4 @@
-import type { ComposeService } from "./compose-state.ts";
+import type { ComposeService, StackState } from "./compose-state.ts";
 import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
 import type { ImageVersion, ServiceUpdate } from "./updates.ts";
@@ -311,20 +311,26 @@ function imageCell(service: ComposeService, update: ServiceUpdate | undefined): 
     return `${image}<div class="update"><span class="state state-update">Update ready</span> <span><span class="version">${escapeHtml(updateSides(update)[0])}</span> → <span class="version">${escapeHtml(updateSides(update)[1])}</span></span>${link}</div>`;
 }
 
-export function servicesSection(services: ComposeService[], state: string, updates: Record<string, ServiceUpdate> = {}): string {
+export function servicesSection(services: ComposeService[], state: string, updates: Record<string, ServiceUpdate> = {}, actions?: { name: string; csrf: string; busy: boolean }): string {
     let content: string;
     if (services.length > 0) {
         // Only show the health column when at least one service declares a
         // health check; otherwise it is an empty column with no information.
         const showHealth = services.some(service => service.health !== null);
+        // Scoped Restart/Up (ADR 0021), plain POST forms like the Actions card.
+        // Same state table: offered on `running`/`stopped` only, never on
+        // `unknown`; the server re-validates every submission.
+        const scoped = actions !== undefined && (state === "running" || state === "stopped");
         const rows = services
             .map(service => {
                 const health = showHealth ? `<td class="col-optional">${healthBadge(service.health)}</td>` : "";
-                return `<tr><td>${escapeHtml(service.name)}</td><td>${serviceBadge(service)}</td>${health}<td>${imageCell(service, updates[service.name])}</td></tr>`;
+                const cell = scoped ? `<td>${serviceActions(actions, service.name)}</td>` : "";
+                return `<tr><td>${escapeHtml(service.name)}</td><td>${serviceBadge(service)}</td>${health}<td>${imageCell(service, updates[service.name])}</td>${cell}</tr>`;
             })
             .join("");
         const healthHead = showHealth ? `<th class="col-optional">Health check</th>` : "";
-        content = `<div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th>Container</th>${healthHead}<th>Image</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        const actionsHead = scoped ? `<th>Actions</th>` : "";
+        content = `<div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th>Container</th>${healthHead}<th>Image</th>${actionsHead}</tr></thead><tbody>${rows}</tbody></table></div>`;
     } else if (state === "not-created") {
         content = `<p class="muted">No containers yet. Use <em>Up</em> to create them.</p>`;
     } else {
@@ -333,27 +339,48 @@ export function servicesSection(services: ComposeService[], state: string, updat
     return `<section class="card"><h2>Services</h2>${content}</section>`;
 }
 
+/** Per-service Restart and Up for one table row (ADR 0021). */
+function serviceActions(actions: { name: string; csrf: string; busy: boolean }, service: string): string {
+    const buttons = (["restart", "up"] as const).map(action => {
+        const label = action === "restart" ? "Restart" : "Up";
+        const disabled = actions.busy ? " disabled" : "";
+        return `<form method="post" action="/stacks/${encodeURIComponent(actions.name)}/operations" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(actions.csrf)}"><input type="hidden" name="action" value="${action}"><input type="hidden" name="service" value="${escapeHtml(service)}"><button type="submit" class="btn btn-quiet"${disabled} data-op-button data-busy-label="Starting…">${label}</button></form>`;
+    }).join("");
+    return `<div class="row-actions">${buttons}</div>`;
+}
+
 const OPERATIONS: { action: OperationAction; label: string; help: string; style: string; needsDeployment: boolean }[] = [
-    { action: "up", label: "Up", help: "Create or update this stack's containers so they match the Compose file and the local images. Use this after editing or after Pull.", style: "btn-primary", needsDeployment: false },
-    { action: "pull", label: "Pull", help: "Check this stack's images for updates and download them. No container is touched: services with a newer image are then marked “Update ready”.", style: "", needsDeployment: false },
-    { action: "pull-up", label: "Pull + up", help: "Pull this stack's images, then Up, in one step: services with a newer image are recreated right away.", style: "", needsDeployment: false },
-    { action: "restart", label: "Restart", help: "Restart all containers in this stack. Does not apply Compose file changes.", style: "", needsDeployment: true },
-    { action: "stop", label: "Stop", help: "Stop this stack's containers without removing them. Up starts them again.", style: "", needsDeployment: true },
+    { action: "up", label: "Up", help: "Create or update this stack's containers so they match the Compose file and the local images. Use this after editing or after Pull. Per-service Up is offered in the Services table.", style: "btn-primary", needsDeployment: false },
+    { action: "pull", label: "Pull", help: "Download this stack's images, except services built from a Dockerfile (those are built by Up). No container is touched: services with a newer image are then marked “Update ready”.", style: "", needsDeployment: false },
+    { action: "pull-up", label: "Pull + up", help: "Pull this stack's images (except locally built services), then Up, in one step: services with a newer image are recreated right away.", style: "", needsDeployment: false },
+    { action: "restart", label: "Restart", help: "Restart all containers in this stack. Does not apply Compose file changes. Per-service Restart is offered in the Services table.", style: "", needsDeployment: true },
+    { action: "stop", label: "Stop", help: "Stop this stack's containers without removing them. Start brings them back; Up recreates them.", style: "", needsDeployment: true },
+    { action: "start", label: "Start", help: "Start this stack's stopped containers without recreating them. Unlike Up, it never applies Compose file changes.", style: "", needsDeployment: true },
     { action: "down", label: "Down", help: "Stop and remove this stack's containers and networks. Volumes and images are kept.", style: "btn-danger", needsDeployment: true },
 ];
 
 export const OPERATION_LABELS: Record<OperationAction, string> = Object.fromEntries(OPERATIONS.map(op => [op.action, op.label])) as Record<OperationAction, string>;
 
-export function operationControls(name: string, csrf: string, options: { busy: boolean; deployed: boolean; updatesReady?: string[] }): string {
+export function operationControls(name: string, csrf: string, options: { busy: boolean; state: StackState; updatesReady?: string[] }): string {
     const action = `/stacks/${encodeURIComponent(name)}/operations`;
+    // Which actions the panel offers for each honest state. `unknown` means the
+    // panel cannot guarantee what it would manipulate, so nothing may run.
+    const runnable = new Set<OperationAction>(
+        options.state === "running" || options.state === "stopped"
+            ? OPERATIONS.map(op => op.action)
+            : options.state === "not-created"
+                ? OPERATIONS.filter(op => !op.needsDeployment).map(op => op.action)
+                : [],
+    );
     const rows = OPERATIONS.map(op => {
-        const blocked = options.busy || (op.needsDeployment && !options.deployed);
+        // Buttons blocked by state (not by a running action) stay disabled when
+        // app.js unlocks the page: only a reload can offer them again.
+        const stateBlocked = !runnable.has(op.action);
+        const blocked = options.busy || stateBlocked;
         const disabled = blocked ? " disabled" : "";
-        // Only actions that need a deployment are locked by it; the busy lock
-        // is released by app.js when the running action finishes.
-        const lock = op.needsDeployment && !options.deployed ? ` data-needs-deployment` : "";
+        const lock = stateBlocked ? ` data-state-locked` : "";
         const form = (label: string) => `<form method="post" action="${action}" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="action" value="${op.action}"><button type="submit" class="btn ${op.style}"${disabled}${lock} data-op-button data-busy-label="Starting…">${escapeHtml(label)}</button></form>`;
-        if (op.action === "down" && options.deployed) {
+        if (op.action === "down" && runnable.has("down")) {
             // Destructive: a disclosure asks for a second, explicit click. Works without JS.
             return `<details class="op-confirm"><summary class="op-row"><span class="btn ${op.style}">${escapeHtml(op.label)}…</span><span class="op-help">${escapeHtml(op.help)}</span></summary>`
                 + `<div class="op-confirm-panel">${note("warn", `This stops and removes every container and network of ${name}. Volumes and images are kept, and Up recreates the containers. Click Down… again to cancel.`)}`
@@ -363,11 +390,13 @@ export function operationControls(name: string, csrf: string, options: { busy: b
     }).join("");
     const status = options.busy
         ? note("info", "An action is running. The buttons unlock when it finishes.", { id: "op-busy-note" })
-        : !options.deployed
-            ? `<p class="muted">This stack is not deployed yet, so only <em>Up</em>, <em>Pull</em> and <em>Pull + up</em> are available.</p>`
-            : options.updatesReady && options.updatesReady.length > 0
-                ? note("info", `Update ready for ${options.updatesReady.join(", ")}: Up recreates ${options.updatesReady.length === 1 ? "it" : "them"} with the newer image. The other services are not affected by the image change. Details under Services.`)
-                : "";
+        : options.state === "unknown"
+            ? `<p class="muted">The panel could not determine this stack's state, so no action is available. The reason is shown above; reload the page to try again.</p>`
+            : options.state === "not-created"
+                ? `<p class="muted">This stack is not deployed yet, so only <em>Up</em>, <em>Pull</em> and <em>Pull + up</em> are available.</p>`
+                : options.updatesReady && options.updatesReady.length > 0
+                    ? note("info", `Update ready for ${options.updatesReady.join(", ")}: Up recreates ${options.updatesReady.length === 1 ? "it" : "them"} with the newer image. The other services are not affected by the image change. Details under Services.`)
+                    : "";
     return `<section class="card"><h2>Actions</h2>`
         + `<p class="muted">These actions apply to this stack only. They run on the server and keep going if you close this page. Only one action or save runs at a time per stack.</p>`
         + `${status}<div class="op-list">${rows}</div></section>`;
@@ -408,7 +437,7 @@ export function operationPanel(operation: OperationView | null, stack?: string):
     const started = new Date(operation.startedAt).toISOString();
     const details = operationDetails(operation);
     return `<section class="card operation"${stream} data-op-status="${escapeHtml(operation.status)}" data-op-started="${operation.startedAt}">`
-        + `<h2>Last action: ${escapeHtml(OPERATION_LABELS[operation.action] ?? operation.action)}</h2>`
+        + `<h2>Last action: ${escapeHtml(OPERATION_LABELS[operation.action] ?? operation.action)}${operation.service ? ` · ${escapeHtml(operation.service)}` : ""}</h2>`
         + `<p class="op-summary"><span class="state state-${escapeHtml(operation.status)}" id="op-status" aria-live="polite">${escapeHtml(operationStatusLabel(operation.status))}</span>`
         + ` <span class="muted">started <time datetime="${escapeHtml(started)}" data-local-time>${started.slice(11, 19)} UTC</time></span>`
         + `<span class="muted" id="op-meta">${details ? ` · ${escapeHtml(details)}` : ""}</span></p>`
@@ -418,14 +447,25 @@ export function operationPanel(operation: OperationView | null, stack?: string):
         + `</section>`;
 }
 
-export function logsPanel(name: string, tailLines: number, timezone = ""): string {
+export function logsPanel(name: string, tailLines: number, timezone = "", services: string[] = []): string {
     const base = `/stacks/${encodeURIComponent(name)}/logs`;
     const zoneHint = timezone
         ? ` Times are shown in <strong>${escapeHtml(timezone)}</strong>.`
         : ` Times are shown in your browser's time zone.`;
+    // Server-known service names only (convenience: the server re-validates
+    // against `config --services` on every request).
+    const serviceOptions = [`<option value="">All services</option>`]
+        .concat([...new Set(services)].map(service => `<option value="${escapeHtml(service)}">${escapeHtml(service)}</option>`))
+        .join("");
+    const tails = [...new Set([100, 200, 500, 1000, tailLines])].sort((a, b) => a - b);
+    const tailOptions = tails
+        .map(lines => `<option value="${lines}"${lines === tailLines ? " selected" : ""}>${lines}</option>`)
+        .join("");
     return `<section class="card logs" data-logs-snapshot="${base}" data-logs-stream="${base}/events"><h2>Logs</h2>`
-        + `<p class="muted">Shows the last ${tailLines} lines of every service. <em>Follow live</em> then keeps new lines arriving. Following stops when you click <em>Stop following</em> or leave the page.${zoneHint}</p>`
-        + `<div class="toolbar"><a class="btn" id="logs-latest" href="${base}">Latest ${tailLines} lines</a><button type="button" class="btn" id="logs-refresh">Refresh</button><button type="button" class="btn" id="logs-follow">Follow live</button><button type="button" class="btn" id="logs-stop" disabled>Stop following</button></div>`
+        + `<p class="muted">Shows the last ${tailLines} lines. <em>Follow live</em> then keeps new lines arriving. Following stops when you click <em>Stop following</em>, change the selection, or leave the page.${zoneHint}</p>`
+        + `<form method="get" action="${base}" class="toolbar" id="logs-form"><label for="logs-service">Service</label><select id="logs-service" name="service">${serviceOptions}</select>`
+        + `<label for="logs-tail">Lines</label><select id="logs-tail" name="tail">${tailOptions}</select>`
+        + `<button type="submit" class="btn" id="logs-show">Show</button><button type="button" class="btn" id="logs-refresh">Refresh</button><button type="button" class="btn" id="logs-follow">Follow live</button><button type="button" class="btn" id="logs-stop" disabled>Stop following</button></form>`
         + `<p id="logs-status" class="muted" role="status">Not following.</p>`
         + `<pre class="output" id="logs-output"></pre>`
         + `</section>`;
@@ -470,7 +510,7 @@ export function auditPage(options: AuditPageOptions): string {
             const when = entry.ts ? `${entry.ts.slice(0, 19).replace("T", " ")}Z` : "";
             const resultClass = AUDIT_RESULT_CLASS[entry.result] ?? "state-stopped";
             const stack = entry.stack ? `<code>${escapeHtml(entry.stack)}</code>` : `<span class="muted">—</span>`;
-            const action = entry.action ? escapeHtml(entry.action) : `<span class="muted">—</span>`;
+            const action = entry.action ? escapeHtml(entry.action) + (entry.service ? ` · ${escapeHtml(entry.service)}` : "") : `<span class="muted">—</span>`;
             const actor = entry.username
                 ? `${escapeHtml(entry.actor ?? "—")} <span class="muted">(${escapeHtml(entry.username)})</span>`
                 : escapeHtml(entry.actor ?? "—");

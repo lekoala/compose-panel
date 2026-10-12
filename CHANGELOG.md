@@ -21,6 +21,30 @@
   `src/scripts/self-update.ts`.
 - Docs: the upgrade procedure covers the published image as well as local
   builds, and is the recovery path for a failed self-update.
+- Stack actions need an honest state (ADR follow-up): `unknown` offers no
+  action at all (the server already refused every mutation there through its
+  fail-closed project check); the Actions card takes the full state instead of
+  a `deployed` boolean.
+- New `Start` action (ADR 0019): `docker compose start` on deployed stacks,
+  for stopped containers, without recreating anything. `Up` stays the only
+  action that creates containers or applies file changes.
+- Logs filtered by service (ADR 0020): the Logs card offers a service
+  selector and line counts (`100/200/500/1000`, configured
+  `COMPOSE_PANEL_LOG_TAIL_LINES` stays the default). `?service=` is validated
+  against `config --services` discovery on every request and `?tail=` against
+  the offered counts; follows share a subprocess only between identical
+  (stack, service, tail) selections, two live selections per stack at most.
+- Restart and Up scoped to one service (ADR 0021): the Services table offers
+  per-service Restart (`restart --no-deps`) and Up (`up -d --no-deps`, normal
+  `Up` semantics — Compose may pull or build) as plain forms. The service is
+  validated against `config --services` on every request; scoped `up` never
+  creates a stack, and a service field on any other action is refused. The
+  service stays visible in the operation panel and the activity log.
+- `Pull` downloads non-buildable services only (ADR 0022): `compose pull
+  --ignore-buildable`, so stacks mixing registry images and local builds pull
+  cleanly in one step (also for `Pull + up`). Services with a `build:`
+  section — including ones that also declare `image:` — are skipped and left
+  to `Up`.
 
 ## 0.2.0
 

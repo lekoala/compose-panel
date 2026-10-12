@@ -15,7 +15,7 @@ import { OperationManager, OperationsDisabledError, isOperationAction, type Oper
 import { LogManager, stripAnsi } from "./logs.ts";
 import { AuditLog, AuditError } from "./audit.ts";
 import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
-import { createComposeProvider, type ComposeProvider } from "./compose-provider.ts";
+import { createComposeProvider, COMPOSE_LOG_TAIL_OPTIONS, isComposeServiceName, type ComposeProvider } from "./compose-provider.ts";
 import { buildAccessReport, type Access } from "./access.ts";
 import type { DockerRunner } from "./docker.ts";
 import {
@@ -296,6 +296,7 @@ export function createApp(options: AppOptions): App {
             result: operation.status,
             stack: operation.stack,
             action: operation.action,
+            service: operation.service,
             detail: [
                 operation.exitCode !== null ? `exit code ${operation.exitCode}` : "",
                 operation.timedOut ? "timed out" : "",
@@ -740,10 +741,10 @@ export function createApp(options: AppOptions): App {
             + `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}${healthSummaryBadge(status.services)}</p>`
             + (notice ? note(notice.kind, notice.text) : "")
             + (status.note ? note("warn", status.note) : "")
-            + operationControls(stack.name, csrf, { busy: operation?.status === "running", deployed: status.state !== "not-created", updatesReady: Object.keys(status.updates ?? {}) })
+            + operationControls(stack.name, csrf, { busy: operation?.status === "running", state: status.state, updatesReady: Object.keys(status.updates ?? {}) })
             + operationPanel(operation, stack.name)
-            + servicesSection(status.services, status.state, status.updates)
-            + logsPanel(stack.name, config.logTailLines, config.timeZone)
+            + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" })
+            + logsPanel(stack.name, config.logTailLines, config.timeZone, status.services.map(service => service.name))
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
             { ...pageChrome(csrf), scripts: ["/app.js"], nav: await sidebarNav("stacks", stack.name) },
         ), statusCode);
@@ -912,6 +913,17 @@ export function createApp(options: AppOptions): App {
         const action = form.get("action") ?? "";
         if (!isOperationAction(action)) return renderStackDetail(name, csrf, { kind: "error", text: "Unknown action. Nothing was run." }, 400);
 
+        // Scoped operations (ADR 0021): only `up` and `restart` accept a
+        // service. Anywhere else the field is refused, never ignored.
+        const serviceParam = (form.get("service") ?? "").trim();
+        if (serviceParam !== "" && action !== "up" && action !== "restart") {
+            return renderStackDetail(name, csrf, { kind: "error", text: "This action does not apply to a single service. Nothing was run." }, 400);
+        }
+        if (serviceParam !== "" && !isComposeServiceName(serviceParam)) {
+            return renderStackDetail(name, csrf, { kind: "error", text: "This service selection is not valid. Nothing was run." }, 400);
+        }
+        const service = serviceParam === "" ? null : serviceParam;
+
         // Fail closed: ambiguous or unreachable project identity never runs
         // blind. An undeployed stack can only be created (up / pull-up) or have
         // its images downloaded (pull, which touches no container); destructive
@@ -932,7 +944,28 @@ export function createApp(options: AppOptions): App {
         if (context.kind === "absent" && !creates) {
             throw new StackError("This stack is not deployed yet, so there is nothing to stop, restart or remove. Use Up or Pull + up to create it.", 409);
         }
-        // Project discovery awaits Docker: re-check before starting anything.
+        // Scoped `up` never creates: it applies the Compose file to one
+        // service of a deployed stack.
+        if (service !== null && action === "up" && context.kind === "absent") {
+            throw new StackError("This stack is not deployed yet, so there is no service to update. Use Up without a service to create it.", 409);
+        }
+        let resolvedService: string | null = null;
+        if (service !== null) {
+            const names = await provider.listServices({
+                project: context.project ?? undefined,
+                composeFile: context.composeFile,
+                cwd: context.cwd,
+                envFile: context.envFile ?? undefined,
+            });
+            if (names === null) {
+                throw new StackError("Docker did not respond, so the panel could not check which services this stack defines. Nothing was run.", 503);
+            }
+            if (!names.includes(service)) {
+                throw new StackError("This stack defines no such service. Nothing was run.", 409);
+            }
+            resolvedService = service;
+        }
+        // Project and service discovery await Docker: re-check before starting anything.
         if (!sessions.isActive(session.id)) {
             await recordAudit({ event: "operation", result: "refused", actor: clientKey(request, config), stack: name, action, detail: "session ended" });
             return sessionEnded();
@@ -942,9 +975,9 @@ export function createApp(options: AppOptions): App {
             operations.start({
                 stack: name,
                 action,
-                target: { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
+                target: { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined, service: resolvedService ?? undefined },
             });
-            await recordAudit({ event: "operation", result: "started", actor: clientKey(request, config), stack: name, action });
+            await recordAudit({ event: "operation", result: "started", actor: clientKey(request, config), stack: name, action, service: resolvedService ?? undefined });
             return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
         } catch (error) {
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
@@ -1228,6 +1261,7 @@ export function createApp(options: AppOptions): App {
             throw new StackError("Docker did not respond, so the panel could not check which project's logs to follow.", 503);
         }
         if (shuttingDown) throw new StackError("The panel is shutting down and no longer starts log streams.", 503);
+        const query = new URL(request.url).searchParams;
         // Re-check the session after the awaited discovery, before subscribing.
         if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
         const guard = { id: sessionId, isAlive: () => sessions.isActive(sessionId) };
@@ -1239,7 +1273,14 @@ export function createApp(options: AppOptions): App {
                 return () => {};
             }, guard);
         }
-        const target = { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined };
+        const selection = await resolveLogSelection(
+            { composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
+            query.get("service"),
+            query.get("tail"),
+        );
+        // The selection awaits Docker too: re-check before subscribing.
+        if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
+        const target = { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined, service: selection.service ?? undefined, tailLines: selection.tailLines };
         return sseResponse(request, (send, close) => {
             const sub = logs.subscribe(
                 name,
@@ -1258,13 +1299,42 @@ export function createApp(options: AppOptions): App {
     }
 
     /**
+     * Validate `?service=` against the effective config and `?tail=` against
+     * the allow-list (ADR 0020). A refused selection throws before any `logs`
+     * subprocess is spawned; the discovery call itself is expected.
+     */
+    async function resolveLogSelection(
+        base: { project?: string; composeFile: string; cwd: string; envFile?: string },
+        serviceParam: string | null,
+        tailParam: string | null,
+    ): Promise<{ service: string | null; tailLines: number }> {
+        let service: string | null = null;
+        const raw = (serviceParam ?? "").trim();
+        if (raw !== "") {
+            if (!isComposeServiceName(raw)) {
+                throw new StackError("This service selection is not valid. Nothing was started.", 400);
+            }
+            const names = await provider.listServices(base);
+            if (names === null) {
+                throw new StackError("Docker did not respond, so the panel could not check which services this stack defines.", 503);
+            }
+            if (!names.includes(raw)) {
+                throw new StackError("This stack defines no such service. Nothing was started.", 409);
+            }
+            service = raw;
+        }
+        const tail = tailParam !== null && /^\d+$/.test(tailParam) ? Number(tailParam) : NaN;
+        return { service, tailLines: (COMPOSE_LOG_TAIL_OPTIONS as readonly number[]).includes(tail) ? tail : config.logTailLines };
+    }
+
+    /**
      * Bounded one-shot log history for the stack page. Same fail-closed project
      * context as the follow, but no subprocess is left running. Returns plain
      * text so the page can show it inline and a browser without JavaScript can
      * open the same URL. Docker stderr is never echoed (logs may hold secrets):
      * failures get a fixed message.
      */
-    async function handleLogsSnapshot(name: string, sessionId: string): Promise<Response> {
+    async function handleLogsSnapshot(name: string, sessionId: string, query: URLSearchParams): Promise<Response> {
         // An unknown or invalid stack name is a plain-text refusal, not an
         // HTML error page: this endpoint always answers `text/plain`.
         let context: Awaited<ReturnType<typeof resolveProjectContext>>;
@@ -1284,12 +1354,26 @@ export function createApp(options: AppOptions): App {
         if (context.kind === "absent") return plain("This stack is not deployed yet, so there are no logs.", 200);
         // Re-check the session after the awaited discovery.
         if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
+        let selection: Awaited<ReturnType<typeof resolveLogSelection>>;
+        try {
+            selection = await resolveLogSelection(
+                { composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
+                query.get("service"),
+                query.get("tail"),
+            );
+        } catch (error) {
+            if (error instanceof StackError) return plain(error.message, error.status);
+            throw error;
+        }
+        // The selection awaits Docker too: re-check before reading.
+        if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
         const target = {
             project: context.project ?? undefined,
             composeFile: context.composeFile,
             cwd: context.cwd,
             envFile: context.envFile ?? undefined,
-            tailLines: config.logTailLines,
+            service: selection.service ?? undefined,
+            tailLines: selection.tailLines,
             timeoutMs: config.dockerTimeoutMs,
             maxBytes: config.logMaxBytes,
         };
@@ -1447,7 +1531,7 @@ export function createApp(options: AppOptions): App {
             }
             const logSnapshotMatch = /^\/stacks\/([^/]+)\/logs$/.exec(url.pathname);
             if (logSnapshotMatch) {
-                const response = await handleLogsSnapshot(decodeName(logSnapshotMatch[1]!), session.id);
+                const response = await handleLogsSnapshot(decodeName(logSnapshotMatch[1]!), session.id, url.searchParams);
                 return method === "HEAD" ? withoutBody(response) : response;
             }
             const detailMatch = /^\/stacks\/([^/]+)$/.exec(url.pathname);

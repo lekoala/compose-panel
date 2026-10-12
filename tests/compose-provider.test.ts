@@ -105,4 +105,72 @@ describe("DockerComposeProvider", () => {
         (provider.capabilities().operations as { logs: boolean }).logs = false;
         await expect(provider.readLogs({ composeFile: "compose.yaml", cwd: "/opt/stacks/demo" })).rejects.toThrow(/does not support/);
     });
+
+    test("lists service names from the effective config, or nothing usable", async () => {
+        const { runner, calls } = recording({ ...ok, stdout: "web\ndb\nweb\n" });
+        const provider = createComposeProvider({ runner });
+        const base = { project: "demo", composeFile: "compose.yaml", cwd: "/opt/stacks/demo", envFile: "/opt/stacks/demo/.env" };
+        expect(await provider.listServices(base)).toEqual(["web", "db"]);
+        expect(calls[0]!.args).toEqual([
+            "compose", "-p", "demo", "--env-file", "/opt/stacks/demo/.env",
+            "--project-directory", "/opt/stacks/demo", "-f", "compose.yaml",
+            "config", "--services",
+        ]);
+        expect(calls[0]!.cwd).toBe("/opt/stacks/demo");
+        for (const result of [
+            { ...ok, stdout: "web\n--privileged\n" },
+            { ...ok, stdout: "web\n../evil\n" },
+            { ...ok, stdout: "web", truncated: true },
+            { ...ok, stdout: "web", timedOut: true },
+            { ...ok, code: 1, stderr: "nope" },
+        ]) {
+            expect(await createComposeProvider({ runner: async () => result }).listServices(base)).toBeNull();
+        }
+    });
+
+    test("scopes up and restart to one service without touching dependents", async () => {
+        const { runner, calls } = recording();
+        const provider = createComposeProvider({ runner });
+        const base = { composeFile: "compose.yaml", cwd: "/opt/stacks/demo" };
+        await provider.restart({ ...base, service: "web" });
+        expect(calls[0]!.args).toEqual([
+            "compose", "--project-directory", "/opt/stacks/demo", "-f", "compose.yaml",
+            "restart", "--no-deps", "--", "web",
+        ]);
+        await provider.up({ project: "demo", ...base, service: "web" });
+        expect(calls[1]!.args).toEqual([
+            "compose", "-p", "demo", "--project-directory", "/opt/stacks/demo", "-f", "compose.yaml",
+            "up", "-d", "--no-deps", "--", "web",
+        ]);
+        // Stack-wide commands are unchanged: no --no-deps without a service.
+        await provider.restart(base);
+        expect(calls[2]!.args).toContain("restart");
+        expect(calls[2]!.args).not.toContain("--no-deps");
+        await provider.up(base);
+        expect(calls[3]!.args.slice(-2)).toEqual(["up", "-d"]);
+        await expect(provider.restart({ ...base, service: "-f" })).rejects.toThrow(/Invalid service name/);
+        await expect(provider.up({ ...base, service: "" })).rejects.toThrow(/Invalid service name/);
+    });
+
+    test("pull skips locally built services (ADR 0022)", async () => {
+        const { runner, calls } = recording();
+        const provider = createComposeProvider({ runner });
+        await provider.pull({ project: "demo", composeFile: "compose.yaml", cwd: "/opt/stacks/demo" });
+        expect(calls[0]!.args).toEqual([
+            "compose", "-p", "demo", "--project-directory", "/opt/stacks/demo", "-f", "compose.yaml",
+            "pull", "--ignore-buildable",
+        ]);
+    });
+
+    test("scopes log reads to a validated service after `--`", async () => {
+        const { runner, calls } = recording();
+        const provider = createComposeProvider({ runner });
+        await provider.readLogs({ composeFile: "compose.yaml", cwd: "/opt/stacks/demo", tailLines: 500, service: "web" });
+        expect(calls[0]!.args).toEqual([
+            "compose", "--project-directory", "/opt/stacks/demo", "-f", "compose.yaml",
+            "logs", "--tail", "500", "--timestamps", "--no-color", "--", "web",
+        ]);
+        await expect(provider.readLogs({ composeFile: "compose.yaml", cwd: "/opt/stacks/demo", service: "--privileged" })).rejects.toThrow(/Invalid service name/);
+        await expect(provider.readLogs({ composeFile: "compose.yaml", cwd: "/opt/stacks/demo", service: "" })).rejects.toThrow(/Invalid service name/);
+    });
 });

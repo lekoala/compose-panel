@@ -26,7 +26,7 @@ const PASSWORD = "temporary-lab-password";
 const USER = "cplaboperator";
 const GRACE_MS = 15_000;
 const DELAY_S = 6;
-const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed", "cp-qa-self"];
+const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed", "cp-qa-self", "cp-qa-scoped", "cp-qa-pull"];
 // A PID 1 that exits on SIGTERM, so `down` does not wait for the kill timeout.
 const SERVICE = (name: string) => `  ${name}:\n    image: ${IMAGE}\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]\n`;
 
@@ -151,10 +151,10 @@ class Panel {
     }
 
     /** POST an action the way the stack page form does, with its CSRF token. */
-    async action(stack: string, action: string): Promise<Response> {
+    async action(stack: string, action: string, extra: Record<string, string> = {}): Promise<Response> {
         const page = await this.get(`/stacks/${stack}`);
         expect(page.status).toBe(200);
-        return this.post(`/stacks/${stack}/operations`, { csrf: Panel.csrf(await page.text()), action });
+        return this.post(`/stacks/${stack}/operations`, { csrf: Panel.csrf(await page.text()), action, ...extra });
     }
 
     /** Follow the operation stream until it reports a final status. */
@@ -205,6 +205,23 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             "duplicate-env/.env": "COMPOSE_PROJECT_NAME=cp-qa-shared\n",
             "unique/compose.yaml": `name: cp-qa-unique\nservices:\n${SERVICE("app")}`,
             "delayed/compose.yaml": `name: cp-qa-delayed\nservices:\n${SERVICE("app")}`,
+            "pullable/compose.yaml": [
+                "name: cp-qa-pull",
+                "services:",
+                `  remote:\n    image: ${IMAGE}\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                "  local:\n    build: .",
+                "  both:\n    image: cp-qa-pull-both:local\n    build: .",
+                "",
+            ].join("\n"),
+            "pullable/Dockerfile": `FROM ${IMAGE}\nCMD ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]\n`,
+            "scoped/compose.yaml": [
+                "name: cp-qa-scoped",
+                "services:",
+                `  db:\n    image: ${IMAGE}\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                `  worker:\n    image: ${IMAGE}\n    depends_on: [db]\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                `  web:\n    image: ${IMAGE}\n    depends_on: [db]\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                "",
+            ].join("\n"),
         };
         for (const [path, content] of Object.entries(files)) {
             await mkdir(join(stacks, path, ".."), { recursive: true });
@@ -351,6 +368,65 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .Image}}", newPanel])).trim())).toBe(target);
         expect(await idOf("other")).toBe(other);
     }, 120_000);
+
+    test("scoped restart/up, start and filtered logs against real Compose (ADR 0019-0021)", async () => {
+        const p = panel!;
+        const compose = (args: string[]) => dockerOk(["compose", "-p", "cp-qa-scoped", ...args]);
+        expect((await p.action("scoped", "up")).status).toBe(303);
+        expect(await p.operationResult("scoped", 60_000)).toBe("succeeded");
+        expect(await runningServices("cp-qa-scoped")).toEqual(["db", "web", "worker"]);
+
+        // Start (ADR 0019): stopped containers come back without recreation.
+        expect((await p.action("scoped", "stop")).status).toBe(303);
+        expect(await p.operationResult("scoped", 60_000)).toBe("succeeded");
+        expect(await runningServices("cp-qa-scoped")).toEqual([]);
+        expect((await p.action("scoped", "start")).status).toBe(303);
+        expect(await p.operationResult("scoped", 60_000)).toBe("succeeded");
+        expect(await runningServices("cp-qa-scoped")).toEqual(["db", "web", "worker"]);
+
+        // Scoped restart (ADR 0021): `--no-deps` leaves the dependent stopped.
+        await compose(["stop", "worker"]);
+        expect(await runningServices("cp-qa-scoped")).toEqual(["db", "web"]);
+        expect((await p.action("scoped", "restart", { service: "db" })).status).toBe(303);
+        expect(await p.operationResult("scoped", 60_000)).toBe("succeeded");
+        expect(await runningServices("cp-qa-scoped")).toEqual(["db", "web"]);
+
+        // Scoped up (ADR 0021): the dependency is not started implicitly.
+        await compose(["stop", "web", "db"]);
+        expect(await runningServices("cp-qa-scoped")).toEqual([]);
+        expect((await p.action("scoped", "up", { service: "web" })).status).toBe(303);
+        expect(await p.operationResult("scoped", 60_000)).toBe("succeeded");
+        expect(await runningServices("cp-qa-scoped")).toEqual(["web"]);
+
+        // Filtered one-shot logs (ADR 0020): the `--` separator works here.
+        const logs = await p.get("/stacks/scoped/logs?service=web&tail=100");
+        expect(logs.status).toBe(200);
+        expect(logs.headers.get("content-type")).toContain("text/plain");
+
+        // Discovery and refusals through the real CLI. Order is Compose's own;
+        // the panel only needs exact membership.
+        const runner = createDockerRunner({ timeoutMs: 60_000 });
+        const provider = createComposeProvider({ runner });
+        const dir = join(stacks, "scoped");
+        const discovered = await provider.listServices({ project: "cp-qa-scoped", composeFile: join(dir, "compose.yaml"), cwd: dir });
+        expect([...discovered ?? []].sort()).toEqual(["db", "web", "worker"]);
+        expect((await p.action("scoped", "restart", { service: "missing" })).status).toBe(409);
+        expect((await p.action("scoped", "down", { service: "web" })).status).toBe(400);
+        expect(await runningServices("cp-qa-scoped")).toEqual(["web"]);
+    }, 180_000);
+
+    test("pull skips locally built services, including image + build (ADR 0022)", async () => {
+        const p = panel!;
+        expect((await p.action("pullable", "pull")).status).toBe(303);
+        expect(await p.operationResult("pullable", 120_000)).toBe("succeeded");
+        // The image+build service was skipped, not downloaded: its tag is
+        // still absent (a plain pull would fail on it).
+        expect((await docker(["image", "inspect", "cp-qa-pull-both:local"])).code).not.toBe(0);
+        // Up then builds the local images and starts everything.
+        expect((await p.action("pullable", "up")).status).toBe(303);
+        expect(await p.operationResult("pullable", 180_000)).toBe("succeeded");
+        expect(await runningServices("cp-qa-pull")).toEqual(["both", "local", "remote"]);
+    }, 300_000);
 
     test("SIGTERM refuses new actions, drains the running one within the grace period and keeps containers", async () => {
         const p = panel!;

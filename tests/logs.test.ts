@@ -26,10 +26,12 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         projectImages: async () => ok,
         inspectImages: async () => ok,
         validateConfig: async () => ok,
+        listServices: async () => [],
         readLogs: async () => ok,
         pull: async () => ok,
         up: async () => ok,
         stop: async () => ok,
+        start: async () => ok,
         restart: async () => ok,
         down: async () => ok,
         serviceImage: async () => null,
@@ -65,10 +67,12 @@ function deferredProvider(): {
         projectImages: async () => ok,
         inspectImages: async () => ok,
         validateConfig: async () => ok,
+        listServices: async () => [],
         readLogs: async () => ok,
         pull: async () => ok,
         up: async () => ok,
         stop: async () => ok,
+        start: async () => ok,
         restart: async () => ok,
         down: async () => ok,
         serviceImage: async () => null,
@@ -102,6 +106,39 @@ test("readers share one subprocess and late readers get a replay", () => {
     expect(second.join("")).toContain("line 2");
     a.unsubscribe();
     b.unsubscribe();
+});
+
+test("different selections run their own subprocess and share identical ones", () => {
+    const { provider, calls } = controllableProvider();
+    const logs = manager(provider);
+    const all = logs.subscribe("demo", target, () => {}, () => {});
+    const web = logs.subscribe("demo", { ...target, service: "web", tailLines: 500 }, () => {}, () => {});
+    const webAgain = logs.subscribe("demo", { ...target, service: "web", tailLines: 500 }, () => {}, () => {});
+    expect(calls.length).toBe(2);
+    expect(calls[1]!.target.service).toBe("web");
+    expect(calls[1]!.target.tailLines).toBe(500);
+    // Leaving one selection does not stop the other.
+    web.unsubscribe();
+    webAgain.unsubscribe();
+    expect(logs.isActive("demo")).toBe(true);
+    expect(calls[1]!.signal.aborted).toBe(true);
+    all.unsubscribe();
+    expect(logs.isActive("demo")).toBe(false);
+});
+
+test("a third live selection for one stack is refused", () => {
+    const { provider, calls } = controllableProvider();
+    const logs = manager(provider);
+    const a = logs.subscribe("demo", target, () => {}, () => {});
+    const b = logs.subscribe("demo", { ...target, service: "web" }, () => {}, () => {});
+    expect(calls.length).toBe(2);
+    expect(() => logs.subscribe("demo", { ...target, service: "db" }, () => {}, () => {})).toThrow(StackError);
+    // After one selection ends, a new one fits again.
+    a.unsubscribe();
+    const c = logs.subscribe("demo", { ...target, service: "db" }, () => {}, () => {});
+    expect(calls.length).toBe(3);
+    b.unsubscribe();
+    c.unsubscribe();
 });
 
 test("leaving the last reader aborts the follow subprocess", async () => {
@@ -195,10 +232,12 @@ test("shutdown stays bounded when a follow never settles", async () => {
         projectImages: async () => ok,
         inspectImages: async () => ok,
         validateConfig: async () => ok,
+        listServices: async () => [],
         readLogs: async () => ok,
         pull: async () => ok,
         up: async () => ok,
         stop: async () => ok,
+        start: async () => ok,
         restart: async () => ok,
         down: async () => ok,
         serviceImage: async () => null,

@@ -62,8 +62,8 @@ Engine-specific CLI calls are encapsulated in `src/compose-provider.ts` (see [AD
 ## Operations
 Three classes, without a generic framework:
 1. **Short reads**: discovery, `compose ps`, `compose config`; short timeout.
-2. **Long mutations**: allow-listed `up`/`pull`/`stop`/`restart`/`down`/`pull-up`, built by the provider (`up -d`, detached); one per stack via the lock; the operation is kept in memory and its output is consumed even without a client. Success only on exit 0, timeout reported as unknown.
-3. **Subscriptions**: `logs --follow`; stop the subprocess when the last reader has left.
+2. **Long mutations**: allow-listed `up`/`pull`/`stop`/`start`/`restart`/`down`/`pull-up`, built by the provider (`up -d`, detached); one per stack via the lock; the operation is kept in memory and its output is consumed even without a client. Success only on exit 0, timeout reported as unknown. `up` and `restart` take one optional validated service (`--no-deps -- <service>`); scoped `up` never creates.
+3. **Subscriptions**: `logs --follow`; stop the subprocess when the last reader has left. One subprocess per (stack, service, tail) selection, two selections per stack at most.
 
 ## Restart semantics
 - Browser disconnect ≠ cancellation.

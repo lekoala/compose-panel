@@ -460,6 +460,17 @@ release. Verified 2026-10-10 against image `compose-panel:local`
       real Compose labels are read, a stale target is refused with nothing
       changed, the retagged service is recreated and verified healthy, and a
       second service keeps its container.
+- [x] Targeted operations, filtered logs and pull policy ([ADR 0019](adr/0019-start-action.md),
+      [ADR 0020](adr/0020-filtered-service-logs.md),
+      [ADR 0021](adr/0021-targeted-service-operations.md),
+      [ADR 0022](adr/0022-pull-ignores-buildable-services.md)) on the disposable
+      lab daemon (`bun run test:docker-lab:wsl`, 2026-10-12, Docker 29.8.1):
+      `start` brings stopped containers back, scoped `restart --no-deps` leaves
+      a stopped dependent alone, scoped `up --no-deps` does not start
+      dependencies, `?service=&tail=` reads through the `--` separator,
+      `config --services` discovery and refusals work, and `pull` succeeds on a
+      stack mixing registry, build-only and image+build services (the local
+      ones are skipped, then built by `up`).
 - [ ] Self-update end to end with the published image on a disposable host:
       deploy `ghcr.io/lekoala/compose-panel:latest` at the previous version,
       publish the new one, Check, Update; the panel comes back on the new

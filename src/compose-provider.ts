@@ -28,6 +28,8 @@ export interface ComposeTarget {
     cwd: string;
     /** Verified `.env` path; passed explicitly so Compose cannot read one implicitly. */
     envFile?: string;
+    /** Single service to scope a read to. Validated against discovery, never free text. */
+    service?: string;
     timeoutMs?: number;
     maxBytes?: number;
     /** Live pipe chunks while a mutation runs. Retention stays capped. */
@@ -74,9 +76,18 @@ export interface ComposeProvider {
      */
     inspectImages(refs: string[]): Promise<CommandResult>;
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult>;
+    /**
+     * Read-only service names from the effective config (`config --services`),
+     * in the same context as a mutation. `null` when Compose fails, times out,
+     * truncates, or prints an unexpected name: callers must refuse, never use a
+     * partial list. No `--profiles` flag is ever passed, so a service disabled
+     * by its profile cannot be activated implicitly.
+     */
+    listServices(target: ComposeTarget): Promise<string[] | null>;
     pull(target: ComposeTarget): Promise<CommandResult>;
     up(target: ComposeTarget): Promise<CommandResult>;
     stop(target: ComposeTarget): Promise<CommandResult>;
+    start(target: ComposeTarget): Promise<CommandResult>;
     restart(target: ComposeTarget): Promise<CommandResult>;
     down(target: ComposeTarget): Promise<CommandResult>;
     /**
@@ -198,19 +209,40 @@ class DockerComposeProvider implements ComposeProvider {
     }
 
     pull(target: ComposeTarget): Promise<CommandResult> {
-        return this.mutation(target, ["pull"]);
+        // ADR 0022: services with a `build:` section are skipped, including
+        // ones that also declare `image:`. Those are built by Up, not pulled.
+        return this.mutation(target, ["pull", "--ignore-buildable"]);
     }
 
     up(target: ComposeTarget): Promise<CommandResult> {
-        return this.mutation(target, ["up", "-d"]);
+        // Scoped (ADR 0021): normal Up semantics for one service, without
+        // starting its dependencies. Compose may still pull or build.
+        if (target.service !== undefined && !isComposeServiceName(target.service)) {
+            return Promise.reject(new Error("Invalid service name."));
+        }
+        const command = target.service === undefined
+            ? ["up", "-d"]
+            : ["up", "-d", "--no-deps", "--", target.service];
+        return this.mutation(target, command);
     }
 
     stop(target: ComposeTarget): Promise<CommandResult> {
         return this.mutation(target, ["stop"]);
     }
 
+    start(target: ComposeTarget): Promise<CommandResult> {
+        return this.mutation(target, ["start"]);
+    }
+
     restart(target: ComposeTarget): Promise<CommandResult> {
-        return this.mutation(target, ["restart"]);
+        // Scoped (ADR 0021): `--no-deps` so dependents are not restarted.
+        if (target.service !== undefined && !isComposeServiceName(target.service)) {
+            return Promise.reject(new Error("Invalid service name."));
+        }
+        const command = target.service === undefined
+            ? ["restart"]
+            : ["restart", "--no-deps", "--", target.service];
+        return this.mutation(target, command);
     }
 
     down(target: ComposeTarget): Promise<CommandResult> {
@@ -249,6 +281,9 @@ class DockerComposeProvider implements ComposeProvider {
 
     readLogs(target: ComposeTarget & { tailLines?: number }): Promise<CommandResult> {
         if (!this.caps.operations.logs) return Promise.reject(new ComposeUnsupportedError("logs"));
+        if (target.service !== undefined && !isComposeServiceName(target.service)) {
+            return Promise.reject(new Error("Invalid service name."));
+        }
         const tail = sanitizeComposeTailLines(target.tailLines);
         const args = ["compose"];
         if (target.project) args.push("-p", target.project);
@@ -258,8 +293,25 @@ class DockerComposeProvider implements ComposeProvider {
             "-f", target.composeFile,
             "logs", "--tail", String(tail), "--timestamps", "--no-color",
         );
+        // `--` ends option parsing: a validated service name can never be read
+        // as a flag. Verified against the embedded Compose in the lab suite.
+        if (target.service !== undefined) args.push("--", target.service);
         // A bounded short read: the runner's timeout and output cap apply.
         return this.runner(args, { cwd: target.cwd, timeoutMs: target.timeoutMs, maxBytes: target.maxBytes });
+    }
+
+    async listServices(target: ComposeTarget): Promise<string[] | null> {
+        if (!this.caps.operations.config) throw new ComposeUnsupportedError("config");
+        const args = ["compose"];
+        if (target.project) args.push("-p", target.project);
+        if (target.envFile) args.push("--env-file", target.envFile);
+        args.push("--project-directory", target.cwd, "-f", target.composeFile, "config", "--services");
+        const result = await this.runner(args, { cwd: target.cwd });
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        const names = result.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+        // Refuse a partial or surprising list instead of validating against it.
+        if (!names.every(isComposeServiceName)) return null;
+        return [...new Set(names)];
     }
 
     async followLogs(
@@ -268,6 +320,9 @@ class DockerComposeProvider implements ComposeProvider {
         signal: AbortSignal,
     ): Promise<{ code: number; timedOut: boolean; terminationUnconfirmed?: boolean }> {
         if (!this.caps.operations.logs) throw new ComposeUnsupportedError("logs");
+        if (target.service !== undefined && !isComposeServiceName(target.service)) {
+            throw new Error("Invalid service name.");
+        }
         const tail = sanitizeComposeTailLines(target.tailLines);
         const args = ["compose"];
         if (target.project) args.push("-p", target.project);
@@ -277,6 +332,7 @@ class DockerComposeProvider implements ComposeProvider {
             "-f", target.composeFile,
             "logs", "--follow", "--tail", String(tail), "--timestamps",
         );
+        if (target.service !== undefined) args.push("--", target.service);
         // LogManager owns the follow timeout; the runner owns bounded abort,
         // signal escalation, pipe cleanup and stateful UTF-8 decoding.
         const result = await runCommand(this.dockerPath, args, {
@@ -288,6 +344,14 @@ class DockerComposeProvider implements ComposeProvider {
 
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
 const IMAGE_REFERENCE = /^[a-z0-9][a-z0-9._/:@-]{0,254}$/i;
+
+/** Choices offered for stack log history. Anything else falls back to configuration. */
+export const COMPOSE_LOG_TAIL_OPTIONS = [100, 200, 500, 1000] as const;
+
+/** A Compose service name: never empty, never an option flag, no path characters. */
+export function isComposeServiceName(value: string): boolean {
+    return /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,128}$/.test(value);
+}
 
 const COMPOSE_LOG_TAIL_DEFAULT = 200;
 /**

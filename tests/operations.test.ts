@@ -7,9 +7,9 @@ import type { CommandResult } from "../src/docker.ts";
 const ok: CommandResult = { code: 0, stdout: "done", stderr: "", timedOut: false, truncated: false };
 const target: ComposeTarget = { composeFile: "/stacks/demo/compose.yaml", cwd: "/stacks/demo" };
 
-function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "restart" | "down", (target: ComposeTarget) => Promise<CommandResult>>> = {}): ComposeProvider {
+function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "start" | "restart" | "down", (target: ComposeTarget) => Promise<CommandResult>>> = {}): ComposeProvider {
     const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
-    const run = (kind: "pull" | "up" | "stop" | "restart" | "down") =>
+    const run = (kind: "pull" | "up" | "stop" | "start" | "restart" | "down") =>
         async (target: ComposeTarget) => (handlers[kind] ?? (async () => ok))(target);
     return {
         engine: "fake",
@@ -21,10 +21,12 @@ function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "restart
         projectImages: async () => ok,
         inspectImages: async () => ok,
         validateConfig: async () => ok,
+        listServices: async () => [],
         readLogs: async () => ok,
         pull: run("pull"),
         up: run("up"),
         stop: run("stop"),
+        start: run("start"),
         restart: run("restart"),
         down: run("down"),
         serviceImage: async () => null,
@@ -41,6 +43,7 @@ async function settle(manager: OperationManager): Promise<void> {
 
 test("isOperationAction accepts allow-listed actions only", () => {
     expect(isOperationAction("up")).toBe(true);
+    expect(isOperationAction("start")).toBe(true);
     expect(isOperationAction("pull-up")).toBe(true);
     expect(isOperationAction("rm")).toBe(false);
     expect(isOperationAction("exec")).toBe(false);

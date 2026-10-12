@@ -14,6 +14,8 @@ export interface LogSnapshot {
 
 interface LogStream {
     stack: string;
+    /** Stream identity: one subprocess per (stack, service, tailLines). */
+    key: string;
     target: ComposeTarget;
     buffer: string;
     truncated: boolean;
@@ -26,17 +28,22 @@ interface LogStream {
     settled: boolean;
 }
 
+/** At most two live selections per stack: identical selections share one. */
+const MAX_STREAMS_PER_STACK = 2;
+
 /** Strip ANSI color escapes so the browser shows strictly textual output. */
 export function stripAnsi(text: string): string {
     return text.replace(new RegExp(String.fromCharCode(27) + "\\[[0-9;]*m", "g"), "");
 }
 
 /**
- * Reference-counted `compose logs --follow` streams, one subprocess per stack
- * at most. Attaching never starts a second process; the subprocess is killed
- * when the last reader leaves or when the explicit timeout fires. Closing the
- * browser only stops observation of operations, but for logs the follow
- * subprocess exists solely for its readers, so the last unsubscribe stops it.
+ * Reference-counted `compose logs --follow` streams, one subprocess per
+ * (stack, service, tailLines) selection at most (two selections per stack).
+ * Attaching never starts a second process for the same selection; a subprocess
+ * is killed when its last reader leaves or when the explicit timeout fires.
+ * Closing the browser only stops observation of operations, but for logs the
+ * follow subprocess exists solely for its readers, so the last unsubscribe
+ * stops it.
  */
 export class LogManager {
     private readonly streams = new Map<string, LogStream>();
@@ -47,13 +54,21 @@ export class LogManager {
         private readonly options: LogManagerOptions,
     ) {}
 
+    private static keyOf(stack: string, target: ComposeTarget & { tailLines?: number }, fallbackTail: number): string {
+        return `${stack}\n${target.service ?? ""}\n${target.tailLines ?? fallbackTail}`;
+    }
+
+    private liveOf(stack: string): LogStream[] {
+        return [...this.streams.values()].filter(stream => stream.stack === stack && !stream.ended);
+    }
+
     /** Refuse new subscriptions synchronously. Existing readers keep going. */
     refuseNew(): void {
         this.refusing = true;
     }
 
     isActive(stack: string): boolean {
-        return this.streams.get(stack)?.ended === false;
+        return this.liveOf(stack).length > 0;
     }
 
     subscriberCount(): number {
@@ -63,21 +78,25 @@ export class LogManager {
     }
 
     subscribersOf(stack: string): number {
-        return this.streams.get(stack)?.listeners.size ?? 0;
+        return this.liveOf(stack).reduce((total, stream) => total + stream.listeners.size, 0);
     }
 
     subscribe(
         stack: string,
-        target: ComposeTarget,
+        target: ComposeTarget & { tailLines?: number },
         listener: (chunk: string) => void,
         onEnd: (reason: "ended" | "timeout") => void,
     ): { replay: LogSnapshot; unsubscribe: () => void } {
         if (this.refusing) throw new StackError("The panel is shutting down and no longer starts log streams.", 503);
-        let stream = this.streams.get(stack);
+        const key = LogManager.keyOf(stack, target, this.options.tailLines);
+        let stream = this.streams.get(key);
         if (stream?.ended) throw new StackError("The previous log stream is still closing. Try again in a few seconds.", 409);
         if (!stream) {
-            stream = this.start(stack, target);
-            this.streams.set(stack, stream);
+            if (this.liveOf(stack).length >= MAX_STREAMS_PER_STACK) {
+                throw new StackError("Too many log selections are followed at once for this stack. Stop one before following another.", 409);
+            }
+            stream = this.start(stack, key, target);
+            this.streams.set(key, stream);
         }
         // Capture the instance: a later replacement must not receive this
         // reader's unsubscribe, and this reader must not stop the replacement.
@@ -93,7 +112,7 @@ export class LogManager {
                 done = true;
                 owned.listeners.delete(listener);
                 owned.endListeners.delete(onEnd);
-                if (this.streams.get(stack) === owned && owned.listeners.size === 0) {
+                if (this.streams.get(key) === owned && owned.listeners.size === 0) {
                     this.stop(owned, "ended");
                 }
             },
@@ -116,10 +135,11 @@ export class LogManager {
         } finally { clearTimeout(timer); }
     }
 
-    private start(stack: string, target: ComposeTarget): LogStream {
+    private start(stack: string, key: string, target: ComposeTarget & { tailLines?: number }): LogStream {
         const controller = new AbortController();
         const stream: LogStream = {
             stack,
+            key,
             target,
             buffer: "",
             truncated: false,
@@ -131,13 +151,13 @@ export class LogManager {
             ended: false,
             settled: false,
         };
-        const fullTarget = { ...target, tailLines: this.options.tailLines };
+        const fullTarget = { ...target, tailLines: target.tailLines ?? this.options.tailLines };
         stream.done = this.provider.followLogs(fullTarget, chunk => this.ingest(stream, chunk), controller.signal)
             .then(
                 result => {
                     stream.settled = !result.terminationUnconfirmed;
                     this.finish(stream, "ended");
-                    if (stream.settled && this.streams.get(stack) === stream) this.streams.delete(stack);
+                    if (stream.settled && this.streams.get(key) === stream) this.streams.delete(key);
                 },
                 () => {
                     // Rejection cannot prove that a spawned child exited.
@@ -175,8 +195,8 @@ export class LogManager {
             catch { /* ignore */ }
         }
         // Only remove our own entry: a replacement started after us keeps
-        // running under the same stack name.
-        if (stream.settled && this.streams.get(stream.stack) === stream) this.streams.delete(stream.stack);
+        // running under the same key.
+        if (stream.settled && this.streams.get(stream.key) === stream) this.streams.delete(stream.key);
     }
 
     private stop(stream: LogStream, reason: "ended" | "timeout"): void {

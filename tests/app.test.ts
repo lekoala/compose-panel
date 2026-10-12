@@ -88,10 +88,12 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         projectImages: async () => empty,
         inspectImages: async () => empty,
         validateConfig: async () => empty,
+        listServices: async () => [],
         readLogs: async () => empty,
         pull: async () => empty,
         up: async () => empty,
         stop: async () => empty,
+        start: async () => empty,
         restart: async () => empty,
         down: async () => empty,
         serviceImage: async () => null,
@@ -1157,6 +1159,26 @@ describe("operations routes", () => {
         });
     }
 
+    function postScopedOperation(app: App, session: string, csrf: string, action: string, service: string) {
+        return authed(app, "/stacks/demo/operations", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, action, service }).toString(),
+        });
+    }
+
+    function deployedRunner(calls: string[][]): DockerRunner {
+        return async args => {
+            calls.push(args);
+            if (args.includes("ls")) return { code: 0, stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]), stderr: "", timedOut: false, truncated: false };
+            if (args.includes("ps")) return { code: 0, stdout: JSON.stringify([{ Service: "web", State: "running", Health: "", ExitCode: 0 }]), stderr: "", timedOut: false, truncated: false };
+            if (args[0] === "compose" && args.includes("config") && args.includes("--services")) {
+                return { code: 0, stdout: "web\ndb\n", stderr: "", timedOut: false, truncated: false };
+            }
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+    }
+
     async function waitIdle(app: App): Promise<void> {
         for (let i = 0; i < 200 && app.operations.activeCount() > 0; i += 1) {
             await new Promise(resolve => setTimeout(resolve, 1));
@@ -1169,6 +1191,17 @@ describe("operations routes", () => {
         const html = await (await authed(app, "/stacks/demo", session)).text();
         expect(html).toMatch(/value="down"><button type="submit" class="btn btn-danger" disabled/);
         expect(html).toMatch(/value="up"><button type="submit" class="btn btn-primary" data-op-button/);
+    });
+
+    test("offers no action while the stack state is unknown", async () => {
+        const unreachable: DockerRunner = async () => ({ code: 1, stdout: "", stderr: "daemon down", timedOut: false, truncated: false });
+        const app = makeApp({}, unreachable);
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo", session)).text();
+        for (const action of ["up", "pull", "pull-up", "restart", "start", "stop", "down"]) {
+            expect(html).toMatch(new RegExp(`value="${action}"><button[^>]* disabled[^>]* data-state-locked[^>]* data-op-button`));
+        }
+        expect(html).not.toContain("op-confirm");
     });
 
     test("Pull runs on an undeployed stack without creating anything", async () => {
@@ -1280,6 +1313,83 @@ describe("operations routes", () => {
 
         release(okResult);
         await waitIdle(app);
+    });
+
+    test("Start runs compose start on a stopped stack and never creates one", async () => {
+        const calls: string[][] = [];
+        const runner: DockerRunner = async args => {
+            calls.push(args);
+            if (args.includes("ls")) return { code: 0, stdout: JSON.stringify([{ Name: "demo-proj", Status: "exited(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]), stderr: "", timedOut: false, truncated: false };
+            if (args.includes("ps")) return { code: 0, stdout: JSON.stringify([{ Service: "app", State: "exited", Health: "", ExitCode: 0 }]), stderr: "", timedOut: false, truncated: false };
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+        const app = makeApp({}, runner);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect(await (await authed(app, "/stacks/demo", session)).text()).toMatch(/value="start"><button[^>]*data-op-button/);
+        expect((await postOperation(app, session, csrf, "start")).status).toBe(303);
+        await waitIdle(app);
+        expect(calls.find(args => args.includes("start"))).toEqual(expect.arrayContaining(["start"]));
+        expect(calls.some(args => args.includes("up"))).toBe(false);
+    });
+
+    test("Start is refused on a stack that was never deployed", async () => {
+        const app = makeApp({}, dispatch(async () => okResult));
+        const session = await login(app);
+        expect((await postOperation(app, session, await csrfOf(app, session), "start")).status).toBe(409);
+    });
+
+    test("Restart runs scoped to one service without touching dependents", async () => {
+        const calls: string[][] = [];
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-scoped-"));
+        try {
+            const audit = new AuditLog({ dir });
+            const app = makeApp({}, deployedRunner(calls), undefined, audit);
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+            const page = await (await authed(app, "/stacks/demo", session)).text();
+            expect(page).toContain('name="service" value="web"');
+            expect((await postScopedOperation(app, session, csrf, "restart", "web")).status).toBe(303);
+            await waitIdle(app);
+            expect(calls.find(args => args.includes("restart"))).toEqual(
+                expect.arrayContaining(["restart", "--no-deps", "--", "web"]),
+            );
+            const done = await (await authed(app, "/stacks/demo", session)).text();
+            expect(done).toContain("Last action: Restart · web");
+            await new Promise(resolve => setTimeout(resolve, 20));
+            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).toContain('"event":"operation","result":"started"');
+            expect(raw).toContain('"action":"restart","service":"web"');
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("scoped Up needs a deployed stack and never creates one", async () => {
+        const calls: string[][] = [];
+        const runner: DockerRunner = async args => {
+            calls.push(args);
+            if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+            if (args.includes("config")) return { code: 0, stdout: '{"name":"demo-proj"}', stderr: "", timedOut: false, truncated: false };
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+        const app = makeApp({}, runner);
+        const session = await login(app);
+        expect((await postScopedOperation(app, session, await csrfOf(app, session), "up", "web")).status).toBe(409);
+        expect(calls.some(args => args.includes("up"))).toBe(false);
+    });
+
+    test("a service field on other actions is refused, never ignored", async () => {
+        const calls: string[][] = [];
+        const app = makeApp({}, deployedRunner(calls));
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        for (const action of ["down", "pull", "start", "pull-up"]) {
+            expect((await postScopedOperation(app, session, csrf, action, "web")).status).toBe(400);
+        }
+        expect((await postScopedOperation(app, session, csrf, "restart", "--privileged")).status).toBe(400);
+        expect((await postScopedOperation(app, session, csrf, "restart", "missing")).status).toBe(409);
+        expect(calls.some(args => ["down", "pull", "start", "restart", "up"].some(verb => args.includes(verb)))).toBe(false);
     });
 });
 
@@ -1743,6 +1853,56 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         expect(response.status).toBe(200);
         expect(await response.text()).toContain("not deployed");
         expect(reads).toBe(0);
+    });
+
+    test("filters the log snapshot by service and tail after discovery", async () => {
+        const { provider } = controllableProvider();
+        provider.listServices = async () => ["web", "db"];
+        let seen: { service?: string; tailLines?: number } | undefined;
+        provider.readLogs = async target => {
+            seen = { service: target.service, tailLines: (target as { tailLines?: number }).tailLines };
+            return { code: 0, stdout: "web line\n", stderr: "", timedOut: false, truncated: false };
+        };
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        const response = await authed(app, "/stacks/demo/logs?service=web&tail=500", session);
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("web line");
+        expect(seen).toEqual({ service: "web", tailLines: 500 });
+    });
+
+    test("falls back to the configured tail when the requested count is not offered", async () => {
+        const { provider } = controllableProvider();
+        provider.listServices = async () => ["web"];
+        let tail: number | undefined;
+        provider.readLogs = async target => {
+            tail = (target as { tailLines?: number }).tailLines;
+            return { code: 0, stdout: "x\n", stderr: "", timedOut: false, truncated: false };
+        };
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        expect((await authed(app, "/stacks/demo/logs?tail=12345", session)).status).toBe(200);
+        expect(tail).toBe(200);
+        expect((await authed(app, "/stacks/demo/logs?tail=many", session)).status).toBe(200);
+        expect(tail).toBe(200);
+    });
+
+    test("refuses an unknown service without spawning a log read", async () => {
+        const { provider } = controllableProvider();
+        provider.listServices = async () => ["web"];
+        let reads = 0;
+        let discoveries = 0;
+        const base = provider.listServices;
+        provider.listServices = async target => { discoveries += 1; return base(target); };
+        provider.readLogs = async () => { reads += 1; return { code: 0, stdout: "x", stderr: "", timedOut: false, truncated: false }; };
+        const app = makeApp({}, undefined, provider);
+        const session = await login(app);
+        expect((await authed(app, "/stacks/demo/logs?service=db", session)).status).toBe(409);
+        expect((await authed(app, "/stacks/demo/logs?service=--privileged", session)).status).toBe(400);
+        expect((await authed(app, "/stacks/demo/logs/events?service=db", session)).status).toBe(409);
+        expect(reads).toBe(0);
+        // The discovery call itself is expected; only the log read must not run.
+        expect(discoveries).toBeGreaterThan(0);
     });
 
     test("refuses the log snapshot for an unknown or ambiguous stack", async () => {

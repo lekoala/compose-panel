@@ -16,6 +16,8 @@ export interface AuditEvent {
     actor?: string;
     stack?: string;
     action?: string;
+    /** Service an operation was scoped to, if any. Syntax-validated upstream. */
+    service?: string;
     /** Attempted username. Not a secret; logged only to surface targeting. */
     username?: string;
     /** Short human-readable detail. Truncated; never includes secrets. */
@@ -167,6 +169,7 @@ export class AuditLog {
             ...(clampField(event.actor) ? { actor: clampField(event.actor) } : {}),
             ...(clampField(event.stack) ? { stack: clampField(event.stack) } : {}),
             ...(clampField(event.action) ? { action: clampField(event.action) } : {}),
+            ...(clampField(event.service) ? { service: clampField(event.service) } : {}),
             ...(clampField(event.username) ? { username: clampField(event.username) } : {}),
             ...(clampField(event.detail) ? { detail: clampField(event.detail) } : {}),
         };

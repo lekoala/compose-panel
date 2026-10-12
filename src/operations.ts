@@ -3,7 +3,7 @@ import type { CommandResult } from "./docker.ts";
 import type { ComposeProvider, ComposeTarget } from "./compose-provider.ts";
 import { StackLocks, StackBusyError } from "./locks.ts";
 
-export const OPERATION_ACTIONS = ["up", "pull", "stop", "restart", "down", "pull-up"] as const;
+export const OPERATION_ACTIONS = ["up", "pull", "stop", "start", "restart", "down", "pull-up"] as const;
 export type OperationAction = typeof OPERATION_ACTIONS[number];
 
 export function isOperationAction(value: string): value is OperationAction {
@@ -16,6 +16,8 @@ export interface OperationView {
     id: string;
     stack: string;
     action: OperationAction;
+    /** Service the action was scoped to, if any (ADR 0021). */
+    service?: string;
     status: OperationStatus;
     startedAt: number;
     endedAt: number | null;
@@ -111,6 +113,7 @@ export class OperationManager {
             id: randomSuffix(),
             stack: input.stack,
             action: input.action,
+            service: input.target.service,
             status: "running",
             startedAt: Date.now(),
             endedAt: null,
@@ -255,6 +258,7 @@ function runAction(provider: ComposeProvider, action: Exclude<OperationAction, "
         case "up": return provider.up(target);
         case "pull": return provider.pull(target);
         case "stop": return provider.stop(target);
+        case "start": return provider.start(target);
         case "restart": return provider.restart(target);
         case "down": return provider.down(target);
     }

@@ -148,10 +148,10 @@
             if (note) note.hidden = true;
             if (busyNote) busyNote.hidden = true;
             if (refresh) refresh.hidden = false;
-            // Unlock the actions; those that need a deployment stay locked
+            // Unlock the actions; those blocked by the stack state stay locked
             // until a reload shows the new state.
             each("[data-op-button]", function (button) {
-                if (!button.hasAttribute("data-needs-deployment")) button.disabled = false;
+                if (!button.hasAttribute("data-state-locked")) button.disabled = false;
             });
         }
     }
@@ -159,6 +159,8 @@
     function wireLogs(section) {
         var snapshot = section.getAttribute("data-logs-snapshot");
         var url = section.getAttribute("data-logs-stream");
+        var service = document.getElementById("logs-service");
+        var tail = document.getElementById("logs-tail");
         var refresh = document.getElementById("logs-refresh");
         var follow = document.getElementById("logs-follow");
         var stop = document.getElementById("logs-stop");
@@ -173,11 +175,19 @@
             if (status) status.textContent = text;
         }
 
+        /* Current selection, as the server validates it (ADR 0020). */
+        function selection() {
+            var params = [];
+            if (service && service.value) params.push("service=" + encodeURIComponent(service.value));
+            if (tail && tail.value) params.push("tail=" + encodeURIComponent(tail.value));
+            return params.length > 0 ? "?" + params.join("&") : "";
+        }
+
         /* History: the last lines, one bounded request, no process left running. */
         function loadSnapshot() {
             if (!snapshot || typeof fetch !== "function") return;
             setStatus("Loading recent lines…");
-            fetch(snapshot, { headers: { "Accept": "text/plain" } })
+            fetch(snapshot + selection(), { headers: { "Accept": "text/plain" } })
                 .then(function (response) { return response.text(); })
                 .then(function (text) {
                     if (source) return;
@@ -214,7 +224,7 @@
             follow.disabled = true;
             if (refresh) refresh.disabled = true;
             stop.disabled = false;
-            source = new EventSource(url);
+            source = new EventSource(url + selection());
             source.addEventListener("replay", function (e) {
                 var payload = null;
                 opened = true;
@@ -265,6 +275,16 @@
             setStatus("Stopped following.");
             shutdown(false);
         });
+        /* A new selection applies to the next read: stop the current follow
+         * rather than mixing selections in one stream. */
+        function reselect() {
+            if (source) {
+                setStatus("Selection changed. Follow live again for the new selection.");
+                shutdown(false);
+            }
+        }
+        if (service) service.addEventListener("change", reselect);
+        if (tail) tail.addEventListener("change", reselect);
         window.addEventListener("pagehide", function () { shutdown(false); });
         // Show history on open, without starting a permanent follow.
         loadSnapshot();
