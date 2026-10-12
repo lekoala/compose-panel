@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createComposeProvider } from "../src/compose-provider.ts";
-import { deployedImage, metadataUrl, projectMetadata, type DeployedImage } from "../src/deployment.ts";
+import { deployedImage, metadataUrl, projectMetadata, type DeclaredMetadata, type DeployedImage } from "../src/deployment.ts";
 import { deploymentSection } from "../src/html.ts";
 import { loadImageUpdates } from "../src/updates.ts";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
@@ -72,6 +72,17 @@ test("failed image reads do not invent a deployed version", async () => {
     const deployed: DeployedImage[] = [];
     expect(await loadImageUpdates(provider, input, [{ name: "app", container: "app-1", image: "app:latest", state: "running", health: null, exitCode: 0 }], deployed)).toEqual({});
     expect(deployed).toEqual([]);
+});
+
+test("renders a metadata disclosure only when it contains actual fields", () => {
+    const emptyCases: (DeclaredMetadata | null | undefined)[] = [undefined, null, {}, { app: {} }, { app: { "stack.version": "" } }];
+    for (const declared of emptyCases) {
+        expect(deploymentSection([], declared)).not.toContain("<details>");
+    }
+    const html = deploymentSection([], { empty: {}, app: { "stack.version": "1.2.3" } });
+    expect(html).toContain("<details>");
+    expect(html).toContain("<dd><code>1.2.3</code></dd>");
+    expect(html).not.toContain("<h3>empty</h3>");
 });
 
 test.skipIf(process.platform !== "linux")("an unsafe .env prevents config metadata reads without breaking Docker status", async () => {
