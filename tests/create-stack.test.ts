@@ -54,14 +54,27 @@ test("preserves the raw pair, validates exact context, and becomes discoverable 
     }
 }));
 
-test("empty variables use an explicit empty interpolation file and leave no .env", async () => fixture(async root => {
+test("empty variables keep Compose's default interpolation sources, like later operations, and leave no .env", async () => fixture(async root => {
+    const envFiles: (string | undefined)[] = [];
+    const fake = provider({
+        validateConfig: async input => { envFiles.push(input.envFile); expect(await readdir(input.directory)).toHaveLength(1); return ok(); },
+        projectName: async input => { envFiles.push(input.envFile); return "chosen-project"; },
+    });
+    await createStack(root, { ...draft, envSource: "" }, fake, 10000);
+    // No substitute --env-file: it would hide an inherited COMPOSE_ENV_FILES
+    // that resolveProjectContext() then honours after creation.
+    expect(envFiles).toEqual([undefined, undefined]);
+    expect(await readdir(join(root, draft.name))).toEqual(["compose.yaml"]);
+}));
+
+test("a .env appearing when none was supplied is refused, since Compose would load it after creation", async () => fixture(async root => {
     const fake = provider({ validateConfig: async input => {
-        expect(input.envFile).not.toBe(join(input.directory, ".env"));
-        expect(await readFile(input.envFile!, "utf8")).toBe("");
+        await writeFile(join(input.directory, ".env"), "STACK_ID=other\n");
         return ok();
     } });
-    await createStack(root, { ...draft, envSource: "" }, fake, 10000);
-    expect(await readdir(join(root, draft.name))).toEqual(["compose.yaml"]);
+    // Refused before publication; the foreign file is kept, so cleanup is partial.
+    await expect(createStack(root, { ...draft, envSource: "" }, fake, 10000)).rejects.toBeInstanceOf(StackCreationPartialError);
+    expect(await readdir(join(root, draft.name))).toEqual([".env"]);
 }));
 
 test.skipIf(process.platform !== "linux" || !foreignOwner)("new stack ownership follows the root even when the process creates files with another owner/group", async () => fixture(async root => {

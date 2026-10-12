@@ -13,6 +13,8 @@
   starting containers. Validation diagnostics are redacted. Existing paths and
   deployed project collisions are refused. Auth, Origin, CSRF, stack locking,
   safe rollback, audit and shutdown drain apply. Available in simulated preview.
+  Without a supplied `.env`, validation and the project collision check use the
+  same interpolation sources as later operations (no substitute `--env-file`).
 
 - Stack deployment metadata (ADR 0023): OCI version, revision and source from
   each container's actual image, full repository digests and a separate image

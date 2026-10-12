@@ -1,7 +1,7 @@
 import { constants, type Stats } from "node:fs";
 import { link, lstat, mkdir, open, readdir, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { StackError, validateStackName } from "./stacks.ts";
+import { ENV_FILENAME, StackError, validateStackName } from "./stacks.ts";
 import { dirIdentity, hashContent, randomSuffix, readFileSafe, sameDirIdentity } from "./fs-safe.ts";
 import { parseComposeLs } from "./compose-state.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
@@ -93,13 +93,17 @@ export async function createStack(root: string, draft: CreateStackRequest, provi
             catch { throw new StackError("The new folder could not inherit the stacks folder's owner and group. Check filesystem permissions.", 500); }
         }
         const composeTmp = `.cp-create-${randomSuffix()}.yaml`;
-        const envName = draft.envSource.length ? ".env" : `.cp-create-env-${randomSuffix()}`;
-        // A real temporary .env is needed for relative service env_file: .env.
+        // Interpolate exactly as later operations will (resolveProjectContext):
+        // --env-file .env when one is supplied, otherwise Compose's own default
+        // sources (e.g. an inherited COMPOSE_ENV_FILES), never a substitute file.
+        // A real .env is also needed for relative service env_file: .env.
         // The directory is private and not discoverable as a stack yet.
+        const envName = draft.envSource.length ? ENV_FILENAME : null;
+        const drafts = envName ? [composeTmp, envName] : [composeTmp];
         await write(composeTmp, draft.composeSource);
-        await write(envName, draft.envSource);
+        if (envName) await write(envName, draft.envSource);
         const composeFile = join(directory, composeTmp);
-        const envFile = join(directory, envName);
+        const envFile = envName ? join(directory, envName) : undefined;
         stage = "validation";
         const result = await provider.validateConfig({ directory, composeFile, envFile });
         const validation = configValidationResult(result, collectSecrets(draft.envSource));
@@ -113,13 +117,15 @@ export async function createStack(root: string, draft: CreateStackRequest, provi
         await checkProjects(project);
         await checkIdentity();
         const compose = await readFileSafe(join(anchored, composeTmp), maxBytes);
-        const env = await readFileSafe(join(anchored, envName), maxBytes);
-        if (compose?.hash !== hashContent(draft.composeSource) || env?.hash !== hashContent(draft.envSource)) throw new StackError("The draft files changed while they were being checked.", 409);
-        for (const filename of [composeTmp, envName]) {
+        const env = envName ? await readFileSafe(join(anchored, envName), maxBytes) : null;
+        if (compose?.hash !== hashContent(draft.composeSource) || (envName && env?.hash !== hashContent(draft.envSource))) throw new StackError("The draft files changed while they were being checked.", 409);
+        for (const filename of drafts) {
             if (!sameDirIdentity(await lstat(join(anchored, filename)), owned.get(filename)!)) throw new StackError("The draft files were replaced while they were being checked.", 409);
         }
+        // Also rejects a .env appearing when none was supplied: Compose would
+        // load it by default after creation, unlike during validation.
         const files = await readdir(anchored);
-        if (files.length !== 2 || !files.includes(composeTmp) || !files.includes(envName)) throw new StackError("Files were added while this stack was being checked.", 409);
+        if (files.length !== drafts.length || !drafts.every(filename => files.includes(filename))) throw new StackError("Files were added while this stack was being checked.", 409);
         await checkProjects(project);
         await checkIdentity();
         options.beforeCommit?.();
@@ -135,7 +141,7 @@ export async function createStack(root: string, draft: CreateStackRequest, provi
         let incomplete = false;
         if (reserved) {
             for (const [filename, info] of owned) {
-                if (committed && (filename === "compose.yaml" || filename === ".env")) continue;
+                if (committed && (filename === "compose.yaml" || filename === ENV_FILENAME)) continue;
                 try {
                     const current = await lstat(join(anchored, filename));
                     if (!sameDirIdentity(current, info) || !current.isFile()) { incomplete = true; continue; }

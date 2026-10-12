@@ -32,6 +32,38 @@ test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPO
     } finally { await rm(root, { recursive: true, force: true }); }
 }, TEST_TIMEOUT_MS);
 
+test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPOSE_CONFIG !== "1")("creation without .env checks the same project identity that later operations resolve", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cp-create-env-files-"));
+    const previous = process.env.COMPOSE_ENV_FILES;
+    const runner = createDockerRunner();
+    let projects: unknown[] = [];
+    const provider = createComposeProvider({ runner: (args, options) => {
+        if (args.includes("ls")) return Promise.resolve({ code: 0, stdout: JSON.stringify(projects), stderr: "", timedOut: false, truncated: false });
+        expect(args).toContain("config");
+        return runner(args, options);
+    } });
+    try {
+        // An interpolation source inherited by the panel process (ADR 0008).
+        const global = join(root, "global.env");
+        await writeFile(global, "REVIEW_PROJECT=from-global-env\n");
+        process.env.COMPOSE_ENV_FILES = global;
+        const stacks = join(root, "stacks");
+        await mkdir(stacks);
+        const composeSource = 'name: ${REVIEW_PROJECT:-fallback}\nservices:\n  app:\n    image: busybox:latest\n';
+        projects = [{ Name: "from-global-env", Status: "running(1)", ConfigFiles: "/another/compose.yaml" }];
+        await expect(createStack(stacks, { name: "taken", composeSource, envSource: "" }, provider, 10000)).rejects.toMatchObject({ status: 409 });
+        projects = [];
+        await createStack(stacks, { name: "created", composeSource, envSource: "" }, provider, 10000);
+        const context = await resolveProjectContext(stacks, "created", provider, true);
+        expect(context.envFile).toBeNull();
+        expect(context.project).toBe("from-global-env");
+    } finally {
+        if (previous === undefined) delete process.env.COMPOSE_ENV_FILES;
+        else process.env.COMPOSE_ENV_FILES = previous;
+        await rm(root, { recursive: true, force: true });
+    }
+}, TEST_TIMEOUT_MS);
+
 test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPOSE_CONFIG !== "1")("real Compose resolves environment/name precedence and rejects conflicting project ownership", async () => {
     const root = await mkdtemp(join(tmpdir(), "compose-panel-config-"));
     const cwd = join(root, "demo");

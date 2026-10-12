@@ -28,8 +28,13 @@ these modes do not grant access to other users or groups. Existing files are
 never chowned by creation.
 
 Write a private `.env` before validation when supplied so relative `env_file:
-.env` resolves in the same context as deployment. Otherwise explicitly use an
-empty temporary interpolation file without creating a service `.env`.
+.env` resolves in the same context as deployment. Otherwise pass no
+`--env-file`, exactly like later operations without `.env`
+(`resolveProjectContext`): Compose then applies its default sources, including
+an inherited `COMPOSE_ENV_FILES` (ADR 0008). A substitute empty file would
+validate and collision-check a different project identity than the one used
+after publication. A `.env` appearing in the reserved directory when none was
+supplied is refused before publication, since Compose would load it by default.
 Publish `compose.yaml` last with an exclusive hard link to its completed draft
 (0600). This is atomic publication of the discoverable
 stack, not an atomic directory rename: the reserved empty directory exists
