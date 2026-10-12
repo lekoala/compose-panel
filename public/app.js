@@ -455,6 +455,23 @@
 
     /* Local filter for the navigation stack list and the stacks table. Hides
      * non-matching entries; without JavaScript every entry is simply shown. */
+    /* Info tips are native <details>; close them on an outside click or Escape
+     * so they behave like small popovers. Without JS they toggle on click. */
+    function wireInfoTips() {
+        function closeAll(except) {
+            each("details.info[open]", function (tip) {
+                if (tip !== except) tip.removeAttribute("open");
+            });
+        }
+        document.addEventListener("click", function (event) {
+            var target = event.target;
+            closeAll(target && typeof target.closest === "function" ? target.closest("details.info") : null);
+        });
+        document.addEventListener("keydown", function (event) {
+            if (event.key === "Escape") closeAll(null);
+        });
+    }
+
     function wireNavSearch() {
         var input = document.querySelector("[data-nav-search]");
         var list = document.getElementById("nav-list");
@@ -695,7 +712,7 @@
 
         toggle.addEventListener("change", function () {
             if (toggle.checked) { enabled = true; tick(); }
-            else { stop(); setStatus("Manual refresh"); }
+            else { stop(); setStatus(""); }
         });
         document.addEventListener("visibilitychange", function () {
             if (document.hidden) { clearTimer(); abortInFlight(); }
@@ -736,6 +753,7 @@
         wireBusyButtons();
         wireAutoSubmit();
         wireNavSearch();
+        wireInfoTips();
         if (op) wireOperation(op);
         if (logs) wireLogs(logs);
         if (containerLogs) wireContainerLogs(containerLogs);

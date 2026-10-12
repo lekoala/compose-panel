@@ -184,6 +184,7 @@ describe("public routes", () => {
         const cases: [string, string][] = [
             ["/favicon.svg", "image/svg+xml"],
             ["/favicon.ico", "image/x-icon"],
+            ["/brand-mark.svg", "image/svg+xml"],
             ["/apple-touch-icon.png", "image/png"],
             ["/icon-active-on-light.svg", "image/svg+xml"],
             ["/icon-active-on-dark.svg", "image/svg+xml"],
@@ -341,7 +342,6 @@ describe("auth gate", () => {
         const html = await response.text();
         expect(html).toContain('name="csrf"');
         expect(html).toContain('id="favicon-svg"');
-        expect(html).toContain('href="/favicon.ico"');
         expect(html).toContain('href="/apple-touch-icon.png"');
         expect(html).toContain('srcset="/icon-boot-on-dark.svg"');
         expect(html).toContain('src="/icon-boot-on-light.svg"');
@@ -351,7 +351,7 @@ describe("auth gate", () => {
         const app = makeApp();
         const session = await login(app);
         const html = await (await authed(app, "/", session)).text();
-        expect(html).toContain('<img src="/favicon.svg" alt="" width="20" height="20">Compose Panel');
+        expect(html).toContain('<img src="/brand-mark.svg" alt="" width="20" height="20">Compose Panel');
         expect(html).toContain('name="theme-color"');
     });
 

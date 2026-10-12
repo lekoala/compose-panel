@@ -106,6 +106,64 @@ const projects = new Map<string, Service[]>([
     ["db", [container("postgres:16", "postgres", "exited", 137)]],
 ]);
 
+/**
+ * Containers outside the demo stacks, so the Containers page, the home
+ * "Other containers" section and Server's "Needs attention" have something to
+ * show: two from a Compose project the panel does not manage, three standalone.
+ */
+interface OtherContainer {
+    id: string;
+    name: string;
+    image: string;
+    state: "running" | "exited" | "restarting";
+    status: string;
+    health: string;
+    exitCode: number;
+    ports: string;
+    restart: string;
+    project: string;
+    service: string;
+    configFiles: string;
+    workingDir: string;
+}
+const others: OtherContainer[] = [
+    { id: `e1${"0".repeat(62)}`, name: "monitoring-grafana-1", image: "grafana/grafana:11.2.0", state: "running", status: "Up 3 days (healthy)", health: "healthy", exitCode: 0, ports: "127.0.0.1:3000->3000/tcp", restart: "unless-stopped", project: "monitoring", service: "grafana", configFiles: "/srv/monitoring/compose.yaml", workingDir: "/srv/monitoring" },
+    { id: `e2${"0".repeat(62)}`, name: "monitoring-prometheus-1", image: "prom/prometheus:v2.54.1", state: "running", status: "Up 3 days", health: "none", exitCode: 0, ports: "9090/tcp", restart: "unless-stopped", project: "monitoring", service: "prometheus", configFiles: "/srv/monitoring/compose.yaml", workingDir: "/srv/monitoring" },
+    { id: `e3${"0".repeat(62)}`, name: "caddy", image: "caddy:2.8", state: "running", status: "Up 12 days", health: "none", exitCode: 0, ports: "0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp", restart: "always", project: "", service: "", configFiles: "", workingDir: "" },
+    { id: `e4${"0".repeat(62)}`, name: "nightly-backup", image: "restic/restic:0.17.0", state: "exited", status: "Exited (1) 6 hours ago", health: "none", exitCode: 1, ports: "", restart: "no", project: "", service: "", configFiles: "", workingDir: "" },
+    { id: `e5${"0".repeat(62)}`, name: "flaky-worker", image: "busybox", state: "restarting", status: "Restarting (2) 10 seconds ago", health: "none", exitCode: 2, ports: "", restart: "on-failure", project: "", service: "", configFiles: "", workingDir: "" },
+];
+
+function otherListLine(other: OtherContainer): string {
+    return [
+        other.id, other.name, other.image, other.state, other.status, other.health,
+        "2026-10-01T06:00:00Z", other.state === "exited" ? "6 hours ago" : "3 days ago", other.ports,
+        other.project, other.service, other.configFiles, other.workingDir,
+    ].map(field => JSON.stringify(field)).join("\t");
+}
+
+function otherInspect(other: OtherContainer): object {
+    const [, host, hostPort, port] = /^(?:([\d.]+):(\d+)->)?(\d+\/tcp)/.exec(other.ports) ?? [];
+    const labels: Record<string, string> = other.project
+        ? { "com.docker.compose.project": other.project, "com.docker.compose.service": other.service, "com.docker.compose.project.config_files": other.configFiles, "com.docker.compose.project.working_dir": other.workingDir }
+        : {};
+    return {
+        Id: other.id,
+        Name: `/${other.name}`,
+        Image: `sha256:${other.id.split("").reverse().join("")}`,
+        Created: "2026-10-01T06:00:00Z",
+        Config: { Image: other.image, Labels: labels, Env: ["SECRET=never shown"] },
+        State: {
+            Status: other.state, Running: other.state === "running", Paused: false, Restarting: other.state === "restarting",
+            ExitCode: other.exitCode, StartedAt: "2026-10-09T06:00:00Z", FinishedAt: other.state === "exited" ? "2026-10-12T00:00:00Z" : "0001-01-01T00:00:00Z",
+            ...(other.health !== "none" ? { Health: { Status: other.health } } : {}),
+        },
+        HostConfig: { RestartPolicy: { Name: other.restart } },
+        NetworkSettings: { Ports: port ? { [port]: host ? [{ HostIp: host, HostPort: hostPort }] : null } : {} },
+        Mounts: other.project ? [{ Type: "bind", Source: `${other.workingDir}/data`, Destination: "/data", RW: true }] : [],
+    };
+}
+
 const ok = (stdout = ""): CommandResult => ({ code: 0, stdout, stderr: "", timedOut: false, truncated: false });
 const fail = (stderr: string): CommandResult => ({ code: 1, stdout: "", stderr, timedOut: false, truncated: false });
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -219,6 +277,17 @@ const runner: DockerRunner = async (args, options) => {
                 }));
             }
         }
+        for (const other of others.filter(item => item.state === "running")) {
+            const seed = pseudo(other.name, 7);
+            const used = (40 + (seed % 600)) * 1024 ** 2;
+            lines.push(JSON.stringify({
+                Container: other.name, Name: other.name, ID: other.id,
+                CPUPerc: `${((seed % 300) / 10).toFixed(2)}%`,
+                MemUsage: `${humanBytes(used)} / ${humanBytes(limit)}`,
+                MemPerc: `${((used / limit) * 100).toFixed(2)}%`,
+                NetIO: "18MB / 6.2MB", BlockIO: "4.1MB / 120MB", PIDs: String(seed % 30),
+            }));
+        }
         return ok(lines.length > 0 ? `${lines.join("\n")}\n` : "");
     }
     if (args[0] === "system" && args[1] === "df") {
@@ -252,7 +321,38 @@ const runner: DockerRunner = async (args, options) => {
                 lines.push(fields.map(field => JSON.stringify(field)).join("\t"));
             }
         }
+        lines.push(...others.map(otherListLine));
         return ok(lines.length > 0 ? `${lines.join("\n")}\n` : "");
+    }
+    if (args[0] === "container" && (args[1] === "inspect" || args[1] === "logs")) {
+        const id = args[args.length - 1]!;
+        const other = others.find(item => item.id === id);
+        if (args[1] === "logs") {
+            const stamp = new Date().toISOString();
+            const last = other && other.state !== "running" ? `error: exit ${other.exitCode}` : "ready";
+            return ok(`${stamp} ${other?.name ?? "container"} started (simulated)\n${stamp} ${last} (simulated)\n`);
+        }
+        if (other) return ok(JSON.stringify([otherInspect(other)]));
+        for (const [project, services] of projects) {
+            const service = services.find(item => item.imageId.replace("sha256:", "") === id);
+            if (!service) continue;
+            return ok(JSON.stringify([{
+                Id: id,
+                Name: `/${containerNameOf(project, service.name)}`,
+                Image: service.imageId,
+                Created: "2026-10-05T08:31:11Z",
+                Config: { Image: service.image },
+                State: {
+                    Status: service.state, Running: service.state === "running", Paused: false, Restarting: false,
+                    ExitCode: service.exitCode, StartedAt: "2026-10-05T08:31:11Z", FinishedAt: "0001-01-01T00:00:00Z",
+                    ...(service.health ? { Health: { Status: service.health } } : {}),
+                },
+                HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
+                NetworkSettings: { Ports: {} },
+                Mounts: [],
+            }]));
+        }
+        return { code: 1, stdout: "[]", stderr: `Error: No such container: ${id}`, timedOut: false, truncated: false };
     }
     const project = arg(args, "-p") ?? basename(arg(args, "--project-directory") ?? "");
     const composeFile = arg(args, "-f") ?? "";

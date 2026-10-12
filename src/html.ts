@@ -23,6 +23,18 @@ export function escapeHtml(value: string): string {
     });
 }
 
+/**
+ * A small ⓘ for secondary details, kept out of the page until asked for.
+ * Native `<details>`: works without JavaScript, on touch and with the keyboard
+ * (a `title` tooltip would not). `text` is escaped; app.js only closes it on an
+ * outside click or Escape. Place it in a heading or a block, never inside a
+ * `<p>`: the parser would close the paragraph and the tip would land on its
+ * own line.
+ */
+export function infoTip(text: string, label = "More information"): string {
+    return `<details class="info"><summary aria-label="${escapeHtml(label)}">i</summary><span class="info-body">${escapeHtml(text)}</span></details>`;
+}
+
 export type NoteKind = "info" | "success" | "warn" | "error";
 
 /** A message box. `text` is escaped; it is never interpreted as markup. */
@@ -129,13 +141,12 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
   <title>${escapeHtml(title)} · Compose Panel</title>
   <link rel="stylesheet" href="/styles.css">
   <link id="favicon-svg" rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="icon" href="/favicon.ico" sizes="48x48">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   ${scripts}
 </head>
 <body>
   ${options.bare ? `<main class="bare">${body}</main>` : `<div class="shell">
-    <header><a href="/" class="brand"><img src="/favicon.svg" alt="" width="20" height="20">Compose Panel</a>${logout}</header>
+    <header><a href="/" class="brand"><img src="/brand-mark.svg" alt="" width="20" height="20">Compose Panel</a>${logout}</header>
     ${content}
     <footer>Compose Panel ${escapeHtml(VERSION)}${options.access ? ` · ${escapeHtml(options.access)}` : ""}</footer>
   </div>`}
@@ -793,20 +804,19 @@ export function serverPage(options: ServerPageOptions): string {
     // rows without the client rebuilding the whole table.
     const emptyRow = (columns: number, text: string): string => `<tr><td colspan="${columns}" class="muted">${escapeHtml(text)}</td></tr>`;
 
-    const engineCard = `<section class="card"><h2>Docker Engine diagnostics</h2>`
-        + `<p class="muted">Facts Docker reports about the machine running the daemon, which may be a VM. This is not live host monitoring and is not refreshed by Live.</p>`
+    const engineCard = `<section class="card"><h2>Docker engine${infoTip("As Docker sees it: this can be a virtual machine rather than the physical server.")}</h2>`
         + (insights.info
             ? `<div class="stats" aria-label="Docker Engine summary">`
-                + `<div class="stat"><span class="stat-value">${insights.info.cpus ?? "—"}</span><span class="stat-label">Engine CPUs</span></div>`
-                + `<div class="stat"><span class="stat-value">${escapeHtml(formatBytes(insights.info.memoryTotalBytes))}</span><span class="stat-label">Engine memory</span></div>`
+                + `<div class="stat"><span class="stat-value">${insights.info.cpus ?? "—"}</span><span class="stat-label">CPUs</span></div>`
+                + `<div class="stat"><span class="stat-value">${escapeHtml(formatBytes(insights.info.memoryTotalBytes))}</span><span class="stat-label">Memory</span></div>`
                 + `<div class="stat"><span class="stat-value" id="live-running">${insights.runningContainers ?? "—"}</span><span class="stat-label">Running containers</span></div>`
                 + `<div class="stat"><span class="stat-value" id="live-attention">${insights.attention === null ? "—" : insights.attention.length}</span><span class="stat-label">Needs attention</span></div>`
                 + `</div>`
                 + engineFacts(insights.info)
-            : `<p class="muted">Docker Engine details are unavailable.</p>`)
+            : `<p class="muted">Engine details are unavailable.</p>`)
         + `</section>`;
 
-    const topCard = `<section class="card"><h2>Top containers by CPU</h2>`
+    const topCard = `<section class="card"><h2>Top containers by CPU${infoTip("Network and block I/O are totals since each container started.")}</h2>`
         + `<div class="table-wrap"><table class="table"><thead><tr><th>Container</th><th>Stack</th><th>CPU</th><th>Memory</th><th class="col-optional">Mem %</th><th class="col-optional">Network I/O</th><th class="col-optional">Block I/O</th><th class="col-optional">PIDs</th></tr></thead><tbody id="live-stats">`
         + (insights.stats === null
             ? emptyRow(8, "Container usage is unavailable.")
@@ -814,19 +824,19 @@ export function serverPage(options: ServerPageOptions): string {
                 ? emptyRow(8, "No running containers.")
                 : statRows([...insights.stats].sort((a, b) => (b.cpuPercent ?? -1) - (a.cpuPercent ?? -1))))
         + `</tbody></table></div>`
-        + `<p class="muted">Reported by <code>docker stats</code>. Network and block I/O are cumulative counters, not rates.</p></section>`;
+        + `</section>`;
 
-    const stacksCard = `<section class="card"><h2>Per-stack usage</h2>`
-        + `<div class="table-wrap"><table class="table"><thead><tr><th>Stack</th><th>CPU (cumulated)</th><th>Memory (summed)</th><th>Containers</th></tr></thead><tbody id="live-stacks">`
+    const stacksCard = `<section class="card"><h2>Usage by stack${infoTip("CPU adds up the stack's containers. 100 % is one core, so it can go higher.")}</h2>`
+        + `<div class="table-wrap"><table class="table"><thead><tr><th>Stack</th><th>CPU</th><th>Memory</th><th>Containers</th></tr></thead><tbody id="live-stacks">`
         + (insights.stacks === null
             ? emptyRow(4, "Per-stack usage is unavailable.")
             : insights.stacks.length === 0
                 ? emptyRow(4, "No managed running containers.")
                 : stackRows(insights.stacks))
         + `</tbody></table></div>`
-        + `<p class="muted">CPU is summed across the stack's containers and may exceed 100 %: Docker's scale is per core.</p></section>`;
+        + `</section>`;
 
-    const attentionCard = `<section class="card"><h2>Needs attention</h2>`
+    const attentionCard = `<section class="card"><h2>Needs attention${infoTip("Current state only. A finished job that exited with an error may be expected.")}</h2>`
         + `<div class="table-wrap"><table class="table"><thead><tr><th>Container</th><th>Issue</th><th>Stack</th></tr></thead><tbody id="live-attention-rows">`
         + (insights.attention === null
             ? emptyRow(3, "Container health could not be checked.")
@@ -834,31 +844,30 @@ export function serverPage(options: ServerPageOptions): string {
                 ? emptyRow(3, "No current issues.")
                 : attentionRows(insights.attention))
         + `</tbody></table></div>`
-        + `<p class="muted">A snapshot of the current state, with no history. An exited job with an error may be harmless.</p></section>`;
+        + `</section>`;
 
     let diskCard: string;
     if (options.disk === null) {
-        diskCard = `<p class="muted">Docker-managed storage is read on demand because it can be expensive on a large host. <strong>Not included in Live updates.</strong></p>`
-            + `<p><a class="btn" href="/server?disk=1">Load disk usage</a></p>`;
+        diskCard = `<p><a class="btn" href="/server?disk=1">Show disk usage</a></p>`;
     } else if (options.disk.rows === null) {
         diskCard = note("warn", options.disk.note ?? "Docker disk usage is unavailable.")
             + `<p><a class="btn" href="/server?disk=1">Try again</a></p>`;
     } else {
-        const readAt = options.disk.readAt === null ? "" : ` Snapshot as of ${timeTag(options.disk.readAt)}.`;
+        const readAt = options.disk.readAt === null ? "" : `<p class="muted">Read ${timeTag(options.disk.readAt)} · <a href="/server?disk=1">Read again</a></p>`;
         diskCard = `<div class="table-wrap"><table class="table"><thead><tr><th>Type</th><th>Items</th><th>Active</th><th>Size</th><th>Reclaimable</th></tr></thead><tbody>${diskRows(options.disk.rows)}</tbody></table></div>`
-            + `<p class="muted">Docker-managed storage only. Not total host disk usage.${readAt} <strong>Not included in Live updates.</strong></p>`;
+            + readAt;
     }
-    const diskSection = `<section class="card"><h2>Docker disk usage <span class="state">Snapshot</span></h2>${diskCard}</section>`;
+    const diskSection = `<section class="card"><h2>Docker disk usage${infoTip("Images, containers, volumes and build cache only, not the whole disk.")}</h2>${diskCard}</section>`;
 
     const body = `<p class="crumbs"><a href="/">← All stacks</a></p>`
-        + `<div class="page-head"><h1>Server</h1></div>`
+        + `<div class="page-head"><h1>Server${infoTip("Only what Docker reports. Server load, uptime, filesystems and system updates are not shown.")}</h1></div>`
         + `<div class="server-toolbar" data-server-live data-server-stats="/server/stats" data-live-interval="15000">`
         + `<label class="live-toggle"><input type="checkbox" id="server-live"> Live (every 15 s)</label>`
-        + `<span class="muted">Snapshot <time id="live-read-at" datetime="${escapeHtml(new Date(insights.readAt).toISOString())}" data-local-time="full">${escapeHtml(new Date(insights.readAt).toISOString().slice(0, 19).replace("T", " "))} UTC</time></span>`
-        + `<span id="server-live-status" class="muted" role="status" aria-live="polite">Manual refresh</span>`
+        + `<span class="muted">Updated <time id="live-read-at" datetime="${escapeHtml(new Date(insights.readAt).toISOString())}" data-local-time="full">${escapeHtml(new Date(insights.readAt).toISOString().slice(0, 19).replace("T", " "))} UTC</time></span>`
+        + `<span id="server-live-status" class="muted" role="status" aria-live="polite"></span>`
         + `<a class="btn btn-quiet" href="/server">Refresh</a>`
         + `</div>`
-        + `<p class="lead">Docker's own diagnostics for this engine: what runs and what consumes resources. Read only. The wider host view — load, memory, uptime, filesystems and system updates — is not available here.</p>`
+        + `<p class="lead">What runs on this Docker engine and what it uses.</p>`
         + insights.notes.map(text => note("warn", text)).join("")
         + engineCard
         + topCard

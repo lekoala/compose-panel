@@ -44,7 +44,9 @@ const BASE_HEADERS: Record<string, string> = {
 /** Brand assets served unauthenticated (login page included). Fixed map, no user input. */
 const BRAND_FILES: Record<string, { file: string; type: string }> = {
     "/favicon.svg": { file: "favicon.svg", type: "image/svg+xml; charset=utf-8" },
+    // Not linked from pages; browsers still request it on their own.
     "/favicon.ico": { file: "favicon.ico", type: "image/x-icon" },
+    "/brand-mark.svg": { file: "brand-mark.svg", type: "image/svg+xml; charset=utf-8" },
     "/apple-touch-icon.png": { file: "apple-touch-icon.png", type: "image/png" },
     "/icon-active-on-light.svg": { file: "icon-active-on-light.svg", type: "image/svg+xml; charset=utf-8" },
     "/icon-active-on-dark.svg": { file: "icon-active-on-dark.svg", type: "image/svg+xml; charset=utf-8" },
