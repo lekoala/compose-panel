@@ -1,5 +1,6 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, type NavSection, type NavigationOptions, type NoteKind } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, type NavSection, type NavigationOptions, type NoteKind } from "./html.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
+import { managedBy } from "./deployment.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
 import { dirname, join } from "node:path";
 import { listStacks, locateComposeFile, readStackCompose, StackError, validateStackName } from "./stacks.ts";
@@ -736,6 +737,7 @@ export function createApp(options: AppOptions): App {
         }
         const href = `/stacks/${encodeURIComponent(stack.name)}`;
         const operation = operations.forStack(stack.name);
+        const owner = managedBy(status.declared);
         const project = status.project
             ? `<span>Compose project <code>${escapeHtml(status.project)}</code></span>`
             : "";
@@ -743,10 +745,10 @@ export function createApp(options: AppOptions): App {
             stack.name,
             `<p class="crumbs"><a href="/">← All stacks</a></p>`
             + `<div class="page-head"><h1>${escapeHtml(stack.name)}</h1><a href="${href}/edit" class="btn">Edit files</a></div>`
-            + `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}${healthSummaryBadge(status.services)}</p>`
+            + `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}${healthSummaryBadge(status.services)}${managedByBadge(owner)}</p>`
             + (notice ? note(notice.kind, notice.text) : "")
             + (status.note ? note("warn", status.note) : "")
-            + operationControls(stack.name, csrf, { busy: operation?.status === "running", state: status.state, updatesReady: Object.keys(status.updates ?? {}) })
+            + operationControls(stack.name, csrf, { busy: operation?.status === "running", state: status.state, updatesReady: Object.keys(status.updates ?? {}), managedBy: owner })
             + operationPanel(operation, stack.name)
             + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" })
             + deploymentSection(status.deployed, status.declared, status.state !== "not-created")

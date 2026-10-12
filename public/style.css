@@ -122,6 +122,7 @@ footer{border-top:1px solid var(--border);padding-block:1rem;color:var(--muted);
 .state-running{border-color:var(--accent);color:var(--accent)}
 .state-stopped{border-color:var(--warn);color:var(--warn)}
 .state-not-created{border-style:dashed}
+.state-managed{border-style:dotted}
 .state-unknown,.state-failed{border-color:var(--danger);color:var(--danger)}
 .state-succeeded,.state-done{border-color:var(--ok);color:var(--ok)}
 

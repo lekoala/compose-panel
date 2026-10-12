@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Declared deployment owner (ADR 0025): a `stack.managed-by` label shared by
+  the stack's services shows a "Managed by" badge on the detail page and warns
+  in Actions that an external deployment may overwrite panel changes.
+  Informational only: no action is blocked and the label grants no trust.
+
 - Controlled stack creation (ADR 0024): New stack accepts a name, raw Compose
   and optional `.env`, validates the exact directory and project context, and
   creates private files inheriting the stacks root's uid/gid on Linux without

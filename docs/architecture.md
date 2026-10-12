@@ -66,7 +66,7 @@ Deployment metadata uses the same provider: `stackMetadata` reads resolved
 config but returns only allow-listed `stack.*` service labels. Image inspection
 is shared with update detection; `src/deployment.ts` projects OCI labels and
 full repository digests from the container's actual image ID. Declared metadata
-is separate from deployed metadata; neither is stored. See [ADR 0023](adr/0023-deployment-metadata.md).
+is separate from deployed metadata; neither is stored. See [ADR 0023](adr/0023-deployment-metadata.md); `stack.managed-by` only adds an informational badge ([ADR 0025](adr/0025-declared-deployment-owner.md)).
 
 Engine-specific CLI calls are encapsulated in `src/compose-provider.ts` (see [ADR 0005](adr/0005-compose-provider-boundary.md)). The rest of the code depends on three operations — `listProjects`, `projectServices`, `validateConfig` — never on the concrete executable or its argument layout. V1 implements Docker only; Podman is rejected explicitly rather than emulated. The provider detects its capabilities at startup, and an unsupported operation fails loudly instead of producing a silently wrong result.
 

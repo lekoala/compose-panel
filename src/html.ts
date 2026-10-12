@@ -265,6 +265,11 @@ const STATE_LABELS: Record<string, string> = {
     unknown: "Unknown",
 };
 
+/** Declared deployment owner: informational, never a trust or permission signal. */
+export function managedByBadge(owner: string | null): string {
+    return owner ? `<span class="state state-managed">Managed by ${escapeHtml(owner)}</span>` : "";
+}
+
 export function stateBadge(state: string): string {
     return `<span class="state state-${escapeHtml(state)}">${escapeHtml(STATE_LABELS[state] ?? state)}</span>`;
 }
@@ -418,7 +423,7 @@ const OPERATIONS: { action: OperationAction; label: string; help: string; style:
 
 export const OPERATION_LABELS: Record<OperationAction, string> = Object.fromEntries(OPERATIONS.map(op => [op.action, op.label])) as Record<OperationAction, string>;
 
-export function operationControls(name: string, csrf: string, options: { busy: boolean; state: StackState; updatesReady?: string[] }): string {
+export function operationControls(name: string, csrf: string, options: { busy: boolean; state: StackState; updatesReady?: string[]; managedBy?: string | null }): string {
     const action = `/stacks/${encodeURIComponent(name)}/operations`;
     // Which actions the panel offers for each honest state. `unknown` means the
     // panel cannot guarantee what it would manipulate, so nothing may run.
@@ -454,9 +459,12 @@ export function operationControls(name: string, csrf: string, options: { busy: b
                 : options.updatesReady && options.updatesReady.length > 0
                     ? note("info", `Update ready for ${options.updatesReady.join(", ")}: Up recreates ${options.updatesReady.length === 1 ? "it" : "them"} with the newer image. The other services are not affected by the image change. Details under Services.`)
                     : "";
+    const managed = options.managedBy
+        ? note("warn", `${options.managedBy} declares that it deploys this stack. Actions and edits made here stay possible, but its next deployment may overwrite them.`)
+        : "";
     return `<section class="card"><h2>Actions</h2>`
         + `<p class="muted">These actions apply to this stack only. They run on the server and keep going if you close this page. Only one action or save runs at a time per stack.</p>`
-        + `${status}<div class="op-list">${rows}</div></section>`;
+        + `${managed}${status}<div class="op-list">${rows}</div></section>`;
 }
 
 const OPERATION_STATUS_LABELS: Record<string, string> = {

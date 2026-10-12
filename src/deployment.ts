@@ -1,6 +1,6 @@
 import type { ImageDetails } from "./compose-state.ts";
 
-export const STACK_LABELS = ["stack.version", "stack.revision", "stack.source", "stack.environment", "stack.branch", "stack.build", "stack.build.url", "stack.url"] as const;
+export const STACK_LABELS = ["stack.version", "stack.revision", "stack.source", "stack.environment", "stack.branch", "stack.build", "stack.build.url", "stack.url", "stack.managed-by"] as const;
 export type DeclaredMetadata = Record<string, Record<string, string>>;
 
 export interface DeployedImage {
@@ -45,6 +45,15 @@ export function projectMetadata(value: unknown): DeclaredMetadata | null {
         if (Object.keys(selected).length) result[name] = selected;
     }
     return result;
+}
+
+/**
+ * The tool declared responsible for deploying the stack, when every service
+ * that declares one agrees. Informational only: never a trust or permission signal.
+ */
+export function managedBy(declared: DeclaredMetadata | null | undefined): string | null {
+    const values = new Set(Object.values(declared ?? {}).map(labels => labels["stack.managed-by"]).filter((value): value is string => Boolean(value)));
+    return values.size === 1 ? [...values][0]! : null;
 }
 
 export function deployedImage(service: string, container: string, detail: ImageDetails): DeployedImage {

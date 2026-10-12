@@ -39,6 +39,7 @@ services:
       stack.build.url: https://ci.example.com/builds/428
       stack.source: https://git.example.com/demo-app
       stack.url: https://staging.example.com
+      stack.managed-by: Example CI
 `,
     web: `# Public website: a web server, a cache and a one-shot migration job.
 services:
@@ -205,7 +206,7 @@ async function servicesOf(composeFile: string): Promise<{ name: string; image: s
         if (/^ {2,4}\S/.test(line)) inLabels = /^ {4}labels:\s*$/.test(line);
         const ref = /^ {4}image:\s*["']?([^"'\s]+)/.exec(line);
         if (ref && result.length > 0) result[result.length - 1]!.image = ref[1]!;
-        const label = inLabels ? /^ {6}(stack\.[a-z.]+):\s*(.*?)\s*$/.exec(line) : null;
+        const label = inLabels ? /^ {6}(stack\.[a-z.-]+):\s*(.*?)\s*$/.exec(line) : null;
         if (label && result.length > 0) result[result.length - 1]!.labels[label[1]!] = label[2]!.replace(/^["']|["']$/g, "");
     }
     return result;

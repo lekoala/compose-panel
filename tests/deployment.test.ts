@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createComposeProvider } from "../src/compose-provider.ts";
-import { deployedImage, metadataUrl, projectMetadata, type DeclaredMetadata, type DeployedImage } from "../src/deployment.ts";
-import { deploymentSection } from "../src/html.ts";
+import { deployedImage, managedBy, metadataUrl, projectMetadata, type DeclaredMetadata, type DeployedImage } from "../src/deployment.ts";
+import { deploymentSection, managedByBadge, operationControls } from "../src/html.ts";
 import { loadImageUpdates } from "../src/updates.ts";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -118,4 +118,27 @@ test.skipIf(process.platform !== "linux")("an unsafe .env prevents config metada
         expect(status.declared).toBeNull();
         expect(calls.some(args => args.includes("config"))).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a declared deployment owner is kept only when every declaring service agrees", () => {
+    expect(projectMetadata({ services: { app: { labels: { "stack.managed-by": "CI" } } } })).toEqual({ app: { "stack.managed-by": "CI" } });
+    expect(managedBy({ app: { "stack.managed-by": "CI" }, worker: { "stack.managed-by": "CI" }, db: {} })).toBe("CI");
+    expect(managedBy({ app: { "stack.managed-by": "CI" }, worker: { "stack.managed-by": "Other" } })).toBeNull();
+    const empty: (DeclaredMetadata | null | undefined)[] = [undefined, null, {}, { app: { "stack.version": "1" } }];
+    for (const declared of empty) expect(managedBy(declared)).toBeNull();
+});
+
+test("the deployment owner is escaped and only marks managed stacks", () => {
+    expect(managedByBadge(null)).toBe("");
+    const badge = managedByBadge("<b>CI</b>");
+    expect(badge).toContain("&lt;b&gt;CI&lt;/b&gt;");
+    expect(badge).not.toContain("<b>");
+    const plain = operationControls("demo", "token", { busy: false, state: "running" });
+    const managed = operationControls("demo", "token", { busy: false, state: "running", managedBy: "<b>CI</b>" });
+    expect(plain).not.toContain("CI");
+    expect(managed).toContain("&lt;b&gt;CI&lt;/b&gt;");
+    expect(managed).not.toContain("<b>");
+    // Informational only: the same actions stay available.
+    const buttons = (html: string) => html.match(/name="action" value="[a-z+-]+"/g);
+    expect(buttons(managed)).toEqual(buttons(plain));
 });

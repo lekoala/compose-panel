@@ -20,6 +20,8 @@ Resolved Compose config is projected inside the provider onto an explicit
 label allow-list; other labels, environment and stderr are never returned.
 All metadata is bounded and escaped. Links allow HTTP(S) without credentials,
 open with `noopener noreferrer`, and are never fetched by the panel.
+`stack.managed-by` is display-only: it never disables an action, changes
+authorization or counts as proof of who deployed the stack (ADR 0025).
 
 An administrator able to edit and then deploy a Compose file on a rootful Docker daemon can obtain very high control over the host. This panel is **not** a Docker sandbox, nor a multi-tenant API. Trusted users only.
 

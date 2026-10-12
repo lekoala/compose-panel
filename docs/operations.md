@@ -75,11 +75,15 @@ services:
       stack.build.url: https://ci.example.com/builds/428
       stack.source: https://git.example.com/app
       stack.url: https://staging.example.com
+      stack.managed-by: Example CI
 ```
 
-Only these eight labels are read. Resolved values are displayed as **declared
+Only these nine labels are read. Resolved values are displayed as **declared
 Compose metadata**, separately from the deployed image: editing a file does not
-change a running container. Put no secrets in these labels. Links allow HTTP(S)
+change a running container. When all declaring services agree,
+`stack.managed-by` adds a **Managed by** badge and a warning in Actions that an
+external deployment may overwrite changes made from the panel; it never blocks
+an action ([ADR 0025](adr/0025-declared-deployment-owner.md)). Put no secrets in these labels. Links allow HTTP(S)
 only and do not prove reachability. No URL is fetched by the panel.
 
 `bun run preview` includes a simulated `release` stack: open it, try **Pull**
