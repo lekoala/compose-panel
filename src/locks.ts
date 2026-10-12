@@ -16,6 +16,15 @@ export class StackLocks {
         return this.active.has(name);
     }
 
+    /**
+     * Whether any stack is locked, including a lock kept on purpose after an
+     * operation whose process exit could not be confirmed. Used to refuse a
+     * panel self-update, whose restart would drop that guard (ADR 0018).
+     */
+    hasActive(): boolean {
+        return this.active.size > 0;
+    }
+
     /** Non-blocking acquire. Returns a release function, or null if already held. */
     tryAcquire(name: string): (() => void) | null {
         if (this.active.has(name)) return null;

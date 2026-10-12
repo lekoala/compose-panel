@@ -1084,6 +1084,11 @@ export function createApp(options: AppOptions): App {
         if (operations.activeCount() > 0 || saves.size > 0) {
             return refuse("An action or a save is still running. Wait for it to finish, then update.");
         }
+        // A stack lock can outlive its operation when the process exit was not
+        // confirmed: restarting the panel would drop that guard, so refuse.
+        if (locks.hasActive()) {
+            return refuse("A stack is still locked by an action whose end Docker did not confirm. Check the stack on the host, then restart the panel from the host if needed.");
+        }
         // Synchronously, before any await: from here on no action, save or
         // purge can start until the updater ends or the panel is replaced.
         selfUpdatePending = true;

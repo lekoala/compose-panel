@@ -2776,6 +2776,29 @@ describe("self-update (ADR 0018)", () => {
         expect(docker.calls.some(args => args[1] === "run")).toBe(false);
     });
 
+    test("update is refused while a stack keeps a lock after an unconfirmed termination", async () => {
+        const docker = fakeDocker();
+        docker.pulled = true;
+        const { provider } = controllableProvider();
+        const unconfirmed: ComposeProvider = {
+            ...provider,
+            up: async () => ({ code: -1, stdout: "", stderr: "", timedOut: true, truncated: false, terminationUnconfirmed: true }),
+        };
+        const app = makeApp({}, undefined, unconfirmed, undefined, root, undefined, fakeSelfUpdater(docker));
+        const session = await login(app);
+        app.operations.start({ stack: "demo", action: "up", target: { composeFile: join(root, "demo", "compose.yaml"), cwd: join(root, "demo") } });
+        while (app.operations.isRunning("demo")) await Bun.sleep(1);
+        // The task ended, but the lock is kept on purpose: the stack refuses a new action.
+        expect(app.operations.activeCount()).toBe(0);
+        const csrf = await csrfOf(app, session);
+        expect((await post(app, session, "/stacks/demo/operations", { csrf, action: "up" })).status).toBe(409);
+
+        await post(app, session, "/about/check", { csrf });
+        const response = await post(app, session, "/about/update", { csrf, target: NEW_IMAGE });
+        expect(response.status).toBe(409);
+        expect(docker.calls.some(args => args[1] === "run")).toBe(false);
+    });
+
     test("update waits for running stack actions", async () => {
         const docker = fakeDocker();
         docker.pulled = true;

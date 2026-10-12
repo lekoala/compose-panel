@@ -108,7 +108,9 @@ brings it into scope, in a deliberately narrow form.
   the panel persists nothing. The finished container is removed when the next
   update starts.
 - **One update, with nothing else running.** The update is refused while any
-  stack action or save runs, while an updater container is running, or during
+  stack action or save runs, while any stack lock is held (including the lock
+  kept after an operation whose process exit was not confirmed: the restart
+  would drop that guard), while an updater container is running, or during
   shutdown. From the moment it starts, the panel refuses new actions, saves and
   backup purges until Docker confirms the updater ended or never started, or
   the panel is replaced. If the start command fails or times out, the panel
