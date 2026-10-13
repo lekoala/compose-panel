@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createComposeProvider } from "../src/compose-provider.ts";
@@ -10,6 +10,27 @@ import { StackError } from "../src/stacks.ts";
 import { loadProjects, loadStackDetail, loadStackStates } from "../src/status.ts";
 
 const ok: CommandResult = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+
+test.skipIf(process.platform === "win32")("detail refuses an unsafe env before any config-consuming Docker read", async () => {
+    const root = await resolveRoot(await mkdtemp(join(tmpdir(), "cp-detail-env-")));
+    const cwd = join(root, "demo");
+    const composeFile = join(cwd, "compose.yaml");
+    const calls: string[][] = [];
+    const provider = createComposeProvider({ runner: async args => {
+        calls.push(args);
+        return { ...ok, stdout: JSON.stringify([{ Name: "actual-project", Status: "running(1)", ConfigFiles: composeFile }]) };
+    } });
+    try {
+        await mkdir(cwd);
+        await writeFile(composeFile, "services: {}\n");
+        await writeFile(join(root, "private.env"), "SECRET=do-not-read\n");
+        await symlink(join(root, "private.env"), join(cwd, ".env"));
+        const detail = await loadStackDetail(root, "demo", provider);
+        expect(detail.state).toBe("running");
+        expect(detail.services).toEqual([]);
+        expect(calls).toEqual([["compose", "ls", "--all", "--format", "json"]]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 function stubProvider(result: Partial<CommandResult> & { stdout?: string }): ComposeProvider {
     return {

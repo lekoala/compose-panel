@@ -981,6 +981,10 @@ export function createApp(options: AppOptions): App {
                 await recordAudit({ event: "save", result: "partial", actor: clientKey(request, config), stack: name });
                 return renderEdit(name, csrf, { error: { title: "Save incomplete.", message: error.message }, draft: saveRequest, keepDraft: true, status: 500 });
             }
+            if (error instanceof FileSafetyError) {
+                await recordAudit({ event: "save", result: "failure", actor: clientKey(request, config), stack: name });
+                return renderEdit(name, csrf, { error: { title: "Not saved.", message: error.message }, draft: saveRequest, keepDraft: true, status: 500 });
+            }
             throw error;
         }
     }

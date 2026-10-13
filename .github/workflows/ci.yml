@@ -7,11 +7,16 @@ name: ci
 
 on:
   push:
+    tags-ignore: ["**"]
   pull_request:
+  workflow_call:
   # Weekly run on the default branch: new fixable CVEs and expired
   # .trivyignore.yaml entries fail the scan even when nothing is pushed.
   schedule:
     - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
 
 jobs:
   test:

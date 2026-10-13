@@ -53,7 +53,8 @@ COPY public ./public
 # The panel always binds 127.0.0.1 (see src/server.ts); reach it via the host
 # loopback (host networking) or an SSH tunnel, never a public port.
 ENV PORT=5081 \
-    STACKS_DIR=/stacks
+    STACKS_DIR=/stacks \
+    NODE_ENV=production
 LABEL org.opencontainers.image.title="Compose Panel" \
     org.opencontainers.image.description="Single-server panel to administer Docker Compose stacks (loopback-only, one trusted administrator)." \
     org.opencontainers.image.url="https://github.com/lekoala/compose-panel" \

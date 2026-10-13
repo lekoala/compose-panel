@@ -1,10 +1,8 @@
-import { constants, type Stats } from "node:fs";
-import { lstat, mkdtemp, open, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, join, posix } from "node:path";
+import { posix } from "node:path";
 import type { CommandResult, DockerRunner } from "./docker.ts";
 import { isContainerId } from "./containers.ts";
 import { isSafeContainerPath } from "./toolbox.ts";
+import { DOCKER_FILE_TAR_OVERHEAD, readDockerFileTar } from "./docker-file-tar.ts";
 
 export class ActionRunnerError extends Error {
     readonly status = 400;
@@ -41,10 +39,8 @@ export interface ActionExecTarget {
 export interface ActionRunner {
     readonly engine: string;
     /**
-     * Copy one file out of a container and read it, bounded. The transfer
-     * itself is NOT size-bounded (Docker `cp` copies the whole object), but the
-     * read is: directories and symlinks are refused, the temporary directory is
-     * private, the copy has a timeout and cleanup always runs.
+     * Read one regular file from a bounded Docker tar stream. Nothing is
+     * extracted or written to disk. Links and directories are refused.
      */
     readFile(id: string, path: string, options: { timeoutMs: number; maxBytes: number }): Promise<ActionFileResult>;
     exec(target: ActionExecTarget): Promise<CommandResult>;
@@ -57,40 +53,16 @@ class DockerActionRunner implements ActionRunner {
 
     async readFile(id: string, path: string, options: { timeoutMs: number; maxBytes: number }): Promise<ActionFileResult> {
         if (!isContainerId(id) || !isSafeContainerPath(path)) return { kind: "error" };
-        let dir: string;
-        try {
-            dir = await mkdtemp(join(tmpdir(), "compose-panel-toolbox-"));
-        } catch {
-            return { kind: "error" };
-        }
         try {
             const copied = await this.runner(
-                ["cp", "--", `${id}:${path}`, dir],
-                { timeoutMs: options.timeoutMs, maxBytes: options.maxBytes },
+                ["cp", "--", `${id}:${path}`, "-"],
+                { timeoutMs: options.timeoutMs, maxBytes: options.maxBytes + DOCKER_FILE_TAR_OVERHEAD, binaryStdout: true, stopOnOutputLimit: true },
             );
-            if (copied.code !== 0 || copied.timedOut) return { kind: "error" };
-
-            const target = join(dir, basename(posix.normalize(path)));
-            let info: Stats;
-            try { info = await lstat(target); }
-            catch { return { kind: "error" }; }
-            // docker cp preserves directory shape and does not follow symlinks by
-            // default, so both are refused rather than read.
-            if (info.isSymbolicLink() || !info.isFile()) return { kind: "not-file" };
-            if (info.size > options.maxBytes) return { kind: "too-large" };
-
-            const handle = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-            try {
-                const content = await handle.readFile({ encoding: "utf8" });
-                if (Buffer.byteLength(content, "utf8") > options.maxBytes) return { kind: "too-large" };
-                return { kind: "ok", content };
-            } finally {
-                await handle.close();
-            }
+            if (copied.truncated) return { kind: "too-large" };
+            if (copied.code !== 0 || copied.timedOut || copied.terminationUnconfirmed || !copied.stdoutBytes) return { kind: "error" };
+            return readDockerFileTar(copied.stdoutBytes, posix.basename(path), options.maxBytes);
         } catch {
             return { kind: "error" };
-        } finally {
-            await rm(dir, { recursive: true, force: true }).catch(() => {});
         }
     }
 

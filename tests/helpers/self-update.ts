@@ -159,10 +159,14 @@ export interface FakeReleases {
     lookup: ReleaseLookup;
 }
 
-export function fakeReleases(lookup: ReleaseLookup = { kind: "found", release: releaseJson() }): FakeReleases {
+export function registryJson() {
+    return { schema: 1, releases: [{ version: "0.3.0", digest: `sha256:${"2".repeat(64)}`, revision: "a".repeat(40), recordedAt: "2026-10-08T12:00:00Z" }] };
+}
+
+export function fakeReleases(lookup: ReleaseLookup | { kind: "found"; release: unknown } = { kind: "found", release: releaseJson(), registry: registryJson() }): FakeReleases {
     const releases: FakeReleases = {
         calls: [],
-        lookup,
+        lookup: lookup.kind === "found" && !("registry" in lookup) ? { ...lookup, registry: registryJson() } : lookup as ReleaseLookup,
         source: async version => {
             releases.calls.push(version);
             return releases.lookup;

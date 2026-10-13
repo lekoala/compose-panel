@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import type { Stats } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, open, rename } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 export function randomSuffix(): string {
@@ -68,26 +68,28 @@ export async function writeFileAtomic(path: string, content: string, attributes:
     const tmp = join(dir, `.cp-tmp-${randomSuffix()}`);
     const handle = await open(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
     try {
-        await handle.writeFile(content, { encoding: "utf8" });
-        const created = await handle.stat();
-        if (created.uid !== uid || created.gid !== gid) {
-            try {
-                await handle.chown(uid, gid);
-            } catch {
-                // Best effort: without root, only the owner's own groups are
-                // allowed; the write itself must not fail over ownership.
+        try {
+            await handle.writeFile(content, { encoding: "utf8" });
+            const created = await handle.stat();
+            if (process.platform === "linux" && (created.uid !== uid || created.gid !== gid)) {
+                try {
+                    await handle.chown(uid, gid);
+                } catch {
+                    throw new FileSafetyError("The file owner and group could not be preserved. The original file was not replaced.");
+                }
             }
+            try { await handle.chmod(mode); }
+            catch { if (process.platform === "linux") throw new FileSafetyError("The file permissions could not be preserved. The original file was not replaced."); }
+            await handle.sync();
+        } finally {
+            await handle.close();
         }
-        await handle.sync();
-    } finally {
-        await handle.close();
+        await rename(tmp, path);
+    } catch (error) {
+        // A failed commit must not leave a draft .env behind.
+        await unlink(tmp).catch(() => {});
+        throw error;
     }
-    try {
-        await chmod(tmp, mode);
-    } catch {
-        // Best effort; some platforms (Windows) ignore POSIX modes.
-    }
-    await rename(tmp, path);
 }
 
 /** Copy a file into a backup directory, returning the backup path. */

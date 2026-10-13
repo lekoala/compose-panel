@@ -496,6 +496,17 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(detail.deployed![0]!.revision).toBe("commit-1");
         expect(detail.deployed![0]!.digests).toEqual([]);
         expect(detail.updates?.app?.to.version).toBe("2");
+        const provider = createComposeProvider({ runner: createDockerRunner() });
+        const verified = join(dir, "verified.env");
+        await writeFile(verified, "APP_VERSION=verified\n");
+        // Invalid implicit interpolation must not affect ps/images when a
+        // different verified source, or an absent default file, is selected.
+        await writeFile(join(dir, ".env"), "BROKEN=${\n");
+        for (const envFile of [verified, undefined]) {
+            const target = { project: "cp-qa-metadata", composeFile, cwd: dir, envFile };
+            expect((await provider.projectServices(target)).code).toBe(0);
+            expect((await provider.projectImages(target)).code).toBe(0);
+        }
     }, 240_000);
 
     test("pull skips locally built services, including image + build (ADR 0022)", async () => {

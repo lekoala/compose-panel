@@ -3,6 +3,10 @@
 # track the apt-installed Docker CLI/Compose versions.
 version: 2
 updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
   - package-ecosystem: docker
     directory: /
     schedule:

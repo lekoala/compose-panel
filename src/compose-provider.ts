@@ -1,4 +1,4 @@
-import { runCommand, type CommandResult, type DockerRunner } from "./docker.ts";
+import { composeEnvironment, runCommand, type CommandResult, type DockerRunner } from "./docker.ts";
 import { projectMetadata, type DeclaredMetadata } from "./deployment.ts";
 
 export class ComposeUnsupportedError extends Error {
@@ -67,7 +67,7 @@ export interface ComposeProvider {
     listProjects(): Promise<CommandResult>;
     /** Resolve only the effective name; never return or publish interpolated config. */
     projectName(input: { composeFile: string; cwd: string; envFile?: string }): Promise<string | null>;
-    projectServices(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult>;
+    projectServices(input: { project: string; composeFile: string; cwd: string; envFile?: string }): Promise<CommandResult>;
     /**
      * Read-only: IDs of the currently running containers of one service, from
      * `compose ps --status running -q`. `null` when Compose fails, times out or
@@ -77,7 +77,7 @@ export interface ComposeProvider {
      */
     runningContainerIds(input: { project: string; composeFile: string; cwd: string; service: string; envFile?: string }): Promise<string[] | null>;
     /** Read-only: which image ID each container of the project runs. */
-    projectImages(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult>;
+    projectImages(input: { project: string; composeFile: string; cwd: string; envFile?: string }): Promise<CommandResult>;
     /**
      * Read-only: local details (ID, digests, creation date, labels) of images
      * given by reference or ID. References that do not look like an image
@@ -187,20 +187,26 @@ class DockerComposeProvider implements ComposeProvider {
         }
     }
 
-    projectServices(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult> {
+    projectServices(input: { project: string; composeFile: string; cwd: string; envFile?: string }): Promise<CommandResult> {
         if (!this.caps.operations.ps) return Promise.reject(new ComposeUnsupportedError("ps"));
-        return this.runner(
-            ["compose", "-p", input.project, "-f", input.composeFile, "ps", "--all", "--format", "json"],
-            { cwd: input.cwd },
-        );
+        return this.readProject(input, ["ps", "--all", "--format", "json"]);
     }
 
-    projectImages(input: { project: string; composeFile: string; cwd: string }): Promise<CommandResult> {
+    projectImages(input: { project: string; composeFile: string; cwd: string; envFile?: string }): Promise<CommandResult> {
         if (!this.caps.operations.ps) return Promise.reject(new ComposeUnsupportedError("images"));
-        return this.runner(
-            ["compose", "-p", input.project, "-f", input.composeFile, "images", "--format", "json"],
-            { cwd: input.cwd },
-        );
+        return this.readProject(input, ["images", "--format", "json"]);
+    }
+
+    private readProject(input: { project: string; composeFile: string; cwd: string; envFile?: string }, command: string[]): Promise<CommandResult> {
+        const args = ["compose", "-p", input.project];
+        if (input.envFile) args.push("--env-file", input.envFile);
+        args.push("--project-directory", input.cwd, "-f", input.composeFile, ...command);
+        return this.runner(args, {
+            cwd: input.cwd,
+            // An absent verified file must not become an implicit .env read.
+            // Explicit operator COMPOSE_ENV_FILES remains supported (ADR 0008).
+            env: input.envFile ? undefined : { ...composeEnvironment(), COMPOSE_DISABLE_ENV_FILE: "true" },
+        });
     }
 
     async runningContainerIds(input: { project: string; composeFile: string; cwd: string; service: string; envFile?: string }): Promise<string[] | null> {

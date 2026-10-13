@@ -11,6 +11,22 @@ function recording(result: CommandResult = ok) {
 }
 
 describe("createComposeProvider", () => {
+    test("ps and images carry the verified env file and explicit project directory", async () => {
+        const calls: { args: string[]; options?: Parameters<DockerRunner>[1] }[] = [];
+        const provider = createComposeProvider({ runner: async (args, options) => { calls.push({ args, options }); return ok; } });
+        const base = { project: "real-project", composeFile: "/opt/demo/compose.yaml", cwd: "/opt/demo" };
+        for (const method of [provider.projectServices.bind(provider), provider.projectImages.bind(provider)]) {
+            await method({ ...base, envFile: "/opt/demo/.env" });
+            await method(base);
+        }
+        for (const index of [0, 2]) {
+            expect(calls[index]!.args.slice(0, 9)).toEqual(["compose", "-p", "real-project", "--env-file", "/opt/demo/.env", "--project-directory", "/opt/demo", "-f", "/opt/demo/compose.yaml"]);
+        }
+        for (const index of [1, 3]) {
+            expect(calls[index]!.options?.env?.COMPOSE_DISABLE_ENV_FILE).toBe("true");
+            expect(calls[index]!.args).not.toContain("--env-file");
+        }
+    });
     test("builds the Docker provider by default", () => {
         const { runner } = recording();
         expect(createComposeProvider({ runner }).engine).toBe("docker");
@@ -61,7 +77,7 @@ describe("DockerComposeProvider", () => {
         expect(calls[0]!.args).toEqual(["compose", "ls", "--all", "--format", "json"]);
 
         await provider.projectServices({ project: "demo", composeFile: "compose.yaml", cwd: "/opt/stacks/demo" });
-        expect(calls[1]!.args).toEqual(["compose", "-p", "demo", "-f", "compose.yaml", "ps", "--all", "--format", "json"]);
+        expect(calls[1]!.args).toEqual(["compose", "-p", "demo", "--project-directory", "/opt/stacks/demo", "-f", "compose.yaml", "ps", "--all", "--format", "json"]);
         expect(calls[1]!.cwd).toBe("/opt/stacks/demo");
 
         await provider.validateConfig({ directory: "/opt/stacks/demo", composeFile: "compose.yaml" });

@@ -47,9 +47,11 @@ need a separate host component and its own ADR. See
 `src/self-update.ts` finds the panel's own container (`/proc/self/mountinfo`,
 then `container inspect`) and validates its Compose labels, image reference and
 socket mount. **Check** pulls that tag, then asks the fixed GitHub repository
-for the release of the image's version (one bounded `fetch`, the panel's only
-outbound request): a published, non-prerelease release at least 72 hours old
-whose recorded index digest is in the image's `RepoDigests`. The answer is kept
+for the release of the image's version and the versioned `releases.json`
+registry (two fixed, byte-bounded reads sharing one timeout): a published,
+non-prerelease release whose digest matches the latest registry entry and the
+image's `RepoDigests`. Installation waits 72 hours from the later of release
+publication and digest registration ([ADR 0028](adr/0028-versioned-release-registry.md)). The answer is kept
 in memory for that image ID. **Install** re-checks the release, then starts a
 one-shot `compose-panel-updater` container from the image the panel runs now,
 with fixed arguments. Inside it, `src/scripts/self-update.ts` (logic in
@@ -105,7 +107,7 @@ rejected ([ADR 0004](adr/0004-single-file-editing.md)).
 
 Discovery resolves **one** running container per service (`compose ps --status
 running -q`) and reads the manifest from that container through `docker cp`
-(bounded read; the transfer itself is not size-bounded), never by running the
+(bounded binary tar stream, never extracted or written to disk; [ADR 0029](adr/0029-bounded-manifest-transfers.md)), never by running the
 runner. A service with several running containers is unavailable. A forged or
 undeclared action is refused, and the argument array is never built from the
 identifier the browser sends. Execution pins the same container id, holds the

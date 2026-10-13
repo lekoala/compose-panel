@@ -165,6 +165,8 @@ test.skipIf(process.platform !== "linux")("an unsafe .env prevents config metada
         expect(status.state).toBe("running");
         expect(status.declared).toBeNull();
         expect(calls.some(args => args.includes("config"))).toBe(false);
+        expect(calls.some(args => args.includes("ps") || args.includes("images"))).toBe(false);
+        expect(status.services).toEqual([]);
     } finally { await rm(root, { recursive: true, force: true }); }
 });
 

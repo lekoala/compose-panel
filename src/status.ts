@@ -181,13 +181,18 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
     if (match.ambiguous) {
         return { project: null, state: "unknown", note: SEVERAL_PROJECTS, services: [] };
     }
-    // Config interpolation must never read an unsafe .env. Failure only makes
-    // metadata unavailable; Docker remains authoritative for service state.
+    const cwd = dirname(location.path);
+    let envFile: string | undefined;
+    try {
+        envFile = (await readFileSafe(join(cwd, ENV_FILENAME), MAX_ENV_BYTES))?.path;
+    } catch {
+        // None of the config-consuming reads may fall back to an unsafe .env.
+        return { project: match.project?.name ?? null, state: match.project ? summarizeProjectStatus(match.project.status) : "not-created", note: "The stack environment file cannot be read safely.", services: [], declared: null };
+    }
+    // Config errors do not change the state reported by Docker services.
     const declaredTask = (async (): Promise<DeclaredMetadata | null> => {
         try {
-            const cwd = dirname(location.path);
-            const env = await readFileSafe(join(cwd, ENV_FILENAME), MAX_ENV_BYTES);
-            return await provider.stackMetadata({ project: match.project?.name, composeFile: location.path, cwd, envFile: env?.path });
+            return await provider.stackMetadata({ project: match.project?.name, composeFile: location.path, cwd, envFile });
         } catch {
             // Never expose config errors or secrets.
             return null;
@@ -200,8 +205,9 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
         try {
             const result = await provider.projectServices({
                 project: project.name,
-                composeFile: location.filename,
-                cwd: dirname(location.path),
+                composeFile: location.path,
+                cwd,
+                envFile,
             });
             if (result.timedOut) return { project: project.name, state: "unknown", note: DOCKER_SLOW, services: [] };
             // Same fail-closed rule as the project list: a truncated `ps` may omit
@@ -210,7 +216,7 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
             if (result.code !== 0) return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
             const services = parseComposePs(result.stdout);
             const deployed: DeployedImage[] = [];
-            const updates = await loadImageUpdates(provider, { project: project.name, composeFile: location.filename, cwd: dirname(location.path) }, services, deployed);
+            const updates = await loadImageUpdates(provider, { project: project.name, composeFile: location.path, cwd, envFile }, services, deployed);
             return { project: project.name, state: summarizeServices(services), note: null, services, updates, deployed };
         } catch {
             return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };

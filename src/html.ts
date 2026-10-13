@@ -1316,22 +1316,22 @@ export function aboutPage(options: AboutPageOptions): string {
                     install = note("warn", verdict.reason, { title: "Not installable." });
                 } else if (verdict.kind === "waiting") {
                     const at = new Date(verdict.installableAt).toISOString();
-                    install = `<div class="note note-info"><strong>Waiting period.</strong> Release ${escapeHtml(verdict.version)} was published ${timeTag(verdict.publishedAt)}. New releases can be installed from the panel 72 hours after publication, from ${timeTag(at)}. To update sooner, use the host commands in docs/deployment.md.</div>`;
+                    install = `<div class="note note-info"><strong>Waiting period.</strong> Release ${escapeHtml(verdict.version)} was published ${timeTag(verdict.publishedAt)}. Installation waits 72 hours after both publication and the latest digest registration, until ${timeTag(at)}. To update sooner, use the host commands in docs/deployment.md.</div>`;
                 } else {
                     const warning = note("warn", "Compose Panel restarts during the update: the page is unavailable for a moment and you sign in again afterwards. Your stacks keep running. Wait for running actions and saves to finish first. Click the button above again to cancel.");
-                    install = `<p class="muted">Release ${escapeHtml(verdict.version)}, published ${timeTag(verdict.publishedAt)}. The downloaded image matches its published digest.</p>
+                    install = `<p class="muted">Release ${escapeHtml(verdict.version)}, published ${timeTag(verdict.publishedAt)}. The downloaded image matches the release digest and the versioned registry.</p>
 <details class="confirm"><summary><span class="btn btn-primary">Install update…</span></summary>
 <div class="confirm-panel">${warning}<form method="post" action="/about/update"><input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}"><input type="hidden" name="target" value="${escapeHtml(available.imageId)}"><button type="submit" class="btn btn-primary" data-busy-label="Starting…">Yes, install now</button></form></div>
 </details>`;
                 }
                 ready = `${sides}${install}`;
             } else {
-                ready = `<p class="muted">No newer image of <code>${escapeHtml(identity.imageRef)}</code> has been downloaded. A version tag such as <code>0.2.0</code> never changes: use the <code>latest</code> tag on the host to follow new releases.</p>`;
+                ready = `<p class="muted">No newer image of <code>${escapeHtml(identity.imageRef)}</code> has been downloaded. Use the <code>latest</code> tag on the host to follow new release versions.</p>`;
             }
             body = `${ready}
-<form method="post" action="/about/check" class="op-row"><input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}"><button type="submit" class="btn" data-busy-label="Checking…">Check &amp; download update</button><p class="op-help">Downloads <code>${escapeHtml(identity.imageRef)}</code> if a newer image was published, then checks its release on GitHub. Nothing restarts.</p></form>`;
+<form method="post" action="/about/check" class="op-row"><input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}"><button type="submit" class="btn" data-busy-label="Checking…">Check &amp; download update</button><p class="op-help">Downloads <code>${escapeHtml(identity.imageRef)}</code> if a newer image was published, then checks its release and digest history on GitHub. Nothing restarts.</p></form>`;
         }
-        updatesCard = `<section class="card"><h2>Updates</h2>${body}</section>`;
+        updatesCard = `<section class="card"><h2>Updates</h2>${body}<p class="muted"><a href="https://github.com/lekoala/compose-panel/blob/master/releases.json" target="_blank" rel="noopener noreferrer">Release registry</a> · <a href="https://github.com/lekoala/compose-panel/commits/master/releases.json" target="_blank" rel="noopener noreferrer">Digest history</a></p></section>`;
     }
 
     let lastCard = "";

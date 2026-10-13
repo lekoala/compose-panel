@@ -316,11 +316,14 @@ With the official image (`ghcr.io/lekoala/compose-panel`), **About**
 1. **Check & download update** pulls the image tag the panel runs from.
    Nothing restarts. Use `image: ghcr.io/lekoala/compose-panel:latest` in
    `deploy/compose.yaml` to follow releases: a version tag such as `0.3.0`
-   never moves, so a check finds nothing newer.
+   stays on that release version rather than following new releases.
 2. For a newer image, the panel asks GitHub for the release of that exact
-   version (one request, no token). The image is installable only when the
-   release is published (not a draft, not a prerelease), at least **72 hours**
-   old, and records the image digest the download carries. Otherwise **About**
+   version and the repository's versioned release registry (two bounded
+   requests, no token). The image is installable only when the release is
+   published (not a draft, not a prerelease), its digest matches the latest
+   registry record and the downloaded image, and **72 hours** have passed since
+   both publication and digest registration. A replacement digest is recorded
+   in Git and waits again; an identical retry preserves the date. Otherwise **About**
    says why, or when the release becomes installable. There is no bypass in
    the panel: to update sooner, use the host commands below.
 3. **Install update…** asks for a confirmation and checks everything again.
@@ -451,6 +454,34 @@ loopback listener can present a proxy-origin Host and forge the header, so this
 is a best-effort attribution, not an authenticated proxy identity.
 
 ## Manual verification (release gate)
+
+Audit hardening additions (run only with disposable fixtures):
+
+- Inspect the image for `NODE_ENV=production`. Exercise a thrown handler through
+  `tests/http-server.test.ts`: status 500, no-store and no exception details.
+- Run `bun run test:docker-lab:wsl` (or the Linux lab script): real toolbox
+  reads must accept the regular manifest and refuse directories, symlinks and
+  oversized manifests; the panel writes no manifest to temporary storage.
+  The metadata fixture also verifies real `ps`/`images` against an explicitly
+  selected env file and with default `.env` discovery disabled.
+- As an unprivileged Linux user, try a save whose original owner/group cannot
+  be reproduced. Confirm the original stays intact, no `.cp-tmp-*` remains,
+  and the editor reports failure. Run `tests/fs-safe.test.ts` on Linux for the
+  isolated regression; pair-save rollback remains covered by editor tests.
+- On a test repository/registry, publish and rerun the same digest: there is
+  one registry record and its date stays unchanged. Retry with a replacement:
+  a second record preserves the first and About waits another 72 hours. Edit
+  only the release digest: the new panel must refuse the registry mismatch.
+  Verify an HTTP response without Content-Length is canceled at the byte cap.
+  Local tests use fake GitHub; no production release is edited during tests.
+
+The new registry starts empty. The next successful publication records its
+image. Older versions without a record can still be installed from the host;
+the new self-updater refuses them. Commit `releases.json` to `master` before
+running the new publication workflow. If default-branch protection refuses the
+publication job's registry commit, resolve that policy through the repository's
+normal review process; the workflow fails rather than publishing an unrecorded
+release. No history is seeded with an unverified or backdated digest.
 
 Automated CI builds the image, scans it and runs unit tests, but the
 following need a real Linux host with Docker and are done by hand before any

@@ -5,6 +5,20 @@ import { join } from "node:path";
 import { runCommand } from "../src/docker.ts";
 import { createComposeProvider } from "../src/compose-provider.ts";
 
+test.skipIf(process.platform !== "linux")("a binary transfer exceeding its cap kills and reaps a resistant child", async () => {
+    const started = Date.now();
+    const result = await runCommand(process.execPath, ["-e", "process.on('SIGTERM', () => {}); process.stdout.write(Buffer.alloc(100000)); setInterval(() => {}, 1000)"], {
+        timeoutMs: 5000, maxBytes: 1024, binaryStdout: true, stopOnOutputLimit: true,
+    });
+    expect(result.truncated).toBe(true);
+    expect(result.stdoutBytes?.length).toBe(1024);
+    expect(result.stdout).toBe("");
+    expect(result.code).not.toBe(0);
+    expect(result.timedOut).toBe(false);
+    expect(result.terminationUnconfirmed).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2500);
+});
+
 // Isolated child-process integration: no Docker executable or daemon is used.
 test.skipIf(process.platform !== "linux")("timeout escalates against a child ignoring SIGTERM", async () => {
     let pid = 0;

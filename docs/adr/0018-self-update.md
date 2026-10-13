@@ -2,6 +2,11 @@
 
 Status: accepted.
 
+Amended by [ADR 0028](0028-versioned-release-registry.md): digest history is
+versioned in the repository and the 72-hour wait starts from the later of
+release publication and the latest registration of its digest. Failed
+publication remains retryable, including a replacement image.
+
 ## Context
 Updating the panel meant an SSH session on the host: pull or rebuild the image,
 then `docker compose up -d` from the deployment directory. Administrators asked
@@ -43,20 +48,23 @@ brings it into scope, in a deliberately narrow form.
   release is the last step, so `published_at` is the moment everything else
   succeeded. If the release already exists (created by hand from the GitHub
   interface, or a re-run), the workflow keeps its notes and sets the digest
-  line to the image it just pushed; the waiting period then counts from that
-  earlier publication. A release stays not installable while it has no
-  digest line.
+  line to the image it just pushed. ADR 0028 also registers that digest in Git;
+  the wait counts from the later of publication and registration, so a
+  replacement cannot reuse the earlier publication date. A release stays not
+  installable while it has no digest line or matching registry record.
 - **Check & download update = pull the panel's own tag, then verify the
   release.** It runs `docker image pull -- <reference>` with the reference the
   panel runs from and touches no container. When the tag now points to another
   image ID than the one the container runs (the ADR 0011 rule), the panel reads
   that image's `org.opencontainers.image.version` label (bare semver) and makes
-  one unauthenticated request to
+  an unauthenticated request to
   `api.github.com/repos/lekoala/compose-panel/releases/tags/<version>`
-  (bounded time and size, no token). The image is installable only if:
+  and another to the fixed `releases.json` Contents API on `master`
+  (byte-bounded streams, one shared timeout, no token). The image is installable only if:
   - the release exists, is not a draft and not a prerelease, and its tag is
     exactly that version;
-  - `published_at` is at least **72 hours** old (a constant, not a setting);
+  - both `published_at` and the latest matching digest registration are at
+    least **72 hours** old (a constant, not a setting);
   - the digest line is present and the pulled image's `RepoDigests` contains
     `ghcr.io/lekoala/compose-panel@<that digest>`. `RepoDigests` records the
     digest of what was pulled by tag, the multi-platform index, so the same
@@ -67,8 +75,8 @@ brings it into scope, in a deliberately narrow form.
   makes the image not installable, with the reason shown. A young release
   shows when it becomes installable. The verdict is kept in memory for the
   image ID it concerns and is never fetched on page render; after a restart,
-  the administrator checks again. A pinned version tag never moves, so the
-  page says there is nothing newer.
+  the administrator checks again. A version tag stays on that release rather
+  than following new versions, but a retried publication can replace its digest.
 - **Install update = a one-shot updater container, independent of the panel.**
   On confirmation the panel re-reads the release and re-checks every condition
   above server-side (no bypass in the interface; the host CLI stays available

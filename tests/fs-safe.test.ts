@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chown, mkdtemp, mkdir, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, chown, mkdtemp, mkdir, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FileSafetyError, backupFile, dirIdentity, ensureBackupDir, readFileSafe, sameDirIdentity, writeFileAtomic } from "../src/fs-safe.ts";
@@ -98,6 +98,35 @@ describe("dirIdentity", () => {
 });
 
 describe("writeFileAtomic", () => {
+    test.skipIf(process.platform !== "linux")("an unprivileged ownership failure leaves the original and removes the draft", async () => {
+        await chmod(root, 0o777);
+        const path = join(root, ".env");
+        await writeFile(path, "ORIGINAL=private\n", { mode: 0o600 });
+        const source = new URL("../src/fs-safe.ts", import.meta.url).href;
+        const script = `
+            import { writeFileAtomic, FileSafetyError } from ${JSON.stringify(source)};
+            if (process.getuid() === 0) { process.setgid(65534); process.setuid(65534); }
+            try {
+                await writeFileAtomic(${JSON.stringify(path)}, "REPLACEMENT=private\\n", { mode: 0o600, uid: 0, gid: 0 });
+                process.exit(1);
+            } catch (error) {
+                process.exit(error instanceof FileSafetyError ? 0 : 2);
+            }
+        `;
+        const child = Bun.spawn([process.execPath, "-e", script], { stdout: "ignore", stderr: "pipe" });
+        const stderr = await new Response(child.stderr).text();
+        expect({ code: await child.exited, stderr }).toEqual({ code: 0, stderr: "" });
+        expect(await readFile(path, "utf8")).toBe("ORIGINAL=private\n");
+        expect(await readdir(root)).toEqual([".env"]);
+    });
+
+    test("a failed rename removes its private temporary file", async () => {
+        const path = join(root, "directory");
+        await mkdir(path);
+        const attributes = await stat(root);
+        await expect(writeFileAtomic(path, "private", { mode: 0o600, uid: attributes.uid, gid: attributes.gid })).rejects.toBeTruthy();
+        expect(await readdir(root)).toEqual(["directory"]);
+    });
     test.skipIf(process.platform === "win32")("keeps the mode of the replaced file", async () => {
         const path = join(root, ".env");
         await writeFile(path, "A=1\n", { mode: 0o640 });

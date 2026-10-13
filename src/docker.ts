@@ -6,6 +6,8 @@ export interface CommandResult {
     truncated: boolean;
     /** The kill deadline elapsed without observing the child exit. */
     terminationUnconfirmed?: boolean;
+    /** Raw stdout only for bounded Docker archive reads. */
+    stdoutBytes?: Uint8Array;
 }
 
 export interface RunOptions {
@@ -17,6 +19,10 @@ export interface RunOptions {
     signal?: AbortSignal;
     /** Exact subprocess environment. Defaults to `composeEnvironment()`. */
     env?: Record<string, string>;
+    /** Capture stdout without decoding binary archive bytes. */
+    binaryStdout?: boolean;
+    /** Stop read-only transfers as soon as their capture limit is exceeded. */
+    stopOnOutputLimit?: boolean;
 }
 
 export type DockerRunner = (args: string[], options?: RunOptions) => Promise<CommandResult>;
@@ -37,6 +43,7 @@ async function readCapped(
     onChunk?: (chunk: string) => void,
     capture: Capture = { chunks: [], total: 0, truncated: false },
     cleanup?: AbortSignal,
+    onLimit?: () => void,
 ): Promise<void> {
     if (!stream) return;
     const reader = stream.getReader();
@@ -54,14 +61,14 @@ async function readCapped(
             const { done, value } = await reader.read();
             if (done) break;
             if (!value || value.byteLength === 0) continue;
-            const text = decoder.decode(value, { stream: true });
             // Live delivery first: observers see progress while running.
-            notify(text);
+            if (onChunk) notify(decoder.decode(value, { stream: true }));
             if (capture.total >= maxBytes) {
                 // Past the cap: keep draining so a chatty process can exit,
                 // discard the rest. Stopping here could wedge the child on a
                 // full pipe and hang the command.
                 capture.truncated = true;
+                onLimit?.();
                 continue;
             }
             const room = maxBytes - capture.total;
@@ -72,6 +79,7 @@ async function readCapped(
                 capture.chunks.push(value.subarray(0, room));
                 capture.total = maxBytes;
                 capture.truncated = true;
+                onLimit?.();
             }
         }
         notify(decoder.decode());
@@ -132,6 +140,7 @@ export async function runCommand(file: string, args: string[], options: RunOptio
     const err: Capture = { chunks: [], total: 0, truncated: false };
     const cleanup = new AbortController();
     let timedOut = false;
+    let terminating = false;
     let deadlineExpired = false;
     let exitCode: number | null = null;
     let escalate: ReturnType<typeof setTimeout> | undefined;
@@ -144,18 +153,21 @@ export async function runCommand(file: string, args: string[], options: RunOptio
             else proc.kill(signal);
         } catch { /* already exited or unavailable */ }
     };
-    const terminate = () => {
-        if (timedOut) return;
-        timedOut = true;
+    const terminate = (timeout = true) => {
+        if (terminating) return;
+        terminating = true;
+        timedOut = timeout;
         kill("SIGTERM");
         escalate = setTimeout(() => kill("SIGKILL"), KILL_GRACE_MS);
         deadline = setTimeout(expire, KILL_DEADLINE_MS);
     };
-    const timer = timeoutMs > 0 ? setTimeout(terminate, timeoutMs) : undefined;
-    options.signal?.addEventListener("abort", terminate, { once: true });
+    const timer = timeoutMs > 0 ? setTimeout(() => terminate(), timeoutMs) : undefined;
+    const abort = () => terminate();
+    options.signal?.addEventListener("abort", abort, { once: true });
+    const onLimit = options.stopOnOutputLimit ? () => terminate(false) : undefined;
     const completed = Promise.all([
-        readCapped(proc.stdout, maxBytes, options.onChunk, out, cleanup.signal),
-        readCapped(proc.stderr, maxBytes, options.onChunk, err, cleanup.signal),
+        readCapped(proc.stdout, maxBytes, options.binaryStdout ? undefined : options.onChunk, out, cleanup.signal, onLimit),
+        readCapped(proc.stderr, maxBytes, options.onChunk, err, cleanup.signal, onLimit),
         proc.exited.then(code => { exitCode = code; }),
     ]).then(() => {}, async () => {
         // A broken pipe must not abandon a still-running privileged child.
@@ -167,7 +179,8 @@ export async function runCommand(file: string, args: string[], options: RunOptio
         await Promise.race([completed, expired]);
         const decode = (capture: Capture) => new TextDecoder().decode(Buffer.concat(capture.chunks), { stream: capture.truncated });
         return {
-            code: exitCode ?? -1, stdout: decode(out), stderr: decode(err), timedOut,
+            code: exitCode ?? -1, stdout: options.binaryStdout ? "" : decode(out), stderr: decode(err), timedOut,
+            ...(options.binaryStdout ? { stdoutBytes: Buffer.concat(out.chunks) } : {}),
             truncated: out.truncated || err.truncated,
             terminationUnconfirmed: exitCode === null || deadlineExpired,
         };
@@ -175,7 +188,7 @@ export async function runCommand(file: string, args: string[], options: RunOptio
         clearTimeout(timer);
         clearTimeout(escalate);
         clearTimeout(deadline);
-        options.signal?.removeEventListener("abort", terminate);
+        options.signal?.removeEventListener("abort", abort);
         cleanup.abort();
     }
 }

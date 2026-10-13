@@ -130,11 +130,12 @@ On opening the Actions view or on refresh:
    running containers (replicas) make the action explicitly unavailable in V1:
    no arbitrary pick, no `--index`, no fan-out.
 3. Read the manifest from that container's filesystem
-   (`docker cp -- <id>:<path> <private temp dir>`) rather than from a host
-   copy, which may not match what is deployed. The **read** is size-capped; the
-   **transfer is not**: Docker `cp` copies the whole object, so a directory or a
-   symlink is refused, the temp directory is private, the copy has a timeout and
-   cleanup always runs. The panel does not run Composer, npm or Bun to discover
+   (`docker cp -- <id>:<path> -`) rather than from a host
+   copy, which may not match what is deployed. [ADR 0029](0029-bounded-manifest-transfers.md)
+   replaces the temporary copy with a binary tar stream capped at the manifest
+   limit plus 16 KiB of metadata, killed on overflow and parsed without extraction.
+   Exactly one regular manifest is accepted; links, directories, extra files
+   and unsafe PAX overrides are refused. The panel does not run Composer, npm or Bun to discover
    actions.
 4. Parse the JSON, validate the `compose-panel` section and intersect the
    declared actions with `scripts`.

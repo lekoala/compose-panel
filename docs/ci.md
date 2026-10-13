@@ -27,7 +27,7 @@ re-run the smoke checklist when you do; prefer action releases that run on a
 supported Node.js (`runs.using` in their `action.yml`).
 
 Update tracking: Dependabot (`.github/dependabot.yml`) proposes base image
-digest refreshes for the pinned Bun tag; the `FROM` reference is written
+digest refreshes for the pinned Bun tag and pinned GitHub Actions updates; the `FROM` reference is written
 literally because Dependabot does not resolve `ARG` values in `FROM`. Bun
 version bumps stay manual (Dockerfile `FROM` and `base.name` label, workflow
 `bun-version`). Docker CLI and Compose come from apt and the Compose release
@@ -112,11 +112,25 @@ cover.
 
 Releases are published by `.github/workflows/release.yml`, triggered only by
 a maintainer tag (bare semver matching `package.json`, e.g. `0.1.0`, no `v`
-prefix), after the smoke test and review: build the Linux image for
+prefix). It calls the reusable CI workflow on that tagged commit and refuses
+to publish if its checks fail. All CI jobs have `contents: read`; the build job
+adds `packages: write`, and only a separate publication job has `contents: write`.
+After the smoke test and review: build the Linux image for
 `linux/amd64` and `linux/arm64` (arm64 under QEMU) with Bun + Docker CLI +
 Compose plugin (pinned, verified with `bun --version`, `docker --version`,
 `docker compose version`), scan each platform, then push a multi-platform
-immutable version tag plus `latest` to GHCR.
+version tag plus `latest` to GHCR. Failed publication can be retried, including
+a corrected digest. The publication job appends version/digest/revision/date
+to `releases.json` on `master` through the Contents API using the current file
+SHA, then creates or edits the release digest line. Runs are serialized.
+An unchanged digest preserves its registration date; a changed digest remains
+in history and restarts the panel's 72-hour wait (ADR 0028). No production
+deployment is triggered. Branch protections must allow the reviewed registry
+write mechanism; a refused commit stops publication safely.
+
+The lab script accepts optional Bun test paths/options to isolate a regression,
+for example `bun run test:docker-lab:wsl tests/toolbox-linux.test.ts`. It keeps
+the same disposable daemon and cleanup guards.
 
 ## Deployment
 Keep the build and deployment steps separate. Publishing an image must **never** automatically update production stacks.

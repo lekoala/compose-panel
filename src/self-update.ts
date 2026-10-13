@@ -3,6 +3,7 @@ import type { CommandResult, DockerRunner } from "./docker.ts";
 import { isImageReference, type ComposeProvider } from "./compose-provider.ts";
 import { parseImageInspect } from "./compose-state.ts";
 import { findByTag, linkFor, versionOf, type ImageLink, type ImageVersion } from "./updates.ts";
+import { latestReleaseRecord, parseReleaseRegistry } from "./release-registry.ts";
 
 /**
  * Panel self-update (ADR 0018). The panel identifies its own container from
@@ -26,7 +27,7 @@ export const DOCKER_SOCKET = "/var/run/docker.sock";
 export const OFFICIAL_IMAGE = "ghcr.io/lekoala/compose-panel";
 /** Fixed release source for `OFFICIAL_IMAGE`; the version is appended. */
 export const RELEASE_API = "https://api.github.com/repos/lekoala/compose-panel/releases/tags/";
-/** A release becomes installable from the panel this long after publication. */
+/** Minimum age of both the release publication and latest digest registration. */
 export const MIN_RELEASE_AGE_MS = 72 * 60 * 60 * 1000;
 /** Line the release workflow writes in the release body. */
 export const DIGEST_MARKER = "compose-panel-image-digest:";
@@ -397,7 +398,7 @@ export function parseUpdaterInspect(stdout: string, now: number = Date.now()): U
 
 /** What the release source answered for one version. */
 export type ReleaseLookup =
-    | { kind: "found"; release: unknown }
+    | { kind: "found"; release: unknown; registry: unknown }
     | { kind: "missing" }
     | { kind: "unavailable" };
 
@@ -411,8 +412,8 @@ export type ReleaseVerdict =
 /**
  * Whether a downloaded image may be installed from the panel (ADR 0018): a
  * published, non-prerelease release of exactly that version, whose recorded
- * index digest is among the image's `RepoDigests`, published at least
- * `MIN_RELEASE_AGE_MS` ago. Anything unexpected refuses.
+ * index digest matches the registry and the image's `RepoDigests`, with both
+ * publication and registration at least `MIN_RELEASE_AGE_MS` ago.
  */
 export function evaluateRelease(input: { version: string | null; repoDigests: string[]; lookup: ReleaseLookup; now: number }): ReleaseVerdict {
     const { version, lookup } = input;
@@ -433,32 +434,80 @@ export function evaluateRelease(input: { version: string | null; repoDigests: st
     const marker = new RegExp(`^${DIGEST_MARKER}\\s*(sha256:[0-9a-f]{64})\\s*$`, "m").exec(body);
     if (!marker) return { kind: "refused", reason: `Release ${version} does not record an image digest.` };
     const expectedDigest = `${OFFICIAL_IMAGE}@${marker[1]}`;
+    const registry = parseReleaseRegistry(lookup.registry);
+    const registered = registry ? latestReleaseRecord(registry, version) : undefined;
+    if (!registered) return { kind: "refused", reason: `Release ${version} has no valid registry record. Update it from the host or check again after publication completes.` };
+    if (registered.digest !== marker[1]) {
+        return { kind: "refused", reason: `Release ${version} does not match the versioned release registry. Do not install it; review the registry history.` };
+    }
     if (!input.repoDigests.includes(expectedDigest)) {
         return { kind: "refused", reason: `The downloaded image does not match the digest published with release ${version}. Do not install it; check the image on the host.` };
     }
-    const installableAt = published + MIN_RELEASE_AGE_MS;
+    const installableAt = Math.max(published, Date.parse(registered.recordedAt)) + MIN_RELEASE_AGE_MS;
     if (input.now < installableAt) return { kind: "waiting", version, publishedAt, installableAt };
     return { kind: "installable", version, expectedDigest, publishedAt };
 }
 
 const RELEASE_MAX_BYTES = 512 * 1024;
+export const RELEASE_REGISTRY_API = "https://api.github.com/repos/lekoala/compose-panel/contents/releases.json?ref=master";
 
-/** One unauthenticated GitHub request per call, bounded in time and size. */
+/** Count bytes before decoding, including responses without Content-Length. */
+async function readReleaseJson(response: Response, signal: AbortSignal): Promise<unknown> {
+    if (Number(response.headers.get("content-length") ?? "0") > RELEASE_MAX_BYTES || !response.body) {
+        await response.body?.cancel();
+        throw new Error("Invalid release response.");
+    }
+    const reader = response.body.getReader();
+    const abort = () => { void reader.cancel().catch(() => {}); };
+    signal.addEventListener("abort", abort, { once: true });
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    try {
+        for (;;) {
+            signal.throwIfAborted();
+            const { done, value } = await reader.read();
+            signal.throwIfAborted();
+            if (done) break;
+            bytes += value.byteLength;
+            if (bytes > RELEASE_MAX_BYTES) throw new Error("Release response exceeds its limit.");
+            chunks.push(value);
+        }
+        return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+    } finally {
+        signal.removeEventListener("abort", abort);
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+    }
+}
+
+/** Two fixed GitHub reads, each size-bounded and sharing one deadline. */
 export function githubReleaseSource(fetchImpl: typeof fetch = fetch, timeoutMs = 10_000): ReleaseSource {
     return async version => {
         if (!RELEASE_VERSION.test(version)) return { kind: "missing" };
         try {
+            const signal = AbortSignal.timeout(timeoutMs);
             const response = await fetchImpl(`${RELEASE_API}${version}`, {
                 headers: { Accept: "application/vnd.github+json", "User-Agent": "compose-panel", "X-GitHub-Api-Version": "2022-11-28" },
                 redirect: "error",
-                signal: AbortSignal.timeout(timeoutMs),
+                signal,
             });
-            if (response.status === 404) return { kind: "missing" };
-            if (!response.ok) return { kind: "unavailable" };
-            if (Number(response.headers.get("content-length") ?? "0") > RELEASE_MAX_BYTES) return { kind: "unavailable" };
-            const text = await response.text();
-            if (text.length > RELEASE_MAX_BYTES) return { kind: "unavailable" };
-            return { kind: "found", release: JSON.parse(text) };
+            if (!response.ok) {
+                await response.body?.cancel();
+                return { kind: response.status === 404 ? "missing" : "unavailable" };
+            }
+            const release = await readReleaseJson(response, signal);
+            const history = await fetchImpl(RELEASE_REGISTRY_API, {
+                headers: { Accept: "application/vnd.github.raw+json", "User-Agent": "compose-panel", "X-GitHub-Api-Version": "2022-11-28" },
+                redirect: "error",
+                signal,
+            });
+            if (!history.ok) {
+                await history.body?.cancel();
+                return { kind: "unavailable" };
+            }
+            const registry = await readReleaseJson(history, signal);
+            if (!parseReleaseRegistry(registry)) return { kind: "unavailable" };
+            return { kind: "found", release, registry };
         } catch {
             return { kind: "unavailable" };
         }
@@ -602,7 +651,7 @@ export class SelfUpdater {
         return { support, current, available, verdict, lastRun };
     }
 
-    /** Ask the release source about `available` (one request), remember and evaluate the answer. */
+    /** Read the release and registry, remember and evaluate the answer. */
     async verifyRelease(available: AvailableUpdate): Promise<ReleaseVerdict> {
         const version = available.releaseVersion;
         const lookup: ReleaseLookup = version !== null && RELEASE_VERSION.test(version)

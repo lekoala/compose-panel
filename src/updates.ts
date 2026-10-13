@@ -37,7 +37,7 @@ export interface ServiceUpdate {
  */
 export async function loadImageUpdates(
     provider: ComposeProvider,
-    input: { project: string; composeFile: string; cwd: string },
+    input: { project: string; composeFile: string; cwd: string; envFile?: string },
     services: ComposeService[],
     deployed?: DeployedImage[],
 ): Promise<Record<string, ServiceUpdate>> {

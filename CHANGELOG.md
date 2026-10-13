@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Audit hardening: production HTTP errors are generic; GitHub release/registry
+  responses are byte-bounded while streaming; release publication waits for CI
+  and has a separate contents-write job. `releases.json` preserves digest
+  replacements in Git and restarts their 72-hour wait (ADR 0028), while
+  identical publication retries remain idempotent. Dependabot tracks Actions.
+- Stack detail `ps`/`images` use verified explicit Compose/env context. Linux
+  saves refuse ownership/permission loss and clean failed temporary writes.
+  Toolbox manifests use a bounded tar stream without disk extraction (ADR 0029).
+
 - External database explorer link (ADR 0027): a stack declares, in an
   `x-compose-panel.database` Compose extension, a label and scalar query
   parameters, and the panel shows an **Explore the database** card linking to a

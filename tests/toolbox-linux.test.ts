@@ -115,4 +115,13 @@ describe.skipIf(!enabled)("Application toolbox on a disposable lab daemon", () =
         const result = await actionRunner.readFile(containerId, "/app", { timeoutMs: 30_000, maxBytes: 256 * 1024 });
         expect(result.kind).toBe("not-file");
     }, 60_000);
+
+    test("refuses symlinks and oversized manifests without copying to disk", async () => {
+        await ready();
+        // Fixed fixture setup on the guarded disposable daemon only.
+        await dockerOk(["exec", containerId, "ln", "-s", "/app/package.json", "/app/link.json"]);
+        await dockerOk(["exec", containerId, "truncate", "-s", "2097152", "/app/huge.json"]);
+        expect((await actionRunner.readFile(containerId, "/app/link.json", { timeoutMs: 30_000, maxBytes: 1024 })).kind).toBe("not-file");
+        expect((await actionRunner.readFile(containerId, "/app/huge.json", { timeoutMs: 30_000, maxBytes: 1024 })).kind).toBe("too-large");
+    }, 60_000);
 });

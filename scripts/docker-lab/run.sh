@@ -3,6 +3,7 @@
 # Docker-in-Docker daemon:
 #   bun run test:docker-lab:wsl        # from Windows, through WSL
 #   bash scripts/docker-lab/run.sh     # on a Linux dev machine or disposable VM
+# Extra arguments select Bun test files/options inside the same guarded lab.
 #
 # Starts a PRIVILEGED docker:dind container on the current daemon. That gives
 # the lab its own Docker resources, not the isolation of a VM: run it only on a
@@ -77,5 +78,9 @@ cd "$LAB/app"
 # Run the two lab suites in separate, sequential processes: the toolbox test
 # pulls an image, and overlapping it with the lifecycle suite can slow the
 # latter's short-timeout Docker reads (a flaky "deployed" metadata read).
-COMPOSE_PANEL_TEST_DOCKER_LAB=1 COMPOSE_PANEL_LAB_SHARED="$SHARED" "$BUN" test tests/docker-lifecycle-linux.test.ts
-COMPOSE_PANEL_TEST_DOCKER_LAB=1 COMPOSE_PANEL_LAB_SHARED="$SHARED" "$BUN" test tests/toolbox-linux.test.ts
+if [ "$#" -gt 0 ]; then
+    COMPOSE_PANEL_TEST_DOCKER_LAB=1 COMPOSE_PANEL_LAB_SHARED="$SHARED" "$BUN" test "$@"
+else
+    COMPOSE_PANEL_TEST_DOCKER_LAB=1 COMPOSE_PANEL_LAB_SHARED="$SHARED" "$BUN" test tests/docker-lifecycle-linux.test.ts
+    COMPOSE_PANEL_TEST_DOCKER_LAB=1 COMPOSE_PANEL_LAB_SHARED="$SHARED" "$BUN" test tests/toolbox-linux.test.ts
+fi

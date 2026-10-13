@@ -441,7 +441,8 @@ describe("runSelfUpdate", () => {
 });
 
 describe("release policy (ADR 0018)", () => {
-    const found = (overrides: Record<string, unknown> = {}) => ({ kind: "found" as const, release: releaseJson(overrides) });
+    const registry = { schema: 1, releases: [{ version: "0.3.0", digest: `sha256:${"2".repeat(64)}`, revision: "a".repeat(40), recordedAt: "2026-10-08T12:00:00Z" }] };
+    const found = (overrides: Record<string, unknown> = {}) => ({ kind: "found" as const, release: releaseJson(overrides), registry });
     const verdict = (input: Partial<Parameters<typeof evaluateRelease>[0]> = {}) =>
         evaluateRelease({ version: "0.3.0", repoDigests: [NEW_DIGEST], lookup: found(), now: NOW, ...input });
 
@@ -455,6 +456,22 @@ describe("release policy (ADR 0018)", () => {
         expect(result.kind).toBe("waiting");
         expect(result.kind === "waiting" && result.installableAt).toBe(Date.parse(published) + 72 * 3600 * 1000);
         expect(verdict({ lookup: found({ published_at: published }), now: Date.parse(published) + 72 * 3600 * 1000 }).kind).toBe("installable");
+    });
+
+    test("a replacement digest on an old release waits from its new registry record", () => {
+        const recordedAt = "2026-10-12T11:59:00Z";
+        const result = verdict({ lookup: { ...found(), registry: { schema: 1, releases: [
+            { ...registry.releases[0]!, digest: `sha256:${"1".repeat(64)}` },
+            { ...registry.releases[0]!, recordedAt },
+        ] } } });
+        expect(result.kind).toBe("waiting");
+        expect(result.kind === "waiting" && result.installableAt).toBe(Date.parse(recordedAt) + 72 * 3600 * 1000);
+    });
+
+    test("a missing record or a release edited independently of the registry refuses", () => {
+        expect(verdict({ lookup: { ...found(), registry: { schema: 1, releases: [] } } }).kind).toBe("refused");
+        const digest = `sha256:${"8".repeat(64)}`;
+        expect(verdict({ repoDigests: [`ghcr.io/lekoala/compose-panel@${digest}`], lookup: found({ body: `compose-panel-image-digest: ${digest}` }) }).kind).toBe("refused");
     });
 
     const refusals: [string, Partial<Parameters<typeof evaluateRelease>[0]>][] = [
@@ -480,11 +497,13 @@ describe("release policy (ADR 0018)", () => {
         const requests: { url: string; init?: RequestInit }[] = [];
         const reply = (status: number, body = "{}") => async (url: string | URL | Request, init?: RequestInit) => {
             requests.push({ url: String(url), init });
-            return new Response(body, { status });
+            return new Response(String(url).includes("contents/releases.json") && status === 200 ? JSON.stringify(registry) : body, { status });
         };
         expect(await githubReleaseSource(reply(200, JSON.stringify(releaseJson())) as typeof fetch)("0.3.0")).toMatchObject({ kind: "found" });
         expect(requests[0]!.url).toBe("https://api.github.com/repos/lekoala/compose-panel/releases/tags/0.3.0");
         expect(requests[0]!.init?.redirect).toBe("error");
+        expect(requests[1]!.url).toBe("https://api.github.com/repos/lekoala/compose-panel/contents/releases.json?ref=master");
+        expect(requests[1]!.init?.redirect).toBe("error");
         expect(await githubReleaseSource(reply(404) as typeof fetch)("0.3.0")).toEqual({ kind: "missing" });
         expect(await githubReleaseSource(reply(403) as typeof fetch)("0.3.0")).toEqual({ kind: "unavailable" });
         expect(await githubReleaseSource(reply(200, "not json") as typeof fetch)("0.3.0")).toEqual({ kind: "unavailable" });
@@ -494,6 +513,37 @@ describe("release policy (ADR 0018)", () => {
         const before = requests.length;
         expect(await githubReleaseSource(reply(200) as typeof fetch)("../../evil")).toEqual({ kind: "missing" });
         expect(requests.length).toBe(before);
+    });
+
+    test("oversized responses without a length header stop reading and cancel the stream", async () => {
+        for (const oversizedRegistry of [false, true]) {
+            let reads = 0;
+            let canceled = false;
+            const reply = (async (url: string | URL | Request) => {
+                if (oversizedRegistry && !String(url).includes("contents/")) return new Response(JSON.stringify(releaseJson()));
+                return new Response(new ReadableStream<Uint8Array>({
+                    pull(controller) { reads++; controller.enqueue(new Uint8Array(128 * 1024)); },
+                    cancel() { canceled = true; },
+                }, { highWaterMark: 0 }));
+            }) as typeof fetch;
+            expect(await githubReleaseSource(reply)("0.3.0")).toEqual({ kind: "unavailable" });
+            expect(reads).toBe(5);
+            expect(canceled).toBe(true);
+        }
+    });
+
+    test("the response deadline also bounds an unending body", async () => {
+        let canceled = false;
+        const reply = (async () => new Response(new ReadableStream({
+            cancel() { canceled = true; },
+        }))) as unknown as typeof fetch;
+        expect(await githubReleaseSource(reply, 30)("0.3.0")).toEqual({ kind: "unavailable" });
+        expect(canceled).toBe(true);
+    });
+
+    test("the response cap counts UTF-8 bytes rather than decoded characters", async () => {
+        const reply = (async () => new Response(JSON.stringify(releaseJson({ body: "é".repeat(300_000) })))) as unknown as typeof fetch;
+        expect(await githubReleaseSource(reply)("0.3.0")).toEqual({ kind: "unavailable" });
     });
 
     test("status never asks GitHub; the verdict comes from the last check of that image", async () => {

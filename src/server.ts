@@ -1,5 +1,6 @@
 import { bootstrap } from "./bootstrap.ts";
 import { loadConfig } from "./config.ts";
+import { startHttpServer } from "./http-server.ts";
 
 const config = loadConfig();
 const { app, capabilities } = await bootstrap(config);
@@ -10,11 +11,7 @@ if (!capabilities.available) {
 // IMPORTANT: hardcoded loopback bind, never configurable (ADR 0010 / 0012).
 // Remote access goes through an SSH tunnel or a TLS reverse proxy on the same
 // host (COMPOSE_PANEL_PROXY_ORIGINS), never through a published port.
-const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: config.port,
-    fetch: request => app.fetch(request),
-});
+const server = startHttpServer(config.port, request => app.fetch(request));
 
 const loopbackEnabled = config.proxyOrigins.length === 0 || config.allowLoopback;
 if (config.proxyOrigins.length > 0) {

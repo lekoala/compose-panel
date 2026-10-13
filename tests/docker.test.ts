@@ -28,6 +28,13 @@ test("caps captured output", async () => {
     expect(result.stdout.length).toBeLessThanOrEqual(100);
 });
 
+test("binary capture preserves arbitrary bytes without a text copy", async () => {
+    const result = await runCommand(process.execPath, ["-e", "process.stdout.write(Buffer.from([0,255,128,13,10]))"], { binaryStdout: true });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stdoutBytes).toEqual(Buffer.from([0, 255, 128, 13, 10]));
+});
+
 test("times out a hanging process", async () => {
     const result = await runCommand(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { timeoutMs: 400 });
     expect(result.timedOut).toBe(true);

@@ -18,6 +18,9 @@ Status: accepted.
   non-namespaced variable the panel reads for itself (for example `PORT`) is a
   shared name and is documented as such; operators should not assume it is
   hidden from Compose.
+- The runtime image sets `NODE_ENV=production` for Bun. It is also inherited
+  by Compose and can take precedence over a stack's `.env` during interpolation;
+  it is not part of the stripped panel namespace.
 
 ## Why
 Handing the whole environment to Compose means panel credentials and unrelated
@@ -34,6 +37,11 @@ isolation is later required, it should be its own ADR with an explicit
 allow-list and migration notes.
 
 ## Consequences
+- Audit hardening amendment: read-only `ps` and `images` disable default `.env`
+  discovery with `COMPOSE_DISABLE_ENV_FILE=true` when the caller found no safe
+  file. A present verified file is passed explicitly. Operator-provided
+  `COMPOSE_ENV_FILES` remains inherited, and other commands retain their
+  existing environment contract.
 - `COMPOSE_PANEL_*` variables are unavailable to stacks by design. A stack that
   legitimately needs a value must define it in its own `.env` or environment.
 - The regression test asserts that a `COMPOSE_PANEL_*` variable is absent from
