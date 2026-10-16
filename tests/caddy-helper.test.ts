@@ -90,7 +90,10 @@ describe("importConfiguredIn and adaptContainsDomain", () => {
     test("accepts the managed import in common spellings", () => {
         expect(importConfiguredIn(`import ${managedDir}/*.caddy\n`, managedDir)).toBe(true);
         expect(importConfiguredIn(`import "${managedDir}/*.caddy"  # managed sites\n`, managedDir)).toBe(true);
-        expect(importConfiguredIn(`import ${managedDir}/*\n`, managedDir)).toBe(true);
+    });
+
+    test("refuses a broader glob that would also load temporary and backup files", () => {
+        expect(importConfiguredIn(`import ${managedDir}/*\n`, managedDir)).toBe(false);
     });
 
     test("refuses other directories and commented imports", () => {
@@ -273,6 +276,33 @@ describe("attach", () => {
         expect(await lstat(lock).catch(() => null)).toBe(null);
     });
 
+    test("a managed file whose domain differs from its name is not adopted", async () => {
+        const fake = fakeCaddyRunner();
+        await writeFile(join(managedDir, "app.example.com.caddy"), buildSiteFile({ domain: "shop.example.com", stack: "web", service: "web", port: 8080 }));
+        const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
+        expect(response).toMatchObject({ ok: false, code: "conflict" });
+        expect(fake.calls).toEqual([]);
+    });
+
+    // Needs a directory the helper cannot write: chmod is not honored for root
+    // nor on Windows.
+    test.skipIf(process.platform !== "linux" || process.getuid?.() === 0)("an unwritable managed directory fails fast instead of waiting on a lock", async () => {
+        const fake = fakeCaddyRunner();
+        let sleeps = 0;
+        await chmod(managedDir, 0o555);
+        try {
+            const response = await runHelperRequest({ ...attach }, env, {
+                runCaddy: fake.run,
+                sleep: async () => { sleeps += 1; },
+            });
+            expect(response).toMatchObject({ ok: false, code: "unavailable" });
+        } finally {
+            await chmod(managedDir, 0o755);
+        }
+        expect(sleeps).toBe(0);
+        expect(fake.calls).toEqual([]);
+    });
+
     test("a validation failure with an unremovable candidate reports unknown", async () => {
         const sitePath = join(managedDir, "app.example.com.caddy");
         const fake = fakeCaddyRunner({ validate: "fail" });
@@ -382,6 +412,16 @@ describe("detach", () => {
         expect(fake.calls.filter(call => call[0] === "reload")).toHaveLength(reloads);
     });
 
+    test("refuses a managed file whose domain differs from its name", async () => {
+        const fake = fakeCaddyRunner();
+        const foreign = buildSiteFile({ domain: "shop.example.com", stack: "web", service: "web", port: 8080 });
+        await writeFile(join(managedDir, "app.example.com.caddy"), foreign);
+        const response = await runHelperRequest({ action: "detach", domain: "app.example.com", stack: "web" }, env, { runCaddy: fake.run });
+        expect(response).toMatchObject({ ok: false, code: "conflict" });
+        expect(await readFile(join(managedDir, "app.example.com.caddy"), "utf8")).toBe(foreign);
+        expect(fake.calls).toEqual([]);
+    });
+
     test("a failed reload restores the file and reports failure", async () => {
         const fake = fakeCaddyRunner({ reload: ["ok", "fail", "ok"] });
         await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
@@ -413,6 +453,12 @@ describe("status and unknown shapes", () => {
             importConfigured: true,
         });
         expect(fake.calls).toHaveLength(3);
+    });
+
+    test("flags a managed file whose domain differs from its name", async () => {
+        await writeFile(join(managedDir, "app.example.com.caddy"), buildSiteFile({ domain: "shop.example.com", stack: "web", service: "web", port: 8080 }));
+        const response = await runHelperRequest({ action: "status" }, env, { runCaddy: fakeCaddyRunner().run });
+        expect(response).toMatchObject({ ok: true, action: "status", sites: [], unparseable: ["app.example.com.caddy"] });
     });
 
     test("reports a missing import without failing", async () => {

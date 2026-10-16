@@ -15,6 +15,31 @@ describe("parseHelperResponse", () => {
             .toEqual({ ok: false, error: "No.", code: "conflict" });
     });
 
+    test("rebuilds a status answer from validated sites only", () => {
+        const site = { domain: "app.example.com", stack: "web", service: "web", port: 8080 };
+        const parsed = parseHelperResponse({ ok: true, action: "status", sites: [{ ...site, extra: "dropped" }], unparseable: ["x.caddy"], importConfigured: false }, "status");
+        expect(parsed).toEqual({ ok: true, action: "status", sites: [site], unparseable: ["x.caddy"], importConfigured: false });
+    });
+
+    test("rejects a status answer with malformed sites", () => {
+        const base = { ok: true, action: "status", unparseable: [], importConfigured: true };
+        const site = { domain: "app.example.com", stack: "web", service: "web", port: 8080 };
+        for (const sites of [
+            null,
+            [null],
+            [{ ...site, port: "8080<script>" }],
+            [{ ...site, port: 0 }],
+            [{ ...site, domain: "<b>x</b>.example.com" }],
+            [{ ...site, domain: "APP.example.com" }],
+            [{ ...site, stack: "../etc" }],
+            [{ ...site, service: "-rm" }],
+        ]) {
+            expect(() => parseHelperResponse({ ...base, sites }, "status")).toThrow(CaddyHelperError);
+        }
+        expect(() => parseHelperResponse({ ...base, sites: [], unparseable: [42] }, "status")).toThrow(CaddyHelperError);
+        expect(() => parseHelperResponse({ ...base, sites: [], importConfigured: "yes" }, "status")).toThrow(CaddyHelperError);
+    });
+
     test("rejects a mismatched action, a bad code and non-objects", () => {
         expect(() => parseHelperResponse({ ok: true, action: "status", sites: [] }, "attach")).toThrow(CaddyHelperError);
         expect(() => parseHelperResponse({ ok: false, error: "No.", code: "nope" }, "attach")).toThrow(CaddyHelperError);

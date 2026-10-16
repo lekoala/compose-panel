@@ -419,7 +419,7 @@ export function domainsSection(options: DomainsSectionOptions): string {
                     ? `<form method="post" action="${href}/domains/detach" class="form inline-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="domain" value="${escapeHtml(site.domain)}"><input type="hidden" name="confirm" value="1"><button type="submit" class="btn btn-danger">Confirm detach</button> <a href="${href}" class="btn">Cancel</a></form>`
                     : `<form method="post" action="${href}/domains/detach" class="form inline-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="domain" value="${escapeHtml(site.domain)}"><button type="submit" class="btn">Detach</button></form>`)
                 : "";
-            return `<li>${open} <span class="meta"><code>${escapeHtml(site.service)}</code> · <code>127.0.0.1:${site.port}</code></span>${detach}</li>`;
+            return `<li>${open} <span class="meta"><code>${escapeHtml(site.service)}</code> · <code>127.0.0.1:${escapeHtml(String(site.port))}</code></span>${detach}</li>`;
         }).join("")}</ul>`;
     const status = statusError ? note("warn", statusError) : "";
     if (owner) {

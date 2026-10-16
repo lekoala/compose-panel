@@ -663,10 +663,8 @@ describe("caddy domain attach and detach", () => {
         const csrf = await csrfOf(app, session);
         const attach = await postDomains(app, session, csrf, "/stacks/demo/domains/attach", { domain: "not_a_domain", service: "web", port: "8080" });
         expect(attach.status).toBe(400);
-        expect(await attach.text()).toContain("Nothing was attached");
         const detach = await postDomains(app, session, csrf, "/stacks/demo/domains/detach", { domain: "not_a_domain" });
         expect(detach.status).toBe(400);
-        expect(await detach.text()).toContain("Nothing was detached");
     });
 
     test("refuses attach with a wrong CSRF token", async () => {

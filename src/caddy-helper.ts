@@ -193,8 +193,13 @@ async function withHelperLock<T>(managedDir: string, deps: HelperDeps, fn: () =>
         try {
             await mkdir(lockPath);
             created = true;
-        } catch {
-            created = false;
+        } catch (error) {
+            // Only an existing lock means "wait". Anything else (read-only
+            // directory, no space) would otherwise spin until the deadline
+            // and be misreported as a busy lock.
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+                throw new HelperConfigError("The lock cannot be created in the managed directory.");
+            }
         }
         if (created) {
             try {
@@ -207,7 +212,9 @@ async function withHelperLock<T>(managedDir: string, deps: HelperDeps, fn: () =>
         }
         const info = await lstat(lockPath).catch(() => null);
         if (!info) {
+            // Released between our mkdir and lstat: retry, without spinning.
             if (now() >= deadline) throw new HelperBusyError();
+            await sleep(10);
             continue;
         }
         if (!info.isDirectory()) throw new HelperBusyError();
@@ -348,7 +355,10 @@ async function publishSiteFile(path: string, content: string): Promise<void> {
 export function importConfiguredIn(mainSource: string, managedDir: string): boolean {
     // Caddyfiles use forward slashes even on Windows; `join` does not.
     const slash = (value: string): string => value.replace(/\\/g, "/");
-    const wanted = [slash(join(managedDir, "*.caddy")), slash(join(managedDir, "*"))];
+    // Only `*.caddy`: a broader glob such as `*` would also load the
+    // temporary and detached backup files kept next to the managed files,
+    // so a detach would reload with the site still served.
+    const wanted = [slash(join(managedDir, "*.caddy"))];
     for (const rawLine of mainSource.split("\n")) {
         const line = rawLine.split("#")[0]!.trim().replace(/\s+/g, " ");
         const match = /^import\s+(.+)$/.exec(line);
@@ -407,7 +417,9 @@ async function handleStatus(env: HelperEnv): Promise<HelperResponse> {
         }
         if (source === null) continue;
         const parsed = parseSiteFile(source);
-        if (parsed.ok) sites.push(parsed.value);
+        // A managed block whose domain differs from its file name was renamed
+        // outside the panel: listing it would offer a detach that cannot work.
+        if (parsed.ok && `${parsed.value.domain}.caddy` === entry) sites.push(parsed.value);
         else if (unparseable.length < MAX_SITES_LISTED) unparseable.push(entry);
     }
     const main = await readMainConfig(env.mainConfig);
@@ -453,7 +465,7 @@ async function handleAttach(env: HelperEnv, deps: HelperDeps, raw: Record<string
             }
             if (existing !== null) {
                 const parsed = parseSiteFile(existing);
-                if (!parsed.ok) {
+                if (!parsed.ok || parsed.value.domain !== inputs.domain) {
                     return refused("This domain already exists but is not managed by the panel. It will not be overwritten.", "conflict");
                 }
                 if (parsed.value.stack !== inputs.stack || parsed.value.service !== inputs.service || parsed.value.port !== inputs.port) {
@@ -519,7 +531,7 @@ async function handleDetach(env: HelperEnv, deps: HelperDeps, raw: Record<string
                 return refused("The existing file cannot be managed safely. Inspect it on the host.", "conflict");
             }
             const parsed = parseSiteFile(existing);
-            if (!parsed.ok) {
+            if (!parsed.ok || parsed.value.domain !== domain) {
                 return refused("This domain is not managed by the panel. It will not be removed.", "conflict");
             }
             if (parsed.value.stack !== stack) {

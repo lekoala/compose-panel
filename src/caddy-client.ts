@@ -10,6 +10,7 @@
  */
 
 import type { HelperRequest, HelperResponse } from "./caddy-helper.ts";
+import { isValidDomain, isValidServiceName, isValidStackName, isValidUpstreamPort, normalizeDomain, type CaddySiteRequest } from "./caddy.ts";
 
 export class CaddyHelperError extends Error {
     constructor(message: string) {
@@ -36,6 +37,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const CODES = new Set(["invalid", "conflict", "unavailable", "failed", "unknown"]);
 
 /**
+ * Rebuild a status answer from validated fields only: every listed site is
+ * rendered on the stack page, so each one must carry the same grammar the
+ * helper itself enforces.
+ */
+function parseStatus(raw: Record<string, unknown>): HelperResponse {
+    const unexpected = (): never => { throw new CaddyHelperError("The Caddy helper gave an unexpected answer."); };
+    if (!Array.isArray(raw.sites) || !Array.isArray(raw.unparseable) || typeof raw.importConfigured !== "boolean") unexpected();
+    const sites: CaddySiteRequest[] = (raw.sites as unknown[]).map(site => {
+        if (!isRecord(site)) return unexpected();
+        const { domain, stack, service, port } = site;
+        if (typeof domain !== "string" || !isValidDomain(domain) || normalizeDomain(domain) !== domain) return unexpected();
+        if (typeof stack !== "string" || !isValidStackName(stack)) return unexpected();
+        if (typeof service !== "string" || !isValidServiceName(service)) return unexpected();
+        if (typeof port !== "number" || !isValidUpstreamPort(port)) return unexpected();
+        return { domain, stack, service, port };
+    });
+    const unparseable = (raw.unparseable as unknown[]).map(entry => typeof entry === "string" ? entry : unexpected());
+    return { ok: true, action: "status", sites, unparseable, importConfigured: raw.importConfigured as boolean };
+}
+
+/**
  * Defensive shape check on the helper answer. The helper is trusted code, but
  * the socket is a boundary: a malformed answer is a transport failure, never
  * an object the panel acts on.
@@ -44,6 +66,7 @@ export function parseHelperResponse(raw: unknown, action: string): HelperRespons
     if (!isRecord(raw) || typeof raw.ok !== "boolean") throw new CaddyHelperError("The Caddy helper gave an unexpected answer.");
     if (raw.ok) {
         if (raw.action !== action) throw new CaddyHelperError("The Caddy helper gave an unexpected answer.");
+        if (action === "status") return parseStatus(raw);
         return raw as HelperResponse;
     }
     if (typeof raw.error !== "string" || !CODES.has(raw.code as string)) {

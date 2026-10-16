@@ -1216,6 +1216,16 @@ export function createApp(options: AppOptions): App {
     }
 
     /**
+     * Notice text for a helper refusal. Only `invalid` and `conflict` are
+     * refusals before any change; every other code already states its own
+     * outcome (applied nothing, restored, or unknown), which a blanket
+     * "nothing was changed" suffix would contradict.
+     */
+    function helperRefusalText(outcome: { error: string; code: string }, suffix: string): string {
+        return outcome.code === "invalid" || outcome.code === "conflict" ? `${outcome.error} ${suffix}` : outcome.error;
+    }
+
+    /**
      * Declared deployment owner (`stack.managed-by`), if Docker can tell.
      * Informational by design (ADR 0025): an unreadable declaration means no
      * owner, never a block. Callers re-check under the per-stack lock where
@@ -1316,7 +1326,7 @@ export function createApp(options: AppOptions): App {
             if (!outcome.ok) {
                 const result = outcome.code === "invalid" || outcome.code === "conflict" ? "refused" : outcome.code === "unknown" ? "unknown" : "failure";
                 await recordAudit({ event: "caddy", result, actor, stack: name, action: "attach", service: serviceParam, detail: `${normalizeDomain(domain)}: ${outcome.code}` });
-                return fail(`${outcome.error} Nothing was attached.`, helperRefusalStatus(outcome.code));
+                return fail(helperRefusalText(outcome, "Nothing was attached."), helperRefusalStatus(outcome.code));
             }
             await recordAudit({ event: "caddy", result: "success", actor, stack: name, action: "attach", service: serviceParam, detail: normalizeDomain(domain) ?? domain });
             return redirect(`${back}?attached=1`, 303);
@@ -1407,7 +1417,7 @@ export function createApp(options: AppOptions): App {
             if (!outcome.ok) {
                 const result = outcome.code === "invalid" || outcome.code === "conflict" ? "refused" : outcome.code === "unknown" ? "unknown" : "failure";
                 await recordAudit({ event: "caddy", result, actor, stack: name, action: "detach", detail: `${domain}: ${outcome.code}` });
-                return renderStackDetail(name, csrf, { kind: "error", text: `${outcome.error} Nothing was detached.` }, helperRefusalStatus(outcome.code));
+                return renderStackDetail(name, csrf, { kind: "error", text: helperRefusalText(outcome, "Nothing was detached.") }, helperRefusalStatus(outcome.code));
             }
             await recordAudit({ event: "caddy", result: "success", actor, stack: name, action: "detach", detail: domain });
             return redirect(`${back}?detached=1`, 303);
