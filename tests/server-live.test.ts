@@ -133,75 +133,91 @@ describe("server live refresh (public/app.js)", () => {
         };
 
         const scope = globalThis as unknown as Record<string, unknown>;
-        scope.document = doc;
-        scope.window = { addEventListener() {} };
-        scope.fetch = fetchImpl;
+        const originals = ["document", "window", "fetch"].map(key => [key, Object.getOwnPropertyDescriptor(scope, key)] as const);
+        try {
+            scope.document = doc;
+            scope.window = { addEventListener() {} };
+            scope.fetch = fetchImpl;
 
-        // A variable specifier keeps TypeScript from resolving the browser
-        // script as a typed module; it is a plain IIFE with no exports.
-        const appSpecifier = ["..", "public", "app.js"].join("/");
-        await import(appSpecifier);
-        doc.dispatch("DOMContentLoaded");
+            // A variable specifier keeps TypeScript from resolving the browser
+            // script as a typed module; it is a plain IIFE with no exports.
+            const appSpecifier = ["..", "public", "app.js"].join("/");
+            await import(appSpecifier);
+            doc.dispatch("DOMContentLoaded");
 
-        const toggle = doc.getElementById("server-live")!;
-        const status = doc.getElementById("server-live-status")!;
+            const toggle = doc.getElementById("server-live")!;
+            const status = doc.getElementById("server-live-status")!;
 
-        // Off by default: nothing is fetched.
-        expect(calls).toBe(0);
+            // Off by default: nothing is fetched.
+            expect(calls).toBe(0);
 
-        // Activation: one immediate fetch, then the dynamic zones are updated.
-        toggle.checked = true;
-        toggle.dispatch("change");
-        await wait(20);
-        expect(calls).toBe(1);
-        expect(doc.getElementById("live-running")!.textContent).toBe("3");
-        expect(doc.getElementById("live-stats")!.children).toHaveLength(1);
-        expect(doc.getElementById("live-attention-rows")!.children).toHaveLength(1);
-        // Stopped-with-an-error containers fill their own folded list.
-        expect(doc.getElementById("live-exited-rows")!.children).toHaveLength(1);
-        expect(doc.getElementById("live-exited-count")!.textContent).toBe("1");
-        expect(doc.getElementById("live-exited")!.getAttribute("hidden")).toBeNull();
-        // Used memory only; the limit is a hover detail, as in the server render.
-        const memoryCell = doc.getElementById("live-stats")!.children[0]!.children[3]!;
-        expect(memoryCell.children[0]!.getAttribute("title")).not.toBeNull();
-        // Followed by its usage bar, built like the server one.
-        expect(memoryCell.children[1]!.getAttribute("class")).toBe("bar");
-        expect(status.textContent).toContain("updated");
+            // Activation: one immediate fetch, then the dynamic zones are updated.
+            toggle.checked = true;
+            toggle.dispatch("change");
+            await wait(20);
+            expect(calls).toBe(1);
+            expect(doc.getElementById("live-running")!.textContent).toBe("3");
+            expect(doc.getElementById("live-stats")!.children).toHaveLength(1);
+            expect(doc.getElementById("live-attention-rows")!.children).toHaveLength(1);
+            // Stopped-with-an-error containers fill their own folded list.
+            expect(doc.getElementById("live-exited-rows")!.children).toHaveLength(1);
+            expect(doc.getElementById("live-exited-count")!.textContent).toBe("1");
+            expect(doc.getElementById("live-exited")!.getAttribute("hidden")).toBeNull();
+            // Used memory only; the limit is a hover detail, as in the server render.
+            const memoryCell = doc.getElementById("live-stats")!.children[0]!.children[3]!;
+            expect(memoryCell.children[0]!.getAttribute("title")).not.toBeNull();
+            // Followed by its usage bar, built like the server one.
+            expect(memoryCell.children[1]!.getAttribute("class")).toBe("bar");
+            expect(status.textContent).toContain("updated");
 
-        // Sequential scheduling: a second fetch happens after the interval.
-        await wait(1200);
-        expect(calls).toBe(2);
+            // Sequential scheduling: a second fetch happens after the interval.
+            await wait(1200);
+            expect(calls).toBe(2);
 
-        // Hidden: polling pauses, no new request.
-        doc.hidden = true;
-        doc.dispatch("visibilitychange");
-        const afterHide = calls;
-        await wait(1200);
-        expect(calls).toBe(afterHide);
+            // Hidden: polling pauses, no new request.
+            doc.hidden = true;
+            doc.dispatch("visibilitychange");
+            const afterHide = calls;
+            await wait(1200);
+            expect(calls).toBe(afterHide);
 
-        // Visible again: an immediate fetch resumes.
-        doc.hidden = false;
-        doc.dispatch("visibilitychange");
-        await wait(20);
-        expect(calls).toBe(afterHide + 1);
+            // Visible again: an immediate fetch resumes.
+            doc.hidden = false;
+            doc.dispatch("visibilitychange");
+            await wait(20);
+            expect(calls).toBe(afterHide + 1);
 
-        // Deactivation stops the loop.
-        toggle.checked = false;
-        toggle.dispatch("change");
-        const afterStop = calls;
-        await wait(1200);
-        expect(calls).toBe(afterStop);
+            // Deactivation stops the loop.
+            toggle.checked = false;
+            toggle.dispatch("change");
+            const afterStop = calls;
+            await wait(1200);
+            expect(calls).toBe(afterStop);
 
-        // Re-activate, then a 401 ends polling instead of retrying forever.
-        toggle.checked = true;
-        toggle.dispatch("change");
-        await wait(20);
-        unauthorized = true;
-        await wait(1200);
-        const afterAuth = calls;
-        expect(toggle.checked).toBe(false);
-        expect(status.textContent).toContain("Session ended");
-        await wait(1200);
-        expect(calls).toBe(afterAuth);
+            // Re-activate, then a 401 ends polling instead of retrying forever.
+            toggle.checked = true;
+            toggle.dispatch("change");
+            await wait(20);
+            unauthorized = true;
+            await wait(1200);
+            const afterAuth = calls;
+            expect(toggle.checked).toBe(false);
+            expect(status.textContent).toContain("Session ended");
+            await wait(1200);
+            expect(calls).toBe(afterAuth);
+        } finally {
+            // Browser fixtures share globals with the HTTP tests in this process.
+            const toggle = doc.getElementById("server-live")!;
+            toggle.checked = false;
+            toggle.dispatch("change");
+            for (const [key, descriptor] of originals) {
+                if (descriptor) Object.defineProperty(scope, key, descriptor);
+                else delete scope[key];
+            }
+        }
+
+        for (const [key, descriptor] of originals) {
+            expect(Object.getOwnPropertyDescriptor(scope, key)).toEqual(descriptor);
+        }
     }, 15000);
 });
