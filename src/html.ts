@@ -9,6 +9,7 @@ import { matchesContainerFilter, type ClassifiedContainer, type ContainerCategor
 import { statDisplayName, type AttentionItem, type AttentionReason, type ClassifiedStat, type DiskUsage, type DiskUsageRow, type EngineInfo, type Insights, type StackUsage } from "./insights.ts";
 import type { ToolboxAction, ToolboxRunner } from "./toolbox.ts";
 import { isExplorerHref } from "./database.ts";
+import { isValidDomain } from "./caddy.ts";
 import packageJson from "../package.json";
 
 const VERSION = packageJson.version;
@@ -371,49 +372,80 @@ export function databaseSection(
     return `<section class="card database"><h2>Database</h2>${meta}${link}</section>`;
 }
 
-/** Input for the Domains preview form (ADR 0030, PR1: preview only). */
-export interface DomainsPreviewInput {
+/** A domain the helper reports as attached to a stack (ADR 0030). */
+export interface AttachedDomain {
+    domain: string;
+    service: string;
+    port: number;
+}
+
+export interface DomainsSectionOptions {
     stackName: string;
-    /** Service names from `config --services`, offered as suggestions. */
+    csrf: string;
+    /** Service names from Docker, offered as suggestions. */
     services: string[];
     /** Declared deployment owner (`stack.managed-by`), if any. */
     owner: string | null;
-    domain: string;
-    service: string;
-    port: string;
+    /** Domains the helper reports for this stack. */
+    attached: AttachedDomain[];
+    /** Set when the helper status could not be read; the page stays 200. */
+    statusError: string | null;
+    /** Whether the helper socket is configured (real attach/detach). */
+    socketReady: boolean;
+    preview: { domain: string; service: string; port: string; file: string | null; error: string | null; hasInput: boolean };
+    /** Domain awaiting detach confirmation (two-step, works without JS). */
+    confirmDetach: string | null;
 }
 
 /**
- * Optional Caddy site preview (ADR 0030, PR1). A GET form validates a
- * domain → loopback upstream mapping and shows the managed file exactly as
- * the helper would generate it. Nothing is written, applied or reloaded:
- * real attach/detach arrives in PR2. Stacks with a declared external owner
- * get a read-only section instead of the form.
+ * Caddy site management (ADR 0030). One card with three parts: the attached
+ * domains with an Open-application link and a two-step Detach, the Attach
+ * form (POST, only with a configured helper), and the GET preview of the
+ * managed file (never a mutation). Stacks with a declared external owner get
+ * a read-only card instead of the forms. Every dynamic value is escaped; the
+ * domain link is only built for a strictly valid domain.
  */
-export function domainsSection(
-    input: DomainsPreviewInput,
-    result: { file: string | null; error: string | null; hasInput: boolean },
-): string {
-    if (input.owner) {
-        return `<section class="card domains"><h2>Domains</h2>${note("info", `Routing for this stack is managed externally (${input.owner}). Domains are shown here for information only and cannot be attached from this panel.`)}${result.file ? `<pre class="output">${escapeHtml(result.file)}</pre>` : ""}</section>`;
+export function domainsSection(options: DomainsSectionOptions): string {
+    const { stackName, csrf, services, owner, attached, statusError, socketReady, preview, confirmDetach } = options;
+    const href = `/stacks/${encodeURIComponent(stackName)}`;
+    const list = attached.length === 0
+        ? `<p class="muted">No domains attached.</p>`
+        : `<ul class="domains-list">${attached.map(site => {
+            const open = isValidDomain(site.domain)
+                ? `<a href="https://${escapeHtml(site.domain)}" target="_blank" rel="noopener noreferrer">${escapeHtml(site.domain)} ↗</a>`
+                : `<code>${escapeHtml(site.domain)}</code>`;
+            const detach = !owner && socketReady
+                ? (confirmDetach === site.domain
+                    ? `<form method="post" action="${href}/domains/detach" class="form inline-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="domain" value="${escapeHtml(site.domain)}"><input type="hidden" name="confirm" value="1"><button type="submit" class="btn btn-danger">Confirm detach</button> <a href="${href}" class="btn">Cancel</a></form>`
+                    : `<form method="post" action="${href}/domains/detach" class="form inline-form"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="domain" value="${escapeHtml(site.domain)}"><button type="submit" class="btn">Detach</button></form>`)
+                : "";
+            return `<li>${open} <span class="meta"><code>${escapeHtml(site.service)}</code> · <code>127.0.0.1:${site.port}</code></span>${detach}</li>`;
+        }).join("")}</ul>`;
+    const status = statusError ? note("warn", statusError) : "";
+    if (owner) {
+        return `<section class="card domains"><h2>Domains</h2>${note("info", `Routing for this stack is managed externally (${owner}). Domains are shown here for information only and cannot be attached from this panel.`)}${status}${list}</section>`;
     }
-    const href = `/stacks/${encodeURIComponent(input.stackName)}`;
-    const options = input.services
-        .map(name => `<option value="${escapeHtml(name)}">`)
-        .join("");
+    const attach = socketReady
+        ? `<form method="post" action="${href}/domains/attach" class="form domains-form">`
+        + `<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">`
+        + `<label>Domain <input type="text" name="domain" value="${escapeHtml(preview.domain)}" placeholder="app.example.com" autocomplete="off" spellcheck="false" required></label>`
+        + `<label>Target service <input type="text" name="service" value="${escapeHtml(preview.service)}" placeholder="web" list="caddy-services" autocomplete="off" spellcheck="false" required><datalist id="caddy-services">${services.map(name => `<option value="${escapeHtml(name)}">`).join("")}</datalist></label>`
+        + `<label>Local upstream port <input type="text" name="port" value="${escapeHtml(preview.port)}" placeholder="8080" autocomplete="off" spellcheck="false" inputmode="numeric" required></label>`
+        + `<div class="form-actions"><button type="submit" class="btn btn-primary">Attach domain</button></div></form>`
+        + `<p class="muted">Attaching validates the service and port, publishes the Caddy file and reloads Caddy. Only ports bound to the host loopback are eligible. DNS and HTTPS are not checked by the panel.</p>`
+        : note("info", "Preview only: the helper is not configured, so nothing can be attached. See the deployment guide to enable domain management.");
+    const previewOptions = services.map(name => `<option value="${escapeHtml(name)}">`).join("");
     const form = `<form method="get" action="${href}" class="form domains-form">`
-        + `<label>Domain <input type="text" name="caddyDomain" value="${escapeHtml(input.domain)}" placeholder="app.example.com" autocomplete="off" spellcheck="false" required></label>`
-        + `<label>Target service <input type="text" name="caddyService" value="${escapeHtml(input.service)}" placeholder="web" list="caddy-services" autocomplete="off" spellcheck="false" required><datalist id="caddy-services">${options}</datalist></label>`
-        + `<label>Local upstream port <input type="text" name="caddyPort" value="${escapeHtml(input.port)}" placeholder="8080" autocomplete="off" spellcheck="false" inputmode="numeric" required></label>`
+        + `<label>Domain <input type="text" name="caddyDomain" value="${escapeHtml(preview.domain)}" placeholder="app.example.com" autocomplete="off" spellcheck="false"></label>`
+        + `<label>Target service <input type="text" name="caddyService" value="${escapeHtml(preview.service)}" placeholder="web" list="caddy-services-preview" autocomplete="off" spellcheck="false"><datalist id="caddy-services-preview">${previewOptions}</datalist></label>`
+        + `<label>Local upstream port <input type="text" name="caddyPort" value="${escapeHtml(preview.port)}" placeholder="8080" autocomplete="off" spellcheck="false" inputmode="numeric"></label>`
         + `<div class="form-actions"><button type="submit" class="btn">Preview configuration</button></div></form>`;
-    const hint = `<p class="muted">Only ports bound to the host loopback are eligible. DNS and HTTPS are not checked by the panel.</p>`;
-    const preview = result.error
-        ? note("warn", result.error)
-        : result.file
-            ? `<details open><summary>Generated Caddy configuration</summary><pre class="output">${escapeHtml(result.file)}</pre></details>`
+    const output = preview.error
+        ? note("warn", preview.error)
+        : preview.file
+            ? `<details open><summary>Generated Caddy configuration</summary><pre class="output">${escapeHtml(preview.file)}</pre></details>`
             : "";
-    const pending = note("info", "Preview only: nothing is written or reloaded. Applying domains arrives with the privileged helper.");
-    return `<section class="card domains"><h2>Domains</h2>${form}${hint}${preview}${pending}</section>`;
+    return `<section class="card domains"><h2>Domains</h2>${status}${list}${attach}${form}${output}</section>`;
 }
 
 /** "1.27.1 → 1.27.2"; when both sides read the same, the digests tell them apart. */

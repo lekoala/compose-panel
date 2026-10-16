@@ -291,6 +291,115 @@ Notes on the trust chain:
 This path is documented, not covered by the end-to-end test (only Caddy is
 tested). Verify it on your own host before relying on it.
 
+## Optional Caddy site management
+
+Stacks that serve HTTP on the host loopback can get a public domain without
+leaving the panel ([ADR 0030](adr/0030-optional-caddy-sites.md)): a Domains
+section on the stack page attaches `app.example.com` to a service's
+loopback-bound port, publishes one managed file per domain, and reloads Caddy.
+The panel never edits your main `Caddyfile` and never touches sites it did
+not create. DNS and HTTPS are not checked by the panel: after attaching, open
+the application link and verify reachability yourself.
+
+The integration is opt-in and in two parts: a preview that needs nothing, and
+real attach/detach through a small privileged helper on the host. Without the
+helper, Domains stays a preview (the managed file is shown, nothing is
+written or reloaded).
+
+1. Prepare Caddy (host operation, once). The helper owns exactly one
+   directory; your main `Caddyfile` imports it:
+
+    ```sh
+    mkdir -p /etc/caddy/compose-panel.d
+    chown caddy:caddy /etc/caddy/compose-panel.d
+    chmod 755 /etc/caddy/compose-panel.d
+    ```
+
+    ```caddyfile
+    # /etc/caddy/Caddyfile (host paths, forward slashes)
+    import /etc/caddy/compose-panel.d/*.caddy
+    ```
+
+    ```sh
+    caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+    systemctl reload caddy
+    ```
+
+    Keep Caddy's administration API enabled (the default): `caddy reload`
+    uses it, and the helper refuses to work without it.
+
+2. Build and install the helper (host operation, once). Any machine with
+   Bun 1.4.3+ builds it; the host itself needs no Bun, no Node, no extra
+   dependency — the output is a single self-contained binary:
+
+    ```sh
+    bun build --compile src/scripts/caddy-helper.ts --outfile compose-panel-caddy-helper
+    install -m 755 compose-panel-caddy-helper /usr/local/bin/compose-panel-caddy-helper
+    cp deploy/caddy/caddy-helper.{socket,service} /etc/systemd/system/
+    systemctl daemon-reload
+    systemctl enable --now caddy-helper.socket
+    ```
+
+    The helper runs as the `caddy` user, one process per request, with no
+    resident daemon. It only ever writes `/etc/caddy/compose-panel.d` and
+    only runs `caddy validate|adapt|reload` with fixed arguments — no shell,
+    no other command.
+
+3. Expose the socket to the panel. In `deploy/compose.yaml`, uncomment the
+   helper socket mount (same path on both sides, like the Docker socket),
+   and in `deploy/compose-panel.env` set:
+
+    ```sh
+    COMPOSE_PANEL_CADDY_ENABLED=true
+    COMPOSE_PANEL_CADDY_SOCKET_PATH=/run/compose-panel/caddy-helper.sock
+    ```
+
+    Then `docker compose -f deploy/compose.yaml up -d --no-deps panel`. A
+    socket path without the flag, or a relative path, is refused at startup.
+
+Behavior once enabled:
+
+- The stack page lists the domains attached to that stack, each with an
+  application link (`https://…`, new tab, no opener access).
+- **Attach domain** checks the service against the effective Compose config
+  and the port against the loopback bindings of its running containers, then
+  publishes the managed file, validates the whole Caddy configuration,
+  confirms the route is present, and reloads Caddy — all serialized behind a
+  global Caddy lock, under the usual per-stack lock. A failed reload restores
+  the previous file and reloads that; if the restore cannot be confirmed the
+  outcome is reported as unknown, never as success.
+- **Detach** asks for an explicit confirmation, then removes the managed
+  file and reloads, with the same rollback.
+- Files the panel does not recognize, or managed files changed outside the
+  panel, are refused rather than overwritten. A missing `import` in the main
+  `Caddyfile` refuses the attach before anything is published.
+- Stacks with a `stack.managed-by` label show their routing read-only: the
+  label stays informational and attaching from the panel is refused as a
+  workflow rule, not a security boundary.
+
+Removal without impact: detach every domain (or delete the managed files by
+hand and `systemctl reload caddy`), set `COMPOSE_PANEL_CADDY_ENABLED=false`,
+remove the socket mount, and stop the socket (`systemctl disable --now
+caddy-helper.socket`). Stacks keep running and stay manageable by the
+`docker compose` CLI throughout.
+
+Manual verification (release gate, on the target host with its real Caddy):
+
+- [ ] Attach a domain to a loopback-bound service: the managed file appears
+      with the exact ownership header, `caddy adapt` contains the route, and
+      the application answers through Caddy.
+- [ ] Re-attach the same mapping: reported unchanged, no reload.
+- [ ] Attach with the `import` line removed from the main `Caddyfile`:
+      refused with the actionable message, nothing published.
+- [ ] Attach a port the service does not publish on loopback, a service
+      outside the stack, and a domain file created by hand: all refused.
+- [ ] Break the reload (for example stop Caddy's admin listener in a test
+      config): the file is rolled back and the failure — never a success —
+      is reported. Restore the listener afterwards.
+- [ ] Detach asks for confirmation, then the file is gone and Caddy reloaded.
+- [ ] Two attaches at once (two stacks): both succeed, serialized, one
+      reload each.
+
 ## Backups and rollback
 
 Two layers, both plain files:

@@ -1,6 +1,6 @@
 # ADR 0030 — Optional Caddy site management
 
-Status: Accepted (PR1: model, validation and preview; PR2: privileged helper and real operations)
+Status: Accepted
 
 ## Context
 
@@ -153,14 +153,14 @@ no Domains section, no socket access, no new dependency.
 
 ## Consequences
 
-- PR1 (this change): pure domain model, validation, canonical file generation
-  and a preview-only Domains section on the stack page. No privileged path, no
-  mutation, no network call. New `COMPOSE_PANEL_CADDY_ENABLED` setting
-  (default off); new pure module `src/caddy.ts`.
-- PR2 (separate): host helper with its systemd socket/service units, the
-  bounded socket client, real attach/detach/status operations under both locks,
-  the import/adapt checks, rollback semantics, and an end-to-end test against a
-  disposable Caddy. New `COMPOSE_PANEL_CADDY_SOCKET_PATH` setting then.
+- Landed in two steps: first the pure domain model, validation, canonical file
+  generation and a preview-only Domains section on the stack page (no
+  privileged path, no mutation, no network call; `COMPOSE_PANEL_CADDY_ENABLED`
+  off by default with the pure module `src/caddy.ts`), then the host helper
+  with its systemd socket/service units, the bounded socket client, real
+  attach/detach/status operations under both locks, the import/adapt checks,
+  rollback semantics, and an end-to-end test against a disposable Caddy
+  (`COMPOSE_PANEL_CADDY_SOCKET_PATH`).
 - No database, no scheduler, no generic command runner, no Caddy Docker Proxy
   migration: the existing Caddy layout is kept.
 - `product.md`, `architecture.md`, `security.md` and `deployment.md` carry the

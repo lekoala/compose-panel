@@ -32,6 +32,9 @@ services:
       # Same path on both sides, or project matching breaks. Adjust both the
       # mount AND STACKS_DIR together if your stacks live elsewhere.
       - /opt/stacks:/opt/stacks
+      # Optional Caddy helper socket (ADR 0030). Same path on both sides.
+      # Uncomment together with COMPOSE_PANEL_CADDY_* in compose-panel.env.
+      # - /run/compose-panel/caddy-helper.sock:/run/compose-panel/caddy-helper.sock
     env_file:
       - compose-panel.env
     environment:

@@ -132,6 +132,25 @@ trusted configuration. The contract is software-agnostic, and no new Docker
 boundary is added. See [ADR 0027](adr/0027-external-database-explorer-links.md)
 and the [LibreDB example](integrations/libredb.md).
 
+## Caddy site management (optional)
+`src/caddy.ts` holds the pure domain model: strict public-domain validation, a
+canonical managed file with an ownership header, and strict parsing that
+refuses foreign or externally modified files. `src/caddy-helper.ts` is the
+privileged host counterpart (entry `src/scripts/caddy-helper.ts`, one JSON
+line over stdio for systemd socket activation): it owns one directory of
+per-domain files, serializes writers behind an exclusive lock directory, and
+runs the safe prepare → validate → publish → reload sequence with honest
+rollback, through fixed `caddy` argument arrays only. The panel reaches it
+through a bounded Unix-socket client (`src/caddy-client.ts`); attach/detach
+(`POST /stacks/<name>/domains/attach|detach`) reuse the mutation guards
+(session, Origin, CSRF, per-stack lock, shutdown/self-update refusal, audit)
+plus fail-closed Docker checks (deployed identity, `config --services`
+membership, loopback-bound port read through the `ContainerInspector`). The
+stack page shows attached sites with an application link, a two-step detach
+and a GET preview that never mutates. Disabled by default
+(`COMPOSE_PANEL_CADDY_ENABLED`, `COMPOSE_PANEL_CADDY_SOCKET_PATH`); with no
+socket the section stays a preview. See [ADR 0030](adr/0030-optional-caddy-sites.md).
+
 ## Compose context
 Stack creation (`src/create-stack.ts`, [ADR 0024](adr/0024-controlled-stack-creation.md))
 reserves a new owner-only directory with exclusive mkdir under the shared stack

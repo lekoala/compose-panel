@@ -88,13 +88,19 @@ export interface AppConfig {
      */
     databaseExplorerUrl: string | null;
     /**
-     * Optional Caddy site preview (ADR 0030, PR1). When true, the stack page
-     * shows a Domains section that validates a domain → loopback upstream
-     * mapping and previews the managed Caddy file, without applying anything.
-     * Real attach/detach through the host helper arrives in PR2; false means
-     * no section, no socket access, no new dependency.
+     * Optional Caddy site management (ADR 0030). When true, the stack page
+     * shows a Domains section: a preview of the managed Caddy file always,
+     * plus real attach/detach through the host helper when `caddySocketPath`
+     * is set. False means no section, no socket access, no new dependency.
      */
     caddyEnabled: boolean;
+    /**
+     * Unix socket of the privileged Caddy helper, mounted into the panel
+     * container (ADR 0030, PR2). Null means attach/detach are unavailable and
+     * the Domains section stays a preview. A socket without the flag above is
+     * refused at startup as a misconfiguration.
+     */
+    caddySocketPath: string | null;
     /**
      * Host-to-panel path prefixes used to classify external containers as
      * managed after a migration where the Docker-side Compose path differs from
@@ -198,6 +204,25 @@ function parseTimeZone(env: Env): string {
     } catch {
         throw new Error(`COMPOSE_PANEL_TIMEZONE must be a valid IANA time zone (e.g. "Europe/Brussels"), got "${raw}".`);
     }
+    return raw;
+}
+
+/**
+ * Unix socket of the privileged Caddy helper (ADR 0030). Empty means the
+ * helper is not used and Domains stays a preview. A socket path without the
+ * opt-in flag is a misconfiguration and is refused at startup. The socket
+ * itself must be absolute: it is a host path mounted into the panel.
+ */
+function parseCaddySocketPath(env: Env, caddyEnabled: boolean): string | null {
+    const raw = env.COMPOSE_PANEL_CADDY_SOCKET_PATH?.trim() ?? "";
+    if (raw === "") return null;
+    if (!caddyEnabled) {
+        throw new Error("COMPOSE_PANEL_CADDY_SOCKET_PATH is set but COMPOSE_PANEL_CADDY_ENABLED is not true. Enable the integration or remove the socket path.");
+    }
+    if (!posix.isAbsolute(raw)) {
+        throw new Error("COMPOSE_PANEL_CADDY_SOCKET_PATH must be an absolute Unix socket path.");
+    }
+    if (/[\x00-\x1f\x7f]/.test(raw)) throw new Error("COMPOSE_PANEL_CADDY_SOCKET_PATH contains control characters.");
     return raw;
 }
 
@@ -362,6 +387,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         composeEngine: parseComposeEngine(env),
         databaseExplorerUrl: normalizeDatabaseExplorerUrl(env.COMPOSE_PANEL_DATABASE_EXPLORER_URL ?? "", devMode),
         caddyEnabled: parseBool(env, "COMPOSE_PANEL_CADDY_ENABLED", false),
+        caddySocketPath: parseCaddySocketPath(env, parseBool(env, "COMPOSE_PANEL_CADDY_ENABLED", false)),
         hostStacksPathAliases: parsePathAliases(env),
         timeZone: parseTimeZone(env),
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),

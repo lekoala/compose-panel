@@ -1,0 +1,38 @@
+# Compose Panel Caddy helper — systemd socket activation (ADR 0030).
+#
+# The helper runs on the HOST (not in the panel container) as the `caddy`
+# user, one process per request, with no resident daemon. The panel reaches it
+# through the socket below, mounted into the panel container (see
+# docs/deployment.md and deploy/compose.yaml).
+#
+# Install:
+#   1. Build the helper binary (needs Bun 1.4.3+ once, on any machine):
+#        bun build --compile src/scripts/caddy-helper.ts --outfile compose-panel-caddy-helper
+#      Copy the result to /usr/local/bin/compose-panel-caddy-helper on the host.
+#   2. Create the managed directory owned by caddy, with the main Caddyfile
+#      importing it (also documented in docs/deployment.md):
+#        mkdir -p /etc/caddy/compose-panel.d
+#        chown caddy:caddy /etc/caddy/compose-panel.d
+#        chmod 755 /etc/caddy/compose-panel.d
+#      Add to /etc/caddy/Caddyfile (host paths, forward slashes):
+#        import /etc/caddy/compose-panel.d/*.caddy
+#      Then: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+#      and:  systemctl reload caddy
+#   3. Copy these two unit files to /etc/systemd/system/, then:
+#        systemctl daemon-reload
+#        systemctl enable --now caddy-helper.socket
+[Unit]
+Description=Compose Panel Caddy helper socket
+Documentation=https://lekoala.github.io/compose-panel/
+
+[Socket]
+ListenStream=/run/compose-panel/caddy-helper.sock
+SocketUser=caddy
+SocketGroup=caddy
+SocketMode=0660
+RemoveOnStop=yes
+# One helper process per connection; its standard input/output IS the socket.
+Accept=yes
+
+[Install]
+WantedBy=sockets.target

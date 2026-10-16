@@ -1,4 +1,4 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, toolboxPage, databaseSection, domainsSection, type NavSection, type NavigationOptions, type NoteKind, type ToolboxSourceView } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, toolboxPage, databaseSection, domainsSection, type AttachedDomain, type NavSection, type NavigationOptions, type NoteKind, type ToolboxSourceView } from "./html.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { managedBy } from "./deployment.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
@@ -11,7 +11,9 @@ import { createContainerInspector, isContainerId, sanitizeTailLines, type Contai
 import { createActionRunner, type ActionRunner } from "./action-runner.ts";
 import { buildCatalog, buildRunnerArgv, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
 import { buildExplorerUrl, parseDatabaseExplorer } from "./database.ts";
-import { buildSiteFile, isValidDomain, isValidServiceName, isValidStackName, isValidUpstreamPort, normalizeDomain } from "./caddy.ts";
+import { buildSiteFile, isLoopbackHostBinding, isValidDomain, isValidServiceName, isValidStackName, isValidUpstreamPort, normalizeDomain } from "./caddy.ts";
+import { CaddyHelperError, callCaddyHelper } from "./caddy-client.ts";
+import { parseContainerInspect, parseContainerLs } from "./container-state.ts";
 import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
@@ -756,44 +758,84 @@ export function createApp(options: AppOptions): App {
     }
 
     /**
-     * Domains preview (ADR 0030, PR1). GET only, no mutation: validates the
-     * query input and renders the canonical managed file. Query values are
-     * never reflected on failure paths other than the escaped form fields and
-     * the fixed validation notes below.
+     * Domains card (ADR 0030). Reads the attached sites from the helper when
+     * the integration is enabled; a helper that cannot be reached leaves a
+     * warning inside the card and never fails the page. Query values are only
+     * ever reflected through escaped form fields.
      */
-    function domainsPreviewSection(stackName: string, serviceNames: string[], owner: string | null, query: URLSearchParams | null): string {
+    async function domainsCard(
+        stackName: string,
+        csrf: string,
+        serviceNames: string[],
+        owner: string | null,
+        query: URLSearchParams | null,
+        confirmDetach: string | null,
+    ): Promise<string> {
         if (!config.caddyEnabled) return "";
         const domain = (query?.get("caddyDomain") ?? "").slice(0, 253);
         const service = (query?.get("caddyService") ?? "").slice(0, 64);
         const portText = (query?.get("caddyPort") ?? "").slice(0, 5);
         const hasInput = query !== null && (query.has("caddyDomain") || query.has("caddyService") || query.has("caddyPort"));
-        if (owner) {
-            return domainsSection({ stackName, services: serviceNames, owner, domain: "", service: "", port: "" }, { file: null, error: null, hasInput: false });
+        let preview: { file: string | null; error: string | null } = { file: null, error: null };
+        if (hasInput && !owner) {
+            preview = previewSiteFile(stackName, serviceNames, domain, service, portText);
         }
-        if (!hasInput) {
-            return domainsSection({ stackName, services: serviceNames, owner: null, domain: "", service: "", port: "" }, { file: null, error: null, hasInput: false });
+        let attached: AttachedDomain[] = [];
+        let statusError: string | null = null;
+        if (config.caddySocketPath) {
+            try {
+                const response = await callCaddyHelper(config.caddySocketPath, { action: "status" }, { timeoutMs: config.dockerTimeoutMs });
+                if (!response.ok) {
+                    statusError = "The domain list could not be read. Nothing was changed.";
+                } else if (response.action !== "status") {
+                    statusError = "The domain list could not be read. Nothing was changed.";
+                } else {
+                    attached = response.sites
+                        .filter(site => site.stack === stackName)
+                        .map(site => ({ domain: site.domain, service: site.service, port: site.port }));
+                    if (response.unparseable.length > 0) {
+                        statusError = "Some managed files could not be read. Inspect them on the host.";
+                    }
+                }
+            } catch {
+                statusError = "The Caddy helper did not answer. Check the helper socket on the host.";
+            }
         }
-        if (!isValidDomain(domain)) {
-            return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file: null, error: "This domain is not valid. Use a public domain such as app.example.com.", hasInput: true });
-        }
-        if (!isValidServiceName(service)) {
-            return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file: null, error: "This service name is not valid.", hasInput: true });
-        }
-        if (!serviceNames.includes(service)) {
-            return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file: null, error: "This service is not part of this stack.", hasInput: true });
-        }
-        const port = Number(portText);
-        if (!isValidUpstreamPort(port)) {
-            return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file: null, error: "This port is not valid. Use a number between 1 and 65535.", hasInput: true });
-        }
-        if (!isValidStackName(stackName)) {
-            return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file: null, error: "This stack name is not valid.", hasInput: true });
-        }
-        const file = buildSiteFile({ domain: normalizeDomain(domain)!, stack: stackName, service, port });
-        return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file, error: null, hasInput: true });
+        return domainsSection({
+            stackName,
+            csrf,
+            services: serviceNames,
+            owner,
+            attached,
+            statusError,
+            socketReady: config.caddySocketPath !== null,
+            preview: { domain, service, port: portText, file: preview.file, error: preview.error, hasInput },
+            confirmDetach,
+        });
     }
 
-    async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200, query: URLSearchParams | null = null): Promise<Response> {
+    /** Validate preview input and render the canonical file. No mutation. */
+    function previewSiteFile(
+        stackName: string,
+        serviceNames: string[],
+        domain: string,
+        service: string,
+        portText: string,
+    ): { file: string | null; error: string | null } {
+        if (!isValidDomain(domain)) {
+            return { file: null, error: "This domain is not valid. Use a public domain such as app.example.com." };
+        }
+        if (!isValidServiceName(service)) return { file: null, error: "This service name is not valid." };
+        if (!serviceNames.includes(service)) return { file: null, error: "This service is not part of this stack." };
+        const port = Number(portText);
+        if (!isValidUpstreamPort(port)) {
+            return { file: null, error: "This port is not valid. Use a number between 1 and 65535." };
+        }
+        if (!isValidStackName(stackName)) return { file: null, error: "This stack name is not valid." };
+        return { file: buildSiteFile({ domain: normalizeDomain(domain)!, stack: stackName, service, port }), error: null };
+    }
+
+    async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200, query: URLSearchParams | null = null, extras: { confirmDetach?: string | null } = {}): Promise<Response> {
         const stack = await readStackCompose(stacksRoot, name);
         let status: StackDetailStatus;
         try {
@@ -819,7 +861,7 @@ export function createApp(options: AppOptions): App {
             + operationPanel(operation, stack.name)
             + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" })
             + databaseExplorerSection(stack.source)
-            + domainsPreviewSection(stack.name, status.services.map(service => service.name), owner, query)
+            + await domainsCard(stack.name, csrf, status.services.map(service => service.name), owner, query, extras.confirmDetach ?? null)
             + deploymentSection(status.deployed, status.declared, status.state !== "not-created")
             + logsPanel(stack.name, config.logTailLines, config.timeZone, status.services.map(service => service.name))
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
@@ -1112,6 +1154,259 @@ export function createApp(options: AppOptions): App {
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
                 await recordAudit({ event: "operation", result: "refused", actor: clientKey(request, config), stack: name, action, detail: error.message });
                 return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Split a `docker inspect` host binding (`127.0.0.1:8080`, `[::1]:8080`)
+     * into its IP and port. Anything else is not a usable binding.
+     */
+    function splitHostBinding(host: string): { ip: string; port: number } | null {
+        const match = /^\[([^\]]+)\]:(\d+)$/.exec(host) ?? /^([^:[\]]+):(\d+)$/.exec(host);
+        if (!match) return null;
+        const port = Number(match[2]);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+        return { ip: match[1]!, port };
+    }
+
+    /**
+     * Whether the requested port is published by a running container of the
+     * service on the host loopback. Read-only, through the existing
+     * `ContainerInspector` boundary: no new Docker capability. Throws a
+     * `StackError` (409/503) when the port cannot be proven eligible.
+     */
+    async function requireLoopbackPort(project: string, service: string, port: number): Promise<void> {
+        let summaries;
+        try {
+            const listed = await inspector.list();
+            if (listed.code !== 0 || listed.timedOut) {
+                throw new StackError("Docker did not respond, so the upstream port could not be checked. Nothing was changed.", 503);
+            }
+            summaries = parseContainerLs(listed.stdout);
+        } catch (error) {
+            if (error instanceof StackError) throw error;
+            throw new StackError("Docker gave an unexpected answer, so the upstream port could not be checked. Nothing was changed.", 503);
+        }
+        const candidates = summaries
+            .filter(entry => entry.project === project && entry.service === service && entry.state.toLowerCase() === "running")
+            .slice(0, 16);
+        if (candidates.length === 0) {
+            throw new StackError("This service has no running container, so there is no upstream port to check. Start the stack first.", 409);
+        }
+        let inspected = 0;
+        for (const candidate of candidates) {
+            let details;
+            try {
+                const result = await inspector.inspect(candidate.id);
+                if (result.code !== 0 || result.timedOut) continue;
+                details = parseContainerInspect(result.stdout);
+            } catch {
+                continue;
+            }
+            inspected += 1;
+            for (const binding of details.ports) {
+                if (!binding.host) continue;
+                const split = splitHostBinding(binding.host);
+                if (split && split.port === port && isLoopbackHostBinding(split.ip)) return;
+            }
+        }
+        if (inspected === 0) {
+            throw new StackError("Docker did not respond, so the upstream port could not be checked. Nothing was changed.", 503);
+        }
+        throw new StackError("This port is not published on the host loopback by this service. Only loopback-bound ports can be attached.", 409);
+    }
+
+    /** Map a helper refusal code to an honest HTTP status. */
+    function helperRefusalStatus(code: string): number {
+        switch (code) {
+            case "invalid": return 400;
+            case "conflict": return 409;
+            case "unavailable": return 503;
+            default: return 500;
+        }
+    }
+
+    /**
+     * Attach a domain (ADR 0030). Same guards as every mutation (session,
+     * Origin, CSRF, per-stack lock, shutdown/self-update refusal, audit), then
+     * fail-closed Docker checks: the stack must be deployed, the service must
+     * belong to its effective config, and the port must be loopback-published
+     * by a running container. The helper re-validates everything under its own
+     * global lock before publishing and reloading.
+     */
+    async function handleCaddyAttach(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!config.caddyEnabled || !config.caddySocketPath) throw new StackError("Domain management is not enabled.", 404);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        // The body may have arrived long after the session was checked.
+        if (!sessions.isActive(session.id)) return sessionEnded();
+
+        const domain = (form.get("domain") ?? "").trim().slice(0, 253);
+        const serviceParam = (form.get("service") ?? "").trim().slice(0, 64);
+        const portText = (form.get("port") ?? "").trim().slice(0, 5);
+        const prefill = new URLSearchParams({ caddyDomain: domain, caddyService: serviceParam, caddyPort: portText });
+        const fail = (text: string, status: number): Promise<Response> =>
+            renderStackDetail(name, csrf, { kind: "error", text }, status, prefill);
+        const actor = clientKey(request, config);
+        if (!isValidDomain(domain)) {
+            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", detail: "invalid domain" });
+            return fail("This domain is not valid. Nothing was attached.", 400);
+        }
+        if (!isValidServiceName(serviceParam)) {
+            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", detail: "invalid service" });
+            return fail("This service name is not valid. Nothing was attached.", 400);
+        }
+        const port = Number(portText);
+        if (!isValidUpstreamPort(port)) {
+            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", detail: "invalid port" });
+            return fail("This port is not valid. Nothing was attached.", 400);
+        }
+        let owner: string | null = null;
+        try {
+            const detail = await loadStackDetail(stacksRoot, name, provider);
+            owner = managedBy(detail.declared);
+        } catch {
+            owner = null;
+        }
+        if (owner) {
+            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", detail: `managed by ${owner}` });
+            return fail("Routing for this stack is managed externally. Nothing was attached.", 409);
+        }
+        const context = await resolveProjectContext(stacksRoot, name, provider, false);
+        if (context.kind === "invalid") throw new StackError(ENV_NOT_REGULAR, 409);
+        if (context.kind === "ambiguous") {
+            throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack. It will not guess, so nothing was attached.", 409);
+        }
+        if (context.kind === "unavailable") {
+            throw new StackError("Docker did not respond, so the panel could not check this stack. Nothing was attached.", 503);
+        }
+        if (context.kind === "absent") {
+            throw new StackError("This stack is not deployed yet. Use Up first, then attach the domain.", 409);
+        }
+        const names = await provider.listServices({
+            project: context.project ?? undefined,
+            composeFile: context.composeFile,
+            cwd: context.cwd,
+            envFile: context.envFile ?? undefined,
+        });
+        if (names === null) throw new StackError("Docker did not respond, so the service could not be checked. Nothing was attached.", 503);
+        if (!names.includes(serviceParam)) {
+            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam, detail: "unknown service" });
+            return fail("This service is not part of this stack. Nothing was attached.", 409);
+        }
+        try {
+            await requireLoopbackPort(context.project ?? name, serviceParam, port);
+        } catch (error) {
+            if (error instanceof StackError) {
+                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam });
+                return fail(`${error.message}`, error.status);
+            }
+            throw error;
+        }
+        try {
+            const outcome = await locks.run(name, async () => {
+                if (shuttingDown) throw new OperationsDisabledError();
+                if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                if (!sessions.isActive(session.id)) throw new SessionEndedError();
+                return callCaddyHelper(config.caddySocketPath!, { action: "attach", domain, stack: name, service: serviceParam, port }, { timeoutMs: config.operationTimeoutMs });
+            });
+            if (!outcome.ok) {
+                const result = outcome.code === "invalid" || outcome.code === "conflict" ? "refused" : outcome.code === "unknown" ? "unknown" : "failure";
+                await recordAudit({ event: "caddy", result, actor, stack: name, action: "attach", service: serviceParam, detail: `${normalizeDomain(domain)}: ${outcome.code}` });
+                return fail(`${outcome.error} Nothing was attached.`, helperRefusalStatus(outcome.code));
+            }
+            await recordAudit({ event: "caddy", result: "success", actor, stack: name, action: "attach", service: serviceParam, detail: normalizeDomain(domain) ?? domain });
+            return redirect(`${back}?attached=1`, 303);
+        } catch (error) {
+            if (error instanceof CaddyHelperError) {
+                await recordAudit({ event: "caddy", result: "unknown", actor, stack: name, action: "attach", service: serviceParam, detail: "helper unreachable" });
+                return fail("The Caddy helper did not answer. Check the helper socket on the host: the outcome is unknown.", 503);
+            }
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam, detail: error.message });
+                return fail(`${error.message} Nothing was attached.`, 409);
+            }
+            if (error instanceof SessionEndedError) {
+                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam, detail: "session ended" });
+                return sessionEnded();
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Detach a domain (ADR 0030). The first POST renders an explicit
+     * confirmation (works without JavaScript); the confirmed POST removes the
+     * managed file and reloads Caddy through the helper, with rollback on
+     * reload failure. The domain must be attached to this stack right now.
+     */
+    async function handleCaddyDetach(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!config.caddyEnabled || !config.caddySocketPath) throw new StackError("Domain management is not enabled.", 404);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+
+        const rawDomain = (form.get("domain") ?? "").trim().slice(0, 253);
+        const domain = normalizeDomain(rawDomain);
+        const actor = clientKey(request, config);
+        if (!domain || !isValidDomain(domain)) {
+            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: "invalid domain" });
+            return renderStackDetail(name, csrf, { kind: "error", text: "This domain is not valid. Nothing was detached." }, 400);
+        }
+        let attached: { domain: string; service: string; port: number }[] = [];
+        try {
+            const response = await callCaddyHelper(config.caddySocketPath, { action: "status" }, { timeoutMs: config.dockerTimeoutMs });
+            if (response.ok && response.action === "status") {
+                attached = response.sites.filter(site => site.stack === name);
+            }
+        } catch {
+            await recordAudit({ event: "caddy", result: "unknown", actor, stack: name, action: "detach", detail: `${domain}: helper unreachable` });
+            return renderStackDetail(name, csrf, { kind: "error", text: "The Caddy helper did not answer. Check the helper socket on the host: the outcome is unknown." }, 503);
+        }
+        const site = attached.find(entry => entry.domain === domain);
+        if (!site) {
+            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: `${domain}: not attached` });
+            return renderStackDetail(name, csrf, { kind: "error", text: "This domain is not attached to this stack. Nothing was detached." }, 409);
+        }
+        if (form.get("confirm") !== "1") {
+            return renderStackDetail(name, csrf, { kind: "warn", text: `Detach ${domain}? Caddy will reload without it.` }, 200, null, { confirmDetach: domain });
+        }
+        try {
+            const outcome = await locks.run(name, async () => {
+                if (shuttingDown) throw new OperationsDisabledError();
+                if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                if (!sessions.isActive(session.id)) throw new SessionEndedError();
+                return callCaddyHelper(config.caddySocketPath!, { action: "detach", domain, stack: name }, { timeoutMs: config.operationTimeoutMs });
+            });
+            if (!outcome.ok) {
+                const result = outcome.code === "invalid" || outcome.code === "conflict" ? "refused" : outcome.code === "unknown" ? "unknown" : "failure";
+                await recordAudit({ event: "caddy", result, actor, stack: name, action: "detach", detail: `${domain}: ${outcome.code}` });
+                return renderStackDetail(name, csrf, { kind: "error", text: `${outcome.error} Nothing was detached.` }, helperRefusalStatus(outcome.code));
+            }
+            await recordAudit({ event: "caddy", result: "success", actor, stack: name, action: "detach", detail: domain });
+            return redirect(`${back}?detached=1`, 303);
+        } catch (error) {
+            if (error instanceof CaddyHelperError) {
+                await recordAudit({ event: "caddy", result: "unknown", actor, stack: name, action: "detach", detail: `${domain}: helper unreachable` });
+                return renderStackDetail(name, csrf, { kind: "error", text: "The Caddy helper did not answer. Check the helper socket on the host: the outcome is unknown." }, 503);
+            }
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: error.message });
+                return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was detached.` }, 409);
+            }
+            if (error instanceof SessionEndedError) {
+                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: "session ended" });
+                return sessionEnded();
             }
             throw error;
         }
@@ -1889,6 +2184,18 @@ export function createApp(options: AppOptions): App {
             try { return await handleToolboxAction(request, decodeName(toolboxMatch[1]!), session); }
             catch (error) { return routeError(error, session.csrf, safeName(toolboxMatch[1]!)); }
         }
+        const caddyAttachMatch = /^\/stacks\/([^/]+)\/domains\/attach$/.exec(url.pathname);
+        if (caddyAttachMatch) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try { return await handleCaddyAttach(request, decodeName(caddyAttachMatch[1]!), session); }
+            catch (error) { return routeError(error, session.csrf, safeName(caddyAttachMatch[1]!)); }
+        }
+        const caddyDetachMatch = /^\/stacks\/([^/]+)\/domains\/detach$/.exec(url.pathname);
+        if (caddyDetachMatch) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try { return await handleCaddyDetach(request, decodeName(caddyDetachMatch[1]!), session); }
+            catch (error) { return routeError(error, session.csrf, safeName(caddyDetachMatch[1]!)); }
+        }
         if (url.pathname === "/about/check" || url.pathname === "/about/update") {
             if (method !== "POST") return methodNotAllowed("POST");
             try {
@@ -1940,7 +2247,11 @@ export function createApp(options: AppOptions): App {
                     ? { kind: "success" as const, text: "Stack created. No containers were started. Use Up when you are ready to deploy." }
                     : saved === "1"
                     ? { kind: "success" as const, text: "Saved. The running containers are unchanged: use Up to apply the new configuration." }
-                    : saved === "0" ? { kind: "info" as const, text: "No changes to save: the files on disk already match." } : undefined;
+                    : saved === "0" ? { kind: "info" as const, text: "No changes to save: the files on disk already match." }
+                    : url.searchParams.get("attached") === "1"
+                    ? { kind: "success" as const, text: "Domain attached. Caddy reloaded with the new site." }
+                    : url.searchParams.get("detached") === "1"
+                    ? { kind: "success" as const, text: "Domain detached. Caddy reloaded without it." } : undefined;
                 return await renderStackDetail(decodeName(detailMatch[1]!), session.csrf, notice, 200, url.searchParams);
             }
             return htmlResponse(messagePage("Not found", "This page does not exist.", { href: "/", label: "← Back to all stacks" }, pageChrome(session.csrf)), 404);

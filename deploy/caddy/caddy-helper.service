@@ -1,0 +1,28 @@
+# Compose Panel Caddy helper — per-request service (ADR 0030).
+# See caddy-helper.socket for the install steps. Paths below are host paths;
+# adjust them together with the panel's COMPOSE_PANEL_CADDY_SOCKET_PATH.
+[Unit]
+Description=Compose Panel Caddy helper (one request per start)
+Documentation=https://lekoala.github.io/compose-panel/
+Requires=caddy-helper.socket
+After=caddy.service
+
+[Service]
+Type=oneshot
+User=caddy
+Group=caddy
+# The helper only ever writes its managed directory and reads the main
+# Caddyfile; everything else stays read-only. Localhost TCP stays allowed:
+# `caddy reload` talks to Caddy's administration API.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/etc/caddy/compose-panel.d
+StandardInput=socket
+StandardOutput=socket
+Environment=CADDY_MANAGED_DIR=/etc/caddy/compose-panel.d
+Environment=CADDY_MAIN_CONFIG=/etc/caddy/Caddyfile
+Environment=CADDY_BIN=caddy
+Environment=CADDY_COMMAND_TIMEOUT_MS=15000
+ExecStart=/usr/local/bin/compose-panel-caddy-helper

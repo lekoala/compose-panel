@@ -188,10 +188,17 @@ test("database section escapes the label and query values and refuses a non-http
 });
 
 test("domains section renders a preview form with service suggestions", () => {
-    const html = domainsSection(
-        { stackName: "web", services: ["web", "worker"], owner: null, domain: "", service: "", port: "" },
-        { file: null, error: null, hasInput: false },
-    );
+    const html = domainsSection({
+        stackName: "web",
+        csrf: "csrf-token",
+        services: ["web", "worker"],
+        owner: null,
+        attached: [],
+        statusError: null,
+        socketReady: false,
+        preview: { domain: "", service: "", port: "", file: null, error: null, hasInput: false },
+        confirmDetach: null,
+    });
     expect(html).toContain('class="card domains"');
     expect(html).toContain('method="get"');
     expect(html).toContain('name="caddyDomain"');
@@ -200,26 +207,96 @@ test("domains section renders a preview form with service suggestions", () => {
 
 test("domains section escapes the generated file instead of interpreting it", () => {
     const file = "# compose-panel:managed v1\n# compose-panel:stack web\n# compose-panel:service <b>web</b>\n\napp.example.com {\n\treverse_proxy 127.0.0.1:8080\n}\n";
-    const html = domainsSection(
-        { stackName: "web", services: ["web"], owner: null, domain: "app.example.com", service: "web", port: "8080" },
-        { file, error: null, hasInput: true },
-    );
+    const html = domainsSection({
+        stackName: "web",
+        csrf: "csrf-token",
+        services: ["web"],
+        owner: null,
+        attached: [],
+        statusError: null,
+        socketReady: false,
+        preview: { domain: "app.example.com", service: "web", port: "8080", file, error: null, hasInput: true },
+        confirmDetach: null,
+    });
     expect(html).toContain("<pre");
     expect(html).not.toContain("<b>web</b>");
     expect(html).toContain("&lt;b&gt;web&lt;/b&gt;");
 });
 
 test("domains section reports invalid input as a warning and stays read-only for external owners", () => {
-    const invalid = domainsSection(
-        { stackName: "web", services: ["web"], owner: null, domain: "", service: "", port: "" },
-        { file: null, error: "This domain is not valid.", hasInput: true },
-    );
+    const invalid = domainsSection({
+        stackName: "web",
+        csrf: "csrf-token",
+        services: ["web"],
+        owner: null,
+        attached: [],
+        statusError: null,
+        socketReady: false,
+        preview: { domain: "", service: "", port: "", file: null, error: "This domain is not valid.", hasInput: true },
+        confirmDetach: null,
+    });
     expect(invalid).toContain('class="note note-warn"');
     expect(invalid).not.toContain("<pre");
-    const external = domainsSection(
-        { stackName: "web", services: ["web"], owner: "external-deployer", domain: "", service: "", port: "" },
-        { file: null, error: null, hasInput: false },
-    );
+    const external = domainsSection({
+        stackName: "web",
+        csrf: "csrf-token",
+        services: ["web"],
+        owner: "external-deployer",
+        attached: [],
+        statusError: null,
+        socketReady: true,
+        preview: { domain: "", service: "", port: "", file: null, error: null, hasInput: false },
+        confirmDetach: null,
+    });
     expect(external).not.toContain("<form");
     expect(external).not.toContain('name="caddyDomain"');
+});
+
+test("domains section lists attached domains with an application link and a detach form", () => {
+    const html = domainsSection({
+        stackName: "web",
+        csrf: "csrf-token",
+        services: ["web"],
+        owner: null,
+        attached: [{ domain: "app.example.com", service: "web", port: 8080 }],
+        statusError: null,
+        socketReady: true,
+        preview: { domain: "", service: "", port: "", file: null, error: null, hasInput: false },
+        confirmDetach: null,
+    });
+    expect(html).toContain('href="https://app.example.com"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain('action="/stacks/web/domains/detach"');
+    expect(html).toContain('action="/stacks/web/domains/attach"');
+    expect(html).not.toContain("Confirm detach");
+    const confirming = domainsSection({
+        stackName: "web",
+        csrf: "csrf-token",
+        services: ["web"],
+        owner: null,
+        attached: [{ domain: "app.example.com", service: "web", port: 8080 }],
+        statusError: null,
+        socketReady: true,
+        preview: { domain: "", service: "", port: "", file: null, error: null, hasInput: false },
+        confirmDetach: "app.example.com",
+    });
+    expect(confirming).toContain("Confirm detach");
+    expect(confirming).toContain('name="confirm" value="1"');
+});
+
+test("domains section escapes attached values and reports an unreadable status", () => {
+    const html = domainsSection({
+        stackName: "web",
+        csrf: "csrf-token",
+        services: ["web"],
+        owner: null,
+        attached: [{ domain: "app.example.com", service: "<b>web</b>", port: 8080 }],
+        statusError: "The Caddy helper did not answer.",
+        socketReady: true,
+        preview: { domain: "", service: "", port: "", file: null, error: null, hasInput: false },
+        confirmDetach: null,
+    });
+    expect(html).not.toContain("<b>web</b>");
+    expect(html).toContain("&lt;b&gt;web&lt;/b&gt;");
+    expect(html).toContain('class="note note-warn"');
 });

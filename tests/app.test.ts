@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp, type App } from "../src/app.ts";
+import { buildSiteFile, parseSiteFile } from "../src/caddy.ts";
 import { createComposeProvider } from "../src/compose-provider.ts";
 import { AuditLog } from "../src/audit.ts";
 import type { AppConfig } from "../src/config.ts";
@@ -51,6 +52,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         composeEngine: "docker",
         databaseExplorerUrl: null,
         caddyEnabled: false,
+        caddySocketPath: null,
         hostStacksPathAliases: [],
         timeZone: "",
         dockerTimeoutMs: 5000,
@@ -623,6 +625,208 @@ describe("caddy domains preview", () => {
         expect(card).toContain('class="note note-warn"');
         expect(card).not.toContain("<pre");
     });
+});
+
+describe("caddy domain attach and detach", () => {
+    async function csrfOf(app: App, session: string): Promise<string> {
+        const html = await (await authed(app, "/", session)).text();
+        return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+    }
+
+    function postDomains(app: App, session: string, csrf: string, path: string, fields: Record<string, string>) {
+        return authed(app, path, session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, ...fields }).toString(),
+        });
+    }
+
+    test("refuses attach and detach when the integration is disabled", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const fields = { domain: "app.example.com", service: "web", port: "8080" };
+        expect((await postDomains(app, session, csrf, "/stacks/demo/domains/attach", fields)).status).toBe(404);
+        expect((await postDomains(app, session, csrf, "/stacks/demo/domains/detach", { domain: "app.example.com" })).status).toBe(404);
+    });
+
+    test("refuses attach when enabled without a helper socket", async () => {
+        const app = makeApp({ caddyEnabled: true });
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await postDomains(app, session, csrf, "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" })).status).toBe(404);
+    });
+
+    test("refuses invalid attach and detach input without touching Docker", async () => {
+        const app = makeApp({ caddyEnabled: true, caddySocketPath: "/nonexistent-dir/helper.sock" });
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const attach = await postDomains(app, session, csrf, "/stacks/demo/domains/attach", { domain: "not_a_domain", service: "web", port: "8080" });
+        expect(attach.status).toBe(400);
+        expect(await attach.text()).toContain("Nothing was attached");
+        const detach = await postDomains(app, session, csrf, "/stacks/demo/domains/detach", { domain: "not_a_domain" });
+        expect(detach.status).toBe(400);
+        expect(await detach.text()).toContain("Nothing was detached");
+    });
+
+    test("refuses attach with a wrong CSRF token", async () => {
+        const app = makeApp({ caddyEnabled: true, caddySocketPath: "/nonexistent-dir/helper.sock" });
+        const session = await login(app);
+        const response = await postDomains(app, session, "wrong", "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
+        expect(response.status).not.toBe(303);
+    });
+});
+
+// Full attach/detach flow against an in-process fake helper over a real Unix
+// socket, with stubbed Docker reads. Linux only. The fake helper writes real
+// canonical files to a temp directory (honest file coverage) but performs no
+// Caddy call: validate/adapt/reload are covered in tests/caddy-helper.test.ts.
+describe.skipIf(process.platform !== "linux")("caddy domain management flow", () => {
+    let helperCounter = 0;
+
+    async function startFakeHelper(managedDir: string): Promise<{ socketPath: string; close: () => void }> {
+        const socketPath = join(await mkdtemp(join(tmpdir(), "compose-panel-caddy-flow-")), `helper-${process.pid}-${helperCounter++}.sock`);
+        await rm(socketPath, { force: true });
+        const pending = new Map<object, number[]>();
+        const server = Bun.listen({
+            unix: socketPath,
+            socket: {
+                open(socket) { pending.set(socket, []); },
+                data(socket, data) {
+                    const seen = pending.get(socket) ?? [];
+                    for (const byte of data) seen.push(byte);
+                    pending.set(socket, seen);
+                    const text = Buffer.from(seen).toString("utf8");
+                    if (!text.includes("\n")) return;
+                    pending.delete(socket);
+                    void answer(socket, text.slice(0, text.indexOf("\n")));
+                },
+                close(socket) { pending.delete(socket); },
+                error(socket) { try { socket.end(); } catch { /* already gone */ } pending.delete(socket); },
+            },
+        });
+        async function answer(socket: { write: (data: string) => void; end: () => void }, line: string): Promise<void> {
+            let response: unknown;
+            try {
+                const request = JSON.parse(line) as { action: string; domain?: string; stack?: string; service?: string; port?: number };
+                if (request.action === "status") {
+                    const sites = [];
+                    for (const entry of await readdir(managedDir).catch(() => [] as string[])) {
+                        if (!entry.endsWith(".caddy")) continue;
+                        const parsed = parseSiteFile(await readFile(join(managedDir, entry), "utf8").catch(() => ""));
+                        if (parsed.ok) sites.push(parsed.value);
+                    }
+                    response = { ok: true, action: "status", sites, unparseable: [], importConfigured: true };
+                } else if (request.action === "attach" && request.domain && request.stack && request.service && request.port) {
+                    const file = buildSiteFile({ domain: request.domain, stack: request.stack, service: request.service, port: request.port });
+                    await writeFile(join(managedDir, `${request.domain}.caddy`), file);
+                    response = { ok: true, action: "attach", unchanged: false };
+                } else if (request.action === "detach" && request.domain) {
+                    await rm(join(managedDir, `${request.domain}.caddy`), { force: true });
+                    response = { ok: true, action: "detach" };
+                } else {
+                    response = { ok: false, error: "Unknown helper action.", code: "invalid" };
+                }
+            } catch {
+                response = { ok: false, error: "The fake helper failed.", code: "failed" };
+            }
+            try {
+                socket.write(`${JSON.stringify(response)}\n`);
+                socket.end();
+            } catch { /* the client may have gone */ }
+        }
+        return { socketPath, close: () => server.stop() };
+    }
+
+    const containerId = "a".repeat(64);
+
+    function lsLine(): string {
+        const fields = [
+            containerId, "demo-web-1", "nginx:alpine", "running", "Up 2 hours", "",
+            "2026-10-01 10:00:00", "2 hours", "127.0.0.1:8080->80/tcp",
+            "demo-proj", "web", join(root, "demo", "compose.yaml"), "",
+        ];
+        return fields.map(field => JSON.stringify(field)).join("\t");
+    }
+
+    function inspectJson(): string {
+        return JSON.stringify([{
+            Id: containerId,
+            Name: "/demo-web-1",
+            Config: { Image: "nginx:alpine" },
+            Image: "sha256:0",
+            Created: "2026-10-01T10:00:00Z",
+            State: { Status: "running", Running: true, ExitCode: 0 },
+            HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
+            NetworkSettings: { Ports: { "80/tcp": [{ HostIp: "127.0.0.1", HostPort: "8080" }] } },
+            Mounts: [],
+        }]);
+    }
+
+    function fakeInspector(): ContainerInspector {
+        const ok = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+        return {
+            engine: "fake",
+            list: async () => ({ ...ok, stdout: lsLine() }),
+            inspect: async () => ({ ...ok, stdout: inspectJson() }),
+            logs: async () => ok,
+            info: async () => ok,
+            stats: async () => ok,
+            diskUsage: async () => ok,
+        };
+    }
+
+    async function csrfOf(app: App, session: string): Promise<string> {
+        const html = await (await authed(app, "/", session)).text();
+        return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+    }
+
+    function postDomains(app: App, session: string, csrf: string, path: string, fields: Record<string, string>) {
+        return authed(app, path, session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, ...fields }).toString(),
+        });
+    }
+
+    test("attaches, lists with an application link, then detaches in two steps", async () => {
+        await writeFile(join(root, "demo", "compose.yaml"), "services:\n  web:\n    image: nginx:alpine\n");
+        await rm(join(root, "demo", ".env"), { force: true });
+        const managedDir = await mkdtemp(join(tmpdir(), "compose-panel-caddy-sites-"));
+        const helper = await startFakeHelper(managedDir);
+        try {
+            const { provider } = controllableProvider();
+            provider.projectServices = async () => ({ code: 0, stdout: JSON.stringify([{ Service: "web", State: "running" }]), stderr: "", timedOut: false, truncated: false });
+            provider.listServices = async () => ["web"];
+            const app = makeApp({ caddyEnabled: true, caddySocketPath: helper.socketPath }, undefined, provider, undefined, root, fakeInspector());
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+
+            const attached = await postDomains(app, session, csrf, "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
+            expect(attached.status).toBe(303);
+            expect(attached.headers.get("location")).toBe("/stacks/demo?attached=1");
+            expect(await readFile(join(managedDir, "app.example.com.caddy"), "utf8"))
+                .toBe(buildSiteFile({ domain: "app.example.com", stack: "demo", service: "web", port: 8080 }));
+
+            const page = await (await authed(app, "/stacks/demo", session)).text();
+            expect(page).toContain('href="https://app.example.com"');
+            expect(page).toContain('action="/stacks/demo/domains/detach"');
+
+            const confirm = await postDomains(app, session, csrf, "/stacks/demo/domains/detach", { domain: "app.example.com" });
+            expect(confirm.status).toBe(200);
+            expect(await confirm.text()).toContain("Confirm detach");
+
+            const detached = await postDomains(app, session, csrf, "/stacks/demo/domains/detach", { domain: "app.example.com", confirm: "1" });
+            expect(detached.status).toBe(303);
+            expect(detached.headers.get("location")).toBe("/stacks/demo?detached=1");
+            expect(await readdir(managedDir)).toEqual([]);
+            expect(await (await authed(app, "/stacks/demo", session)).text()).toContain("No domains attached.");
+        } finally {
+            helper.close();
+            await rm(managedDir, { recursive: true, force: true });
+            await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+        }
+    }, 30_000);
 });
 
 describe("access diagnostics", () => {

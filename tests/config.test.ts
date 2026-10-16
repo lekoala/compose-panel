@@ -192,11 +192,23 @@ describe("loadConfig Caddy domains preview", () => {
     const user = { ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala" };
 
     test("defaults to disabled", () => {
-        expect(loadConfig(user).caddyEnabled).toBe(false);
+        const config = loadConfig(user);
+        expect(config.caddyEnabled).toBe(false);
+        expect(config.caddySocketPath).toBeNull();
     });
 
     test("parses the opt-in flag", () => {
         expect(loadConfig({ ...user, COMPOSE_PANEL_CADDY_ENABLED: "true" }).caddyEnabled).toBe(true);
         expect(loadConfig({ ...user, COMPOSE_PANEL_CADDY_ENABLED: "yes" }).caddyEnabled).toBe(true);
+    });
+
+    test("parses the helper socket path when enabled", () => {
+        const config = loadConfig({ ...user, COMPOSE_PANEL_CADDY_ENABLED: "true", COMPOSE_PANEL_CADDY_SOCKET_PATH: "/run/compose-panel/caddy-helper.sock" });
+        expect(config.caddySocketPath).toBe("/run/compose-panel/caddy-helper.sock");
+    });
+
+    test("refuses a socket path without the opt-in flag or with a bad shape", () => {
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_CADDY_SOCKET_PATH: "/run/caddy.sock" })).toThrow(/COMPOSE_PANEL_CADDY_ENABLED/);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_CADDY_ENABLED: "true", COMPOSE_PANEL_CADDY_SOCKET_PATH: "run/caddy.sock" })).toThrow(/absolute/);
     });
 });

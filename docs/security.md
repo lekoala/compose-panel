@@ -139,6 +139,51 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   assumption about any explorer-specific setting. See
   [the LibreDB deployment example](integrations/libredb.md).
 
+## Caddy site management (ADR 0030)
+
+- The privileged helper runs on the host as the `caddy` user, activated per
+  request through a systemd socket mounted into the panel container. Its
+  protocol is closed (`status`, `attach`, `detach` with four bounded fields):
+  no free command, no user-supplied path, no shell. The managed directory and
+  the main `Caddyfile` are fixed in the helper's own host-side configuration.
+- Panel → helper calls carry one bounded JSON line each way with an explicit
+  timeout. A helper that cannot be reached, answers too late, too large or
+  malformed leaves an unknown outcome (`503` on mutation, a warning on the
+  page), never a success.
+- Caddy itself is always invoked with a fixed executable and explicit argument
+  arrays (`validate`, `adapt`, `reload` with `--config`/`--adapter`), bounded
+  output and timeouts. `caddy validate` alone is not trusted to prove the
+  integration: the helper checks the `import` text in the main `Caddyfile`
+  before publishing, and the adapted JSON for the expected route before
+  reloading. A missing import refuses before anything is written.
+- Ownership is enforced by a strict file header. Foreign files and externally
+  modified managed files are refused, never overwritten or adopted. Repeating
+  an identical attach is a no-op without reload; changing a mapping requires
+  detach first.
+- Concurrency: every attach/detach holds the panel's per-stack lock (so a
+  self-update start refuses while one runs, and shutdown drains it) and the
+  helper serializes the whole prepare → reload sequence behind an exclusive
+  lock directory with stale-holder expiry. External writers can take the same
+  lock path; otherwise coordination with them is best-effort and documented.
+- Rollback is honest: a failed reload restores the previous file and reloads
+  that; a second failure is reported as unknown requiring host intervention.
+  Validation/adapt failures remove the unpublished candidate without any
+  reload, since the running configuration was never touched.
+- The panel verifies before calling: session, allowed Origin and CSRF on both
+  endpoints, deployed project identity resolved fail-closed, service
+  membership against `config --services`, and the port against the
+  loopback-bound (`127.0.0.1`/`::1`) published ports of the service's running
+  containers, read through the existing read-only inspector. The helper
+  re-validates every field under its lock.
+- The panel never fetches the domain (no SSRF surface by construction) and
+  never stores or logs anything beyond the domain, stack, service and port —
+  all bounded, all HTML-escaped, with `noopener noreferrer` on the
+  application link. Audit events `caddy` (`attach`/`detach`, with stack,
+  service and domain) record starts, refusals, failures and unknowns.
+- `stack.managed-by` stays display-only: read-only routing for externally
+  deployed stacks is a workflow refusal, not a trust signal, and it never
+  disables the panel's other actions.
+
 ## Self-update
 - `POST /about/check` (pull the panel's own tag) and `POST /about/update` (start the updater) require a session, an allowed Origin and the CSRF token, are refused during shutdown and are recorded in the activity log (`self-update-check`, `self-update`). See [ADR 0018](adr/0018-self-update.md).
 - Nothing comes from the browser except the target image ID, which must be a `sha256:` ID equal to the image the tag points to when the request is handled. Project, service, paths, image reference, socket source, user and groups are read from Docker (`/proc/self/mountinfo`, then `container inspect` of the panel's own container) and validated: plain absolute paths without `..` or CSV-breaking characters, Compose and env files inside the deployment directory, a tag reference (not a digest or ID), a socket bind mount. Anything unexpected disables the feature with a reason.
