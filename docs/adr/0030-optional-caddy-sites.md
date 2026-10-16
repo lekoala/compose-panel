@@ -200,6 +200,38 @@ security boundary, and it never disables the panel's other actions.
 Opt-in. When the integration is disabled, the panel behaves exactly as before:
 no Domains section, no socket access, no new dependency.
 
+### Installation (amendment, after 0.5.0)
+
+Host setup is one administrator operation, separate from the day-to-day
+attach/detach the helper allows: `scripts/setup-caddy.sh --check` (read-only)
+then `--install` (explicit confirmation, or `--yes`). It supports exactly one
+layout — Caddy as the host systemd service `caddy` running
+`/etc/caddy/Caddyfile`, the panel deployed with `deploy/compose.yaml` — and
+refuses anything else, including a Caddy running in a container, rather than
+half-installing. Every step is idempotent and backs up what it edits.
+
+- The helper is compiled from the running panel image, offline
+  (`--network none`): same sources and version as the panel, host
+  architecture, no Bun or download on the host. Re-running `--install` after a
+  panel update recompiles it.
+- The only edit to the main `Caddyfile` is appending the one `import` line,
+  after a backup, validated as the `caddy` user before `systemctl reload
+  caddy`, restored on failure. An existing import of the managed directory
+  with another pattern is refused, never rewritten. This is an installation
+  step run by the administrator; the helper itself still never edits that file.
+- `deploy/compose.yaml` mounts `/run/compose-panel` read-only unconditionally,
+  so the script never edits a versioned file (a local change would conflict
+  with the next `git pull`); the script only appends the two settings to the
+  untracked `compose-panel.env`, refusing other values already set.
+- The panel is recreated and verified (healthy, mount present, helper status
+  read from inside the container); a panel that does not come back healthy
+  gets its previous settings back.
+
+No installer framework, no interactive wizard, no uninstall automation (the
+removal steps stay documented). The file-editing steps are tested on
+temporary files (`tests/setup-caddy.test.ts`); the full run is part of the
+manual verification on the target host.
+
 ## Consequences
 
 - Landed in two steps: first the pure domain model, validation, canonical file

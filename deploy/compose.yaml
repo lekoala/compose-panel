@@ -32,12 +32,14 @@ services:
       # Same path on both sides, or project matching breaks. Adjust both the
       # mount AND STACKS_DIR together if your stacks live elsewhere.
       - /opt/stacks:/opt/stacks
-      # Optional Caddy helper socket (ADR 0030). Mount the DIRECTORY, not the
-      # socket file: restarting caddy-helper.socket recreates the socket, and a
-      # file bind mount would keep pointing at the removed one. Same path on
-      # both sides; read-only is enough to connect. Uncomment together with
-      # COMPOSE_PANEL_CADDY_* in compose-panel.env.
-      # - /run/compose-panel:/run/compose-panel:ro
+      # Caddy helper socket directory (ADR 0030), always mounted so enabling
+      # the integration never requires editing this file. Unused (an empty
+      # directory on /run) until scripts/setup-caddy.sh installs the helper
+      # and sets COMPOSE_PANEL_CADDY_* in compose-panel.env. The DIRECTORY, not
+      # the socket file: restarting caddy-helper.socket recreates the socket,
+      # and a file bind mount would keep pointing at the removed one. Same path
+      # on both sides; read-only is enough to connect.
+      - /run/compose-panel:/run/compose-panel:ro
     env_file:
       - compose-panel.env
     environment:

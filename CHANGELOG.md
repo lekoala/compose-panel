@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Caddy site management setup in one command (ADR 0030 amendment):
+  `sudo bash scripts/setup-caddy.sh --check` lists what is in place and what
+  would change, without changing anything; `--install` applies it after an
+  explicit confirmation (`--yes` for automation). It compiles the helper from
+  the running panel image (offline, same version, host architecture: no Bun
+  on the host), installs the systemd units, appends the `import` line to the
+  `Caddyfile` (backup, validation as `caddy`, reload, restore on failure),
+  adds the two settings to `compose-panel.env`, then recreates the panel and
+  checks it reaches the helper. Idempotent; supports only a host Caddy
+  systemd service with `/etc/caddy/Caddyfile` and refuses other layouts,
+  including Caddy in a container. Re-run it after a panel update to rebuild
+  the helper.
+- `deploy/compose.yaml` now always mounts `/run/compose-panel` read-only (an
+  empty directory until the helper is installed), so enabling Caddy site
+  management never requires editing that versioned file.
+
 ## 0.5.0
 
 - Optional Caddy site management (ADR 0030): a **Domains** card on the stack

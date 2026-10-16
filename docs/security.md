@@ -141,6 +141,12 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 
 ## Caddy site management (ADR 0030)
 
+- Installation (`scripts/setup-caddy.sh`) is a separate, root-run
+  administrator step with an explicit confirmation: it is the only thing that
+  appends the `import` line to the main `Caddyfile` (backup, validation,
+  restore on failure). The helper binary is compiled offline from the panel
+  image already trusted on the host; nothing is downloaded.
+
 - The privileged helper runs on the host as the `caddy` user, activated per
   request through a systemd socket mounted into the panel container. Its
   protocol is closed (`status`, `attach`, `detach` with four bounded fields):

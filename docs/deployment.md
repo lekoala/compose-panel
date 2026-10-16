@@ -306,6 +306,59 @@ real attach/detach through a small privileged helper on the host. Without the
 helper, Domains stays a preview (the managed file is shown, nothing is
 written or reloaded).
 
+### Setup with the script
+
+Supported layout: Caddy installed on the host as the systemd service `caddy`
+running `/etc/caddy/Caddyfile` (the official package), and the panel deployed
+with `deploy/compose.yaml`. A Caddy that runs in a Docker container is not
+supported by the helper: the script refuses it instead of half-installing.
+
+From the Compose Panel checkout on the host:
+
+```sh
+sudo bash scripts/setup-caddy.sh --check     # read-only: checks and the planned changes
+sudo bash scripts/setup-caddy.sh --install   # applies them after you type "yes"
+```
+
+`--check` changes nothing: it verifies the host (Linux, systemd, root, host
+Caddy service and its `Caddyfile`, the `caddy` user, administration API not
+disabled, the panel container and its `/run/compose-panel` mount) and lists
+what `--install` would do. Any failed check stops both modes before a single
+change. `--install` then, each step idempotent (a second run changes nothing):
+
+1. creates `/etc/caddy/compose-panel.d` owned by `caddy`;
+2. compiles the helper **from the panel image that is running**, offline
+   (`docker run --network none … bun build --compile`): same version as the
+   panel, host architecture, no Bun on the host and no extra download;
+   installs it to `/usr/local/bin/compose-panel-caddy-helper`;
+3. installs and enables the systemd socket and service units;
+4. appends `import /etc/caddy/compose-panel.d/*.caddy` to the `Caddyfile`
+   after a timestamped backup, validates as the `caddy` user, then
+   `systemctl reload caddy`; either failure restores the backup. An existing
+   import of that directory with another pattern is refused, never rewritten.
+   It also runs `caddy validate` once inside the helper's sandbox and warns if
+   that fails (see "Systemd sandbox" below);
+5. adds `COMPOSE_PANEL_CADDY_ENABLED=true` and
+   `COMPOSE_PANEL_CADDY_SOCKET_PATH` to `deploy/compose-panel.env` after a
+   backup (other values already set there are refused, not overwritten);
+6. recreates the panel and checks it is healthy, mounts the socket directory
+   and reaches the helper from inside the container. If the panel does not
+   come back healthy, the previous `compose-panel.env` is restored and the
+   panel recreated again.
+
+`--yes` skips the confirmation prompt, for automation. Run `--install` again
+after each panel image update (including **About → Update**): it recompiles
+the helper from the new image so both sides keep the same protocol.
+
+`deploy/compose.yaml` always mounts `/run/compose-panel` read-only, so the
+script never edits that versioned file; on a host without the helper it is an
+empty directory.
+
+### Manual setup
+
+The script performs exactly these steps; they stay documented for other
+layouts and for review.
+
 1. Prepare Caddy (host operation, once). The helper owns exactly one
    directory; your main `Caddyfile` imports it:
 
@@ -328,13 +381,17 @@ written or reloaded).
     Keep Caddy's administration API enabled (the default): `caddy reload`
     uses it, and the helper refuses to work without it.
 
-2. Build and install the helper (host operation, once). Any machine with
-   Bun 1.4.3+ builds it; the host itself needs no Bun, no Node, no extra
-   dependency — the output is a single self-contained binary:
+2. Build and install the helper (host operation, once per panel version).
+   The panel image already contains Bun and the sources, so the host needs no
+   Bun, no Node, no extra dependency — the output is a single self-contained
+   binary:
 
     ```sh
-    bun build --compile src/scripts/caddy-helper.ts --outfile compose-panel-caddy-helper
-    install -m 755 compose-panel-caddy-helper /usr/local/bin/compose-panel-caddy-helper
+    out=$(mktemp -d)
+    docker run --rm --network none --entrypoint bun -v "$out:/out" \
+      "$(docker inspect -f '{{.Image}}' compose-panel)" \
+      build --compile src/scripts/caddy-helper.ts --outfile /out/compose-panel-caddy-helper
+    install -m 755 "$out/compose-panel-caddy-helper" /usr/local/bin/compose-panel-caddy-helper
     cp deploy/caddy/caddy-helper.socket "deploy/caddy/caddy-helper@.service" /etc/systemd/system/
     systemctl daemon-reload
     systemctl enable --now caddy-helper.socket
@@ -345,8 +402,8 @@ written or reloaded).
     only runs `caddy validate|adapt|reload` with fixed arguments — no shell,
     no other command.
 
-3. Expose the socket to the panel. In `deploy/compose.yaml`, uncomment the
-   helper socket mount. It mounts the socket's **directory**
+3. Expose the socket to the panel. `deploy/compose.yaml` already mounts the
+   socket's **directory**
    (`/run/compose-panel`, read-only, same path on both sides), not the socket
    file: restarting `caddy-helper.socket` recreates the socket, and a file
    bind mount would keep pointing at the removed one until the panel
@@ -363,7 +420,7 @@ written or reloaded).
     Then `docker compose -f deploy/compose.yaml up -d --no-deps panel`. A
     socket path without the flag, or a relative path, is refused at startup.
 
-Behavior once enabled:
+### Behavior once enabled
 
 - The stack page lists the domains attached to that stack, each with an
   application link (`https://…`, new tab, no opener access).
@@ -415,12 +472,18 @@ not loosen the sandbox preventively; if the check below shows a write is
 really needed, add a targeted `ReadWritePaths=` for that exact path only.
 
 Removal without impact: detach every domain (or delete the managed files by
-hand and `systemctl reload caddy`), set `COMPOSE_PANEL_CADDY_ENABLED=false`,
-remove the socket mount, and stop the socket (`systemctl disable --now
-caddy-helper.socket`). Stacks keep running and stay manageable by the
+hand and `systemctl reload caddy`), set `COMPOSE_PANEL_CADDY_ENABLED=false`
+and remove `COMPOSE_PANEL_CADDY_SOCKET_PATH`, recreate the panel, and stop
+the socket (`systemctl disable --now caddy-helper.socket`). The import line
+can stay in the `Caddyfile`: it matches nothing once the directory is empty. Stacks keep running and stay manageable by the
 `docker compose` CLI throughout.
 
 Manual verification (release gate, on the target host with its real Caddy):
+
+- [ ] `scripts/setup-caddy.sh --check` reports every check and the planned
+      changes without changing anything; `--install` applies them, and a
+      second `--install` adds nothing (no duplicate import or setting, no new
+      `Caddyfile` or `compose-panel.env` backup).
 
 - [ ] Attach a domain to a loopback-bound service: the managed file appears
       with the exact ownership header, `caddy adapt` contains the route, and
