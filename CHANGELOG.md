@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - Optional Caddy site management (ADR 0030): a **Domains** card on the stack
   page attaches a public domain to a service port published on `127.0.0.1`
