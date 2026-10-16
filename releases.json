@@ -1,4 +1,11 @@
 {
   "schema": 1,
-  "releases": []
+  "releases": [
+    {
+      "version": "0.4.0",
+      "digest": "sha256:47b7f9eb1f9f6eafae85a6ab4fbbec3b417a31315b85dae1054e7d1ff92abc2c",
+      "revision": "ec896926199c71dc16e988e0724e054ae2bbd922",
+      "recordedAt": "2026-10-16T12:01:27.083Z"
+    }
+  ]
 }
