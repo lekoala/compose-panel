@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -239,6 +239,92 @@ describe("attach", () => {
             lockOptions: { staleMs: 60_000, waitMs: 1000 },
         });
         expect(response).toEqual({ ok: true, action: "attach", unchanged: false });
+    });
+
+    test("concurrent reclaims of the same dead lock do not overlap", async () => {
+        const proc = Bun.spawn([process.execPath, "-e", ""], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+        const dead = proc.pid;
+        await proc.exited;
+        const lock = join(managedDir, ".lock");
+        await mkdir(lock);
+        await writeFile(join(lock, "owner"), `${dead}:crashed`, { flag: "wx" });
+        let active = 0;
+        let maxActive = 0;
+        const fake = fakeCaddyRunner({ adaptHosts: ["a.example.com", "b.example.com"] });
+        const slow: HelperDeps["runCaddy"] = async (args, options) => {
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            try {
+                await Bun.sleep(120);
+                return fake.run(args, options);
+            } finally {
+                active -= 1;
+            }
+        };
+        const deps: HelperDeps = { runCaddy: slow, lockOptions: { staleMs: 30, waitMs: 10_000 } };
+        const [first, second] = await Promise.all([
+            runHelperRequest({ action: "attach", domain: "a.example.com", stack: "web", service: "web", port: 8080 }, env, deps),
+            runHelperRequest({ action: "attach", domain: "b.example.com", stack: "web", service: "web", port: 8081 }, env, deps),
+        ]);
+        expect(first.ok).toBe(true);
+        expect(second.ok).toBe(true);
+        expect(maxActive).toBe(1);
+        expect(await managedFiles()).toEqual(["a.example.com.caddy", "b.example.com.caddy"]);
+        expect(await lstat(lock).catch(() => null)).toBe(null);
+    });
+
+    test("a validation failure with an unremovable candidate reports unknown", async () => {
+        const sitePath = join(managedDir, "app.example.com.caddy");
+        const fake = fakeCaddyRunner({ validate: "fail" });
+        const blocking: HelperDeps["runCaddy"] = async (args, options) => {
+            if (args[0] === "validate") {
+                // Leave a non-empty directory behind: unlink must fail.
+                await rm(sitePath, { recursive: true, force: true });
+                await mkdir(sitePath, { recursive: true });
+                await writeFile(join(sitePath, "kept.txt"), "kept");
+                return { ...okResult, code: 1, stderr: "invalid" };
+            }
+            return fake.run(args, options);
+        };
+        const response = await runHelperRequest({ ...attach }, env, { runCaddy: blocking });
+        expect(response).toEqual({ ok: false, error: expect.stringContaining("unknown"), code: "unknown" });
+        await rm(sitePath, { recursive: true, force: true });
+    });
+
+    test("a detach whose backup cannot be restored reports unknown, not restored", async () => {
+        const fake = fakeCaddyRunner({ reload: ["ok", "fail", "ok"] });
+        await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
+        const sitePath = join(managedDir, "app.example.com.caddy");
+        const blocking: HelperDeps["runCaddy"] = async (args, options) => {
+            const result = await fake.run(args, options);
+            if (args[0] === "reload" && fake.calls.filter(call => call[0] === "reload").length === 2) {
+                // Occupy the site path so rename(backup, path) fails.
+                await mkdir(sitePath, { recursive: true });
+                await writeFile(join(sitePath, "kept.txt"), "kept");
+            }
+            return result;
+        };
+        const blockingCalls: string[][] = fake.calls;
+        const response = await runHelperRequest({ action: "detach", domain: "app.example.com", stack: "web" }, env, { runCaddy: blocking });
+        expect(response).toEqual({ ok: false, error: expect.stringContaining("unknown"), code: "unknown" });
+        expect(blockingCalls.filter(call => call[0] === "reload")).toHaveLength(2);
+        await rm(sitePath, { recursive: true, force: true });
+    });
+
+    test.skipIf(process.platform !== "linux")("a symlinked managed directory is refused without writing through it", async () => {
+        const target = join(dir, "real-target");
+        await mkdir(target, { recursive: true });
+        const link = join(dir, "linked.d");
+        await symlink(target, link);
+        const linkEnv: HelperEnv = { ...env, managedDir: link };
+        const fake = fakeCaddyRunner();
+        const response = await runHelperRequest({ ...attach }, linkEnv, { runCaddy: fake.run });
+        expect(response.ok).toBe(false);
+        expect((response as { code: string }).code).toBe("unavailable");
+        expect(await readdir(target)).toEqual([]);
+        expect(fake.calls).toEqual([]);
+        const status = await runHelperRequest({ action: "status" }, linkEnv, { runCaddy: fake.run });
+        expect(status).toMatchObject({ ok: true, action: "status", sites: [] });
     });
 
     test("slow writers never overlap, even past the stale timeout", async () => {

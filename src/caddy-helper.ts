@@ -131,12 +131,23 @@ function sitePath(managedDir: string, domain: string): string {
     return join(managedDir, `${domain}.caddy`);
 }
 
-async function ensureManagedDir(managedDir: string): Promise<void> {
+async function assertManagedDirUsable(managedDir: string): Promise<void> {
     const info = await lstat(managedDir).catch(() => null);
-    if (!info || !info.isDirectory() || info.isSymbolicLink()) {
+    if (!info) {
         // Created once by the install step with the right owner; recreated
         // here only when absent so a fresh host keeps working.
         await mkdir(managedDir, { recursive: true, mode: 0o755 });
+        const created = await lstat(managedDir).catch(() => null);
+        if (!created || created.isSymbolicLink() || !created.isDirectory()) {
+            throw new HelperConfigError("CADDY_MANAGED_DIR must be a directory, not a symlink or file.");
+        }
+        return;
+    }
+    // A symlinked managed directory would redirect every write (O_NOFOLLOW on
+    // the final file does not protect parent components), so refuse it
+    // instead of following it.
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+        throw new HelperConfigError("CADDY_MANAGED_DIR must be a directory, not a symlink or file.");
     }
 }
 
@@ -151,13 +162,25 @@ async function ensureManagedDir(managedDir: string): Promise<void> {
  * records `pid:token` in `<lock>/owner`, and a contender steals the lock
  * only when that PID no longer exists (or when an ownerless directory is
  * older than the stale timeout, covering a holder that crashed between the
- * `mkdir` and the owner write). A live holder is waited on, never stolen, so
- * long validations and reloads cannot cause two overlapping mutations — and
- * the release only removes a lock still owned by this holder, never
- * another writer's.
+ * `mkdir` and the owner write). Reclamation itself is exclusive behind a
+ * short-lived `.lock.reclaim` directory: the winner re-reads the lock while
+ * holding it, so two contenders that both observed the same dead owner cannot
+ * both delete — the loser re-reads a live owner and waits. A live holder is
+ * waited on, never stolen, so long validations and reloads cannot cause two
+ * overlapping mutations — and the release only removes a lock still owned by
+ * this holder, never another writer's.
+ *
+ * External writers using the documented `mkdir` + `owner` protocol get the
+ * same guarantee only when they use the same reclaim discipline; otherwise
+ * coordination with them stays best-effort. The managed directory is checked
+ * before waiting and again once the lock is held, so a directory swapped for
+ * a symlink is refused instead of followed (point-in-time checks against a
+ * privileged local writer racing `rename` itself, like backups).
  */
 async function withHelperLock<T>(managedDir: string, deps: HelperDeps, fn: () => Promise<T>): Promise<T> {
+    await assertManagedDirUsable(managedDir);
     const lockPath = join(managedDir, LOCK_NAME);
+    const reclaimPath = `${lockPath}.reclaim`;
     const ownerPath = join(lockPath, OWNER_NAME);
     const now = deps.now ?? Date.now;
     const sleep = deps.sleep ?? Bun.sleep;
@@ -199,9 +222,42 @@ async function withHelperLock<T>(managedDir: string, deps: HelperDeps, fn: () =>
             await sleep(100);
             continue;
         }
-        await rm(lockPath, { recursive: true, force: true }).catch(() => {});
+        // Stale candidate. Reclaim exclusively: only one contender may delete
+        // the dead lock. The winner re-reads the owner while holding the
+        // reclaim directory; the loser sees a fresh live owner and waits.
+        let reclaimHeld = false;
+        try {
+            try {
+                await mkdir(reclaimPath);
+                reclaimHeld = true;
+            } catch {
+                const reclaimInfo = await lstat(reclaimPath).catch(() => null);
+                if (reclaimInfo && !reclaimInfo.isDirectory()) {
+                    await rm(reclaimPath, { recursive: true, force: true }).catch(() => {});
+                } else if (reclaimInfo && now() - reclaimInfo.mtimeMs > staleMs) {
+                    // A reclaimer that crashed mid-reclaim must not block
+                    // forever; its section is milliseconds, so expiry by age
+                    // only ever fires for a dead holder.
+                    await rm(reclaimPath, { recursive: true, force: true }).catch(() => {});
+                }
+                if (now() >= deadline) throw new HelperBusyError();
+                await sleep(100);
+                continue;
+            }
+            const freshInfo = await lstat(lockPath).catch(() => null);
+            if (!freshInfo) continue;
+            if (!freshInfo.isDirectory()) throw new HelperBusyError();
+            const freshOwner = await readFile(ownerPath, "utf8").catch(() => null);
+            if (freshOwner !== null && isOwnerAlive(freshOwner)) continue;
+            if (freshOwner === null && now() - freshInfo.mtimeMs <= staleMs) continue;
+            await rm(lockPath, { recursive: true, force: true }).catch(() => {});
+        } finally {
+            if (reclaimHeld) await rm(reclaimPath, { recursive: true, force: true }).catch(() => {});
+        }
     }
+    // The directory could have been swapped while waiting for the lock.
     try {
+        await assertManagedDirUsable(managedDir);
         return await fn();
     } finally {
         // Only remove our own lock: a contender that stole it meanwhile (our
@@ -239,6 +295,30 @@ async function readSiteFile(path: string): Promise<string | null> {
         return await handle.readFile("utf8");
     } finally {
         await handle.close();
+    }
+}
+
+/**
+ * Remove a published candidate. Returns true when the path is absent
+ * afterwards. A failed `unlink` that leaves the file behind must not be
+ * reported as "nothing was applied": the next reload would load it.
+ */
+async function removePublishedFile(path: string): Promise<boolean> {
+    try {
+        await unlink(path);
+        return true;
+    } catch {
+        return (await lstat(path).catch(() => null)) === null;
+    }
+}
+
+/** Restore a detached file. Returns true only when the rename succeeded. */
+async function restoreDetachedFile(backup: string, path: string): Promise<boolean> {
+    try {
+        await rename(backup, path);
+        return true;
+    } catch {
+        return false;
     }
 }
 
@@ -308,7 +388,11 @@ async function reloadConfig(runCaddy: HelperDeps["runCaddy"], mainConfig: string
 }
 
 async function handleStatus(env: HelperEnv): Promise<HelperResponse> {
-    await ensureManagedDir(env.managedDir).catch(() => {});
+    try {
+        await assertManagedDirUsable(env.managedDir);
+    } catch {
+        return { ok: true, action: "status", sites: [], unparseable: [], importConfigured: false };
+    }
     const sites: CaddySiteRequest[] = [];
     const unparseable: string[] = [];
     const entries = await readdir(env.managedDir).catch(() => [] as string[]);
@@ -387,18 +471,26 @@ async function handleAttach(env: HelperEnv, deps: HelperDeps, raw: Record<string
             await publishSiteFile(path, candidate);
             const valid = await validateConfig(runCaddy, env.mainConfig);
             if (valid.code !== 0 || valid.timedOut) {
-                await unlink(path).catch(() => {});
+                if (!(await removePublishedFile(path))) {
+                    return refused("Caddy rejected the configuration and the unpublished file could not be removed. Check Caddy on the host: the outcome is unknown.", "unknown");
+                }
                 return refused("Caddy rejected the configuration. Nothing was applied.", "failed");
             }
             const adapt = await runCaddy(["adapt", "--config", env.mainConfig, "--adapter", "caddyfile"], { maxBytes: ADAPT_MAX_BYTES });
             if (adapt.code !== 0 || adapt.timedOut || adapt.truncated || !adaptContainsDomain(adapt.stdout, inputs.domain)) {
-                await unlink(path).catch(() => {});
+                if (!(await removePublishedFile(path))) {
+                    return refused("The domain is missing from the Caddy configuration and the unpublished file could not be removed. Check Caddy on the host: the outcome is unknown.", "unknown");
+                }
                 return refused("The domain is missing from the Caddy configuration. The import may not be effective. Nothing was applied.", "failed");
             }
             const reloaded = await reloadConfig(runCaddy, env.mainConfig);
             if (reloaded.code === 0 && !reloaded.timedOut) return { ok: true, action: "attach", unchanged: false };
-            // Roll back to the previous state (no file) and reload that.
-            await unlink(path).catch(() => {});
+            // Roll back to the previous state (no file) and reload that. The
+            // restored state may only be claimed when the file is actually
+            // gone; otherwise the next reload would still load the candidate.
+            if (!(await removePublishedFile(path))) {
+                return refused("Caddy did not reload and the unpublished file could not be removed. Check Caddy on the host: the outcome is unknown.", "unknown");
+            }
             const restored = await reloadConfig(runCaddy, env.mainConfig);
             if (restored.code === 0 && !restored.timedOut) {
                 return refused("Caddy did not reload. The previous configuration was restored.", "failed");
@@ -407,6 +499,7 @@ async function handleAttach(env: HelperEnv, deps: HelperDeps, raw: Record<string
         });
     } catch (error) {
         if (error instanceof HelperBusyError) return refused(error.message, "conflict");
+        if (error instanceof HelperConfigError) return refused("The managed directory is not usable. Check the helper configuration on the host: nothing was changed.", "unavailable");
         throw error;
     }
 }
@@ -443,8 +536,13 @@ async function handleDetach(env: HelperEnv, deps: HelperDeps, raw: Record<string
                 await unlink(backup).catch(() => {});
                 return { ok: true, action: "detach" };
             }
-            // Restore the file and reload the restored configuration.
-            await rename(backup, path).catch(() => {});
+            // Restore the file and reload the restored configuration. The
+            // restored state may only be claimed when the rename actually
+            // succeeded: otherwise the file is still absent while the running
+            // configuration still serves it.
+            if (!(await restoreDetachedFile(backup, path))) {
+                return refused("Caddy did not reload and the previous configuration could not be restored. Check Caddy on the host: the outcome is unknown.", "unknown");
+            }
             const restored = await reloadConfig(runCaddy, env.mainConfig);
             if (restored.code === 0 && !restored.timedOut) {
                 return refused("Caddy did not reload. The previous configuration was restored.", "failed");
@@ -453,6 +551,7 @@ async function handleDetach(env: HelperEnv, deps: HelperDeps, raw: Record<string
         });
     } catch (error) {
         if (error instanceof HelperBusyError) return refused(error.message, "conflict");
+        if (error instanceof HelperConfigError) return refused("The managed directory is not usable. Check the helper configuration on the host: nothing was changed.", "unavailable");
         throw error;
     }
 }

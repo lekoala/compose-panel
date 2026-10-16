@@ -1233,10 +1233,11 @@ export function createApp(options: AppOptions): App {
     /**
      * Attach a domain (ADR 0030). Same guards as every mutation (session,
      * Origin, CSRF, per-stack lock, shutdown/self-update refusal, audit), then
-     * fail-closed Docker checks: the stack must be deployed, the service must
-     * belong to its effective config, and the port must be loopback-published
-     * by a running container. The helper re-validates everything under its own
-     * global lock before publishing and reloading.
+     * fail-closed Docker checks resolved under the per-stack lock: the stack
+     * must be deployed, the service must belong to its effective config, and
+     * the port must be loopback-published by a running container. The helper
+     * re-validates the request fields under its own global lock before
+     * publishing and reloading.
      */
     async function handleCaddyAttach(request: Request, name: string, session: Session): Promise<Response> {
         const csrf = session.csrf;
@@ -1269,49 +1270,43 @@ export function createApp(options: AppOptions): App {
             await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", detail: "invalid port" });
             return fail("This port is not valid. Nothing was attached.", 400);
         }
-        const owner: string | null = await readStackOwner(name);
-        if (owner) {
-            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", detail: `managed by ${owner}` });
-            return fail("Routing for this stack is managed externally. Nothing was attached.", 409);
-        }
-        const context = await resolveProjectContext(stacksRoot, name, provider, false);
-        if (context.kind === "invalid") throw new StackError(ENV_NOT_REGULAR, 409);
-        if (context.kind === "ambiguous") {
-            throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack. It will not guess, so nothing was attached.", 409);
-        }
-        if (context.kind === "unavailable") {
-            throw new StackError("Docker did not respond, so the panel could not check this stack. Nothing was attached.", 503);
-        }
-        if (context.kind === "absent") {
-            throw new StackError("This stack is not deployed yet. Use Up first, then attach the domain.", 409);
-        }
-        const names = await provider.listServices({
-            project: context.project ?? undefined,
-            composeFile: context.composeFile,
-            cwd: context.cwd,
-            envFile: context.envFile ?? undefined,
-        });
-        if (names === null) throw new StackError("Docker did not respond, so the service could not be checked. Nothing was attached.", 503);
-        if (!names.includes(serviceParam)) {
-            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam, detail: "unknown service" });
-            return fail("This service is not part of this stack. Nothing was attached.", 409);
-        }
-        try {
-            await requireLoopbackPort(context.project ?? name, serviceParam, port);
-        } catch (error) {
-            if (error instanceof StackError) {
-                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam });
-                return fail(`${error.message}`, error.status);
-            }
-            throw error;
-        }
         try {
             // Joins the shared shutdown drain like saves: a SIGTERM waits for
-            // the helper call instead of cutting it mid-reload.
+            // the helper call instead of cutting it mid-reload. Every Docker
+            // check below runs inside the per-stack lock: owner, project
+            // identity, service membership and the loopback port are
+            // re-resolved at mutation time, so a concurrent save or operation
+            // cannot render them stale between inspection and the helper call.
             const task = locks.run(name, async () => {
                 if (shuttingDown) throw new OperationsDisabledError();
                 if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
                 if (!sessions.isActive(session.id)) throw new SessionEndedError();
+                const innerOwner: string | null = await readStackOwner(name);
+                if (innerOwner) {
+                    throw new StackError("Routing for this stack is managed externally. Nothing was attached.", 409);
+                }
+                const innerContext = await resolveProjectContext(stacksRoot, name, provider, false);
+                if (innerContext.kind === "invalid") throw new StackError(ENV_NOT_REGULAR, 409);
+                if (innerContext.kind === "ambiguous") {
+                    throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack. It will not guess, so nothing was attached.", 409);
+                }
+                if (innerContext.kind === "unavailable") {
+                    throw new StackError("Docker did not respond, so the panel could not check this stack. Nothing was attached.", 503);
+                }
+                if (innerContext.kind === "absent") {
+                    throw new StackError("This stack is not deployed yet. Use Up first, then attach the domain.", 409);
+                }
+                const innerNames = await provider.listServices({
+                    project: innerContext.project ?? undefined,
+                    composeFile: innerContext.composeFile,
+                    cwd: innerContext.cwd,
+                    envFile: innerContext.envFile ?? undefined,
+                });
+                if (innerNames === null) throw new StackError("Docker did not respond, so the service could not be checked. Nothing was attached.", 503);
+                if (!innerNames.includes(serviceParam)) {
+                    throw new StackError("This service is not part of this stack. Nothing was attached.", 409);
+                }
+                await requireLoopbackPort(innerContext.project ?? name, serviceParam, port);
                 return callCaddyHelper(config.caddySocketPath!, { action: "attach", domain, stack: name, service: serviceParam, port }, { timeoutMs: config.operationTimeoutMs });
             });
             saves.add(task);
@@ -1329,6 +1324,10 @@ export function createApp(options: AppOptions): App {
             if (error instanceof CaddyHelperError) {
                 await recordAudit({ event: "caddy", result: "unknown", actor, stack: name, action: "attach", service: serviceParam, detail: "helper unreachable" });
                 return fail("The Caddy helper did not answer. Check the helper socket on the host: the outcome is unknown.", 503);
+            }
+            if (error instanceof StackError) {
+                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam, detail: error.message });
+                return fail(`${error.message}`, error.status);
             }
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
                 await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam, detail: error.message });
