@@ -352,6 +352,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     }
 
     const devMode = parseBool(env, "COMPOSE_PANEL_DEV", false);
+    const caddyEnabled = parseBool(env, "COMPOSE_PANEL_CADDY_ENABLED", false);
     const adminUser = env.COMPOSE_PANEL_ADMIN_USER?.trim() || "admin";
     if (!devMode && WEAK_ADMIN_USERS.has(adminUser.toLowerCase())) {
         throw new Error(`COMPOSE_PANEL_ADMIN_USER must not be a common name like "${adminUser}". Choose a unique name, or set COMPOSE_PANEL_DEV=true for local development.`);
@@ -386,8 +387,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
         dockerPath: env.COMPOSE_PANEL_DOCKER_PATH?.trim() || "docker",
         composeEngine: parseComposeEngine(env),
         databaseExplorerUrl: normalizeDatabaseExplorerUrl(env.COMPOSE_PANEL_DATABASE_EXPLORER_URL ?? "", devMode),
-        caddyEnabled: parseBool(env, "COMPOSE_PANEL_CADDY_ENABLED", false),
-        caddySocketPath: parseCaddySocketPath(env, parseBool(env, "COMPOSE_PANEL_CADDY_ENABLED", false)),
+        caddyEnabled,
+        caddySocketPath: parseCaddySocketPath(env, caddyEnabled),
         hostStacksPathAliases: parsePathAliases(env),
         timeZone: parseTimeZone(env),
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),

@@ -13,7 +13,7 @@
  */
 
 import { constants } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { runCommand, type CommandResult } from "./docker.ts";
 import {
@@ -77,6 +77,22 @@ const OWNER_NAME = "owner";
 const LOCK_STALE_MS = 30_000;
 /** How long to wait for a lock held by another writer. */
 const LOCK_WAIT_MS = 30_000;
+/** Worst-case `caddy` subprocesses of one attach: adapt (prevalidation),
+ * validate, adapt (route check), reload, rollback reload. */
+const MAX_CADDY_COMMANDS = 5;
+/** Slack on top of the summed budget for file operations and startup. */
+const DEADLINE_MARGIN_MS = 15_000;
+
+/**
+ * Overall deadline of one helper request. Derived from the configured
+ * per-command timeout so the hard stop can never fire before a rollback
+ * reload has had its full time: lock wait + every subprocess at its timeout
+ * + a margin (135 s with the defaults). The panel's call timeout should be
+ * at least this long; a shorter one is reported as an unknown outcome.
+ */
+export function helperDeadlineMs(env: HelperEnv): number {
+    return LOCK_WAIT_MS + MAX_CADDY_COMMANDS * env.commandTimeoutMs + DEADLINE_MARGIN_MS;
+}
 
 export class HelperConfigError extends Error {
     constructor(message: string) {
@@ -296,7 +312,6 @@ async function readSiteFile(path: string): Promise<string | null> {
     if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_SITE_FILE_BYTES) {
         throw new Error("unreadable");
     }
-    const { open } = await import("node:fs/promises");
     const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
         return await handle.readFile("utf8");
@@ -319,31 +334,53 @@ async function removePublishedFile(path: string): Promise<boolean> {
     }
 }
 
-/** Restore a detached file. Returns true only when the rename succeeded. */
+/**
+ * Restore a detached file without overwriting: `link` fails when a file
+ * appeared at the path meanwhile (an external writer ignoring the lock).
+ * Returns true only when the file is back at its path.
+ */
 async function restoreDetachedFile(backup: string, path: string): Promise<boolean> {
     try {
-        await rename(backup, path);
-        return true;
+        await link(backup, path);
     } catch {
         return false;
     }
+    await unlink(backup).catch(() => {});
+    return true;
 }
 
-/** Atomic publish: exclusive temp file in the same directory, then rename. */
-async function publishSiteFile(path: string, content: string): Promise<void> {
-    const temp = `${path}.tmp.${process.pid}`;
-    const { open } = await import("node:fs/promises");
-    const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644);
+/** Sibling name for a temporary or backup file. Never ends with `.caddy`, so
+ * the `*.caddy` import does not load it, and random so a stale file left by a
+ * crashed helper with a reused PID never collides. */
+function siblingPath(path: string, kind: "tmp" | "detached"): string {
+    return `${path}.${kind}.${crypto.randomUUID()}`;
+}
+
+/**
+ * Atomic, no-clobber publish: exclusive temp file in the same directory, then
+ * `link` to the final name. Unlike `rename`, `link` refuses an existing path,
+ * so a file created concurrently by another writer is never overwritten.
+ * Returns false when the path already exists (nothing published).
+ */
+async function publishSiteFile(path: string, content: string): Promise<boolean> {
+    const temp = siblingPath(path, "tmp");
+    const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o644);
     try {
         await handle.writeFile(content, "utf8");
-    } finally {
-        await handle.close();
-    }
-    try {
-        await rename(temp, path);
     } catch (error) {
+        await handle.close();
         await unlink(temp).catch(() => {});
         throw error;
+    }
+    await handle.close();
+    try {
+        await link(temp, path);
+        return true;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+        throw error;
+    } finally {
+        await unlink(temp).catch(() => {});
     }
 }
 
@@ -369,10 +406,55 @@ export function importConfiguredIn(mainSource: string, managedDir: string): bool
     return false;
 }
 
+/**
+ * Every host matcher value in an adapted JSON configuration, lowercased.
+ * Returns null when the output is not JSON: an unreadable configuration is
+ * never read as "no such host".
+ */
+function adaptedHosts(adaptedJson: string): Set<string> | null {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(adaptedJson);
+    } catch {
+        return null;
+    }
+    const hosts = new Set<string>();
+    const stack: unknown[] = [parsed];
+    while (stack.length > 0) {
+        const value = stack.pop();
+        if (Array.isArray(value)) {
+            stack.push(...value);
+        } else if (typeof value === "object" && value !== null) {
+            for (const [key, child] of Object.entries(value)) {
+                if (key === "host" && Array.isArray(child)) {
+                    for (const host of child) if (typeof host === "string") hosts.add(host.toLowerCase());
+                } else {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    return hosts;
+}
+
 /** Whether the adapted JSON configuration contains a route for the domain. */
 export function adaptContainsDomain(adaptedJson: string, domain: string): boolean {
-    const escaped = domain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`"host"\\s*:\\s*\\[[^\\]]*"${escaped}"`).test(adaptedJson);
+    return adaptedHosts(adaptedJson)?.has(domain.toLowerCase()) ?? false;
+}
+
+/**
+ * Whether the adapted configuration already routes the domain, either
+ * exactly or through a single-level wildcard (`*.example.com`), so that a
+ * domain served by another configuration (the main `Caddyfile`, another
+ * deployment tool's import) is refused instead of shadowed. Null when the
+ * output cannot be read: uniqueness is then unproven.
+ */
+export function adaptDeclaresDomain(adaptedJson: string, domain: string): boolean | null {
+    const hosts = adaptedHosts(adaptedJson);
+    if (hosts === null) return null;
+    const lower = domain.toLowerCase();
+    const parent = lower.slice(lower.indexOf(".") + 1);
+    return hosts.has(lower) || hosts.has(`*.${parent}`);
 }
 
 async function readMainConfig(mainConfig: string): Promise<string | null> {
@@ -480,7 +562,22 @@ async function handleAttach(env: HelperEnv, deps: HelperDeps, raw: Record<string
                     "unavailable",
                 );
             }
-            await publishSiteFile(path, candidate);
+            // Prevalidation, before anything is published: the current
+            // configuration must adapt, and must not already route this
+            // domain from elsewhere (the main Caddyfile, another tool's
+            // import). A candidate is only ever published into a
+            // configuration it cannot shadow or break by duplication.
+            const current = await runCaddy(["adapt", "--config", env.mainConfig, "--adapter", "caddyfile"], { maxBytes: ADAPT_MAX_BYTES });
+            const declared = current.code !== 0 || current.timedOut || current.truncated ? null : adaptDeclaresDomain(current.stdout, inputs.domain);
+            if (declared === null) {
+                return refused("The current Caddy configuration could not be read, so the domain cannot be proven unused. Nothing was applied.", "failed");
+            }
+            if (declared) {
+                return refused("This domain is already served by another part of the Caddy configuration. It will not be attached here.", "conflict");
+            }
+            if (!(await publishSiteFile(path, candidate))) {
+                return refused("A file for this domain appeared meanwhile. It will not be overwritten.", "conflict");
+            }
             const valid = await validateConfig(runCaddy, env.mainConfig);
             if (valid.code !== 0 || valid.timedOut) {
                 if (!(await removePublishedFile(path))) {
@@ -537,7 +634,7 @@ async function handleDetach(env: HelperEnv, deps: HelperDeps, raw: Record<string
             if (parsed.value.stack !== stack) {
                 return refused("This domain belongs to another stack. It will not be removed.", "conflict");
             }
-            const backup = `${path}.detached.${process.pid}`;
+            const backup = siblingPath(path, "detached");
             try {
                 await rename(path, backup);
             } catch {
@@ -549,7 +646,7 @@ async function handleDetach(env: HelperEnv, deps: HelperDeps, raw: Record<string
                 return { ok: true, action: "detach" };
             }
             // Restore the file and reload the restored configuration. The
-            // restored state may only be claimed when the rename actually
+            // restored state may only be claimed when the restore actually
             // succeeded: otherwise the file is still absent while the running
             // configuration still serves it.
             if (!(await restoreDetachedFile(backup, path))) {

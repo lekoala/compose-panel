@@ -134,13 +134,14 @@ export function buildSiteFile(request: CaddySiteRequest): string {
     if (!isValidStackName(request.stack)) throw new Error("Invalid stack name.");
     if (!isValidServiceName(request.service)) throw new Error("Invalid service name.");
     if (!isValidUpstreamPort(request.port)) throw new Error("Invalid upstream port.");
-    return `# compose-panel:managed v1\n`
-        + `# compose-panel:stack ${request.stack}\n`
-        + `# compose-panel:service ${request.service}\n`
-        + `\n`
-        + `${domain} {\n`
-        + `\treverse_proxy 127.0.0.1:${request.port}\n`
-        + `}\n`;
+    return `# compose-panel:managed ${CADDY_MANAGED_VERSION}
+# compose-panel:stack ${request.stack}
+# compose-panel:service ${request.service}
+
+${domain} {
+\treverse_proxy 127.0.0.1:${request.port}
+}
+`;
 }
 
 /**

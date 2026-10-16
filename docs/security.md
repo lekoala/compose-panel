@@ -155,16 +155,27 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   output and timeouts. `caddy validate` alone is not trusted to prove the
   integration: the helper checks the `import` text in the main `Caddyfile`
   before publishing, and the adapted JSON for the expected route before
-  reloading. A missing import refuses before anything is written.
+  reloading. A missing import refuses before anything is written. A domain
+  already routed anywhere in the current adapted configuration (exactly or
+  by a `*.` wildcard) is refused before publishing, so a panel site can never
+  shadow a route owned by the main `Caddyfile` or another tool; an
+  unreadable current configuration refuses too (uniqueness unproven).
+- Publication never overwrites: the candidate is written to a random
+  exclusive temp file and linked into place, which fails if a file appeared
+  meanwhile; a detach restore uses the same no-clobber link.
 - Ownership is enforced by a strict file header. Foreign files and externally
   modified managed files are refused, never overwritten or adopted. Repeating
   an identical attach is a no-op without reload; changing a mapping requires
   detach first.
 - Concurrency: every attach/detach holds the panel's per-stack lock (so a
   self-update start refuses while one runs, and shutdown drains it) and the
-  helper serializes the whole prepare → reload sequence behind an exclusive
-  lock directory with stale-holder expiry. External writers can take the same
-  lock path; otherwise coordination with them is best-effort and documented.
+  helper serializes the whole prevalidate → reload sequence behind an
+  exclusive lock directory, reclaimed only from a dead holder. Other tools
+  that reload Caddy take the same lock with `deploy/caddy/with-caddy-lock.sh`;
+  a tool that does not is not coordinated, and this is documented.
+- The helper socket's directory (`/run/compose-panel`, root-only `0750`) is
+  mounted read-only into the panel, so a socket recreated by systemd stays
+  reachable and no other host user can connect.
 - Rollback is honest: a failed reload restores the previous file and reloads
   that; a second failure is reported as unknown requiring host intervention.
   Validation/adapt failures remove the unpublished candidate without any

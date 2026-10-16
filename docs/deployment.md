@@ -346,8 +346,14 @@ written or reloaded).
     no other command.
 
 3. Expose the socket to the panel. In `deploy/compose.yaml`, uncomment the
-   helper socket mount (same path on both sides, like the Docker socket),
-   and in `deploy/compose-panel.env` set:
+   helper socket mount. It mounts the socket's **directory**
+   (`/run/compose-panel`, read-only, same path on both sides), not the socket
+   file: restarting `caddy-helper.socket` recreates the socket, and a file
+   bind mount would keep pointing at the removed one until the panel
+   restarts. The socket unit creates that directory as root-only (`0750`), so
+   no other host user can reach the helper; if the directory already existed
+   (for example created by an earlier `docker compose up`), set it with
+   `chmod 750 /run/compose-panel`. Then, in `deploy/compose-panel.env`, set:
 
     ```sh
     COMPOSE_PANEL_CADDY_ENABLED=true
@@ -363,12 +369,16 @@ Behavior once enabled:
   application link (`https://…`, new tab, no opener access).
 - **Attach domain** checks the service against the effective Compose config
   and the port against the TCP `127.0.0.1` bindings of its running containers
-  (exactly what the managed file will dial), then
-  publishes the managed file, validates the whole Caddy configuration,
+  (exactly what the managed file will dial). The helper then refuses a domain
+  already routed anywhere in the current Caddy configuration (exactly or by a
+  `*.` wildcard, for example in the main `Caddyfile`), publishes the managed
+  file without ever overwriting one, validates the whole Caddy configuration,
   confirms the route is present, and reloads Caddy — all serialized behind a
   global Caddy lock, under the usual per-stack lock. A failed reload restores
   the previous file and reloads that; if the restore cannot be confirmed the
-  outcome is reported as unknown, never as success.
+  outcome is reported as unknown, never as success. One attach can take up
+  to about two minutes in the worst case (lock wait plus every `caddy`
+  command at its timeout); the panel waits at least 150 s for it.
 - **Detach** asks for an explicit confirmation, then removes the managed
   file and reloads, with the same rollback.
 - Files the panel does not recognize, or managed files changed outside the
@@ -377,6 +387,32 @@ Behavior once enabled:
 - Stacks with a `stack.managed-by` label show their routing read-only: the
   label stays informational and attaching from the panel is refused as a
   workflow rule, not a security boundary.
+
+Other tools that change Caddy on the same host (for example an external
+deployment pipeline that owns its own routes) must take the same lock around
+their Caddy step, or their reload can land between a panel publish and its
+validation. Install the wrapper once and prefix that step with it:
+
+```sh
+install -m 755 deploy/caddy/with-caddy-lock.sh /usr/local/bin/with-caddy-lock
+with-caddy-lock caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+Run it on the host (not inside a container: the lock records a host PID), as
+root or `caddy`. It waits up to `CADDY_LOCK_WAIT_SECONDS` (default 60) and
+exits `75` without running anything if the lock stays held. Keep those tools'
+files outside `/etc/caddy/compose-panel.d`: the panel refuses to attach a
+domain they already route, and never touches their files.
+
+Systemd sandbox. The helper service keeps `ProtectSystem=strict`: everything
+but `/etc/caddy/compose-panel.d` is read-only to it, including Caddy's data
+directory (`/var/lib/caddy`). With public ACME certificates `caddy validate`
+writes nothing. With an internal CA (`tls internal`, `local_certs`), `caddy
+validate` reads the CA from Caddy's storage and only writes it when it does
+not exist yet — so it works once Caddy itself has run with that
+configuration, and fails (attach refused, nothing published) otherwise. Do
+not loosen the sandbox preventively; if the check below shows a write is
+really needed, add a targeted `ReadWritePaths=` for that exact path only.
 
 Removal without impact: detach every domain (or delete the managed files by
 hand and `systemctl reload caddy`), set `COMPOSE_PANEL_CADDY_ENABLED=false`,
@@ -400,6 +436,17 @@ Manual verification (release gate, on the target host with its real Caddy):
 - [ ] Detach asks for confirmation, then the file is gone and Caddy reloaded.
 - [ ] Two attaches at once (two stacks): both succeed, serialized, one
       reload each.
+- [ ] Attach a domain already served by the main `Caddyfile` or by another
+      tool: refused, nothing published, its routing untouched.
+- [ ] While `with-caddy-lock sleep 20` runs, start an attach: it completes
+      only after the wrapper exits.
+- [ ] Sandbox, as the service runs: `systemd-run --pipe --wait -p User=caddy
+      -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes
+      -p ReadWritePaths=/etc/caddy/compose-panel.d caddy validate --config
+      /etc/caddy/Caddyfile --adapter caddyfile` succeeds (repeat with
+      `adapt`), and a first attach of a brand-new domain reloads successfully.
+- [ ] `systemctl restart caddy-helper.socket`, then the stack page still
+      lists the domains (directory mount survives the socket recreation).
 
 ## Backups and rollback
 

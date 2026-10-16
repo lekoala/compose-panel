@@ -7,12 +7,10 @@
 // with `{ok:false}` for refusals (operational outcome), non-zero for crashes
 // (the panel then reports an unknown outcome, never success).
 import { writeSync } from "node:fs";
-import { createCaddyRunner, parseHelperEnv, runHelperRequest } from "../caddy-helper.ts";
+import { createCaddyRunner, helperDeadlineMs, parseHelperEnv, runHelperRequest } from "../caddy-helper.ts";
 
 /** Upper bound for one request line: attach/detach carry four short fields. */
 const MAX_REQUEST_BYTES = 8 * 1024;
-/** Overall deadline for one request, including every Caddy subprocess. */
-const DEADLINE_MS = 90_000;
 
 function fail(message: string, code: number): never {
     try {
@@ -21,8 +19,6 @@ function fail(message: string, code: number): never {
     process.exit(code);
 }
 
-setTimeout(() => fail("The helper did not answer in time. Check Caddy on the host: the outcome is unknown.", 3), DEADLINE_MS).unref?.();
-
 let env: ReturnType<typeof parseHelperEnv>;
 try {
     env = parseHelperEnv(process.env);
@@ -30,6 +26,10 @@ try {
     console.error(`Refused: ${error instanceof Error ? error.message : "invalid helper configuration."} Nothing was changed.`);
     process.exit(4);
 }
+
+// Overall deadline for one request, including every Caddy subprocess and the
+// rollback reload (derived from the per-command timeout, see helperDeadlineMs).
+setTimeout(() => fail("The helper did not answer in time. Check Caddy on the host: the outcome is unknown.", 3), helperDeadlineMs(env!)).unref?.();
 
 async function readLine(capped: number): Promise<string | null> {
     const stream = Bun.stdin.stream();

@@ -143,6 +143,10 @@ async function readTextLimited(request: Request, maxBytes: number): Promise<stri
     return Buffer.concat(chunks).toString("utf8");
 }
 
+/** Floor for attach/detach helper calls: the helper deadline with its default
+ * per-command timeout (135 s, see `helperDeadlineMs`) plus slack. */
+const CADDY_MUTATION_MIN_TIMEOUT_MS = 150_000;
+
 const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"] as const;
 
 /**
@@ -1205,6 +1209,17 @@ export function createApp(options: AppOptions): App {
         throw new StackError("This port is not published on 127.0.0.1 (TCP) by this service. Only such ports can be attached.", 409);
     }
 
+    /**
+     * Call timeout for attach/detach. Never below the helper's own deadline
+     * with its default per-command timeout (135 s, `helperDeadlineMs`) plus
+     * slack, so the panel does not give up while the helper is still inside
+     * a rollback. A longer helper budget configured on the host only makes
+     * the outcome reported as unknown, never as success.
+     */
+    function caddyMutationTimeoutMs(): number {
+        return Math.max(config.operationTimeoutMs, CADDY_MUTATION_MIN_TIMEOUT_MS);
+    }
+
     /** Map a helper refusal code to an honest HTTP status. */
     function helperRefusalStatus(code: string): number {
         switch (code) {
@@ -1317,7 +1332,7 @@ export function createApp(options: AppOptions): App {
                     throw new StackError("This service is not part of this stack. Nothing was attached.", 409);
                 }
                 await requireLoopbackPort(innerContext.project ?? name, serviceParam, port);
-                return callCaddyHelper(config.caddySocketPath!, { action: "attach", domain, stack: name, service: serviceParam, port }, { timeoutMs: config.operationTimeoutMs });
+                return callCaddyHelper(config.caddySocketPath!, { action: "attach", domain, stack: name, service: serviceParam, port }, { timeoutMs: caddyMutationTimeoutMs() });
             });
             saves.add(task);
             let outcome: Awaited<typeof task>;
@@ -1374,26 +1389,28 @@ export function createApp(options: AppOptions): App {
             await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: "invalid domain" });
             return renderStackDetail(name, csrf, { kind: "error", text: "This domain is not valid. Nothing was detached." }, 400);
         }
-        let attached: { domain: string; service: string; port: number }[] = [];
-        try {
-            const response = await callCaddyHelper(config.caddySocketPath, { action: "status" }, { timeoutMs: config.dockerTimeoutMs });
-            if (response.ok && response.action === "status") {
-                attached = response.sites.filter(site => site.stack === name);
-            }
-        } catch {
-            await recordAudit({ event: "caddy", result: "unknown", actor, stack: name, action: "detach", detail: `${domain}: helper unreachable` });
-            return renderStackDetail(name, csrf, { kind: "error", text: "The Caddy helper did not answer. Check the helper socket on the host: the outcome is unknown." }, 503);
-        }
-        const site = attached.find(entry => entry.domain === domain);
-        if (!site) {
-            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: `${domain}: not attached` });
-            return renderStackDetail(name, csrf, { kind: "error", text: "This domain is not attached to this stack. Nothing was detached." }, 409);
-        }
-        if (await readStackOwner(name)) {
-            await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: `${domain}: managed externally` });
-            return renderStackDetail(name, csrf, { kind: "error", text: "Routing for this stack is managed externally. Nothing was detached." }, 409);
-        }
         if (form.get("confirm") !== "1") {
+            // The confirmation is only offered for a domain attached to this
+            // stack right now. The confirmed POST skips this read: the helper
+            // re-checks attachment and ownership under its own lock anyway.
+            let attached: { domain: string; service: string; port: number }[] = [];
+            try {
+                const response = await callCaddyHelper(config.caddySocketPath, { action: "status" }, { timeoutMs: config.dockerTimeoutMs });
+                if (response.ok && response.action === "status") {
+                    attached = response.sites.filter(site => site.stack === name);
+                }
+            } catch {
+                await recordAudit({ event: "caddy", result: "failure", actor, stack: name, action: "detach", detail: `${domain}: helper unreachable` });
+                return renderStackDetail(name, csrf, { kind: "error", text: "The Caddy helper did not answer. Check the helper socket on the host. Nothing was detached." }, 503);
+            }
+            if (!attached.some(entry => entry.domain === domain)) {
+                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: `${domain}: not attached` });
+                return renderStackDetail(name, csrf, { kind: "error", text: "This domain is not attached to this stack. Nothing was detached." }, 409);
+            }
+            if (await readStackOwner(name)) {
+                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: `${domain}: managed externally` });
+                return renderStackDetail(name, csrf, { kind: "error", text: "Routing for this stack is managed externally. Nothing was detached." }, 409);
+            }
             return renderStackDetail(name, csrf, { kind: "warn", text: `Detach ${domain}? Caddy will reload without it.` }, 200, null, { confirmDetach: domain });
         }
         try {
@@ -1408,7 +1425,7 @@ export function createApp(options: AppOptions): App {
                 if (await readStackOwner(name)) {
                     throw new StackError("Routing for this stack is managed externally. Nothing was detached.", 409);
                 }
-                return callCaddyHelper(config.caddySocketPath!, { action: "detach", domain, stack: name }, { timeoutMs: config.operationTimeoutMs });
+                return callCaddyHelper(config.caddySocketPath!, { action: "detach", domain, stack: name }, { timeoutMs: caddyMutationTimeoutMs() });
             });
             saves.add(task);
             let outcome: Awaited<typeof task>;

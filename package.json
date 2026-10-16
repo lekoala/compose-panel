@@ -13,6 +13,7 @@
     "verify": "bun test && bun check",
     "test:wsl": "wsl -- bash scripts/test-wsl.sh",
     "test:proxy:wsl": "wsl -- bash scripts/proxy-e2e/run.sh",
+    "test:caddy:wsl": "wsl -- bash scripts/caddy-e2e.sh",
     "test:docker-lab:wsl": "wsl -- bash scripts/docker-lab/run.sh",
     "preview": "bun scripts/preview.ts",
     "docs:build": "bun scripts/build-docs.ts",

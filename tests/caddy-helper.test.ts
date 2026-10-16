@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, lstat, mkdtemp, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     adaptContainsDomain,
+    adaptDeclaresDomain,
     importConfiguredIn,
     parseHelperEnv,
     runHelperRequest,
@@ -19,7 +21,10 @@ const okResult: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: fal
 
 interface FakeCaddyOptions {
     validate?: "ok" | "fail";
+    /** Hosts routed by other parts of the configuration (default none). */
     adaptHosts?: string[] | "fail";
+    /** Whether the managed files reach the adapted config (default true). */
+    adaptRoute?: boolean;
     reload?: Array<"ok" | "fail">;
 }
 
@@ -34,7 +39,12 @@ function fakeCaddyRunner(options: FakeCaddyOptions = {}): { run: HelperDeps["run
         }
         if (command === "adapt") {
             if (options.adaptHosts === "fail") return { ...okResult, code: 1 };
-            const hosts = options.adaptHosts ?? ["app.example.com", "shop.example.com"];
+            // Like a real import: every managed file present on disk routes
+            // its domain, on top of what the rest of the config declares.
+            const managed = options.adaptRoute === false ? [] : readdirSync(managedDir)
+                .filter(name => name.endsWith(".caddy"))
+                .map(name => name.slice(0, -".caddy".length));
+            const hosts = [...(options.adaptHosts ?? []), ...managed];
             return { ...okResult, stdout: JSON.stringify({ apps: { http: { servers: { srv0: { routes: [{ match: [{ host: hosts }] }] } } } } }) };
         }
         if (command === "reload") {
@@ -108,6 +118,17 @@ describe("importConfiguredIn and adaptContainsDomain", () => {
         expect(adaptContainsDomain(adapted, "other.example.com")).toBe(false);
         // Dots are regex-significant: a lookalike must not match.
         expect(adaptContainsDomain(adapted, "appXexampleYcom")).toBe(false);
+        expect(adaptContainsDomain("not json", "app.example.com")).toBe(false);
+    });
+
+    test("detects a domain declared exactly or through a single-level wildcard", () => {
+        const adapted = (hosts: string[]): string => JSON.stringify({ apps: { http: { servers: { srv0: { routes: [{ match: [{ host: hosts }] }] } } } } });
+        expect(adaptDeclaresDomain(adapted(["app.example.com"]), "app.example.com")).toBe(true);
+        expect(adaptDeclaresDomain(adapted(["*.example.com"]), "app.example.com")).toBe(true);
+        expect(adaptDeclaresDomain(adapted(["*.example.com"]), "a.b.example.com")).toBe(false);
+        expect(adaptDeclaresDomain(adapted(["other.example.com"]), "app.example.com")).toBe(false);
+        expect(adaptDeclaresDomain(JSON.stringify({}), "app.example.com")).toBe(false);
+        expect(adaptDeclaresDomain("not json", "app.example.com")).toBeNull();
     });
 });
 
@@ -120,7 +141,7 @@ describe("attach", () => {
         expect(response).toEqual({ ok: true, action: "attach", unchanged: false });
         expect(await readFile(join(managedDir, "app.example.com.caddy"), "utf8"))
             .toBe(buildSiteFile({ domain: "app.example.com", stack: "web", service: "web", port: 8080 }));
-        expect(fake.calls.map(call => call[0])).toEqual(["validate", "adapt", "reload"]);
+        expect(fake.calls.map(call => call[0])).toEqual(["adapt", "validate", "adapt", "reload"]);
     });
 
     test("repeating the same attach is a no-op without reload", async () => {
@@ -161,20 +182,55 @@ describe("attach", () => {
         expect(fake.calls).toEqual([]);
     });
 
+    test("refuses a domain already routed elsewhere, before publishing anything", async () => {
+        for (const declared of ["app.example.com", "*.example.com", "APP.example.com"]) {
+            const fake = fakeCaddyRunner({ adaptHosts: [declared] });
+            const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
+            expect(response).toMatchObject({ ok: false, code: "conflict" });
+            expect(await managedFiles()).toEqual([]);
+            expect(fake.calls.map(call => call[0])).toEqual(["adapt"]);
+        }
+    });
+
+    test("refuses when the current configuration cannot be adapted, before publishing anything", async () => {
+        const fake = fakeCaddyRunner({ adaptHosts: "fail" });
+        const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
+        expect(response).toMatchObject({ ok: false, code: "failed" });
+        expect(await managedFiles()).toEqual([]);
+        expect(fake.calls.map(call => call[0])).toEqual(["adapt"]);
+    });
+
+    test("never overwrites a file that appears between the checks and the publish", async () => {
+        const fake = fakeCaddyRunner();
+        const sitePath = join(managedDir, "app.example.com.caddy");
+        const racing: HelperDeps["runCaddy"] = async (args, options) => {
+            const result = await fake.run(args, options);
+            // An external writer ignoring the lock creates the file right
+            // after the prevalidation.
+            if (fake.calls.length === 1) await writeFile(sitePath, "external");
+            return result;
+        };
+        const response = await runHelperRequest({ ...attach }, env, { runCaddy: racing });
+        expect(response).toMatchObject({ ok: false, code: "conflict" });
+        expect(await readFile(sitePath, "utf8")).toBe("external");
+        expect((await readdir(managedDir)).filter(name => name !== "app.example.com.caddy")).toEqual([]);
+        expect(fake.calls.map(call => call[0])).toEqual(["adapt"]);
+    });
+
     test("a failed validation removes the file without reloading", async () => {
         const fake = fakeCaddyRunner({ validate: "fail" });
         const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
         expect(response.ok).toBe(false);
         expect(await managedFiles()).toEqual([]);
-        expect(fake.calls.map(call => call[0])).toEqual(["validate"]);
+        expect(fake.calls.map(call => call[0])).toEqual(["adapt", "validate"]);
     });
 
     test("a route missing from the adapted config removes the file", async () => {
-        const fake = fakeCaddyRunner({ adaptHosts: ["other.example.com"] });
+        const fake = fakeCaddyRunner({ adaptRoute: false });
         const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
         expect(response.ok).toBe(false);
         expect(await managedFiles()).toEqual([]);
-        expect(fake.calls.map(call => call[0])).toEqual(["validate", "adapt"]);
+        expect(fake.calls.map(call => call[0])).toEqual(["adapt", "validate", "adapt"]);
     });
 
     test("a failed reload rolls back and reports failure", async () => {
@@ -192,7 +248,7 @@ describe("attach", () => {
     });
 
     test("concurrent attaches serialize behind the lock", async () => {
-        const fake = fakeCaddyRunner({ adaptHosts: ["a.example.com", "b.example.com"] });
+        const fake = fakeCaddyRunner();
         const [first, second] = await Promise.all([
             runHelperRequest({ action: "attach", domain: "a.example.com", stack: "web", service: "web", port: 8080 }, env, { runCaddy: fake.run }),
             runHelperRequest({ action: "attach", domain: "b.example.com", stack: "web", service: "web", port: 8081 }, env, { runCaddy: fake.run }),
@@ -253,7 +309,7 @@ describe("attach", () => {
         await writeFile(join(lock, "owner"), `${dead}:crashed`, { flag: "wx" });
         let active = 0;
         let maxActive = 0;
-        const fake = fakeCaddyRunner({ adaptHosts: ["a.example.com", "b.example.com"] });
+        const fake = fakeCaddyRunner();
         const slow: HelperDeps["runCaddy"] = async (args, options) => {
             active += 1;
             maxActive = Math.max(maxActive, active);
@@ -360,7 +416,7 @@ describe("attach", () => {
     test("slow writers never overlap, even past the stale timeout", async () => {
         let active = 0;
         let maxActive = 0;
-        const fake = fakeCaddyRunner({ adaptHosts: ["a.example.com", "b.example.com"] });
+        const fake = fakeCaddyRunner();
         const slow: HelperDeps["runCaddy"] = async (args, options) => {
             active += 1;
             maxActive = Math.max(maxActive, active);
@@ -452,7 +508,7 @@ describe("status and unknown shapes", () => {
             unparseable: ["broken.example.com.caddy"],
             importConfigured: true,
         });
-        expect(fake.calls).toHaveLength(3);
+        expect(fake.calls).toHaveLength(4);
     });
 
     test("flags a managed file whose domain differs from its name", async () => {
@@ -499,6 +555,7 @@ describe.skipIf(process.platform !== "linux")("caddy helper stdio entry", () => 
         '  if [ "$CADDY_FAKE_ADAPT" = "fail" ]; then exit 1; fi',
         '  hosts_json=""',
         '  for h in $CADDY_FAKE_HOSTS; do hosts_json="$hosts_json\\"$h\\","; done',
+        '  for f in "$CADDY_MANAGED_DIR"/*.caddy; do [ -e "$f" ] && h=$(basename "$f" .caddy) && hosts_json="$hosts_json\\"$h\\","; done',
         '  hosts_json="[${hosts_json%,}]"',
         "  echo '{\"apps\":{\"http\":{\"servers\":{\"srv0\":{\"routes\":[{\"match\":[{\"host\":'\"$hosts_json\"'}]}]}}}}}'",
         "  exit 0",
@@ -540,7 +597,7 @@ describe.skipIf(process.platform !== "linux")("caddy helper stdio entry", () => 
                 CADDY_MANAGED_DIR: entryManaged,
                 CADDY_MAIN_CONFIG: entryMain,
                 CADDY_BIN: fakeBin,
-                CADDY_FAKE_HOSTS: "app.example.com",
+                CADDY_FAKE_HOSTS: "",
                 ...extraEnv,
             },
         });
@@ -571,6 +628,25 @@ describe.skipIf(process.platform !== "linux")("caddy helper stdio entry", () => 
         expect(code).toBe(0);
         expect(JSON.parse(stdout)).toMatchObject({ ok: false, code: "unavailable" });
         expect(await readdir(entryManaged)).toEqual([]);
+    });
+
+    test("an external writer holding the lock through with-caddy-lock.sh is waited on", async () => {
+        const wrapper = fileURLToPath(new URL("../deploy/caddy/with-caddy-lock.sh", import.meta.url));
+        const marker = join(entryDir, "external-done");
+        const external = Bun.spawn(["bash", wrapper, "bash", "-c", `sleep 1; touch "${marker}"`], {
+            env: { ...process.env, CADDY_MANAGED_DIR: entryManaged },
+            stdout: "ignore",
+            stderr: "pipe",
+        });
+        // Let the wrapper take the lock first.
+        for (let i = 0; i < 50 && !(await lstat(join(entryManaged, ".lock", "owner")).catch(() => null)); i += 1) await Bun.sleep(20);
+        const { code, stdout } = await invoke(`{"action":"attach","domain":"app.example.com","stack":"web","service":"web","port":8080}\n`);
+        expect(code).toBe(0);
+        expect(JSON.parse(stdout)).toEqual({ ok: true, action: "attach", unchanged: false });
+        // The attach could only finish after the external command released.
+        expect(await lstat(marker).then(() => true, () => false)).toBe(true);
+        expect(await external.exited).toBe(0);
+        expect(await lstat(join(entryManaged, ".lock")).catch(() => null)).toBeNull();
     });
 
     test("rejects an oversized request and invalid JSON", async () => {

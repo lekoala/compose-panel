@@ -57,7 +57,7 @@ never pass the check while producing a broken proxy.
 ### Host helper behind a Unix socket, no sudo from the container
 
 The panel runs in a container, so a host `sudoers` rule cannot apply to it.
- privileged work happens in a small host helper, reachable through a Unix
+All privileged work happens in a small host helper, reachable through a Unix
 socket mounted into the panel container and activated on demand via systemd:
 
 - Closed protocol: `attach`, `detach`, `list`/`status`. No free command, no
@@ -88,13 +88,34 @@ records which stack and service the domain belongs to.
 The panel keeps its per-stack lock (one modifying operation per stack,
 including saves) and registers Caddy mutations in the shared shutdown drain.
 The helper additionally serializes the whole
-prepare → validate → publish → reload sequence behind an exclusive lock on
+prevalidate → publish → validate → reload sequence behind an exclusive lock on
 the managed directory, so two stacks attaching domains at once cannot interleave
 a publish and a reload. The lock is only ever reclaimed from a provably dead
 holder (a `pid` recorded in the lock, never mere age), so long validations
-and reloads cannot cause overlapping mutations; external writers that reload
-Caddy should ideally take the same lock, without sharing the files. Otherwise
-the coordination with them is best-effort and this is documented as such.
+and reloads cannot cause overlapping mutations.
+
+That lock is the single host-side convention for every Caddy change. Any
+other tool that edits its own Caddy files or reloads Caddy on the same host
+(for example an external deployment pipeline) wraps that step with
+`deploy/caddy/with-caddy-lock.sh`, which takes the same lock with the same
+`mkdir` + `<pid>:<token>` owner protocol, runs one command, and releases only
+its own lock. It runs in the host PID namespace (the helper checks the PID),
+never reclaims a lock itself, and gives up without running anything after a
+bounded wait. It never writes into the managed directory. A tool that does
+not use it is not coordinated: its reload can land between a publish and the
+validation, and this is documented as such.
+
+### Domain uniqueness across the whole configuration
+
+A domain is unique across the whole Caddy configuration, not only across
+managed files. Before publishing, the helper adapts the current
+configuration and refuses the attach when the domain is already routed
+elsewhere — exactly, or through a single-level wildcard (`*.example.com`) —
+for example by the main `Caddyfile` or another tool's import. When the
+current configuration cannot be adapted (error, timeout, truncated output),
+uniqueness is unproven and the attach is refused too. Routes that exist only
+in Caddy's running JSON configuration (pushed through the administration API,
+not present in any Caddyfile) are not visible to this check.
 
 ### No network verification in V1
 
@@ -126,22 +147,45 @@ Otherwise it refuses with an actionable message and publishes nothing.
 ### Safe sequence and honest rollback
 
 ```text
-Prepare candidate
+Prepare candidate (rendered by the helper)
        ↓
-Validate complete Caddy configuration
+Acquire the shared Caddy lock
        ↓
-Publish candidate atomically
+Prevalidate: import present, current config adapts, domain not routed elsewhere
+       ↓
+Publish candidate atomically, never overwriting (temp file + link)
+       ↓
+Validate the complete configuration, check the route in the adapted config
        ↓
 Reload Caddy
        ↓
 Success / rollback
 ```
 
+The complete validation can only run after publication: `caddy validate`
+reads the real import, and the import path is fixed. The candidate is
+therefore briefly present in the imported directory before it is validated;
+the shared lock is what keeps a cooperating writer from reloading Caddy in
+that window, and the prevalidation removes the predictable failure (a
+duplicate domain) before anything is written. A validation or route-check
+failure removes the candidate without any reload.
+
 When the reload fails, the helper restores the previous file and reloads the
 restored configuration. If that second reload also fails, the outcome is
 reported as unknown and requiring intervention — never as success. `caddy
 reload` uses Caddy's administration API, which must stay enabled for this
 mechanism.
+
+### Time budget
+
+One request may wait for the lock and then run up to five `caddy`
+subprocesses (adapt, validate, adapt, reload, rollback reload), each bounded
+by the helper's per-command timeout. The helper's hard deadline is derived
+from that timeout — lock wait + five commands + a margin, 135 s with the
+defaults — so it can never fire before the rollback reload has had its full
+time. The panel's attach/detach call timeout is never below 150 s. A panel
+that still gives up first (a longer per-command timeout configured on the
+host) reports the outcome as unknown; there is no durable job to resume it.
 
 ### Externally deployed stacks stay read-only here
 
@@ -199,11 +243,17 @@ when disabled, preview shown when enabled, invalid input is a warning never a
 is needed for PR1.
 
 PR2: unit tests for the socket client (bounds, timeouts, malformed answers)
-plus an isolated Linux end-to-end test against a disposable Caddy (attach →
-adapt contains the route → reload; missing import refused with nothing
-published; failed reload restores the previous file; second-reload failure
-reported as unknown). Never against the host's production Caddy or daemon.
-Manual verification on the target host with its real Caddy before release.
+and the helper policy (fake Caddy runner), plus an opt-in Linux end-to-end
+test against a real, disposable Caddy (`tests/caddy-e2e.test.ts`, run by
+`bun run test:caddy:wsl` with a pinned Caddy release): attach routes HTTPS
+traffic to the upstream and detach removes it; a domain already served by the
+main `Caddyfile` is refused with the routing intact; a failed reload on
+attach or detach rolls back to the previous running configuration (the
+failing reload is injected, the rollback reload is real); an unreachable Caddy
+is reported as unknown. The external lock wrapper is tested against the
+helper entry point. Never against the host's production Caddy or daemon.
+Manual verification on the target host with its real Caddy before release,
+including the systemd sandbox (see `docs/deployment.md`).
 
 ## Out of scope
 

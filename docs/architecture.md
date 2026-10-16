@@ -139,8 +139,10 @@ refuses foreign or externally modified files. `src/caddy-helper.ts` is the
 privileged host counterpart (entry `src/scripts/caddy-helper.ts`, one JSON
 line over stdio for systemd socket activation): it owns one directory of
 per-domain files, serializes writers behind an exclusive lock directory, and
-runs the safe prepare → validate → publish → reload sequence with honest
-rollback, through fixed `caddy` argument arrays only. The panel reaches it
+runs the prevalidate (import, current config, domain unused) → no-clobber
+publish → validate → reload sequence with honest rollback, through fixed
+`caddy` argument arrays only. Other host tools join the same lock through
+`deploy/caddy/with-caddy-lock.sh`. The panel reaches it
 through a bounded Unix-socket client (`src/caddy-client.ts`); attach/detach
 (`POST /stacks/<name>/domains/attach|detach`) reuse the mutation guards
 (session, Origin, CSRF, per-stack lock, shutdown/self-update refusal, audit)

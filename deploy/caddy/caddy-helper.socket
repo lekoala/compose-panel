@@ -33,6 +33,9 @@ ListenStream=/run/compose-panel/caddy-helper.sock
 SocketUser=caddy
 SocketGroup=caddy
 SocketMode=0660
+# The directory is reserved for this socket and mounted into the panel
+# container: root only, so no other host user can reach the helper.
+DirectoryMode=0750
 RemoveOnStop=yes
 # One helper process per connection; its standard input/output IS the socket.
 Accept=yes

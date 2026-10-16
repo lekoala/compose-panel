@@ -884,22 +884,20 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
             const early = await postDomains(refused, refusedSession, await csrfOf(refused, refusedSession), "/stacks/demo/domains/detach", { domain: "app.example.com", confirm: "1" });
             expect(early.status).toBe(409);
             expect(await early.text()).toContain("managed externally");
-            // In-lock refusal: the owner appears only when re-checked inside
-            // the mutation, covering the confirmation-to-mutation window.
-            let metadataCalls = 0;
+            // In-lock refusal: the confirmation is offered while the stack has
+            // no owner, then the owner appears before the confirmed POST,
+            // covering the confirmation-to-mutation window.
+            let ownerDeclared = false;
             const racing = await providerWithService();
             const unowned: Record<string, Record<string, string>> = {};
-            racing.stackMetadata = async () => {
-                metadataCalls += 1;
-                return metadataCalls === 1 ? unowned : { web: { "stack.managed-by": "external-deployer" } };
-            };
+            racing.stackMetadata = async () => (ownerDeclared ? { web: { "stack.managed-by": "external-deployer" } } : unowned);
             const app = makeApp({ caddyEnabled: true, caddySocketPath: helper.socketPath }, undefined, racing, undefined, root, fakeInspector());
             const session = await login(app);
-            // The page load itself reads metadata once; reset so the first
-            // detach read sees no owner and the in-lock re-check does.
-            metadataCalls = 0;
-            const late = await postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/detach", { domain: "app.example.com", confirm: "1" });
-            expect(metadataCalls).toBeGreaterThanOrEqual(2);
+            const csrf = await csrfOf(app, session);
+            const confirmation = await postDomains(app, session, csrf, "/stacks/demo/domains/detach", { domain: "app.example.com" });
+            expect(confirmation.status).toBe(200);
+            ownerDeclared = true;
+            const late = await postDomains(app, session, csrf, "/stacks/demo/domains/detach", { domain: "app.example.com", confirm: "1" });
             expect(late.status).toBe(409);
             expect(await late.text()).toContain("managed externally");
             expect(await readdir(managedDir)).toEqual(["app.example.com.caddy"]);
