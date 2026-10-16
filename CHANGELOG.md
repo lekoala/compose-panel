@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+- Optional Caddy site management (ADR 0030): a **Domains** card on the stack
+  page attaches a public domain to a service port published on `127.0.0.1`
+  (TCP), and detaches it after an explicit confirmation. Off by default
+  (`COMPOSE_PANEL_CADDY_ENABLED`); without the helper socket
+  (`COMPOSE_PANEL_CADDY_SOCKET_PATH`) the card only previews the generated
+  file. The panel never edits the main `Caddyfile`: it owns one directory of
+  per-domain files (`/etc/caddy/compose-panel.d/*.caddy`, imported once by
+  hand), each with a strict ownership header, and refuses foreign or
+  externally modified files.
+  - Privileged work runs in a small host helper (`caddy` user, systemd socket
+    activation, one process per request, `deploy/caddy/`) behind a closed
+    protocol (`status`, `attach`, `detach`): fixed paths, fixed `caddy`
+    argument arrays, no shell. The panel reaches it through a bounded
+    Unix-socket client; the socket's directory is mounted read-only.
+  - Attach checks, under the per-stack lock, the deployed project, service
+    membership and the loopback port; the helper then refuses a domain
+    already routed anywhere in the current Caddy configuration (exactly or by
+    a `*.` wildcard), publishes without ever overwriting, validates the whole
+    configuration, checks the route and reloads. A failed reload restores the
+    previous file and reloads it; an unconfirmed rollback is reported as
+    unknown, never as success. The helper's deadline leaves room for that
+    rollback (135 s by default) and the panel waits at least 150 s.
+  - One global lock serializes every Caddy change. Other host tools that
+    reload Caddy (for example an external deployment pipeline) join it with
+    `deploy/caddy/with-caddy-lock.sh`.
+  - Stacks with a `stack.managed-by` label show their routing read-only. DNS
+    and HTTPS reachability are not checked by the panel (no SSRF surface).
+  - Tests: helper policy and socket client unit tests, the stdio entry point
+    and the lock wrapper on Linux, and an opt-in end-to-end test against a
+    real, disposable Caddy (`bun run test:caddy:wsl`, pinned Caddy 2.8.4).
+    Manual verification on the target host, including the systemd sandbox,
+    is listed in `docs/deployment.md`.
+
 ## 0.4.0
 
 - Audit hardening: production HTTP errors are generic; GitHub release/registry

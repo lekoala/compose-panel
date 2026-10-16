@@ -18,6 +18,9 @@ SRC="$(pwd)"
 BUN="${BUN_INSTALL:-$HOME/.bun}/bin/bun"
 IMAGE="${COMPOSE_PANEL_LAB_IMAGE:-docker:29.9.0-dind}"
 NAME="compose-panel-lab-$$"
+# Set only by a successful `docker run`; empty means nothing was created. The
+# name above is for humans reading `docker ps` and is never used to delete.
+LAB_ID=""
 
 if [ ! -x "$BUN" ]; then
     echo "Bun not found at $BUN. Install it first:" >&2
@@ -27,6 +30,17 @@ fi
 
 # The outer daemon only hosts the lab container; nothing else is sent to it.
 unset DOCKER_HOST COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_ENV_FILES COMPOSE_PROFILES
+# The lab container is created on the daemon the caller selected. That endpoint
+# and context are pinned now, before anything repoints DOCKER_* at the lab
+# daemon, so creation and removal can never diverge.
+OUTER_CONTEXT="${DOCKER_CONTEXT-}"
+outer_docker() {
+    if [ -n "$OUTER_CONTEXT" ]; then
+        env -u DOCKER_HOST DOCKER_CONTEXT="$OUTER_CONTEXT" docker "$@"
+    else
+        env -u DOCKER_HOST docker "$@"
+    fi
+}
 LAB="$(mktemp -d /tmp/compose-panel-lab.XXXXXX)"
 # Shared at the same path on both sides, like the real deployment (host path ==
 # container path), so the self-update test can bind-mount a deployment folder
@@ -35,8 +49,12 @@ LAB="$(mktemp -d /tmp/compose-panel-lab.XXXXXX)"
 mkdir -p "$HOME/.cache"
 SHARED="$(mktemp -d "$HOME/.cache/compose-panel-lab-shared.XXXXXX")"
 cleanup() {
-    # DOCKER_HOST points to the lab by now; the container lives on the outer daemon.
-    env -u DOCKER_HOST docker rm -fv "$NAME" >/dev/null 2>&1 || true
+    # Only the container this run actually created, on the daemon it was created
+    # on. A failed `docker run` leaves LAB_ID empty, and a container is never
+    # removed by its predictable name: that name may belong to another run.
+    if [ -n "$LAB_ID" ]; then
+        outer_docker rm -fv "$LAB_ID" >/dev/null 2>&1 || true
+    fi
     # Only the directories created above.
     case "$LAB" in /tmp/compose-panel-lab.*) rm -rf -- "$LAB" ;; esac
     case "$SHARED" in "$HOME"/.cache/compose-panel-lab-shared.*) rm -rf -- "$SHARED" ;; esac
@@ -44,25 +62,26 @@ cleanup() {
 trap cleanup EXIT
 mkdir -m 700 "$LAB/socket"
 
-# `dind` prepares cgroups for a nested daemon, then runs dockerd as given.
-docker run -d --name "$NAME" --privileged \
+# `dind` prepares cgroups for a nested daemon, then runs dockerd as given. The
+# id printed by `docker run -d` is the only thing ever removed again.
+LAB_ID="$(outer_docker run -d --name "$NAME" --privileged \
     -v "$LAB/socket:/lab" \
     -v "$SHARED:$SHARED" \
     --entrypoint dind "$IMAGE" \
-    dockerd -H unix:///lab/docker.sock --label compose-panel-lab=1 >/dev/null
+    dockerd -H unix:///lab/docker.sock --label compose-panel-lab=1)"
 
 ready=0
 for _ in $(seq 1 60); do
-    if docker exec "$NAME" test -S /lab/docker.sock 2>/dev/null; then ready=1; break; fi
+    if outer_docker exec "$LAB_ID" test -S /lab/docker.sock 2>/dev/null; then ready=1; break; fi
     sleep 0.5
 done
 if [ "$ready" -ne 1 ]; then
     echo "The lab daemon did not start:" >&2
-    docker logs "$NAME" 2>&1 | tail -20 >&2
+    outer_docker logs "$LAB_ID" 2>&1 | tail -20 >&2
     exit 1
 fi
 # The directory is private to this user; let this user reach the socket.
-docker exec "$NAME" chmod 666 /lab/docker.sock
+outer_docker exec "$LAB_ID" chmod 666 /lab/docker.sock
 
 unset DOCKER_CONTEXT
 export DOCKER_HOST="unix://$LAB/socket/docker.sock"
