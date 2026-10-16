@@ -126,6 +126,70 @@ ensure_env() {
     done
 }
 
+# Only the documented, single-file deployment from this checkout is supported.
+# Labels are checked before any host changes, never inferred from the name.
+panel_identity_matches() {
+    local project service directory files oneoff env_files
+    project="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$CONTAINER")" || return 1
+    service="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$CONTAINER")" || return 1
+    directory="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$CONTAINER")" || return 1
+    files="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$CONTAINER")" || return 1
+    oneoff="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.oneoff"}}' "$CONTAINER")" || return 1
+    env_files="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.environment_file"}}' "$CONTAINER")" || return 1
+    [ "$project" = compose-panel ] && [ "$service" = panel ] &&
+        [ "$directory" = "$REPO/deploy" ] && [ "$files" = "$COMPOSE_FILE" ] &&
+        [ "$oneoff" = False ] || return 1
+    # This layout uses env_file: compose-panel.env, not a CLI interpolation file.
+    case "$env_files" in ''|'<no value>') ;; *) return 1 ;; esac
+    [ ! -e "$REPO/deploy/.env" ] && [ ! -L "$REPO/deploy/.env" ]
+}
+
+panel_compose() {
+    # Disable implicit .env discovery and inherited Compose control variables.
+    env -u COMPOSE_FILE -u COMPOSE_ENV_FILES -u COMPOSE_PROFILES COMPOSE_DISABLE_ENV_FILE=true \
+        docker compose -p compose-panel --project-directory "$REPO/deploy" \
+        -f "$COMPOSE_FILE" "$@"
+}
+
+# Preserve Config.Image and Compose labels (needed by About's updater). Pin the
+# tag to the running image for the duration of up, then restore the cached tag,
+# including on command failure. Do not overwrite a tag changed by another writer.
+restore_panel_tag() {
+    [ -n "${saved_tag_image:-}" ] || return 0
+    local current
+    current="$(docker image inspect -f '{{.Id}}' "$panel_image_ref")" || return 1
+    if [ "$current" != "$panel_image" ]; then
+        echo "The panel image tag changed concurrently; refusing to overwrite it." >&2
+        return 1
+    fi
+    docker image tag "$saved_tag_image" "$panel_image_ref" || return 1
+    saved_tag_image=""
+}
+
+recreate_panel() {
+    local result=0
+    [ -z "${saved_tag_image:-}" ] || restore_panel_tag || return 1
+    saved_tag_image="$(docker image inspect -f '{{.Id}}' "$panel_image_ref")" || return 1
+    docker image tag "$panel_image" "$panel_image_ref" || return 1
+    panel_compose up -d --no-deps --no-build --pull never panel || result=$?
+    restore_panel_tag || return 1
+    return "$result"
+}
+
+# A nonzero up and an unhealthy container share the same rollback path.
+recreate_and_verify_panel() {
+    if recreate_panel && wait_healthy; then return 0; fi
+    if [ -n "$env_backup" ]; then
+        cp -p "$env_backup" "$ENV_FILE" || return 1
+        if recreate_panel && wait_healthy; then
+            echo "Panel settings restored and rollback is healthy." >&2
+        else
+            echo "Panel settings restored, but rollback failed or remains unhealthy. Check Docker before retrying." >&2
+        fi
+    fi
+    return 1
+}
+
 if [ "${COMPOSE_PANEL_SETUP_LIB:-}" = 1 ]; then
     return 0 2>/dev/null || exit 0
 fi
@@ -230,7 +294,22 @@ echo "Panel:"
 panel_image=""
 panel_port=5081
 if docker inspect "$CONTAINER" >/dev/null 2>&1; then
+    if panel_identity_matches; then
+        ok "container belongs to this checkout's Compose deployment"
+    else
+        bad "Container $CONTAINER does not match this checkout's single-file Compose deployment (including interpolation files)."
+    fi
     panel_image="$(docker inspect -f '{{.Image}}' "$CONTAINER")"
+    panel_image_ref="$(docker inspect -f '{{.Config.Image}}' "$CONTAINER")"
+    if [[ ! "$panel_image" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+        [[ ! "$panel_image_ref" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:+-]*$ ]] ||
+        [[ "$panel_image_ref" == sha256:* ]]; then
+        bad "The panel must use a tagged image with a valid running image ID."
+    elif [ "$(panel_compose config --images panel 2>/dev/null)" != "$panel_image_ref" ]; then
+        bad "The Compose panel image differs from the running container's image reference."
+    elif ! docker image inspect "$panel_image_ref" >/dev/null 2>&1; then
+        bad "The panel image tag is missing locally; restore it before running setup."
+    fi
     panel_port="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" | sed -n 's/^PORT=//p' | tail -n 1)"
     panel_port="${panel_port:-5081}"
     ok "container $CONTAINER ($(docker inspect -f '{{.Config.Image}}' "$CONTAINER"))"
@@ -279,7 +358,10 @@ install -d -o caddy -g caddy -m 0755 "$MANAGED_DIR"
 
 echo "2/6 Helper binary (from the panel image $panel_image)"
 build_dir="$(mktemp -d)"
-trap 'rm -rf "$build_dir"' EXIT
+saved_tag_image=""
+trap 'restore_panel_tag; rm -rf "$build_dir"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 docker run --rm --network none --entrypoint bun -v "$build_dir:/out" "$panel_image" \
     build --compile src/scripts/caddy-helper.ts --outfile /out/compose-panel-caddy-helper >/dev/null
 install -m 0755 "$build_dir/compose-panel-caddy-helper" "$HELPER_BIN"
@@ -350,15 +432,7 @@ wait_healthy() {
     done
     return 1
 }
-docker compose -f "$COMPOSE_FILE" up -d --no-build panel
-if ! wait_healthy; then
-    if [ -n "$env_backup" ]; then
-        cp -p "$env_backup" "$ENV_FILE"
-        docker compose -f "$COMPOSE_FILE" up -d --no-build panel || true
-        die "the panel did not come back healthy; compose-panel.env was restored from $env_backup and the panel recreated. Check: docker logs $CONTAINER"
-    fi
-    die "the panel did not come back healthy. Check: docker logs $CONTAINER"
-fi
+recreate_and_verify_panel || die "panel recreation or health verification failed. Check: docker logs $CONTAINER"
 docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' "$CONTAINER" | grep -w "$SOCKET_DIR" >/dev/null \
     || die "the panel container does not mount $SOCKET_DIR. Check $COMPOSE_FILE."
 status="$(docker exec "$CONTAINER" bun -e "

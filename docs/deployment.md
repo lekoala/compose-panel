@@ -326,6 +326,12 @@ disabled, the panel container and its `/run/compose-panel` mount) and lists
 what `--install` would do. Any failed check stops both modes before a single
 change. `--install` then, each step idempotent (a second run changes nothing):
 
+The container must belong to project `compose-panel`, service `panel`, with
+this checkout's `deploy` working directory and only `deploy/compose.yaml` in
+its Compose labels. One-off containers, extra Compose/interpolation files and
+an implicit `deploy/.env` are refused. The configured image reference must
+match the running container's reference and still exist locally.
+
 1. creates `/etc/caddy/compose-panel.d` owned by `caddy`;
 2. compiles the helper **from the panel image that is running**, offline
    (`docker run --network none … bun build --compile`): same version as the
@@ -340,11 +346,23 @@ change. `--install` then, each step idempotent (a second run changes nothing):
    that fails (see "Systemd sandbox" below);
 5. adds `COMPOSE_PANEL_CADDY_ENABLED=true` and
    `COMPOSE_PANEL_CADDY_SOCKET_PATH` to `deploy/compose-panel.env` after a
-   backup (other values already set there are refused, not overwritten);
+   backup (ignored by Git; it contains the same secrets as the original).
+   Other values already set there are refused, not overwritten;
 6. recreates the panel and checks it is healthy, mounts the socket directory
    and reaches the helper from inside the container. If the panel does not
-   come back healthy, the previous `compose-panel.env` is restored and the
-   panel recreated again.
+   come back healthy, or Compose exits unsuccessfully, the previous
+   `compose-panel.env` is restored and recreation is attempted again. A failed
+   rollback is reported explicitly.
+
+Recreation never builds or pulls, and only targets the panel service. To keep
+the running version even if **About → Check** has pulled a newer image, setup
+temporarily points the configured local tag at the running image ID, then
+restores the previously cached tag, also on failure or a handled signal. This
+preserves the container's tag reference and Compose labels for browser updates.
+Do not run image pulls, updates or another setup concurrently. If another writer
+changes the tag, setup refuses to overwrite that change. A crash or SIGKILL
+cannot run cleanup and can leave the tag pointing at the previous image; check
+Docker's actual state before retrying.
 
 `--yes` skips the confirmation prompt, for automation. Run `--install` again
 after each panel image update (including **About → Update**): it recompiles
@@ -484,7 +502,12 @@ Manual verification (release gate, on the target host with its real Caddy):
       changes without changing anything; `--install` applies them, and a
       second `--install` adds nothing (no duplicate import or setting, no new
       `Caddyfile` or `compose-panel.env` backup).
-
+- [ ] On a disposable deployment, pull a newer panel tag without installing
+      it, then run setup: the container and helper keep the previous image ID,
+      the newer tag is restored, and About can still check for updates.
+- [ ] From a second checkout, setup refuses before any changes. Simulate a
+      failed Compose recreation on the disposable deployment: the env file
+      is restored and rollback success or failure is reported accurately.
 - [ ] Attach a domain to a loopback-bound service: the managed file appears
       with the exact ownership header, `caddy adapt` contains the route, and
       the application answers through Caddy.
