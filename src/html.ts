@@ -432,7 +432,7 @@ export function domainsSection(options: DomainsSectionOptions): string {
         + `<label>Target service <input type="text" name="service" value="${escapeHtml(preview.service)}" placeholder="web" list="caddy-services" autocomplete="off" spellcheck="false" required><datalist id="caddy-services">${services.map(name => `<option value="${escapeHtml(name)}">`).join("")}</datalist></label>`
         + `<label>Local upstream port <input type="text" name="port" value="${escapeHtml(preview.port)}" placeholder="8080" autocomplete="off" spellcheck="false" inputmode="numeric" required></label>`
         + `<div class="form-actions"><button type="submit" class="btn btn-primary">Attach domain</button></div></form>`
-        + `<p class="muted">Attaching validates the service and port, publishes the Caddy file and reloads Caddy. Only ports bound to the host loopback are eligible. DNS and HTTPS are not checked by the panel.</p>`
+        + `<p class="muted">Attaching validates the service and port, publishes the Caddy file and reloads Caddy. Only TCP ports bound to 127.0.0.1 are eligible. DNS and HTTPS are not checked by the panel.</p>`
         : note("info", "Preview only: the helper is not configured, so nothing can be attached. See the deployment guide to enable domain management.");
     const previewOptions = services.map(name => `<option value="${escapeHtml(name)}">`).join("");
     const form = `<form method="get" action="${href}" class="form domains-form">`

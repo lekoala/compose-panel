@@ -50,7 +50,9 @@ app.example.com {
 
 V1 scope is deliberately narrow: one public domain → one local HTTP upstream.
 No path rules, no wildcards, no Caddy-level authentication options, no
-`Caddyfile` editor. Only ports bound to the host loopback are eligible.
+`Caddyfile` editor. Only TCP ports published on `127.0.0.1` are eligible —
+exactly what the managed file dials — so an IPv6-only or UDP publication can
+never pass the check while producing a broken proxy.
 
 ### Host helper behind a Unix socket, no sudo from the container
 
@@ -84,12 +86,15 @@ records which stack and service the domain belongs to.
 ### Concurrency: one global Caddy lock plus the per-stack lock
 
 The panel keeps its per-stack lock (one modifying operation per stack,
-including saves). The helper additionally serializes the whole
+including saves) and registers Caddy mutations in the shared shutdown drain.
+The helper additionally serializes the whole
 prepare → validate → publish → reload sequence behind an exclusive lock on
 the managed directory, so two stacks attaching domains at once cannot interleave
-a publish and a reload. External writers that reload Caddy should ideally take
-the same lock; otherwise the coordination with them is best-effort and this is
-documented as such.
+a publish and a reload. The lock is only ever reclaimed from a provably dead
+holder (a `pid` recorded in the lock, never mere age), so long validations
+and reloads cannot cause overlapping mutations; external writers that reload
+Caddy should ideally take the same lock, without sharing the files. Otherwise
+the coordination with them is best-effort and this is documented as such.
 
 ### No network verification in V1
 

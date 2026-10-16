@@ -13,7 +13,7 @@
  */
 
 import { constants } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rename, rmdir, unlink } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { runCommand, type CommandResult } from "./docker.ts";
 import {
@@ -58,6 +58,8 @@ export interface HelperDeps {
     runCaddy: (args: string[], options?: { maxBytes?: number }) => Promise<CommandResult>;
     now?: () => number;
     sleep?: (ms: number) => Promise<void>;
+    /** Lock timings, overridable in tests (defaults below). */
+    lockOptions?: { staleMs?: number; waitMs?: number };
 }
 
 const MAX_MAIN_CONFIG_BYTES = 1024 * 1024;
@@ -66,9 +68,12 @@ const MAX_SITES_LISTED = 1024;
 /** `caddy adapt` output cap: the whole host config as JSON can be large. */
 const ADAPT_MAX_BYTES = 4 * 1024 * 1024;
 /** Exclusive lock directory inside the managed dir (external writers such as
- * a deployment script can take the same lock with an `mkdir` of this path). */
+ * a deployment script can take the same lock with an `mkdir` of this path,
+ * and should write their PID into `<lock>/owner` the same way). */
 const LOCK_NAME = ".lock";
-/** A lock older than this is treated as left by a crashed holder. */
+const OWNER_NAME = "owner";
+/** A lock whose holder is gone is reclaimed; a live holder is never stolen,
+ * however long validation and reloads take. */
 const LOCK_STALE_MS = 30_000;
 /** How long to wait for a lock held by another writer. */
 const LOCK_WAIT_MS = 30_000;
@@ -140,32 +145,84 @@ async function ensureManagedDir(managedDir: string): Promise<void> {
  * two concurrent writers (panel stacks, or the panel and an external
  * deployment) cannot interleave a publish and a reload. Implemented with an
  * atomic `mkdir`, which needs no extra dependency and works over the same
- * path for external writers. Stale locks from crashed holders expire.
+ * path for external writers.
+ *
+ * A lock is only ever reclaimed when its holder is provably gone: the holder
+ * records `pid:token` in `<lock>/owner`, and a contender steals the lock
+ * only when that PID no longer exists (or when an ownerless directory is
+ * older than the stale timeout, covering a holder that crashed between the
+ * `mkdir` and the owner write). A live holder is waited on, never stolen, so
+ * long validations and reloads cannot cause two overlapping mutations — and
+ * the release only removes a lock still owned by this holder, never
+ * another writer's.
  */
 async function withHelperLock<T>(managedDir: string, deps: HelperDeps, fn: () => Promise<T>): Promise<T> {
     const lockPath = join(managedDir, LOCK_NAME);
+    const ownerPath = join(lockPath, OWNER_NAME);
     const now = deps.now ?? Date.now;
     const sleep = deps.sleep ?? Bun.sleep;
-    const deadline = now() + LOCK_WAIT_MS;
+    const staleMs = deps.lockOptions?.staleMs ?? LOCK_STALE_MS;
+    const waitMs = deps.lockOptions?.waitMs ?? LOCK_WAIT_MS;
+    const token = `${process.pid}:${crypto.randomUUID()}`;
+    const deadline = now() + waitMs;
     for (;;) {
+        let created = false;
         try {
             await mkdir(lockPath);
-            break;
+            created = true;
         } catch {
-            const info = await lstat(lockPath).catch(() => null);
-            if (info && !info.isDirectory()) throw new HelperBusyError();
-            if (info && now() - info.mtimeMs > LOCK_STALE_MS) {
+            created = false;
+        }
+        if (created) {
+            try {
+                await writeFile(ownerPath, token, { flag: "wx", mode: 0o644 });
+                break;
+            } catch (error) {
                 await rmdir(lockPath).catch(() => {});
-                continue;
+                throw error;
             }
+        }
+        const info = await lstat(lockPath).catch(() => null);
+        if (!info) {
+            if (now() >= deadline) throw new HelperBusyError();
+            continue;
+        }
+        if (!info.isDirectory()) throw new HelperBusyError();
+        const owner = await readFile(ownerPath, "utf8").catch(() => null);
+        if (owner !== null && isOwnerAlive(owner)) {
             if (now() >= deadline) throw new HelperBusyError();
             await sleep(100);
+            continue;
         }
+        if (owner === null && now() - info.mtimeMs <= staleMs) {
+            if (now() >= deadline) throw new HelperBusyError();
+            await sleep(100);
+            continue;
+        }
+        await rm(lockPath, { recursive: true, force: true }).catch(() => {});
     }
     try {
         return await fn();
     } finally {
-        await rmdir(lockPath).catch(() => {});
+        // Only remove our own lock: a contender that stole it meanwhile (our
+        // holder could only have been stolen when dead, so this is purely
+        // defensive) keeps its directory.
+        const owner = await readFile(ownerPath, "utf8").catch(() => null);
+        if (owner === token) await rm(lockPath, { recursive: true, force: true }).catch(() => {});
+    }
+}
+
+/** Whether the `pid:token` owner recorded in a lock directory still runs. */
+function isOwnerAlive(owner: string): boolean {
+    const pid = Number(owner.split(":")[0]);
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        // ESRCH: no such process. Anything else (EPERM and the like) means a
+        // process exists that we may not signal: treat it as alive.
+        return (error as NodeJS.ErrnoException).code !== "ESRCH";
     }
 }
 

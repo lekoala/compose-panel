@@ -172,9 +172,9 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - The panel verifies before calling: session, allowed Origin and CSRF on both
   endpoints, deployed project identity resolved fail-closed, service
   membership against `config --services`, and the port against the
-  loopback-bound (`127.0.0.1`/`::1`) published ports of the service's running
-  containers, read through the existing read-only inspector. The helper
-  re-validates every field under its lock.
+  TCP `127.0.0.1` published ports of the service's running containers —
+  exactly the destination the managed file dials — read through the existing
+  read-only inspector. The helper re-validates every field under its lock.
 - The panel never fetches the domain (no SSRF surface by construction) and
   never stores or logs anything beyond the domain, stack, service and port —
   all bounded, all HTML-escaped, with `noopener noreferrer` on the

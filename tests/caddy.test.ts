@@ -1,14 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
     buildSiteFile,
-    isLoopbackHostBinding,
     isValidDomain,
     isValidServiceName,
     isValidStackName,
     isValidUpstreamPort,
+    matchesGeneratedUpstream,
     normalizeDomain,
     parseSiteFile,
     siteFilename,
+    splitHostBinding,
 } from "../src/caddy.ts";
 
 describe("isValidDomain", () => {
@@ -56,12 +57,25 @@ describe("service, stack and port validation", () => {
         expect(isValidUpstreamPort(Number.NaN)).toBe(false);
     });
 
-    test("only loopback bindings are eligible", () => {
-        expect(isLoopbackHostBinding("127.0.0.1")).toBe(true);
-        expect(isLoopbackHostBinding("::1")).toBe(true);
-        expect(isLoopbackHostBinding("0.0.0.0")).toBe(false);
-        expect(isLoopbackHostBinding("192.0.2.10")).toBe(false);
-        expect(isLoopbackHostBinding("")).toBe(false);
+    test("only the exact generated upstream is eligible", () => {
+        expect(matchesGeneratedUpstream("80/tcp", "127.0.0.1:8080", 8080)).toBe(true);
+        // IPv6-only, UDP, all-interfaces and wrong-port publications are out:
+        // the file always dials 127.0.0.1 over TCP.
+        expect(matchesGeneratedUpstream("80/tcp", "[::1]:8080", 8080)).toBe(false);
+        expect(matchesGeneratedUpstream("53/udp", "127.0.0.1:8080", 8080)).toBe(false);
+        expect(matchesGeneratedUpstream("80/tcp", "0.0.0.0:8080", 8080)).toBe(false);
+        expect(matchesGeneratedUpstream("80/tcp", "127.0.0.1:9090", 8080)).toBe(false);
+        expect(matchesGeneratedUpstream("80/tcp", null, 8080)).toBe(false);
+        expect(matchesGeneratedUpstream("80", "127.0.0.1:8080", 8080)).toBe(false);
+        expect(matchesGeneratedUpstream("80/tcp", "not-a-binding", 8080)).toBe(false);
+    });
+
+    test("splits host bindings with or without IPv6 brackets", () => {
+        expect(splitHostBinding("127.0.0.1:8080")).toEqual({ ip: "127.0.0.1", port: 8080 });
+        expect(splitHostBinding("[::1]:8080")).toEqual({ ip: "::1", port: 8080 });
+        expect(splitHostBinding("")).toBeNull();
+        expect(splitHostBinding("127.0.0.1")).toBeNull();
+        expect(splitHostBinding("127.0.0.1:0")).toBeNull();
     });
 
     test("derives the file name from a valid domain only", () => {

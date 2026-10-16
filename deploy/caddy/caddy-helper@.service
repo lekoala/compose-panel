@@ -1,8 +1,10 @@
-# Compose Panel Caddy helper — per-request service (ADR 0030).
-# See caddy-helper.socket for the install steps. Paths below are host paths;
-# adjust them together with the panel's COMPOSE_PANEL_CADDY_SOCKET_PATH.
+# Compose Panel Caddy helper — per-connection service (ADR 0030).
+# Template instance: required by caddy-helper.socket (Accept=yes), which
+# spawns one caddy-helper@<n>.service per connection. See caddy-helper.socket
+# for the install steps. Paths below are host paths; adjust them together
+# with the panel's COMPOSE_PANEL_CADDY_SOCKET_PATH.
 [Unit]
-Description=Compose Panel Caddy helper (one request per start)
+Description=Compose Panel Caddy helper (one request per connection)
 Documentation=https://lekoala.github.io/compose-panel/
 Requires=caddy-helper.socket
 After=caddy.service

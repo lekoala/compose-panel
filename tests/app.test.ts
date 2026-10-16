@@ -675,6 +675,16 @@ describe("caddy domain attach and detach", () => {
         const response = await postDomains(app, session, "wrong", "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
         expect(response.status).not.toBe(303);
     });
+
+    test("refuses attach when the stack is managed externally", async () => {
+        const { provider } = controllableProvider();
+        provider.stackMetadata = async () => ({ web: { "stack.managed-by": "external-deployer" } });
+        const app = makeApp({ caddyEnabled: true, caddySocketPath: "/nonexistent-dir/helper.sock" }, undefined, provider);
+        const session = await login(app);
+        const response = await postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
+        expect(response.status).toBe(409);
+        expect(await response.text()).toContain("managed externally");
+    });
 });
 
 // Full attach/detach flow against an in-process fake helper over a real Unix
@@ -749,8 +759,9 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
         return fields.map(field => JSON.stringify(field)).join("\t");
     }
 
-    function inspectJson(): string {
-        return JSON.stringify([{
+    function fakeInspector(bindings: Record<string, Array<{ HostIp: string; HostPort: string }>> = { "80/tcp": [{ HostIp: "127.0.0.1", HostPort: "8080" }]}): ContainerInspector {
+        const ok = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+        const inspect = JSON.stringify([{
             Id: containerId,
             Name: "/demo-web-1",
             Config: { Image: "nginx:alpine" },
@@ -758,17 +769,13 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
             Created: "2026-10-01T10:00:00Z",
             State: { Status: "running", Running: true, ExitCode: 0 },
             HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
-            NetworkSettings: { Ports: { "80/tcp": [{ HostIp: "127.0.0.1", HostPort: "8080" }] } },
+            NetworkSettings: { Ports: bindings },
             Mounts: [],
         }]);
-    }
-
-    function fakeInspector(): ContainerInspector {
-        const ok = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
         return {
             engine: "fake",
             list: async () => ({ ...ok, stdout: lsLine() }),
-            inspect: async () => ({ ...ok, stdout: inspectJson() }),
+            inspect: async () => ({ ...ok, stdout: inspect }),
             logs: async () => ok,
             info: async () => ok,
             stats: async () => ok,
@@ -823,6 +830,122 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
             expect(await (await authed(app, "/stacks/demo", session)).text()).toContain("No domains attached.");
         } finally {
             helper.close();
+            await rm(managedDir, { recursive: true, force: true });
+            await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+        }
+    }, 30_000);
+
+    async function providerWithService(): Promise<ComposeProvider> {
+        const { provider } = controllableProvider();
+        provider.projectServices = async () => ({ code: 0, stdout: JSON.stringify([{ Service: "web", State: "running" }]), stderr: "", timedOut: false, truncated: false });
+        provider.listServices = async () => ["web"];
+        return provider;
+    }
+
+    async function prepareDemo(): Promise<void> {
+        await writeFile(join(root, "demo", "compose.yaml"), "services:\n  web:\n    image: nginx:alpine\n");
+        await rm(join(root, "demo", ".env"), { force: true });
+    }
+
+    test("refuses a port that is not exactly the generated upstream", async () => {
+        await prepareDemo();
+        const cases: Array<Record<string, Array<{ HostIp: string; HostPort: string }>>> = [
+            { "53/udp": [{ HostIp: "127.0.0.1", HostPort: "8080" }] },
+            { "80/tcp": [{ HostIp: "::1", HostPort: "8080" }] },
+            { "80/tcp": [{ HostIp: "0.0.0.0", HostPort: "8080" }] },
+        ];
+        for (const bindings of cases) {
+            const managedDir = await mkdtemp(join(tmpdir(), "compose-panel-caddy-sites-"));
+            const helper = await startFakeHelper(managedDir);
+            try {
+                const app = makeApp({ caddyEnabled: true, caddySocketPath: helper.socketPath }, undefined, await providerWithService(), undefined, root, fakeInspector(bindings));
+                const session = await login(app);
+                const response = await postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
+                expect(response.status).toBe(409);
+                expect(await response.text()).toContain("127.0.0.1 (TCP)");
+                expect(await readdir(managedDir)).toEqual([]);
+            } finally {
+                helper.close();
+                await rm(managedDir, { recursive: true, force: true });
+            }
+        }
+        await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+    }, 30_000);
+
+    test("refuses detach when the stack is managed externally, before and under the lock", async () => {
+        await prepareDemo();
+        const managedDir = await mkdtemp(join(tmpdir(), "compose-panel-caddy-sites-"));
+        const helper = await startFakeHelper(managedDir);
+        try {
+            await writeFile(join(managedDir, "app.example.com.caddy"), buildSiteFile({ domain: "app.example.com", stack: "demo", service: "web", port: 8080 }));
+            // Pre-check refusal: the owner is already known.
+            const owned = await providerWithService();
+            owned.stackMetadata = async () => ({ web: { "stack.managed-by": "external-deployer" } });
+            const refused = makeApp({ caddyEnabled: true, caddySocketPath: helper.socketPath }, undefined, owned, undefined, root, fakeInspector());
+            const refusedSession = await login(refused);
+            const early = await postDomains(refused, refusedSession, await csrfOf(refused, refusedSession), "/stacks/demo/domains/detach", { domain: "app.example.com", confirm: "1" });
+            expect(early.status).toBe(409);
+            expect(await early.text()).toContain("managed externally");
+            // In-lock refusal: the owner appears only when re-checked inside
+            // the mutation, covering the confirmation-to-mutation window.
+            let metadataCalls = 0;
+            const racing = await providerWithService();
+            const unowned: Record<string, Record<string, string>> = {};
+            racing.stackMetadata = async () => {
+                metadataCalls += 1;
+                return metadataCalls === 1 ? unowned : { web: { "stack.managed-by": "external-deployer" } };
+            };
+            const app = makeApp({ caddyEnabled: true, caddySocketPath: helper.socketPath }, undefined, racing, undefined, root, fakeInspector());
+            const session = await login(app);
+            // The page load itself reads metadata once; reset so the first
+            // detach read sees no owner and the in-lock re-check does.
+            metadataCalls = 0;
+            const late = await postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/detach", { domain: "app.example.com", confirm: "1" });
+            expect(metadataCalls).toBeGreaterThanOrEqual(2);
+            expect(late.status).toBe(409);
+            expect(await late.text()).toContain("managed externally");
+            expect(await readdir(managedDir)).toEqual(["app.example.com.caddy"]);
+        } finally {
+            helper.close();
+            await rm(managedDir, { recursive: true, force: true });
+            await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+        }
+    }, 30_000);
+
+    test("shutdown waits for a running Caddy mutation", async () => {
+        await prepareDemo();
+        const managedDir = await mkdtemp(join(tmpdir(), "compose-panel-caddy-sites-"));
+        const socketPath = join(managedDir, "slow.sock");
+        const server = Bun.listen({
+            unix: socketPath,
+            socket: {
+                open() {},
+                data(socket, data) {
+                    if (!Buffer.from(data).toString("utf8").includes("\n")) return;
+                    setTimeout(() => {
+                        try {
+                            socket.write(`${JSON.stringify({ ok: true, action: "attach", unchanged: false })}\n`);
+                            socket.end();
+                        } catch { /* the client may have gone */ }
+                    }, 1500);
+                },
+                close() {},
+                error(socket) { try { socket.end(); } catch { /* already gone */ } },
+            },
+        });
+        try {
+            const app = makeApp({ caddyEnabled: true, caddySocketPath: socketPath }, undefined, await providerWithService(), undefined, root, fakeInspector());
+            const session = await login(app);
+            const pending = postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
+            await Bun.sleep(400);
+            const started = Date.now();
+            await app.beginShutdown(5000);
+            // The drain waited for the helper answer instead of ending at once.
+            expect(Date.now() - started).toBeGreaterThanOrEqual(800);
+            const response = await pending;
+            expect(response.status).toBe(303);
+        } finally {
+            server.stop();
             await rm(managedDir, { recursive: true, force: true });
             await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
         }

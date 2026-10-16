@@ -208,6 +208,65 @@ describe("attach", () => {
         const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
         expect(response.ok).toBe(true);
     });
+
+    test("a lock held by a live holder is waited on, never stolen", async () => {
+        const fake = fakeCaddyRunner();
+        const lock = join(managedDir, ".lock");
+        await mkdir(lock);
+        // Our own PID is alive: even an old lock directory must not be taken.
+        await writeFile(join(lock, "owner"), `${process.pid}:other`, { flag: "wx" });
+        const past = Date.now() - 120_000;
+        await utimes(lock, new Date(past), new Date(past));
+        const response = await runHelperRequest({ ...attach }, env, {
+            runCaddy: fake.run,
+            lockOptions: { staleMs: 50, waitMs: 150 },
+        });
+        expect(response).toEqual({ ok: false, error: expect.stringContaining("in progress"), code: "conflict" });
+        expect(fake.calls).toEqual([]);
+        expect(await managedFiles()).toEqual([]);
+    });
+
+    test("a lock left by a dead holder is reclaimed", async () => {
+        const proc = Bun.spawn([process.execPath, "-e", ""], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+        const dead = proc.pid;
+        await proc.exited;
+        const fake = fakeCaddyRunner();
+        const lock = join(managedDir, ".lock");
+        await mkdir(lock);
+        await writeFile(join(lock, "owner"), `${dead}:crashed`, { flag: "wx" });
+        const response = await runHelperRequest({ ...attach }, env, {
+            runCaddy: fake.run,
+            lockOptions: { staleMs: 60_000, waitMs: 1000 },
+        });
+        expect(response).toEqual({ ok: true, action: "attach", unchanged: false });
+    });
+
+    test("slow writers never overlap, even past the stale timeout", async () => {
+        let active = 0;
+        let maxActive = 0;
+        const fake = fakeCaddyRunner({ adaptHosts: ["a.example.com", "b.example.com"] });
+        const slow: HelperDeps["runCaddy"] = async (args, options) => {
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            try {
+                // Longer than the stale timeout below: with stealing by age
+                // alone, both writers would run their Caddy calls together.
+                await Bun.sleep(120);
+                return fake.run(args, options);
+            } finally {
+                active -= 1;
+            }
+        };
+        const deps: HelperDeps = { runCaddy: slow, lockOptions: { staleMs: 30, waitMs: 10_000 } };
+        const [first, second] = await Promise.all([
+            runHelperRequest({ action: "attach", domain: "a.example.com", stack: "web", service: "web", port: 8080 }, env, deps),
+            runHelperRequest({ action: "attach", domain: "b.example.com", stack: "web", service: "web", port: 8081 }, env, deps),
+        ]);
+        expect(first.ok).toBe(true);
+        expect(second.ok).toBe(true);
+        expect(maxActive).toBe(1);
+        expect(await managedFiles()).toEqual(["a.example.com.caddy", "b.example.com.caddy"]);
+    });
 });
 
 describe("detach", () => {

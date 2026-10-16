@@ -335,7 +335,7 @@ written or reloaded).
     ```sh
     bun build --compile src/scripts/caddy-helper.ts --outfile compose-panel-caddy-helper
     install -m 755 compose-panel-caddy-helper /usr/local/bin/compose-panel-caddy-helper
-    cp deploy/caddy/caddy-helper.{socket,service} /etc/systemd/system/
+    cp deploy/caddy/caddy-helper.socket "deploy/caddy/caddy-helper@.service" /etc/systemd/system/
     systemctl daemon-reload
     systemctl enable --now caddy-helper.socket
     ```
@@ -362,7 +362,8 @@ Behavior once enabled:
 - The stack page lists the domains attached to that stack, each with an
   application link (`https://…`, new tab, no opener access).
 - **Attach domain** checks the service against the effective Compose config
-  and the port against the loopback bindings of its running containers, then
+  and the port against the TCP `127.0.0.1` bindings of its running containers
+  (exactly what the managed file will dial), then
   publishes the managed file, validates the whole Caddy configuration,
   confirms the route is present, and reloads Caddy — all serialized behind a
   global Caddy lock, under the usual per-stack lock. A failed reload restores

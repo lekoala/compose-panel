@@ -91,11 +91,30 @@ export function isValidUpstreamPort(port: number): boolean {
 }
 
 /**
- * Only host-loopback bindings are eligible as upstreams in V1. Docker may
- * report `127.0.0.1` or `::1`; anything else (including `0.0.0.0`) is refused.
+ * Split a `docker inspect` host binding (`127.0.0.1:8080`, `[::1]:8080`)
+ * into its IP and port. Anything else is not a usable binding.
  */
-export function isLoopbackHostBinding(hostIp: string): boolean {
-    return hostIp === "127.0.0.1" || hostIp === "::1";
+export function splitHostBinding(host: string): { ip: string; port: number } | null {
+    const match = /^\[([^\]]+)\]:(\d+)$/.exec(host) ?? /^([^:[\]]+):(\d+)$/.exec(host);
+    if (!match) return null;
+    const port = Number(match[2]);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    return { ip: match[1]!, port };
+}
+
+/**
+ * Whether a Docker published port is exactly the upstream the managed file
+ * generates (`reverse_proxy 127.0.0.1:<port>` over TCP): the container-side
+ * protocol must be TCP and the host binding must be `127.0.0.1` with the
+ * requested port. An IPv6-only (`::1`) or UDP publication is refused here,
+ * since dialing `127.0.0.1` would fail or reach a different service.
+ */
+export function matchesGeneratedUpstream(containerPort: string, hostBinding: string | null, port: number): boolean {
+    if (hostBinding === null) return false;
+    const protocol = containerPort.split("/")[1] ?? "";
+    if (protocol.toLowerCase() !== "tcp") return false;
+    const split = splitHostBinding(hostBinding);
+    return split !== null && split.ip === "127.0.0.1" && split.port === port;
 }
 
 /** File name of a managed site, after domain validation. */

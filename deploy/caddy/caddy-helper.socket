@@ -18,7 +18,10 @@
 #        import /etc/caddy/compose-panel.d/*.caddy
 #      Then: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 #      and:  systemctl reload caddy
-#   3. Copy these two unit files to /etc/systemd/system/, then:
+#   3. Copy the socket unit and the service template to /etc/systemd/system/,
+#      then (`Accept=yes` in the socket requires the `caddy-helper@.service`
+#      template name):
+#        cp deploy/caddy/caddy-helper.socket deploy/caddy/'caddy-helper@.service' /etc/systemd/system/
 #        systemctl daemon-reload
 #        systemctl enable --now caddy-helper.socket
 [Unit]
