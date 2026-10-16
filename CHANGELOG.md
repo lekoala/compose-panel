@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Audit hardening: production HTTP errors are generic; GitHub release/registry
   responses are byte-bounded while streaming; release publication waits for CI
