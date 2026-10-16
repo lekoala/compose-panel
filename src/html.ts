@@ -371,6 +371,51 @@ export function databaseSection(
     return `<section class="card database"><h2>Database</h2>${meta}${link}</section>`;
 }
 
+/** Input for the Domains preview form (ADR 0030, PR1: preview only). */
+export interface DomainsPreviewInput {
+    stackName: string;
+    /** Service names from `config --services`, offered as suggestions. */
+    services: string[];
+    /** Declared deployment owner (`stack.managed-by`), if any. */
+    owner: string | null;
+    domain: string;
+    service: string;
+    port: string;
+}
+
+/**
+ * Optional Caddy site preview (ADR 0030, PR1). A GET form validates a
+ * domain → loopback upstream mapping and shows the managed file exactly as
+ * the helper would generate it. Nothing is written, applied or reloaded:
+ * real attach/detach arrives in PR2. Stacks with a declared external owner
+ * get a read-only section instead of the form.
+ */
+export function domainsSection(
+    input: DomainsPreviewInput,
+    result: { file: string | null; error: string | null; hasInput: boolean },
+): string {
+    if (input.owner) {
+        return `<section class="card domains"><h2>Domains</h2>${note("info", `Routing for this stack is managed externally (${input.owner}). Domains are shown here for information only and cannot be attached from this panel.`)}${result.file ? `<pre class="output">${escapeHtml(result.file)}</pre>` : ""}</section>`;
+    }
+    const href = `/stacks/${encodeURIComponent(input.stackName)}`;
+    const options = input.services
+        .map(name => `<option value="${escapeHtml(name)}">`)
+        .join("");
+    const form = `<form method="get" action="${href}" class="form domains-form">`
+        + `<label>Domain <input type="text" name="caddyDomain" value="${escapeHtml(input.domain)}" placeholder="app.example.com" autocomplete="off" spellcheck="false" required></label>`
+        + `<label>Target service <input type="text" name="caddyService" value="${escapeHtml(input.service)}" placeholder="web" list="caddy-services" autocomplete="off" spellcheck="false" required><datalist id="caddy-services">${options}</datalist></label>`
+        + `<label>Local upstream port <input type="text" name="caddyPort" value="${escapeHtml(input.port)}" placeholder="8080" autocomplete="off" spellcheck="false" inputmode="numeric" required></label>`
+        + `<div class="form-actions"><button type="submit" class="btn">Preview configuration</button></div></form>`;
+    const hint = `<p class="muted">Only ports bound to the host loopback are eligible. DNS and HTTPS are not checked by the panel.</p>`;
+    const preview = result.error
+        ? note("warn", result.error)
+        : result.file
+            ? `<details open><summary>Generated Caddy configuration</summary><pre class="output">${escapeHtml(result.file)}</pre></details>`
+            : "";
+    const pending = note("info", "Preview only: nothing is written or reloaded. Applying domains arrives with the privileged helper.");
+    return `<section class="card domains"><h2>Domains</h2>${form}${hint}${preview}${pending}</section>`;
+}
+
 /** "1.27.1 → 1.27.2"; when both sides read the same, the digests tell them apart. */
 function updateSides(update: ServiceUpdate): [string, string] {
     const from = versionText(update.from);

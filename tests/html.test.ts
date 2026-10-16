@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, operationPanel, renderSidebar, servicesSection, usageBar, databaseSection } from "../src/html.ts";
+import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, operationPanel, renderSidebar, servicesSection, usageBar, databaseSection, domainsSection } from "../src/html.ts";
 import { buildExplorerUrl } from "../src/database.ts";
 import type { ComposeService } from "../src/compose-state.ts";
 import type { OperationView } from "../src/operations.ts";
@@ -185,4 +185,41 @@ test("database section escapes the label and query values and refuses a non-http
     const bad = databaseSection({ url: "javascript:alert(1)", label: null, query: { db: "shop" } });
     expect(bad).not.toContain("javascript:");
     expect(bad).not.toContain("<a ");
+});
+
+test("domains section renders a preview form with service suggestions", () => {
+    const html = domainsSection(
+        { stackName: "web", services: ["web", "worker"], owner: null, domain: "", service: "", port: "" },
+        { file: null, error: null, hasInput: false },
+    );
+    expect(html).toContain('class="card domains"');
+    expect(html).toContain('method="get"');
+    expect(html).toContain('name="caddyDomain"');
+    expect(html).toContain('<option value="web">');
+});
+
+test("domains section escapes the generated file instead of interpreting it", () => {
+    const file = "# compose-panel:managed v1\n# compose-panel:stack web\n# compose-panel:service <b>web</b>\n\napp.example.com {\n\treverse_proxy 127.0.0.1:8080\n}\n";
+    const html = domainsSection(
+        { stackName: "web", services: ["web"], owner: null, domain: "app.example.com", service: "web", port: "8080" },
+        { file, error: null, hasInput: true },
+    );
+    expect(html).toContain("<pre");
+    expect(html).not.toContain("<b>web</b>");
+    expect(html).toContain("&lt;b&gt;web&lt;/b&gt;");
+});
+
+test("domains section reports invalid input as a warning and stays read-only for external owners", () => {
+    const invalid = domainsSection(
+        { stackName: "web", services: ["web"], owner: null, domain: "", service: "", port: "" },
+        { file: null, error: "This domain is not valid.", hasInput: true },
+    );
+    expect(invalid).toContain('class="note note-warn"');
+    expect(invalid).not.toContain("<pre");
+    const external = domainsSection(
+        { stackName: "web", services: ["web"], owner: "external-deployer", domain: "", service: "", port: "" },
+        { file: null, error: null, hasInput: false },
+    );
+    expect(external).not.toContain("<form");
+    expect(external).not.toContain('name="caddyDomain"');
 });

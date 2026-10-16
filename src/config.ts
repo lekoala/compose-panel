@@ -88,6 +88,14 @@ export interface AppConfig {
      */
     databaseExplorerUrl: string | null;
     /**
+     * Optional Caddy site preview (ADR 0030, PR1). When true, the stack page
+     * shows a Domains section that validates a domain → loopback upstream
+     * mapping and previews the managed Caddy file, without applying anything.
+     * Real attach/detach through the host helper arrives in PR2; false means
+     * no section, no socket access, no new dependency.
+     */
+    caddyEnabled: boolean;
+    /**
      * Host-to-panel path prefixes used to classify external containers as
      * managed after a migration where the Docker-side Compose path differs from
      * the panel's mount (`hostPrefix=panelPrefix` entries). Empty by default.
@@ -353,6 +361,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         dockerPath: env.COMPOSE_PANEL_DOCKER_PATH?.trim() || "docker",
         composeEngine: parseComposeEngine(env),
         databaseExplorerUrl: normalizeDatabaseExplorerUrl(env.COMPOSE_PANEL_DATABASE_EXPLORER_URL ?? "", devMode),
+        caddyEnabled: parseBool(env, "COMPOSE_PANEL_CADDY_ENABLED", false),
         hostStacksPathAliases: parsePathAliases(env),
         timeZone: parseTimeZone(env),
         dockerTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_DOCKER_TIMEOUT_MS", 5000),

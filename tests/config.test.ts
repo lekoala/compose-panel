@@ -187,3 +187,16 @@ describe("loadConfig external database explorer", () => {
         expect(() => loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "https://user:pass@db.example.com" })).toThrow(/credentials/i);
     });
 });
+
+describe("loadConfig Caddy domains preview", () => {
+    const user = { ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala" };
+
+    test("defaults to disabled", () => {
+        expect(loadConfig(user).caddyEnabled).toBe(false);
+    });
+
+    test("parses the opt-in flag", () => {
+        expect(loadConfig({ ...user, COMPOSE_PANEL_CADDY_ENABLED: "true" }).caddyEnabled).toBe(true);
+        expect(loadConfig({ ...user, COMPOSE_PANEL_CADDY_ENABLED: "yes" }).caddyEnabled).toBe(true);
+    });
+});

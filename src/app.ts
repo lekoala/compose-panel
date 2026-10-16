@@ -1,4 +1,4 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, toolboxPage, databaseSection, type NavSection, type NavigationOptions, type NoteKind, type ToolboxSourceView } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, toolboxPage, databaseSection, domainsSection, type NavSection, type NavigationOptions, type NoteKind, type ToolboxSourceView } from "./html.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { managedBy } from "./deployment.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
@@ -11,6 +11,7 @@ import { createContainerInspector, isContainerId, sanitizeTailLines, type Contai
 import { createActionRunner, type ActionRunner } from "./action-runner.ts";
 import { buildCatalog, buildRunnerArgv, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
 import { buildExplorerUrl, parseDatabaseExplorer } from "./database.ts";
+import { buildSiteFile, isValidDomain, isValidServiceName, isValidStackName, isValidUpstreamPort, normalizeDomain } from "./caddy.ts";
 import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
@@ -754,7 +755,45 @@ export function createApp(options: AppOptions): App {
         return databaseSection({ url, label: parsed.value.label, query: parsed.value.query });
     }
 
-    async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200): Promise<Response> {
+    /**
+     * Domains preview (ADR 0030, PR1). GET only, no mutation: validates the
+     * query input and renders the canonical managed file. Query values are
+     * never reflected on failure paths other than the escaped form fields and
+     * the fixed validation notes below.
+     */
+    function domainsPreviewSection(stackName: string, serviceNames: string[], owner: string | null, query: URLSearchParams | null): string {
+        if (!config.caddyEnabled) return "";
+        const domain = (query?.get("caddyDomain") ?? "").slice(0, 253);
+        const service = (query?.get("caddyService") ?? "").slice(0, 64);
+        const portText = (query?.get("caddyPort") ?? "").slice(0, 5);
+        const hasInput = query !== null && (query.has("caddyDomain") || query.has("caddyService") || query.has("caddyPort"));
+        if (owner) {
+            return domainsSection({ stackName, services: serviceNames, owner, domain: "", service: "", port: "" }, { file: null, error: null, hasInput: false });
+        }
+        if (!hasInput) {
+            return domainsSection({ stackName, services: serviceNames, owner: null, domain: "", service: "", port: "" }, { file: null, error: null, hasInput: false });
+        }
+        if (!isValidDomain(domain)) {
+            return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file: null, error: "This domain is not valid. Use a public domain such as app.example.com.", hasInput: true });
+        }
+        if (!isValidServiceName(service)) {
+            return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file: null, error: "This service name is not valid.", hasInput: true });
+        }
+        if (!serviceNames.includes(service)) {
+            return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file: null, error: "This service is not part of this stack.", hasInput: true });
+        }
+        const port = Number(portText);
+        if (!isValidUpstreamPort(port)) {
+            return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file: null, error: "This port is not valid. Use a number between 1 and 65535.", hasInput: true });
+        }
+        if (!isValidStackName(stackName)) {
+            return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file: null, error: "This stack name is not valid.", hasInput: true });
+        }
+        const file = buildSiteFile({ domain: normalizeDomain(domain)!, stack: stackName, service, port });
+        return domainsSection({ stackName, services: serviceNames, owner: null, domain, service, port: portText }, { file, error: null, hasInput: true });
+    }
+
+    async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200, query: URLSearchParams | null = null): Promise<Response> {
         const stack = await readStackCompose(stacksRoot, name);
         let status: StackDetailStatus;
         try {
@@ -780,6 +819,7 @@ export function createApp(options: AppOptions): App {
             + operationPanel(operation, stack.name)
             + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" })
             + databaseExplorerSection(stack.source)
+            + domainsPreviewSection(stack.name, status.services.map(service => service.name), owner, query)
             + deploymentSection(status.deployed, status.declared, status.state !== "not-created")
             + logsPanel(stack.name, config.logTailLines, config.timeZone, status.services.map(service => service.name))
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
@@ -1901,7 +1941,7 @@ export function createApp(options: AppOptions): App {
                     : saved === "1"
                     ? { kind: "success" as const, text: "Saved. The running containers are unchanged: use Up to apply the new configuration." }
                     : saved === "0" ? { kind: "info" as const, text: "No changes to save: the files on disk already match." } : undefined;
-                return await renderStackDetail(decodeName(detailMatch[1]!), session.csrf, notice);
+                return await renderStackDetail(decodeName(detailMatch[1]!), session.csrf, notice, 200, url.searchParams);
             }
             return htmlResponse(messagePage("Not found", "This page does not exist.", { href: "/", label: "← Back to all stacks" }, pageChrome(session.csrf)), 404);
         } catch (error) {

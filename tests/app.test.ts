@@ -50,6 +50,7 @@ function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, prov
         dockerPath: "docker",
         composeEngine: "docker",
         databaseExplorerUrl: null,
+        caddyEnabled: false,
         hostStacksPathAliases: [],
         timeZone: "",
         dockerTimeoutMs: 5000,
@@ -578,6 +579,49 @@ describe("external database explorer link", () => {
         } finally {
             await rm(dir(), { recursive: true, force: true });
         }
+    });
+});
+
+describe("caddy domains preview", () => {
+    test("shows no domains section when the integration is disabled", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo", session)).text();
+        expect(html).not.toContain('class="card domains"');
+    });
+
+    test("shows the preview form when enabled, without writing anything", async () => {
+        const app = makeApp({ caddyEnabled: true });
+        const session = await login(app);
+        const html = await (await authed(app, "/stacks/demo", session)).text();
+        expect(html).toContain('class="card domains"');
+        expect(html).toContain('name="caddyDomain"');
+    });
+
+    test("previews the managed file for valid input", async () => {
+        const { provider } = controllableProvider();
+        const withService: ComposeProvider = {
+            ...provider,
+            projectServices: async () => ({ code: 0, stdout: JSON.stringify([{ Service: "web", State: "running" }]), stderr: "", timedOut: false, truncated: false }),
+        };
+        const app = makeApp({ caddyEnabled: true }, undefined, withService);
+        const session = await login(app);
+        const response = await authed(app, "/stacks/demo?caddyDomain=app.example.com&caddyService=web&caddyPort=8080", session);
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        expect(html).toContain("app.example.com");
+        expect(html).toContain("reverse_proxy 127.0.0.1:8080");
+    });
+
+    test("reports invalid input as a warning without failing the page", async () => {
+        const app = makeApp({ caddyEnabled: true });
+        const session = await login(app);
+        const response = await authed(app, "/stacks/demo?caddyDomain=not_a_domain&caddyService=web&caddyPort=8080", session);
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        const card = /<section class="card domains">[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
+        expect(card).toContain('class="note note-warn"');
+        expect(card).not.toContain("<pre");
     });
 });
 
