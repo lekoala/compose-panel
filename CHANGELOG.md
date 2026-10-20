@@ -13,7 +13,9 @@
   Doctor checks installer hash permissions, actual container ports and the
   HTTPS authentication challenge.
   An installation takes the installer lock before its checks, and existing
-  Caddy must use exactly `--config /etc/caddy/Caddyfile`.
+  Caddy must be started with exactly that Caddyfile path (`--config FILE` or
+  `--config=FILE`, the last one counting). Panel health waits have an overall
+  deadline.
   Disposable VM validation remains pending; see
   [installation](docs/installation.md).
 - Caddy site management setup in one command (ADR 0030 amendment):

@@ -96,6 +96,7 @@ attach/detach (`with-caddy-lock.sh` protocol) for publication, validation,
 reload and rollback. A separate lock prevents two installers from running
 together; an installation takes it before its checks, so a plan cannot be
 applied after another installer changed the host. `--check` takes no lock.
+It does not exclude `setup-caddy.sh` or manual changes during the prompts.
 
 - The Caddyfile and helper binary are replaced by atomic rename on the same
   filesystem, after a backup.

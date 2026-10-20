@@ -187,12 +187,23 @@ printf 'STATE %s %s %s %s\\n' "$have_docker" "$have_panel" "$have_caddy" "$caddy
     test("an unbooted systemd host is refused", async () => { await rm(join(host, "run/systemd/system"), { recursive: true }); await run(1); });
     // The lock is outside the snapshotted trees; --check keeps the forbidden flock stub.
     async function realFlock() { await tool("flock", `exec ${Bun.which("flock")} "$@"`); }
-    test("install takes the installer lock before probing the host", async () => {
+    test("install holds the installer lock while probing the host", async () => {
         await realFlock(); env.ALLOW_APPLY = "1";
+        // A fresh open file description: the inherited fd 9 would always relock.
+        await tool("ss", `exec 8>>"$LOCK_FIXTURE"
+if ${Bun.which("flock")} -n 8; then printf 'lock-free\\n' >> "$CALLS"; else printf 'lock-held\\n' >> "$CALLS"; fi
+${TOOLS.ss}`);
         const calls = await run(0, ["--install"]);
-        expect(calls.indexOf("flock\t")).toBeGreaterThan(-1);
-        expect(calls.indexOf("flock\t")).toBeLessThan(calls.indexOf("ss\t"));
+        expect(calls).toContain("lock-held\n");
+        expect(calls).not.toContain("lock-free");
         expect(calls).toContain("apply\n");
+    });
+    test("a symlinked installer lock is refused without following it", async () => {
+        await realFlock(); env.ALLOW_APPLY = "1";
+        await writeFile(join(dir, "target"), "keep\n"); await symlink(join(dir, "target"), env.LOCK_FIXTURE!);
+        const calls = await run(1, ["--install"]);
+        expect(await readFile(join(dir, "target"), "utf8")).toBe("keep\n");
+        for (const probe of ["flock\t", "ss\t", "apply\n"]) expect(calls).not.toContain(probe);
     });
     test("a running installer refuses another install before preflight", async () => {
         await realFlock(); env.HOLD_LOCK = "1"; env.ALLOW_APPLY = "1";
@@ -200,7 +211,10 @@ printf 'STATE %s %s %s %s\\n' "$have_docker" "$have_panel" "$have_caddy" "$caddy
         expect(calls).toContain("flock\t");
         for (const probe of ["ss\t", "systemctl\t", "dpkg-query\t", "apply\n"]) expect(calls).not.toContain(probe);
     });
-    test("check ignores a running installer and takes no lock", async () => { env.HOLD_LOCK = "1"; await run(); });
+    test("check creates no lock file and ignores a running installer", async () => {
+        await run(); expect(await Bun.file(env.LOCK_FIXTURE!).exists()).toBe(false);
+        env.HOLD_LOCK = "1"; await run();
+    });
     test("unknown CLI option fails before probing", async () => { expect(await run(1, ["--force"])).toBe(""); });
     test("writable checkout refuses before sourcing setup", async () => { await chmod(join(repo, "scripts/setup-caddy.sh"), 0o666); await run(1); });
     test("missing production Compose file refuses", async () => { await rm(join(repo, "deploy/compose.prod.yaml")); await run(1); });
@@ -270,11 +284,12 @@ printf 'STATE %s %s %s %s\\n' "$have_docker" "$have_panel" "$have_caddy" "$caddy
         await caddy(); env.CADDY_EXEC = `{ path=/usr/bin/caddy ; argv[]=caddy run --environ --config=${host}/etc/caddy/Caddyfile ; ignore_errors=no }`;
         await run(0, ["--check"], [0, 0, 1, 0]);
     });
-    for (const fault of ["foreign", "stopped", "config-path", "config-prefix", "old-version", "missing-group", "managed-routes"]) test(`existing Caddy ${fault} refuses`, async () => {
+    for (const fault of ["foreign", "stopped", "config-path", "config-prefix", "config-overridden", "old-version", "missing-group", "managed-routes"]) test(`existing Caddy ${fault} refuses`, async () => {
         await caddy();
         if (fault === "foreign") await file(join(host, "etc/caddy/Caddyfile"), "foreign\n");
         if (fault === "stopped") env.CADDY_ACTIVE = "0";
         if (fault === "config-path") env.CADDY_EXEC = "caddy run --config /elsewhere";
+        if (fault === "config-overridden") env.CADDY_EXEC = `caddy run --config ${host}/etc/caddy/Caddyfile --config /elsewhere`;
         if (fault === "config-prefix") env.CADDY_EXEC = `{ path=/usr/bin/caddy ; argv[]=caddy run --config ${host}/etc/caddy/Caddyfile.custom ; }`;
         if (fault === "old-version") env.CADDY_VERSION = "v2.7.6";
         if (fault === "missing-group") env.CADDY_GROUP = "0";

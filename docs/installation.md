@@ -186,6 +186,10 @@ automatic crash recovery.
 If installation stopped after installing `unattended-upgrades` but before
 writing the installer policy, its existing policy is kept; inspect the
 reported timer and APT settings rather than assuming our policy was applied.
+The installer lock only excludes another installer. Do not run
+`setup-caddy.sh` or change Docker, Caddy or the deployment files while the
+installer is waiting for answers: the plan it shows would no longer match the
+host.
 
 Read-only diagnostics of the whole installation (Docker, panel identity and
 health, Caddy, helper, settings permissions, HTTPS origins):
@@ -248,14 +252,14 @@ covered by an end-to-end automated fixture; the VM checks below cover it.
 Local verification on 2026-10-20 used a disposable Debian arm64 container in
 Docker Desktop on macOS, Bun 1.4.3, no host mounts and no Docker socket:
 
-- `bun run test` as an unprivileged user: 847 passed, 25 skipped, none failed.
-  This included five real Caddy 2.8.4 integration tests with temporary
-  configuration, certificates and ports.
-- Opt-in Compose configuration tests with CLI 29.9.0 and Compose 5.6.0:
-  four passed, without a daemon.
-- Filesystem/editor/stack-creation tests as container root: 58 passed,
-  including ownership checks skipped by the unprivileged run.
-- Typechecking, ShellCheck, Bash syntax and documentation build passed.
+- `bun run test` as an unprivileged user, including the real Caddy 2.8.4
+  integration tests with temporary configuration, certificates and ports.
+  The Git ignore check is skipped when the image has no `git`.
+- Opt-in Compose configuration tests with CLI 29.9.0 and Compose 5.6.0,
+  without a daemon.
+- Filesystem/editor/stack-creation tests as container root, including
+  ownership checks skipped by the unprivileged run.
+- Typechecking, ShellCheck, Bash syntax and documentation build.
 
 These checks do not run an Ubuntu installation or boot systemd. Direct writes
 of helper units and appended manual-deployment settings in `setup-caddy.sh`

@@ -429,10 +429,10 @@ exit "$INSPECT_EXIT"
         await chmod(join(dir, "bin", "docker"), 0o755);
         const check = `COMPOSE_PANEL_DOCTOR_LIB=1 source "$DOCTOR"
 if port="$(doctor_port)"; then printf '%s' "$port"; else exit 1; fi`;
-        for (const [env, port] of [["", "5081"], ["PORT=8080", "8080"], ["PORT=65535", "65535"]]) {
-            const result = await run(check, { DOCTOR, INSPECT_ENV: env!, INSPECT_EXIT: "0" });
+        for (const [env, port] of [["", "5081"], ["PORT=8080", "8080"], ["PORT=65535", "65535"]] as const) {
+            const result = await run(check, { DOCTOR, INSPECT_ENV: env, INSPECT_EXIT: "0" });
             expect(result.code).toBe(0);
-            expect(result.stdout).toBe(port!);
+            expect(result.stdout).toBe(port);
         }
         for (const env of ["PORT=0", "PORT=65536", "PORT=invalid", "PORT=-1"]) {
             expect((await run(check, { DOCTOR, INSPECT_ENV: env, INSPECT_EXIT: "0" })).code).toBe(1);
@@ -471,6 +471,17 @@ doctor_caddy_permissions`;
         await symlink(join(dir, "missing"), backup);
         expect((await run(check, env)).code).toBe(1);
     });
+
+    test("panel health waiting has an overall deadline even when Docker hangs", async () => {
+        // Real timeout(1): the fixture one would let each inspection hang.
+        await rm(join(dir, "bin", "timeout"));
+        await writeFile(join(dir, "bin", "docker"), "#!/usr/bin/env bash\nexec sleep 60\n");
+        await chmod(join(dir, "bin", "docker"), 0o755);
+        const started = performance.now();
+        expect((await run("wait_panel_for 1")).code).toBe(1);
+        // One bounded inspection plus the pause, never 60 hung iterations.
+        expect(performance.now() - started).toBeLessThan(15_000);
+    }, 30_000);
 
     for (const running of [true, false]) {
         test(`a rerun ${running ? "leaves a running" : "starts a stopped"} panel without recreating it`, async () => {

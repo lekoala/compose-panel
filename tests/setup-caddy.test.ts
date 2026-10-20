@@ -217,7 +217,8 @@ fi`;
     });
 });
 
-test("deployment secret backups are ignored by Git", async () => {
+// Disposable test containers may lack git; CI runners always have it.
+test.skipIf(!Bun.which("git"))("deployment secret backups are ignored by Git", async () => {
     const dir = await mkdtemp(join(tmpdir(), "compose-panel-ignore-"));
     try {
         await mkdir(join(dir, "deploy"));

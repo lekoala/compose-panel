@@ -173,11 +173,14 @@ trusted_checkout() {
     done
 }
 
-# No logs or resolved Compose config: both can contain secrets.
-wait_panel() {
-    local i
-    for ((i = 0; i < 60; i++)); do
-        if [ "$(timeout 20 docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' compose-panel 2>/dev/null)" = healthy ] &&
+# No logs or resolved Compose config: both can contain secrets. The deadline
+# bounds the whole wait, even when every inspection hangs on a stuck daemon.
+wait_panel() { wait_panel_for 150; }
+
+wait_panel_for() {
+    local deadline=$((SECONDS + $1))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if [ "$(timeout 5 docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' compose-panel 2>/dev/null)" = healthy ] &&
             curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:5081/health/live >/dev/null 2>&1; then
             return 0
         fi
@@ -267,12 +270,13 @@ replace_caddy() {
     return "$result"
 }
 
-# The exact --config argument, not a prefix such as Caddyfile.custom. systemctl
-# shows ExecStart as "{ path=... ; argv[]=caddy run --config FILE ; ... }".
+# The exact --config argument, not a prefix such as Caddyfile.custom; the last
+# one wins when repeated, as for Caddy itself. systemctl shows ExecStart as
+# "{ path=... ; argv[]=caddy run --config FILE ; ... }".
 caddy_uses_config() {
     timeout 20 systemctl show caddy -p ExecStart --value | awk -v file="$1" '
-        { for (i = 1; i <= NF; i++) if (($i == "--config" && $(i + 1) == file) || $i == "--config=" file) found = 1 }
-        END { exit !found }'
+        { for (i = 1; i <= NF; i++) if ($i == "--config") config = $(i + 1); else if (index($i, "--config=") == 1) config = substr($i, 10) }
+        END { exit config != file }'
 }
 
 check_installer_host() {
@@ -467,9 +471,9 @@ show_install_plan() {
     if [ "$have_caddy" = 0 ]; then
         plan Caddy "install Caddy from its APT repository, as a systemd service"
     elif [ "$caddy_owned" = 1 ]; then
-        plan Caddy "$(caddy version 2>/dev/null | cut -d' ' -f1) present, configured by this installer: kept"
+        plan Caddy "$(timeout 20 caddy version 2>/dev/null | cut -d' ' -f1) present, configured by this installer: kept"
     else
-        plan Caddy "$(caddy version 2>/dev/null | cut -d' ' -f1) present: replace its default Caddyfile (backup first)"
+        plan Caddy "$(timeout 20 caddy version 2>/dev/null | cut -d' ' -f1) present: replace its default Caddyfile (backup first)"
     fi
     if installed unattended-upgrades; then
         plan Updates "unattended-upgrades present: policy kept"
@@ -585,9 +589,13 @@ ask_credentials() {
 
 # Serialize installers before inspection: a run waiting at its prompts must not
 # apply a plan made before another installer changed the host. --check takes no
-# lock, so it writes nothing, not even under /run.
+# lock, so it writes nothing, not even under /run. This runs before the path
+# checks: a symbolic link is refused here, and append mode never truncates.
 acquire_installer_lock() {
-    exec 9>"$LOCK_FILE"
+    command -v flock >/dev/null || installer_die "flock (package util-linux) is required to serialize installers."
+    plain_path "$LOCK_FILE" && { [ ! -e "$LOCK_FILE" ] || [ -f "$LOCK_FILE" ]; } ||
+        installer_die "Installer lock path is not a regular file: $LOCK_FILE"
+    exec 9>>"$LOCK_FILE"
     flock -n 9 || installer_die "Another installer is running."
 }
 
@@ -685,7 +693,7 @@ install_caddy() {
         apt_update
         apt_install caddy
         enable_now caddy
-        printf '  ok    %s installed and enabled at boot\n' "$(caddy version 2>/dev/null | cut -d' ' -f1)"
+        printf '  ok    %s installed and enabled at boot\n' "$(timeout 20 caddy version 2>/dev/null | cut -d' ' -f1)"
     else
         printf '  skip  Existing Caddy kept\n'
     fi
@@ -762,7 +770,7 @@ check_access() {
     printf '  ok    SSH tunnel ready\n'
     https_line=""
     [ -n "$domain" ] || return 0
-    printf '  ...   Checking https://%s (up to 1 minute while the certificate is issued)\n' "$domain"
+    printf '  ...   Checking https://%s (up to 3 minutes while the certificate is issued)\n' "$domain"
     for ((attempt = 0; attempt < 12; attempt++)); do
         # Validate public TLS/DNS and the local TLS listener separately. No -k.
         public="$(curl --noproxy '*' -sS --max-time 5 -o /dev/null -w '%{http_code}' "https://$domain/login" 2>/dev/null || true)"
@@ -794,7 +802,7 @@ show_summary() {
 installer_apply() {
     confirm_plan
     [ -f "$ENV_FILE" ] || ask_credentials
-    if [ -n "$domain" ] && ! getent ahosts "$domain" >/dev/null; then
+    if [ -n "$domain" ] && ! timeout 10 getent ahosts "$domain" >/dev/null; then
         printf '  WARN  %s does not resolve yet; HTTPS may stay pending until DNS points here.\n' "$domain"
     fi
     start_installation
