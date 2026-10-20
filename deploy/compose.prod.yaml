@@ -1,0 +1,20 @@
+# Official image deployment for scripts/install.sh (ADR 0031).
+# Keep the checkout at this path: Compose labels and self-update use it.
+name: compose-panel
+
+services:
+  panel:
+    image: ghcr.io/lekoala/compose-panel:latest
+    container_name: compose-panel
+    network_mode: host
+    stop_grace_period: 35s
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/stacks:/opt/stacks
+      - /run/compose-panel:/run/compose-panel:ro
+    env_file:
+      - compose-panel.env
+    environment:
+      STACKS_DIR: /opt/stacks
+      PORT: 5081

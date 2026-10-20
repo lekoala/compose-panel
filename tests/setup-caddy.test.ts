@@ -109,7 +109,7 @@ describe.skipIf(process.platform !== "linux")("setup-caddy.sh file steps", () =>
     test("only this checkout's single-file, non-oneoff Compose identity is accepted", async () => {
         const valid = ["compose-panel", "panel", `${dir}/deploy`, `${dir}/deploy/compose.yaml`, "False", ""];
         const command = `
-REPO=$1; COMPOSE_FILE=$REPO/deploy/compose.yaml; shift
+REPO=$1; COMPOSE_FILE=$2; shift 2
 values=("$@")
 docker() {
     case "$3" in
@@ -123,18 +123,22 @@ docker() {
     esac
 }
 panel_identity_matches`;
-        expect((await shell(command, dir, ...valid)).code).toBe(0);
+        expect((await shell(command, dir, valid[3]!, ...valid)).code).toBe(0);
+        const production = [...valid];
+        production[3] = `${dir}/deploy/compose.prod.yaml`;
+        expect((await shell(command, dir, production[3]!, ...production)).code).toBe(0);
+        expect((await shell(command, dir, production[3]!, ...valid)).code).toBe(1);
         for (const [index, value] of [
             [0, "foreign"], [0, ""], [1, "other"], [2, "/second-checkout/deploy"],
             [3, "/second-checkout/deploy/compose.yaml"], [3, `${valid[3]},/override.yaml`],
             [4, "True"], [5, "/other.env"],
         ] as const) {
             const values = [...valid]; values[index] = value;
-            expect((await shell(command, dir, ...values)).code).not.toBe(0);
+            expect((await shell(command, dir, valid[3]!, ...values)).code).not.toBe(0);
         }
         await mkdir(join(dir, "deploy"));
         await writeFile(join(dir, "deploy", ".env"), "UNEXPECTED=value\n");
-        expect((await shell(command, dir, ...valid)).code).not.toBe(0);
+        expect((await shell(command, dir, valid[3]!, ...valid)).code).not.toBe(0);
     });
 
     // Isolated Linux integration: the real Bash functions call a fake Docker

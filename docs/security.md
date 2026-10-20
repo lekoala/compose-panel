@@ -141,6 +141,18 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 
 ## Caddy site management (ADR 0030)
 
+- The one-time Ubuntu installer ([ADR 0031](adr/0031-ubuntu-installer.md))
+  provisions packages and an initial Caddyfile after a plan confirmation.
+  Private SSH access is the default; optional HTTPS adds a separate Basic Auth
+  password. It refuses foreign configuration, symlinked destinations and a
+  checkout other local users could modify, stores only quoted password hashes
+  in a root-owned 0600 env file (the Caddyfile repeating the Basic Auth hash is
+  `root:caddy` 0640) and sends plaintext only through hasher stdin. The first
+  image is trusted from the GHCR `latest` tag over TLS, without a digest check
+  against `releases.json`. It never changes SSH/firewall rules or
+  replaces an existing Docker installation. Package failure is not rolled back
+  automatically; see [installation and recovery](installation.md).
+
 - Installation (`scripts/setup-caddy.sh`) is a separate, root-run
   administrator step with an explicit confirmation: it is the only thing that
   appends the `import` line to the main `Caddyfile` (backup, validation,

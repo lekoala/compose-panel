@@ -12,6 +12,40 @@ import { createStack } from "../src/create-stack.ts";
 // The test makes six sequential Compose calls, each bounded by the runner's own
 // 5 s timeout, so Bun's default 5 s per-test limit is too short by design.
 const TEST_TIMEOUT_MS = 40_000;
+test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPOSE_CONFIG !== "1")("production deployment preserves hashes and mounts without publishing ports or building", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cp-prod-config-"));
+    const hash = "$argon2id$v=19$m=65536,t=3,p=1$c2FsdA$aGFzaA";
+    try {
+        const file = join(root, "compose.prod.yaml");
+        await writeFile(file, await Bun.file(new URL("../deploy/compose.prod.yaml", import.meta.url)).text());
+        await writeFile(join(root, "compose-panel.env"), `COMPOSE_PANEL_ADMIN_USER=operator42\nCOMPOSE_PANEL_ADMIN_PASSWORD_HASH='${hash}'\n`);
+        // Config does not contact Docker; an invalid host also prevents accidental access.
+        const proc = Bun.spawn(["docker", "compose", "-p", "compose-panel", "--project-directory", root,
+            "-f", file, "config", "--format", "json"], {
+            env: { PATH: process.env.PATH, HOME: process.env.HOME,
+                COMPOSE_DISABLE_ENV_FILE: "true", DOCKER_HOST: "unix:///nonexistent-cp-test.sock" },
+            stdout: "pipe", stderr: "pipe",
+        });
+        const [output, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+        expect(code).toBe(0);
+        const config = JSON.parse(output);
+        const panel = config.services.panel;
+        expect(Object.keys(config.services)).toEqual(["panel"]);
+        expect(config.name).toBe("compose-panel");
+        expect(panel.image).toBe("ghcr.io/lekoala/compose-panel:latest");
+        expect(panel.build).toBeUndefined();
+        expect(panel.ports).toBeUndefined();
+        expect(panel.network_mode).toBe("host");
+        expect(panel.environment.COMPOSE_PANEL_ADMIN_PASSWORD_HASH).toBe(hash);
+        expect(panel.environment.STACKS_DIR).toBe("/opt/stacks");
+        expect(panel.volumes).toEqual(expect.arrayContaining([
+            expect.objectContaining({ source: "/opt/stacks", target: "/opt/stacks", type: "bind" }),
+            expect.objectContaining({ source: "/var/run/docker.sock", target: "/var/run/docker.sock", type: "bind" }),
+            expect.objectContaining({ source: "/run/compose-panel", target: "/run/compose-panel", read_only: true }),
+        ]));
+    } finally { await rm(root, { recursive: true, force: true }); }
+}, TEST_TIMEOUT_MS);
+
 test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPOSE_CONFIG !== "1")("real Compose validates stack creation in its final directory without deployment", async () => {
     const root = await mkdtemp(join(tmpdir(), "cp-create-config-"));
     const runner = createDockerRunner();

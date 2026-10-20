@@ -7,6 +7,12 @@ Nothing below is scheduled or promised. Each item changes a documented guarantee
 After V1 the direction is to understand the host the stacks run on, not only the stacks themselves: observe resource use and service health, and carry out targeted server maintenance — without becoming a general-purpose Linux administration panel. Working tagline: *Manage your stacks. Understand your server.*
 
 ## Access
+- **Ubuntu host installation.** Implemented ([ADR 0031](adr/0031-ubuntu-installer.md)):
+  interactive bootstrap for Ubuntu Server 24.04/26.04, official image, host
+  Caddy/helper, private SSH by default and optional HTTPS with Basic Auth,
+  plus read-only diagnostics (`scripts/doctor.sh`).
+  [Disposable VM validation](installation.md#verification-before-release)
+  remains required.
 - **Use HTTPS and the SSH tunnel at the same time.** Done in 0.2.0 ([ADR 0012](adr/0012-multiple-access-origins.md)): `COMPOSE_PANEL_PROXY_ORIGINS` (a list) plus `COMPOSE_PANEL_ALLOW_LOOPBACK`. Host and Origin are validated per access point, and the cookie attribute is chosen per path.
 - **Login CSRF across tabs and access modes.** Make the token robust when several tabs are open or the access path changes.
 - **Access diagnostics (0.2.0).** A read-only `/access` page done in 0.2.0 ([ADR 0013](adr/0013-access-diagnostics.md)): it lists the configured paths with an honest status (verified by the panel / configured but unverifiable / verify externally) and never shows an access as secure from its configuration alone. No extra privileges.

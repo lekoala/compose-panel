@@ -6,7 +6,8 @@
 #   sudo bash scripts/setup-caddy.sh --install --yes   # same, no prompt (automation)
 #
 # Run it on the host, from the Compose Panel checkout used to deploy the panel
-# (deploy/compose.yaml). It supports exactly one layout and refuses anything
+# (deploy/compose.yaml, or --production for deploy/compose.prod.yaml).
+# It supports the documented layout and refuses anything
 # else instead of guessing:
 #   - Caddy installed on the host as the systemd service `caddy`, running
 #     `--config /etc/caddy/Caddyfile`, with its administration API enabled.
@@ -14,7 +15,7 @@
 #   - The panel deployed with deploy/compose.yaml (container `compose-panel`),
 #     which mounts /run/compose-panel read-only.
 #
-# --install, in order, each step idempotent (a second run changes nothing):
+# --install preserves settings and image, but rebuilds and recreates:
 #   1. /etc/caddy/compose-panel.d owned by caddy (0755).
 #   2. The helper binary compiled from the panel image that is running now
 #      (same version, host architecture; no Bun on the host, no download),
@@ -31,6 +32,9 @@
 #
 # Re-run --install after updating the panel image: it recompiles the helper
 # from the new image, so both sides keep speaking the same protocol.
+# Guard chains intentionally report any failed check; library mode can be
+# sourced or invoked directly.
+# shellcheck disable=SC2015,SC2317
 set -euo pipefail
 
 MANAGED_DIR=/etc/caddy/compose-panel.d
@@ -146,7 +150,7 @@ panel_identity_matches() {
 
 panel_compose() {
     # Disable implicit .env discovery and inherited Compose control variables.
-    env -u COMPOSE_FILE -u COMPOSE_ENV_FILES -u COMPOSE_PROFILES COMPOSE_DISABLE_ENV_FILE=true \
+    timeout --kill-after=10 600 env -u COMPOSE_FILE -u COMPOSE_ENV_FILES -u COMPOSE_PROFILES COMPOSE_DISABLE_ENV_FILE=true \
         docker compose -p compose-panel --project-directory "$REPO/deploy" \
         -f "$COMPOSE_FILE" "$@"
 }
@@ -190,6 +194,90 @@ recreate_and_verify_panel() {
     return 1
 }
 
+# Replace an existing regular file by rename on the same filesystem. Copying
+# the source preserves its owner/mode, including during rollback.
+atomic_host_file() {
+    local source="$1" target="$2" staged parent
+    parent="$(dirname "$target")"
+    while [ "$parent" != / ]; do
+        [ ! -L "$parent" ] || return 1
+        parent="$(dirname "$parent")"
+    done
+    [ ! -L "$target" ] && { [ ! -e "$target" ] || [ -f "$target" ]; } || return 1
+    staged="$(mktemp "$(dirname "$target")/.cp-host.XXXXXX")" || return 1
+    if ! cp -p "$source" "$staged" || ! mv -fT "$staged" "$target"; then
+        rm -f "$staged"
+        return 1
+    fi
+}
+
+# Print a backup of the current helper binary, only once the copy is complete:
+# the EXIT trap restores it, so a failed copy must never become that source.
+backup_helper() {
+    local backup
+    backup="$(mktemp "$HELPER_BIN.bak-XXXXXX")" || return 1
+    if cp -p "$HELPER_BIN" "$backup" && cmp -s "$HELPER_BIN" "$backup"; then
+        printf '%s\n' "$backup"
+        return 0
+    fi
+    rm -f "$backup"
+    return 1
+}
+
+caddy_validate_as_caddy() {
+    timeout --kill-after=5 30 runuser -u caddy -- env HOME="$(getent passwd caddy | cut -d: -f6)" \
+        caddy validate --config "$CADDYFILE" --adapter caddyfile >/dev/null 2>&1
+}
+
+caddy_validate_sandbox() {
+    timeout --kill-after=5 45 systemd-run --quiet --pipe --wait --collect \
+        -p RuntimeMaxSec=30 -p User=caddy -p Group=caddy -p ProtectSystem=strict -p ProtectHome=yes \
+        -p PrivateTmp=yes -p NoNewPrivileges=yes -p ReadWritePaths="$MANAGED_DIR" \
+        caddy validate --config "$CADDYFILE" --adapter caddyfile >/dev/null 2>&1
+}
+
+caddy_reload() { timeout --kill-after=5 45 systemctl reload caddy; }
+
+# The caller holds the shared Caddy lock for publication, validation AND rollback.
+# A pending backup also lets the caller's signal/EXIT trap restore the file.
+caddy_rollback() {
+    [ -n "${caddy_pending_backup:-}" ] || return 0
+    if ! atomic_host_file "$caddy_pending_backup" "$CADDYFILE"; then
+        echo "Caddyfile restoration failed; inspect the retained backup. Outcome unknown." >&2
+        return 2
+    fi
+    if ! caddy_reload; then
+        echo "Caddyfile restored, but its reload failed. Running configuration unknown." >&2
+        return 2
+    fi
+    caddy_pending_backup=""
+    echo "Previous Caddyfile restored and reloaded." >&2
+}
+
+caddy_apply_candidate() {
+    local candidate="$1" result=1
+    [ -f "$CADDYFILE" ] && [ ! -L "$CADDYFILE" ] || return 1
+    caddy_pending_backup="$(mktemp "$CADDYFILE.bak-setup.XXXXXX")" || return 1
+    if ! cp -p "$CADDYFILE" "$caddy_pending_backup"; then caddy_pending_backup=""; return 1; fi
+    printf 'Caddyfile backup: %s\n' "$caddy_pending_backup"
+    if atomic_host_file "$candidate" "$CADDYFILE" &&
+        caddy_validate_as_caddy && caddy_validate_sandbox && caddy_reload; then
+        caddy_pending_backup=""
+        return 0
+    fi
+    caddy_rollback || result=2
+    return "$result"
+}
+
+helper_status_ok() {
+    # Status only reads files. Never print a helper response (it may name sites).
+    timeout --kill-after=5 20 docker exec "$CONTAINER" bun -e '
+const { callCaddyHelper } = await import("/app/src/caddy-client.ts");
+const r = await callCaddyHelper("/run/compose-panel/caddy-helper.sock", {action:"status"}, {timeoutMs:10000});
+process.exit(r.ok && r.importConfigured && r.unparseable.length === 0 ? 0 : 1);
+' >/dev/null 2>&1
+}
+
 if [ "${COMPOSE_PANEL_SETUP_LIB:-}" = 1 ]; then
     return 0 2>/dev/null || exit 0
 fi
@@ -199,6 +287,7 @@ fi
 # ---------------------------------------------------------------------------
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+COMPOSE_PANEL_CADDY_LOCK_LIB=1 CADDY_MANAGED_DIR="$MANAGED_DIR" source "$REPO/deploy/caddy/with-caddy-lock.sh"
 COMPOSE_FILE="$REPO/deploy/compose.yaml"
 ENV_FILE="$REPO/deploy/compose-panel.env"
 ENV_PAIRS=("COMPOSE_PANEL_CADDY_ENABLED=true" "COMPOSE_PANEL_CADDY_SOCKET_PATH=$SOCKET_PATH")
@@ -210,12 +299,13 @@ for arg in "$@"; do
         --check) MODE=check ;;
         --install) MODE=install ;;
         --yes) ASSUME_YES=1 ;;
+        --production) COMPOSE_FILE="$REPO/deploy/compose.prod.yaml" ;;
         -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $arg (use --check or --install)" >&2; exit 64 ;;
     esac
 done
 if [ -z "$MODE" ]; then
-    echo "Usage: sudo bash scripts/setup-caddy.sh --check | --install [--yes]" >&2
+    echo "Usage: sudo bash scripts/setup-caddy.sh --check | --install [--yes] [--production]" >&2
     exit 64
 fi
 
@@ -359,58 +449,58 @@ install -d -o caddy -g caddy -m 0755 "$MANAGED_DIR"
 echo "2/6 Helper binary (from the panel image $panel_image)"
 build_dir="$(mktemp -d)"
 saved_tag_image=""
-trap 'restore_panel_tag; rm -rf "$build_dir"' EXIT
+helper_backup=""
+caddy_pending_backup=""
+setup_cleanup() {
+    local result=$?
+    restore_panel_tag || result=2
+    caddy_rollback || result=2
+    if [ "$result" -ne 0 ] && [ -n "$helper_backup" ]; then
+        atomic_host_file "$helper_backup" "$HELPER_BIN" || result=2
+    fi
+    release_caddy_lock || result=2
+    rm -rf "$build_dir"
+    exit "$result"
+}
+trap setup_cleanup EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-docker run --rm --network none --entrypoint bun -v "$build_dir:/out" "$panel_image" \
+timeout --kill-after=10 600 docker run --rm --network none --entrypoint bun -v "$build_dir:/out" "$panel_image" \
     build --compile src/scripts/caddy-helper.ts --outfile /out/compose-panel-caddy-helper >/dev/null
-install -m 0755 "$build_dir/compose-panel-caddy-helper" "$HELPER_BIN"
+chmod 0755 "$build_dir/compose-panel-caddy-helper"
+acquire_caddy_lock || die "Caddy is busy; no helper or Caddyfile was replaced."
+if [ -f "$HELPER_BIN" ] && ! cmp -s "$build_dir/compose-panel-caddy-helper" "$HELPER_BIN"; then
+    helper_backup="$(backup_helper)" || die "Cannot back up the current helper; nothing was replaced."
+fi
+atomic_host_file "$build_dir/compose-panel-caddy-helper" "$HELPER_BIN"
 
 echo "3/6 systemd units"
 install -m 0644 "$REPO/deploy/caddy/caddy-helper.socket" "$SYSTEMD_DIR/caddy-helper.socket"
 install -m 0644 "$REPO/deploy/caddy/caddy-helper@.service" "$SYSTEMD_DIR/caddy-helper@.service"
-systemctl daemon-reload
+timeout --kill-after=5 120 systemctl daemon-reload
 # The directory may predate the socket unit (created by Docker for the panel
 # mount, 0755): keep it root-only, like the unit's DirectoryMode.
 install -d -m 0750 "$SOCKET_DIR"
-systemctl enable --now caddy-helper.socket >/dev/null
-systemctl restart caddy-helper.socket
+timeout --kill-after=5 120 systemctl enable --now caddy-helper.socket >/dev/null
+timeout --kill-after=5 120 systemctl restart caddy-helper.socket
 [ -S "$SOCKET_PATH" ] || die "the helper socket $SOCKET_PATH did not appear (systemctl status caddy-helper.socket)."
 
-# Validate as the caddy user with its own HOME, like the running service, so
-# nothing (an internal CA, for instance) is written into root's home.
-caddy_validate_as_caddy() {
-    runuser -u caddy -- env HOME="$(getent passwd caddy | cut -d: -f6)" \
-        caddy validate --config "$CADDYFILE" --adapter caddyfile >/dev/null 2>&1
-}
-
 echo "4/6 Caddyfile import"
-if [ "$caddy_import" = absent ]; then
-    backup="$CADDYFILE.bak-$stamp"
-    cp -p "$CADDYFILE" "$backup"
-    append_caddy_import "$CADDYFILE" "$MANAGED_DIR"
-    if ! caddy_validate_as_caddy; then
-        cp -p "$backup" "$CADDYFILE"
-        die "caddy validate refused the Caddyfile with the import; it was restored from $backup. Caddy was not reloaded."
-    fi
-    if ! systemctl reload caddy; then
-        cp -p "$backup" "$CADDYFILE"
-        systemctl reload caddy || true
-        die "systemctl reload caddy failed; $CADDYFILE was restored from $backup and reloaded."
-    fi
-    echo "    import added (backup: $backup)"
-else
-    echo "    already present"
-fi
-# The helper validates inside its systemd sandbox (ProtectSystem=strict):
-# check that once, so a configuration needing writes there is reported now
-# rather than on the first attach. Warning only: nothing to roll back.
-if ! systemd-run --quiet --pipe --wait --collect -p User=caddy -p ProtectSystem=strict -p ProtectHome=yes \
-    -p PrivateTmp=yes -p NoNewPrivileges=yes -p ReadWritePaths="$MANAGED_DIR" \
-    caddy validate --config "$CADDYFILE" --adapter caddyfile >/dev/null 2>&1; then
-    echo "    WARNING: caddy validate fails inside the helper sandbox. Attaches will be refused until it passes;"
-    echo "    see docs/deployment.md, 'Systemd sandbox' (an internal CA must exist before the first attach)."
-fi
+# Re-read under the lock: the preflight was only a snapshot.
+case "$(caddy_import_state "$CADDYFILE" "$MANAGED_DIR")" in
+    absent)
+        cp -p "$CADDYFILE" "$build_dir/Caddyfile"
+        append_caddy_import "$build_dir/Caddyfile" "$MANAGED_DIR"
+        caddy_apply_candidate "$build_dir/Caddyfile" || die "Caddy setup failed; inspect the rollback result above."
+        ;;
+    present)
+        caddy_validate_as_caddy && caddy_validate_sandbox ||
+            die "Caddy cannot validate in the helper sandbox. Site management is not ready."
+        ;;
+    *) die "The Caddy import changed concurrently; nothing was appended." ;;
+esac
+release_caddy_lock
 
 echo "5/6 Panel settings"
 env_backup=""
@@ -426,8 +516,8 @@ fi
 echo "6/6 Recreate and verify the panel"
 wait_healthy() {
     local i
-    for i in $(seq 1 60); do
-        if curl -fsS "http://127.0.0.1:$panel_port/health/live" >/dev/null 2>&1; then return 0; fi
+    for ((i = 0; i < 60; i++)); do
+        if curl --noproxy '*' -fsS --max-time 3 "http://127.0.0.1:$panel_port/health/live" >/dev/null 2>&1; then return 0; fi
         sleep 1
     done
     return 1
@@ -435,12 +525,7 @@ wait_healthy() {
 recreate_and_verify_panel || die "panel recreation or health verification failed. Check: docker logs $CONTAINER"
 docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' "$CONTAINER" | grep -w "$SOCKET_DIR" >/dev/null \
     || die "the panel container does not mount $SOCKET_DIR. Check $COMPOSE_FILE."
-status="$(docker exec "$CONTAINER" bun -e "
-const { callCaddyHelper } = await import('/app/src/caddy-client.ts');
-const r = await callCaddyHelper('$SOCKET_PATH', { action: 'status' }, { timeoutMs: 10000 });
-console.log(r.ok ? 'importConfigured=' + r.importConfigured : 'refused:' + r.code);
-" 2>&1)" || die "the panel cannot reach the helper: $status"
-[ "$status" = "importConfigured=true" ] || die "unexpected helper status from the panel: $status"
+helper_status_ok || die "Helper status failed or managed site files are unparseable. Site management is not ready."
 
 echo
 echo "Done. Open a stack page: the Domains card can attach a domain now."

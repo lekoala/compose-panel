@@ -42,6 +42,7 @@ const GUIDES: ReadonlyArray<{ src: string; label: string }> = [
   { src: "docs/product.md", label: "Product" },
   { src: "docs/architecture.md", label: "Architecture" },
   { src: "docs/security.md", label: "Security" },
+  { src: "docs/installation.md", label: "Ubuntu installation" },
   { src: "docs/deployment.md", label: "Deployment" },
   { src: "docs/operations.md", label: "Operations" },
   { src: "docs/integrations/libredb.md", label: "LibreDB explorer" },

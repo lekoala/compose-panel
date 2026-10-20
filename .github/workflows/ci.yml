@@ -30,6 +30,10 @@ jobs:
       - run: bun audit
       - run: bun run typecheck
       - run: bun run test
+      - name: Host installer shell checks (no deployment)
+        run: |
+          shellcheck -e SC1090,SC1091 scripts/install.sh scripts/setup-caddy.sh scripts/doctor.sh deploy/caddy/with-caddy-lock.sh
+          for script in scripts/install.sh scripts/setup-caddy.sh scripts/doctor.sh deploy/caddy/with-caddy-lock.sh; do bash -n "$script"; done
       # Same Compose plugin version as the image (DOCKER_COMPOSE_VERSION in the
       # Dockerfile), not whatever the runner ships. Bump both together. The
       # checksum is pinned here, not fetched from the same release.

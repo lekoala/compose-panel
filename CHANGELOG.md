@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Interactive Ubuntu Server 24.04/26.04 installer (ADR 0031), targeting amd64
+  and arm64: official Docker/Caddy packages, a separate production Compose
+  file using the published image, private SSH access by default and optional
+  HTTPS with Basic Auth. Includes read-only preflight, configuration ownership
+  checks, secret-safe hashing, Caddy rollback and helper setup via
+  `--production`, plus `scripts/doctor.sh` for read-only diagnostics.
+  Disposable VM validation remains pending; see
+  [installation](docs/installation.md).
 - Caddy site management setup in one command (ADR 0030 amendment):
   `sudo bash scripts/setup-caddy.sh --check` lists what is in place and what
   would change, without changing anything; `--install` applies it after an

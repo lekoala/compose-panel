@@ -33,6 +33,22 @@ Mounting the Docker socket gives the panel full control of the host's Docker: on
 
 ## Deploy
 
+On a fresh **Ubuntu Server 24.04 or 26.04** (amd64/arm64), the interactive
+installer prepares Docker, Caddy, the panel and its domain helper:
+
+```sh
+git clone https://github.com/lekoala/compose-panel.git
+cd compose-panel
+sudo bash scripts/install.sh --check
+sudo bash scripts/install.sh
+```
+
+It defaults to private SSH access, with optional HTTPS protected by a separate
+Caddy password. See [installation and validation status](docs/installation.md)
+for prerequisites, existing-host refusals and the pending real-VM checks.
+
+For manual deployment or a local image build:
+
 You need Docker Engine with Compose v2 and a stacks directory already managed by
 `docker compose`. No Bun install is required on the host: the image provides it.
 
@@ -120,6 +136,7 @@ The same pages are published as a static site at <https://lekoala.github.io/comp
 - [docs/architecture.md](docs/architecture.md) and [docs/adr/](docs/adr/): how it is built and why
 - [docs/security.md](docs/security.md): threat model and invariants
 - [docs/deployment.md](docs/deployment.md): deploying, backups, rollback, release checklist
+- [docs/installation.md](docs/installation.md): interactive Ubuntu installer, recovery and validation
 - [docs/troubleshooting.md](docs/troubleshooting.md): sign-in, stacks, logs and other common issues
 - [docs/migrating-from-dockge.md](docs/migrating-from-dockge.md): switching from Dockge, step by step
 - [docs/operations.md](docs/operations.md): adding Compose commands safely, switching over from another panel
