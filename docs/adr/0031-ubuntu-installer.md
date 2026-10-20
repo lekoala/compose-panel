@@ -94,7 +94,8 @@ existing key automatically. Any repository-search error refuses adoption.
 The installer and `setup-caddy.sh` take the same host lock as panel
 attach/detach (`with-caddy-lock.sh` protocol) for publication, validation,
 reload and rollback. A separate lock prevents two installers from running
-together.
+together; an installation takes it before its checks, so a plan cannot be
+applied after another installer changed the host. `--check` takes no lock.
 
 - The Caddyfile and helper binary are replaced by atomic rename on the same
   filesystem, after a backup.

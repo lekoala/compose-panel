@@ -12,6 +12,8 @@
   refuse repository-search errors, and recognize update policy by content.
   Doctor checks installer hash permissions, actual container ports and the
   HTTPS authentication challenge.
+  An installation takes the installer lock before its checks, and existing
+  Caddy must use exactly `--config /etc/caddy/Caddyfile`.
   Disposable VM validation remains pending; see
   [installation](docs/installation.md).
 - Caddy site management setup in one command (ADR 0030 amendment):

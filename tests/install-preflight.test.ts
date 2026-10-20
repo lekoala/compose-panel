@@ -100,6 +100,7 @@ describe.skipIf(process.platform !== "linux")("complete installer preflight (iso
             await tool(name, 'printf "FORBIDDEN mutation\\n" >> "$CALLS"; exit 97');
         }
         env = { PATH: bin, HOST: host, REPO_FIXTURE: repo, CALLS: join(dir, "calls"),
+            LOCK_FIXTURE: join(dir, "install.lock"), HOLD_LOCK: "0", ALLOW_APPLY: "0",
             SUDO_UID: String(process.getuid!()), SUDO_GID: String(process.getgid!()),
             PACKAGES: "", PACKAGE_SUM: "", SS_ERROR: "", BUSY: "", DOCKER_ERROR: "", PROJECT_CONTAINERS: "", NAMED_CONTAINER: "",
             LABEL_PROJECT: "compose-panel", LABEL_SERVICE: "panel", LABEL_DIRECTORY: `${repo}/deploy`,
@@ -117,10 +118,16 @@ installer_prepare() {
     check_installer_host "$HOST/etc/os-release" "$HOST/run/systemd/system"
     load_installer_checkout "$REPO_FIXTURE"
     LOG="$HOST/var/log/compose-panel-install.log"
+    LOCK_FILE="$LOCK_FIXTURE"
     inspection_root="$HOST"
 }
+# Another installer: a separate open file description holding the lock.
+if [ "$HOLD_LOCK" = 1 ]; then exec 8>"$LOCK_FIXTURE"; /usr/bin/flock -n 8; fi
 # A dispatch regression must fail before entering privileged installation code.
-installer_apply() { printf 'FORBIDDEN apply\\n' >> "$CALLS"; return 97; }
+installer_apply() {
+    if [ "$ALLOW_APPLY" = 1 ]; then printf 'apply\\n' >> "$CALLS"; return 0; fi
+    printf 'FORBIDDEN apply\\n' >> "$CALLS"; return 97
+}
 shift
 installer_main "$@"
 printf 'STATE %s %s %s %s\\n' "$have_docker" "$have_panel" "$have_caddy" "$caddy_owned"
@@ -178,6 +185,22 @@ printf 'STATE %s %s %s %s\\n' "$have_docker" "$have_panel" "$have_caddy" "$caddy
         });
     }
     test("an unbooted systemd host is refused", async () => { await rm(join(host, "run/systemd/system"), { recursive: true }); await run(1); });
+    // The lock is outside the snapshotted trees; --check keeps the forbidden flock stub.
+    async function realFlock() { await tool("flock", `exec ${Bun.which("flock")} "$@"`); }
+    test("install takes the installer lock before probing the host", async () => {
+        await realFlock(); env.ALLOW_APPLY = "1";
+        const calls = await run(0, ["--install"]);
+        expect(calls.indexOf("flock\t")).toBeGreaterThan(-1);
+        expect(calls.indexOf("flock\t")).toBeLessThan(calls.indexOf("ss\t"));
+        expect(calls).toContain("apply\n");
+    });
+    test("a running installer refuses another install before preflight", async () => {
+        await realFlock(); env.HOLD_LOCK = "1"; env.ALLOW_APPLY = "1";
+        const calls = await run(1, ["--install"]);
+        expect(calls).toContain("flock\t");
+        for (const probe of ["ss\t", "systemctl\t", "dpkg-query\t", "apply\n"]) expect(calls).not.toContain(probe);
+    });
+    test("check ignores a running installer and takes no lock", async () => { env.HOLD_LOCK = "1"; await run(); });
     test("unknown CLI option fails before probing", async () => { expect(await run(1, ["--force"])).toBe(""); });
     test("writable checkout refuses before sourcing setup", async () => { await chmod(join(repo, "scripts/setup-caddy.sh"), 0o666); await run(1); });
     test("missing production Compose file refuses", async () => { await rm(join(repo, "deploy/compose.prod.yaml")); await run(1); });
@@ -243,11 +266,16 @@ printf 'STATE %s %s %s %s\\n' "$have_docker" "$have_panel" "$have_caddy" "$caddy
         await run(1);
     });
     test("packaged Caddy from a partial install can resume", async () => { await caddy(); await run(0, ["--check"], [0, 0, 1, 0]); });
-    for (const fault of ["foreign", "stopped", "config-path", "old-version", "missing-group", "managed-routes"]) test(`existing Caddy ${fault} refuses`, async () => {
+    test("systemd ExecStart formatting with --config= is recognized", async () => {
+        await caddy(); env.CADDY_EXEC = `{ path=/usr/bin/caddy ; argv[]=caddy run --environ --config=${host}/etc/caddy/Caddyfile ; ignore_errors=no }`;
+        await run(0, ["--check"], [0, 0, 1, 0]);
+    });
+    for (const fault of ["foreign", "stopped", "config-path", "config-prefix", "old-version", "missing-group", "managed-routes"]) test(`existing Caddy ${fault} refuses`, async () => {
         await caddy();
         if (fault === "foreign") await file(join(host, "etc/caddy/Caddyfile"), "foreign\n");
         if (fault === "stopped") env.CADDY_ACTIVE = "0";
         if (fault === "config-path") env.CADDY_EXEC = "caddy run --config /elsewhere";
+        if (fault === "config-prefix") env.CADDY_EXEC = `{ path=/usr/bin/caddy ; argv[]=caddy run --config ${host}/etc/caddy/Caddyfile.custom ; }`;
         if (fault === "old-version") env.CADDY_VERSION = "v2.7.6";
         if (fault === "missing-group") env.CADDY_GROUP = "0";
         if (fault === "managed-routes") await file(join(host, "etc/caddy/compose-panel.d/app.caddy"), "foreign\n");

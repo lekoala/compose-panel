@@ -240,9 +240,10 @@ They exercise credentials, exact identities, refusal paths, file modes,
 no-clobber publication and rollback, without touching a host daemon.
 CI also runs ShellCheck and real Compose configuration parsing with no daemon
 access. They do not establish that APT, systemd or public TLS work on a real VPS.
-The full host preflight and installer signal cleanup are not yet covered by
-an end-to-end automated fixture; the VM checks below cover those remaining
-release requirements.
+The complete preflight runs against fixture host trees with fake host
+commands: each scenario asserts that files and metadata are unchanged and that
+`--check` calls no mutating command. Installer signal cleanup is not yet
+covered by an end-to-end automated fixture; the VM checks below cover it.
 
 Local verification on 2026-10-20 used a disposable Debian arm64 container in
 Docker Desktop on macOS, Bun 1.4.3, no host mounts and no Docker socket:

@@ -177,7 +177,7 @@ trusted_checkout() {
 wait_panel() {
     local i
     for ((i = 0; i < 60; i++)); do
-        if [ "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' compose-panel 2>/dev/null)" = healthy ] &&
+        if [ "$(timeout 20 docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' compose-panel 2>/dev/null)" = healthy ] &&
             curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:5081/health/live >/dev/null 2>&1; then
             return 0
         fi
@@ -253,7 +253,7 @@ packaged_caddyfile() {
 # starts it when an earlier run (an expired `up --wait`) or an administrator
 # left it stopped; recreating an unhealthy container identically would not help.
 start_existing_panel() {
-    [ "$(docker inspect -f '{{.State.Running}}' compose-panel 2>/dev/null)" != true ] || return 0
+    [ "$(timeout 20 docker inspect -f '{{.State.Running}}' compose-panel 2>/dev/null)" != true ] || return 0
     printf '  step  Starting the existing panel container (same image and settings).\n'
     timeout 60 docker start compose-panel >/dev/null
 }
@@ -265,6 +265,14 @@ replace_caddy() {
     # Keep the lock for the EXIT trap if rollback needs another attempt.
     [ -n "${caddy_pending_backup:-}" ] || release_caddy_lock || result=2
     return "$result"
+}
+
+# The exact --config argument, not a prefix such as Caddyfile.custom. systemctl
+# shows ExecStart as "{ path=... ; argv[]=caddy run --config FILE ; ... }".
+caddy_uses_config() {
+    timeout 20 systemctl show caddy -p ExecStart --value | awk -v file="$1" '
+        { for (i = 1; i <= NF; i++) if (($i == "--config" && $(i + 1) == file) || $i == "--config=" file) found = 1 }
+        END { exit !found }'
 }
 
 check_installer_host() {
@@ -336,7 +344,7 @@ check_docker_state() {
         timeout 20 docker compose version >/dev/null 2>&1 || installer_die "Docker Compose plugin is unavailable."
         [ -S "$host/var/run/docker.sock" ] || installer_die "Local Docker socket is missing."
         have_docker=1
-        systemctl is-enabled --quiet docker ||
+        timeout 20 systemctl is-enabled --quiet docker ||
             printf '  WARN  The existing docker service is not enabled at boot; the panel will not return after a reboot.\n'
         containers="$(timeout 20 docker ps -a --filter label=com.docker.compose.project=compose-panel --format '{{.Names}}')" ||
             installer_die "Cannot inspect existing Compose projects."
@@ -348,7 +356,7 @@ check_docker_state() {
         if [ -n "$named" ]; then
             [ "$named" = compose-panel ] || installer_die "Unexpected panel container identity."
             panel_identity_matches && [ -f "$ENV_FILE" ] || installer_die "Existing panel belongs to another deployment."
-            [ "$(docker inspect -f '{{.Config.Image}}' compose-panel)" = "$IMAGE" ] ||
+            [ "$(timeout 20 docker inspect -f '{{.Config.Image}}' compose-panel)" = "$IMAGE" ] ||
                 installer_die "Existing panel uses another image."
             have_panel=1
         fi
@@ -380,10 +388,9 @@ check_caddy_state() {
         else
             installer_die "Existing Caddy configuration is not owned by this installer; use manual deployment and setup-caddy.sh."
         fi
-        systemctl is-active --quiet caddy &&
-            systemctl show caddy -p ExecStart --value | grep -F -- "--config $CADDYFILE" >/dev/null ||
+        timeout 20 systemctl is-active --quiet caddy && caddy_uses_config "$CADDYFILE" ||
             installer_die "Existing Caddy must be active with /etc/caddy/Caddyfile."
-        systemctl is-enabled --quiet caddy ||
+        timeout 20 systemctl is-enabled --quiet caddy ||
             printf '  WARN  The existing caddy service is not enabled at boot; HTTPS and application domains will stop after a reboot.\n'
         have_caddy=1
     else
@@ -499,6 +506,7 @@ load_installer_checkout() {
     ENV_FILE="$REPO/deploy/compose-panel.env"
     IMAGE=ghcr.io/lekoala/compose-panel:latest
     LOG=/var/log/compose-panel-install.log
+    LOCK_FILE=/run/compose-panel-install.lock
     # Reuse the exact Compose identity and invocation boundary of the host helper.
     COMPOSE_PANEL_SETUP_LIB=1 source "$REPO/scripts/setup-caddy.sh"
     COMPOSE_PANEL_CADDY_LOCK_LIB=1 CADDY_MANAGED_DIR="$MANAGED_DIR" source "$REPO/deploy/caddy/with-caddy-lock.sh"
@@ -514,118 +522,126 @@ installer_prepare() {
     load_installer_checkout "$(cd "$(dirname "$0")/.." && pwd -P)"
 }
 
-installer_apply() {
-    if [ "$ASSUME_YES" != 1 ]; then
-        [ -t 0 ] || installer_die "No terminal for confirmation; use --yes."
-        read -rp $'\nApply this plan? Type \'yes\': ' answer || installer_die "No answer; nothing changed."
-        [ "$answer" = yes ] || installer_die "Not confirmed; nothing changed."
-    fi
+confirm_plan() {
+    [ "$ASSUME_YES" != 1 ] || return 0
+    [ -t 0 ] || installer_die "No terminal for confirmation; use --yes."
+    read -rp $'\nApply this plan? Type \'yes\': ' answer || installer_die "No answer; nothing changed."
+    [ "$answer" = yes ] || installer_die "Not confirmed; nothing changed."
+}
 
-    # Invalid input is asked again; only a closed terminal stops the installer.
-    ask() { read -rp "$1" "$2" || installer_die "Input closed; nothing changed."; }
-    ask_secret() {
-        read -rsp "$1" "$2" || { printf '\n'; installer_die "Input closed; nothing changed."; }
-        printf '\n'
-    }
-    retry() { printf '        %s\n' "$1"; }
+# Invalid input is asked again; only a closed terminal stops the installer.
+ask() { read -rp "$1" "$2" || installer_die "Input closed; nothing changed."; }
+ask_secret() {
+    read -rsp "$1" "$2" || { printf '\n'; installer_die "Input closed; nothing changed."; }
+    printf '\n'
+}
+retry() { printf '        %s\n' "$1"; }
 
-    if [ ! -f "$ENV_FILE" ]; then
-        [ -t 0 ] || installer_die "First installation needs a terminal for credentials (also with --yes)."
-        printf '\nAdministrator account\n'
+ask_credentials() {
+    [ -t 0 ] || installer_die "First installation needs a terminal for credentials (also with --yes)."
+    printf '\nAdministrator account\n'
+    while :; do
+        ask '  Username (3-64 letters, digits, _ or -, starting with a letter): ' admin_user
+        valid_user "$admin_user" && break
+        retry "Not accepted. Common names such as admin or root are refused too."
+    done
+    while :; do
+        ask_secret '  Panel password (12-1024 characters): ' password
+        ask_secret '  Repeat it: ' repeat
+        if [ "$password" != "$repeat" ]; then
+            retry "The passwords differ."
+        elif [ "${#password}" -lt 12 ] || [ "${#password}" -gt 1024 ]; then
+            retry "Use 12 to 1024 characters."
+        else
+            break
+        fi
+    done
+    unset repeat
+    printf '\nAccess\n'
+    while :; do
+        ask '  Panel domain, e.g. panel.example.org (empty = SSH tunnel only): ' domain
+        [ -n "$domain" ] && ! valid_domain "$domain" || break
+        retry "Enter a lowercase public DNS name, without https:// or a path."
+    done
+    if [ -n "$domain" ]; then
+        printf '  HTTPS adds a browser password prompt before the panel login. Use a different password.\n'
         while :; do
-            ask '  Username (3-64 letters, digits, _ or -, starting with a letter): ' admin_user
-            valid_user "$admin_user" && break
-            retry "Not accepted. Common names such as admin or root are refused too."
-        done
-        while :; do
-            ask_secret '  Panel password (12-1024 characters): ' password
+            ask_secret '  HTTPS password (12-72 characters): ' proxy_password
             ask_secret '  Repeat it: ' repeat
-            if [ "$password" != "$repeat" ]; then
+            # bcrypt truncates after 72 bytes, not characters.
+            if [ "$proxy_password" != "$repeat" ]; then
                 retry "The passwords differ."
-            elif [ "${#password}" -lt 12 ] || [ "${#password}" -gt 1024 ]; then
-                retry "Use 12 to 1024 characters."
+            elif [ "$proxy_password" = "$password" ]; then
+                retry "Choose a password different from the panel password."
+            elif [ "${#proxy_password}" -lt 12 ] || [ "$(LC_ALL=C; printf '%s' "${#proxy_password}")" -gt 72 ]; then
+                retry "Use 12 to 72 characters (bytes)."
             else
                 break
             fi
         done
         unset repeat
-        printf '\nAccess\n'
-        while :; do
-            ask '  Panel domain, e.g. panel.example.org (empty = SSH tunnel only): ' domain
-            [ -n "$domain" ] && ! valid_domain "$domain" || break
-            retry "Enter a lowercase public DNS name, without https:// or a path."
-        done
-        if [ -n "$domain" ]; then
-            printf '  HTTPS adds a browser password prompt before the panel login. Use a different password.\n'
-            while :; do
-                ask_secret '  HTTPS password (12-72 characters): ' proxy_password
-                ask_secret '  Repeat it: ' repeat
-                # bcrypt truncates after 72 bytes, not characters.
-                if [ "$proxy_password" != "$repeat" ]; then
-                    retry "The passwords differ."
-                elif [ "$proxy_password" = "$password" ]; then
-                    retry "Choose a password different from the panel password."
-                elif [ "${#proxy_password}" -lt 12 ] || [ "$(LC_ALL=C; printf '%s' "${#proxy_password}")" -gt 72 ]; then
-                    retry "Use 12 to 72 characters (bytes)."
-                else
-                    break
-                fi
-            done
-            unset repeat
-        fi
     fi
-    if [ -n "$domain" ] && ! getent ahosts "$domain" >/dev/null; then
-        printf '  WARN  %s does not resolve yet; HTTPS may stay pending until DNS points here.\n' "$domain"
-    fi
+}
 
-    umask 077
-    # Serialize installers without writing anything in --check mode.
-    exec 9>/run/compose-panel-install.lock
+# Serialize installers before inspection: a run waiting at its prompts must not
+# apply a plan made before another installer changed the host. --check takes no
+# lock, so it writes nothing, not even under /run.
+acquire_installer_lock() {
+    exec 9>"$LOCK_FILE"
     flock -n 9 || installer_die "Another installer is running."
+}
+
+installer_cleanup() {
+    local result=$?
+    unset password proxy_password
+    caddy_rollback || result=2
+    release_caddy_lock || result=2
+    rm -rf "$work"
+    if [ "$result" -ne 0 ] && [ "${https_unverified:-0}" != 1 ]; then
+        printf '  FAIL  Installation incomplete. Completed package/file steps remain; stacks were not removed.\n' >&2
+        printf '        Details: %s. Inspect the failed step before retrying; see docs/installation.md.\n' "$LOG" >&2
+    fi
+    exit "$result"
+}
+
+start_installation() {
     work="$(mktemp -d)"
-    cleanup() {
-        local result=$?
-        unset password proxy_password
-        caddy_rollback || result=2
-        release_caddy_lock || result=2
-        rm -rf "$work"
-        if [ "$result" -ne 0 ] && [ "${https_unverified:-0}" != 1 ]; then
-            printf '  FAIL  Installation incomplete. Completed package/file steps remain; stacks were not removed.\n' >&2
-            printf '        Details: %s. Inspect the failed step before retrying; see docs/installation.md.\n' "$LOG" >&2
-        fi
-        exit "$result"
-    }
-    trap cleanup EXIT
+    trap installer_cleanup EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
     # One run per log (root-only, umask 077): tool output only, never passwords.
     : > "$LOG"
     printf 'Compose Panel installer, %s\n' "$(date -Is)" >> "$LOG"
-    # Long tool output goes to the log; on failure, its end is shown. No terminal
-    # on stdin: under timeout(1), a command touching the tty (apt) is stopped by
-    # SIGTTOU and would hang until its timeout.
-    logged() {
-        local status=0
-        "$@" < /dev/null >> "$LOG" 2>&1 || status=$?
-        [ "$status" -ne 0 ] || return 0
-        printf '  FAIL  "%s" exited with %s. Last lines of %s:\n' "$*" "$status" "$LOG" >&2
-        tail -n 15 "$LOG" | sed 's/^/        /' >&2
-        return "$status"
-    }
     STEP=0
-    step() { STEP=$((STEP + 1)); printf '\n[%d/7] %s\n' "$STEP" "$1"; }
-    fetch() { curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 15 --max-time 120 --retry 2 "$@"; }
-    # --no-upgrade: install what is missing, never upgrade what is already there.
-    apt_install() { logged env DEBIAN_FRONTEND=noninteractive timeout 900 apt-get -o DPkg::Lock::Timeout=60 install -y --no-upgrade "$@"; }
-    apt_update() { logged timeout 300 apt-get update; }
-    enable_now() { logged timeout --kill-after=5 120 systemctl enable --now "$@"; }
+}
 
+# Long tool output goes to the log; on failure, its end is shown. No terminal
+# on stdin: under timeout(1), a command touching the tty (apt) is stopped by
+# SIGTTOU and would hang until its timeout.
+logged() {
+    local status=0
+    "$@" < /dev/null >> "$LOG" 2>&1 || status=$?
+    [ "$status" -ne 0 ] || return 0
+    printf '  FAIL  "%s" exited with %s. Last lines of %s:\n' "$*" "$status" "$LOG" >&2
+    tail -n 15 "$LOG" | sed 's/^/        /' >&2
+    return "$status"
+}
+step() { STEP=$((STEP + 1)); printf '\n[%d/7] %s\n' "$STEP" "$1"; }
+fetch() { curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 15 --max-time 120 --retry 2 "$@"; }
+# --no-upgrade: install what is missing, never upgrade what is already there.
+apt_install() { logged env DEBIAN_FRONTEND=noninteractive timeout 900 apt-get -o DPkg::Lock::Timeout=60 install -y --no-upgrade "$@"; }
+apt_update() { logged timeout 300 apt-get update; }
+enable_now() { logged timeout --kill-after=5 120 systemctl enable --now "$@"; }
+
+install_base_packages() {
     step "Base packages"
     apt_update
     apt_install ca-certificates curl gnupg
     printf '  ok    ca-certificates, curl, gnupg\n'
+}
 
+install_docker() {
     step "Docker"
     if [ "$have_docker" = 0 ]; then
         install -d -m 0755 /etc/apt/keyrings
@@ -651,7 +667,9 @@ EOF
         printf '  skip  Existing Docker kept, not upgraded or restarted\n'
     fi
     timeout 20 docker info >/dev/null 2>&1 || installer_die "Local Docker is unavailable."
+}
 
+install_caddy() {
     step "Caddy"
     if [ "$have_caddy" = 0 ]; then
         fetch https://dl.cloudsmith.io/public/caddy/stable/gpg.key -o "$work/caddy.asc"
@@ -671,7 +689,9 @@ EOF
     else
         printf '  skip  Existing Caddy kept\n'
     fi
+}
 
+install_security_updates() {
     step "Security updates"
     UPDATE_POLICY=/etc/apt/apt.conf.d/52compose-panel-periodic
     if installed unattended-upgrades; then
@@ -686,7 +706,9 @@ EOF
     if ! apt-config dump | grep -E '^APT::Periodic::Unattended-Upgrade "1";$' >/dev/null; then
         printf '  WARN  Automatic security upgrades are disabled by the existing APT policy.\n'
     fi
+}
 
+deploy_panel() {
     step "Panel"
     [ -d /opt/stacks ] || install -d -m 0755 /opt/stacks
     [ -d /run/compose-panel ] || install -d -m 0750 /run/compose-panel
@@ -715,7 +737,9 @@ EOF
     fi
     wait_panel || installer_die "Panel is not healthy; inspect docker logs compose-panel locally."
     printf '  ok    Panel healthy on 127.0.0.1:5081\n'
+}
 
+configure_caddy_and_helper() {
     step "Caddy configuration and helper"
     if [ "$caddy_owned" = 0 ]; then
         install -d -o caddy -g caddy -m 0755 /etc/caddy/compose-panel.d
@@ -730,29 +754,33 @@ EOF
     logged timeout 600 bash "$REPO/scripts/setup-caddy.sh" --install --yes --production
     wait_panel || installer_die "Panel failed its final health check."
     printf '  ok    Helper installed and answering from inside the panel\n'
+}
 
+check_access() {
+    local attempt public="" local_status=""
     step "Access check"
     printf '  ok    SSH tunnel ready\n'
     https_line=""
-    if [ -n "$domain" ]; then
-        printf '  ...   Checking https://%s (up to 1 minute while the certificate is issued)\n' "$domain"
-        for ((attempt = 0; attempt < 12; attempt++)); do
-            # Validate public TLS/DNS and the local TLS listener separately. No -k.
-            public="$(curl --noproxy '*' -sS --max-time 5 -o /dev/null -w '%{http_code}' "https://$domain/login" 2>/dev/null || true)"
-            local_status="$(curl --noproxy '*' -sS --max-time 5 --resolve "$domain:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$domain/login" 2>/dev/null || true)"
-            if [ "$public" = 401 ] && [ "$local_status" = 401 ]; then break; fi
-            sleep 5
-        done
-        if [ "$public" = 401 ] && [ "$local_status" = 401 ]; then
-            printf '  ok    HTTPS certificate valid and Basic Auth answering\n'
-            https_line="https://$domain (browser prompt: user $admin_user and the HTTPS password, then the panel login)"
-        else
-            printf '  WARN  HTTPS is not verified yet. Check DNS A/AAAA records, inbound TCP 80/443 and: journalctl -u caddy\n'
-            printf '  note  Some provider images (Oracle Cloud, for example) block 80/443 with iptables rules outside UFW.\n'
-            https_unverified=1
-        fi
+    [ -n "$domain" ] || return 0
+    printf '  ...   Checking https://%s (up to 1 minute while the certificate is issued)\n' "$domain"
+    for ((attempt = 0; attempt < 12; attempt++)); do
+        # Validate public TLS/DNS and the local TLS listener separately. No -k.
+        public="$(curl --noproxy '*' -sS --max-time 5 -o /dev/null -w '%{http_code}' "https://$domain/login" 2>/dev/null || true)"
+        local_status="$(curl --noproxy '*' -sS --max-time 5 --resolve "$domain:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$domain/login" 2>/dev/null || true)"
+        if [ "$public" = 401 ] && [ "$local_status" = 401 ]; then break; fi
+        sleep 5
+    done
+    if [ "$public" = 401 ] && [ "$local_status" = 401 ]; then
+        printf '  ok    HTTPS certificate valid and Basic Auth answering\n'
+        https_line="https://$domain (browser prompt: user $admin_user and the HTTPS password, then the panel login)"
+    else
+        printf '  WARN  HTTPS is not verified yet. Check DNS A/AAAA records, inbound TCP 80/443 and: journalctl -u caddy\n'
+        printf '  note  Some provider images (Oracle Cloud, for example) block 80/443 with iptables rules outside UFW.\n'
+        https_unverified=1
     fi
+}
 
+show_summary() {
     printf '\nCompose Panel is installed.\n\n'
     printf '  %-9s ssh -L5081:127.0.0.1:5081 %s@<server address>, then open http://127.0.0.1:5081\n' "SSH" "${SUDO_USER:-you}"
     [ -z "$https_line" ] || printf '  %-9s %s\n' "HTTPS" "$https_line"
@@ -761,6 +789,23 @@ EOF
     printf '  %-9s %s\n' "Log" "$LOG"
     printf '  %-9s sudo bash scripts/doctor.sh --production\n' "Check"
     printf '  %-9s About > Update in the panel, then: sudo bash scripts/setup-caddy.sh --install --production\n' "Update"
+}
+
+installer_apply() {
+    confirm_plan
+    [ -f "$ENV_FILE" ] || ask_credentials
+    if [ -n "$domain" ] && ! getent ahosts "$domain" >/dev/null; then
+        printf '  WARN  %s does not resolve yet; HTTPS may stay pending until DNS points here.\n' "$domain"
+    fi
+    start_installation
+    install_base_packages
+    install_docker
+    install_caddy
+    install_security_updates
+    deploy_panel
+    configure_caddy_and_helper
+    check_access
+    show_summary
     [ "${https_unverified:-0}" != 1 ] || exit 2
 }
 
@@ -781,6 +826,10 @@ installer_main() {
     # Library fixtures replace installer_prepare and inspect a temporary tree.
     local inspection_root=/
     installer_prepare
+    if [ "$MODE" = install ]; then
+        umask 077
+        acquire_installer_lock
+    fi
     installer_preflight "$inspection_root"
     show_install_plan
     if [ "$MODE" = check ]; then
