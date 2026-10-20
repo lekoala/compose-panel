@@ -8,6 +8,10 @@
   HTTPS with Basic Auth. Includes read-only preflight, configuration ownership
   checks, secret-safe hashing, Caddy rollback and helper setup via
   `--production`, plus `scripts/doctor.sh` for read-only diagnostics.
+  Reruns repair recognized Caddy/backup and repository file permissions,
+  refuse repository-search errors, and recognize update policy by content.
+  Doctor checks installer hash permissions, actual container ports and the
+  HTTPS authentication challenge.
   Disposable VM validation remains pending; see
   [installation](docs/installation.md).
 - Caddy site management setup in one command (ADR 0030 amendment):

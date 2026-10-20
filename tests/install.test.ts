@@ -50,6 +50,15 @@ describe.skipIf(process.platform === "win32")("Ubuntu installer isolated fixture
         }
     });
 
+    test("existing Caddy must support basic_auth with an identifiable stable version", async () => {
+        for (const version of ["v2.8.4 h1:fixture", "v2.10.2", "2.8.0", "v3.0.0"]) {
+            expect((await shell('caddy_version_supported "$1"', [version])).code).toBe(0);
+        }
+        for (const version of ["v2.7.6", "v1.8.0", "", "unknown", "v2.8.0-beta.1"]) {
+            expect((await shell('caddy_version_supported "$1"', [version])).code).not.toBe(0);
+        }
+    });
+
     test("env output round-trips hashes literally and never enables a public origin in private mode", async () => {
         const hash = "$argon2id$v=19$m=65536,t=3,p=1$c2FsdA$aGFzaA";
         const proxy = `$2a$14$${"x".repeat(53)}`;
@@ -146,7 +155,7 @@ hash_admin_password
 const FAKES: Record<string, string> = {
     "timeout": 'while [ "${1#--}" != "$1" ]; do shift; done; shift; exec "$@"',
     "runuser": '[ "$FAIL" != validate ]',
-    "systemd-run": '[ "$FAIL" != validate ]',
+    "systemd-run": '[ "$FAIL" != validate ] && [ "$FAIL" != sandbox ]',
     "systemctl": `n=$(( $(cat "$FIXTURE/calls" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIXTURE/calls"
 [ "$FAIL" != rollback ] && { [ "$FAIL" != reload ] || [ "$n" -gt 1 ]; }`,
     "dpkg-query": `case "$*" in
@@ -183,7 +192,7 @@ export FAIL=\${FAIL:-} SUM=\${SUM:-} OBSOLETE=\${OBSOLETE:-}
 ${command}`, [dir, SETUP, LOCK], "", env);
     }
 
-    for (const [failure, code] of [["none", 0], ["validate", 1], ["reload", 1], ["rollback", 2]] as const) {
+    for (const [failure, code] of [["none", 0], ["validate", 1], ["sandbox", 1], ["reload", 1], ["rollback", 2]] as const) {
         test(`replacement with ${failure} failure keeps a readable original or candidate`, async () => {
             const result = await run('domain=""; write_caddy_candidate "$1/candidate"; replace_caddy "$1/candidate"',
                 { FAIL: failure });
@@ -228,10 +237,46 @@ printf '$2a$14$fixture\\n'
         await writeFile(join(dir, "source"), "key");
         expect((await run('publish_same "$1/source" "$1/target" 0644')).code).toBe(0);
         expect(await readFile(target, "utf8")).toBe("key");
+        await chmod(target, 0o600);
         expect((await run('publish_same "$1/source" "$1/target" 0644')).code).toBe(0);
+        expect((await stat(target)).mode & 0o777).toBe(0o644);
+        expect(await readFile(join(dir, "chown"), "utf8")).toContain(`root:root ${target}`);
         await writeFile(target, "foreign");
         expect((await run('publish_same "$1/source" "$1/target" 0644')).code).not.toBe(0);
         expect(await readFile(target, "utf8")).toBe("foreign");
+    });
+
+    test("errors from either APT repository search refuse adoption", async () => {
+        await mkdir(join(dir, "apt", "sources.list.d"), { recursive: true });
+        await writeFile(join(dir, "bin", "grep"), `#!/usr/bin/env bash
+if [ "$1" = "$ERROR_OPTION" ]; then exit 2; fi
+exec /usr/bin/grep "$@"
+`);
+        await chmod(join(dir, "bin", "grep"), 0o755);
+        for (const option of ["-RlE", "-qvxF"]) {
+            expect((await run('apt_repo_resumable "$1/apt" docker "$1/apt/sources.list.d/docker.sources"',
+                { ERROR_OPTION: option })).code).not.toBe(0);
+        }
+    });
+
+    test("timers are enabled only for the exact installer policy, never an admin file or symlink", async () => {
+        const policy = join(dir, "periodic");
+        const check = `UPDATE_POLICY=$1/periodic
+enable_now() { printf '%s\\n' "$*" >> "$FIXTURE/enabled"; }
+configure_update_timers`;
+        expect((await run('render_periodic > "$1/periodic"')).code).toBe(0);
+        expect((await run(check)).code).toBe(0);
+        expect(await readFile(join(dir, "enabled"), "utf8")).toBe("apt-daily.timer apt-daily-upgrade.timer\n");
+        await rm(join(dir, "enabled"));
+        await rm(policy);
+        expect((await run(check)).code).toBe(0);
+        await writeFile(policy, 'APT::Periodic::Unattended-Upgrade "0";\n');
+        expect((await run(check)).code).toBe(0);
+        await rm(policy);
+        expect((await run('render_periodic > "$1/admin-policy"')).code).toBe(0);
+        await symlink(join(dir, "admin-policy"), policy);
+        expect((await run(check)).code).toBe(0);
+        expect(await Bun.file(join(dir, "enabled")).exists()).toBe(false);
     });
 
     test("an APT repository resumes only from the installer's own files", async () => {
@@ -283,6 +328,53 @@ printf '$2a$14$fixture\\n'
         expect(await readFile(helper, "utf8")).toBe("working binary");
     });
 
+    test("owned Caddy backups become private without rewriting foreign files or following links", async () => {
+        const owned = `${caddyfile}.bak-setup.owned`;
+        const foreign = `${caddyfile}.bak-setup.foreign`;
+        const elsewhere = join(dir, "elsewhere");
+        await writeFile(owned, "original\n", { mode: 0o644 });
+        await writeFile(foreign, "administrator $2a$14$fixture\n", { mode: 0o644 });
+        await writeFile(elsewhere, "original\n", { mode: 0o644 });
+        await symlink(elsewhere, `${caddyfile}.bak-setup.link`);
+        expect((await run("secure_caddy_backups")).code).toBe(0);
+        expect((await stat(owned)).mode & 0o777).toBe(0o600);
+        expect(await readFile(owned, "utf8")).toBe("original\n");
+        expect((await stat(foreign)).mode & 0o777).toBe(0o644);
+        expect((await stat(elsewhere)).mode & 0o777).toBe(0o644);
+    });
+
+    test("atomic replacement preserves metadata and leaves the previous inode intact", async () => {
+        const source = join(dir, "replacement");
+        await writeFile(source, "new binary", { mode: 0o750 });
+        const previous = await stat(caddyfile);
+        expect((await run('atomic_host_file "$1/replacement" "$CADDYFILE"')).code).toBe(0);
+        const published = await stat(caddyfile);
+        expect(published.ino).not.toBe(previous.ino);
+        expect(published.mode & 0o777).toBe(0o750);
+        expect(await readFile(caddyfile, "utf8")).toBe("new binary");
+        await rm(caddyfile);
+        await symlink(source, caddyfile);
+        expect((await run('atomic_host_file "$1/replacement" "$CADDYFILE"')).code).not.toBe(0);
+        expect(await readFile(source, "utf8")).toBe("new binary");
+    });
+
+    test("HUP releases the standalone Caddy lock and contention never runs the command", async () => {
+        const runWrapper = async (command: string[]) => {
+            const proc = Bun.spawn(["bash", LOCK, ...command], {
+                env: { PATH: process.env.PATH, CADDY_MANAGED_DIR: join(dir, "managed"), CADDY_LOCK_WAIT_SECONDS: "0" },
+                stdout: "pipe", stderr: "pipe",
+            });
+            return proc.exited;
+        };
+        expect(await runWrapper(["bash", "-c", 'kill -HUP "$PPID"'])).toBe(129);
+        expect(await Bun.file(join(dir, "managed", ".lock", "owner")).exists()).toBe(false);
+        await mkdir(join(dir, "managed", ".lock"));
+        await writeFile(join(dir, "managed", ".lock", "owner"), `${process.pid}:fixture`);
+        expect(await runWrapper(["touch", join(dir, "must-not-exist")])).toBe(75);
+        expect(await Bun.file(join(dir, "must-not-exist")).exists()).toBe(false);
+        expect(await readFile(join(dir, "managed", ".lock", "owner"), "utf8")).toBe(`${process.pid}:fixture`);
+    });
+
     test("a checkout writable by other users is refused before anything is sourced", async () => {
         const repo = join(dir, "repo");
         for (const sub of ["scripts", "deploy/caddy"]) await mkdir(join(repo, sub), { recursive: true });
@@ -311,20 +403,74 @@ printf '$2a$14$fixture\\n'
         expect((await run(check, { SUDO_UID: uid })).code).not.toBe(0);
     });
 
-    for (const [proxyHash, failures] of [["", "0"], ["$2a$14$fixture", "1"]] as const) {
-        test(`doctor ${proxyHash ? "requires the installer Basic Auth" : "accepts a login page"} on HTTPS`, async () => {
-            await writeFile(join(dir, "bin", "curl"), "#!/usr/bin/env bash\nprintf 200\n");
+    for (const [proxyHash, status, failures, unverified] of [
+        ["", "200", "0", "0"], ["$2a$14$fixture", "200", "1", "0"],
+        ["$2a$14$fixture", "401", "0", "0"], ["$2a$14$fixture", "000", "0", "1"],
+    ] as const) {
+        test(`doctor checks HTTPS ${status} with ${proxyHash ? "installer" : "manual"} authentication`, async () => {
+            await writeFile(join(dir, "bin", "curl"), `#!/usr/bin/env bash\nprintf ${status}\n`);
             await chmod(join(dir, "bin", "curl"), 0o755);
             await writeFile(join(dir, "panel.env"),
                 `COMPOSE_PANEL_PROXY_ORIGINS=https://panel.example.org\nCOMPOSE_PANEL_INSTALLER_PROXY_HASH='${proxyHash}'\n`);
             const result = await run(`COMPOSE_PANEL_DOCTOR_LIB=1 source "$DOCTOR"
 ENV_FILE=$1/panel.env doctor_failures=0 doctor_unverified=0
 doctor_https >/dev/null
-printf '%s' "$doctor_failures"`, { DOCTOR });
+printf '%s %s' "$doctor_failures" "$doctor_unverified"`, { DOCTOR });
             expect(result.code).toBe(0);
-            expect(result.stdout).toBe(failures);
+            expect(result.stdout).toBe(`${failures} ${unverified}`);
         });
     }
+
+    test("doctor uses the container port and refuses inspection errors or invalid ports even inside a guard", async () => {
+        await writeFile(join(dir, "bin", "docker"), `#!/usr/bin/env bash
+printf '%s\\n' "$INSPECT_ENV"
+exit "$INSPECT_EXIT"
+`);
+        await chmod(join(dir, "bin", "docker"), 0o755);
+        const check = `COMPOSE_PANEL_DOCTOR_LIB=1 source "$DOCTOR"
+if port="$(doctor_port)"; then printf '%s' "$port"; else exit 1; fi`;
+        for (const [env, port] of [["", "5081"], ["PORT=8080", "8080"], ["PORT=65535", "65535"]]) {
+            const result = await run(check, { DOCTOR, INSPECT_ENV: env!, INSPECT_EXIT: "0" });
+            expect(result.code).toBe(0);
+            expect(result.stdout).toBe(port!);
+        }
+        for (const env of ["PORT=0", "PORT=65536", "PORT=invalid", "PORT=-1"]) {
+            expect((await run(check, { DOCTOR, INSPECT_ENV: env, INSPECT_EXIT: "0" })).code).toBe(1);
+        }
+        expect((await run(check, { DOCTOR, INSPECT_ENV: "", INSPECT_EXIT: "1" })).code).toBe(1);
+    });
+
+    test("doctor detects public installer hashes in the Caddyfile and backups without changing files", async () => {
+        await writeFile(join(dir, "panel.env"), "COMPOSE_PANEL_INSTALLER_PROXY_HASH='$2a$14$fixture'\n");
+        // Simulate root/caddy metadata; CI also runs as an unprivileged user.
+        await writeFile(join(dir, "bin", "stat"), `#!/usr/bin/env bash
+case "\${@: -1}" in
+    "$FIXTURE/Caddyfile") printf '%s\\n' "$CADDY_METADATA" ;;
+    *) printf '%s\\n' "$BACKUP_METADATA" ;;
+esac
+`);
+        await chmod(join(dir, "bin", "stat"), 0o755);
+        const check = `COMPOSE_PANEL_DOCTOR_LIB=1 source "$DOCTOR"
+ENV_FILE=$1/panel.env
+doctor_secret_file() { return 0; }
+doctor_caddy_permissions`;
+        const env = { DOCTOR, CADDY_METADATA: "root:caddy 640", BACKUP_METADATA: "root:root 644" };
+        expect((await run(check, env)).code).toBe(0);
+        expect((await run(check, { ...env, CADDY_METADATA: "root:caddy 644" })).code).toBe(1);
+        const backup = `${caddyfile}.bak-setup.old`;
+        await writeFile(backup, "packaged welcome page\n", { mode: 0o644 });
+        expect((await run(check, env)).code).toBe(0);
+        await writeFile(backup, "operator $2a$14$fixture\n");
+        expect((await run(check, env)).code).toBe(1);
+        for (const metadata of ["root:root 600", "root:caddy 640"]) {
+            expect((await run(check, { ...env, BACKUP_METADATA: metadata })).code).toBe(0);
+        }
+        expect(await readFile(backup, "utf8")).toBe("operator $2a$14$fixture\n");
+        expect((await stat(backup)).mode & 0o777).toBe(0o644);
+        await rm(backup);
+        await symlink(join(dir, "missing"), backup);
+        expect((await run(check, env)).code).toBe(1);
+    });
 
     for (const running of [true, false]) {
         test(`a rerun ${running ? "leaves a running" : "starts a stopped"} panel without recreating it`, async () => {

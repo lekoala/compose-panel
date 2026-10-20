@@ -20,11 +20,36 @@ doctor_secret_file() {
     plain_path "$ENV_FILE" && [ -f "$ENV_FILE" ] && [ "$(stat -c '%u %a' "$ENV_FILE")" = '0 600' ]
 }
 
+# Enforce the installer's secret-file contract only for its deployments.
+# Manual Caddy configurations may legitimately be public and contain no hashes.
+doctor_caddy_permissions() {
+    local backup metadata status
+    doctor_secret_file || return 1
+    [ -n "$(env_value "$ENV_FILE" COMPOSE_PANEL_INSTALLER_PROXY_HASH)" ] || return 0
+    plain_path "$CADDYFILE" && [ -f "$CADDYFILE" ] &&
+        [ "$(stat -c '%U:%G %a' "$CADDYFILE")" = 'root:caddy 640' ] || return 1
+    for backup in "$CADDYFILE".bak-setup.*; do
+        [ -e "$backup" ] || [ -L "$backup" ] || continue
+        plain_path "$backup" && [ -f "$backup" ] || return 1
+        # The original packaged welcome page has no password hash.
+        status=0
+        grep -E '[$]2[aby][$][0-9]{2}[$]' "$backup" >/dev/null || status=$?
+        [ "$status" -ne 1 ] || continue
+        [ "$status" -eq 0 ] || return 1
+        metadata="$(stat -c '%U:%G %a' "$backup")" || return 1
+        case "$metadata" in
+            'root:root 600'|'root:caddy 600'|'root:caddy 640') ;;
+            *) return 1 ;;
+        esac
+    done
+}
+
 # The port the container actually uses (PORT in its environment, as setup-caddy.sh reads it).
 doctor_port() {
     local port
-    port="$(timeout 15 docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" | sed -n 's/^PORT=//p' | tail -n 1)"
+    port="$(timeout 15 docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" | sed -n 's/^PORT=//p' | tail -n 1)" || return 1
     [[ "${port:-5081}" =~ ^[0-9]{1,5}$ ]] || return 1
+    [ -z "$port" ] || (( 10#$port >= 1 && 10#$port <= 65535 )) || return 1
     printf '%s\n' "${port:-5081}"
 }
 
@@ -88,6 +113,7 @@ doctor_checks() {
         doctor_probe "$service enabled at boot" timeout 15 systemctl is-enabled --quiet "$service"
     done
     doctor_probe "Settings are a regular root-owned 0600 file without symlink parents" doctor_secret_file
+    doctor_probe "Installer Caddyfile and backups protect password hashes" doctor_caddy_permissions
     if panel_identity_matches; then
         printf '  ok    Panel belongs to this checkout and selected Compose file.\n'
         doctor_probe "Container health and loopback HTTP endpoint" doctor_health

@@ -41,6 +41,8 @@ Docker or Caddy service not enabled at boot is reported, not changed. Never
 remove conflicting packages, change SSH or firewall rules, add users to the
 `docker` group, or reboot. An existing unattended-upgrades policy is
 preserved; the installer's own policy has its timers enabled on every run.
+Ownership of that policy is determined by exact content, not its filename.
+Existing Caddy must identify itself as a stable version 2.8 or later.
 
 Repository keys are fetched over TLS without a pinned fingerprint, and the
 first image is the GHCR `latest` tag; comparing its digest with
@@ -56,9 +58,11 @@ Private SSH access is the default. Optional HTTPS uses a host Caddy site with
 automatic TLS and Basic Auth, with a password separate from the panel's, and
 keeps `COMPOSE_PANEL_ALLOW_LOOPBACK=true` as the SSH fallback. Passwords reach
 the hashers on stdin only, never in command arguments or container
-environment; `deploy/compose-panel.env` holds only quoted hashes, root-owned,
-mode 0600. The Caddyfile, which repeats the Basic Auth hash, is `root:caddy`
-0640.
+environment; `deploy/compose-panel.env` holds quoted hashes and non-secret
+settings, root-owned, mode 0600. The Caddyfile, which repeats the Basic Auth
+hash, is `root:caddy` 0640, including after reruns of an older installation.
+Matching backups are restricted to `root:root` 0600; foreign backups exposing
+bcrypt hashes are reported for manual review.
 
 The installer then runs `setup-caddy.sh --install --yes --production`.
 `--production` explicitly selects `compose.prod.yaml`; the helper still
@@ -81,6 +85,9 @@ and no application routes may exist yet. Existing application domain files
 are kept. Likewise, APT repository files left by an interrupted run are reused
 only when byte-identical to the fresh download and when no other source refers
 to that repository; a helper binary without its units is rebuilt.
+Matching repository files have their metadata normalized to `root:root` 0644.
+Key rotations remain a manual review: a changed download never overwrites an
+existing key automatically. Any repository-search error refuses adoption.
 
 ### Reliability of Caddy changes
 
@@ -110,7 +117,10 @@ Exit codes: 0 success, 1 failure, 2 installed but external HTTPS unverified.
 Add `scripts/doctor.sh [--production]` to check an installation without
 changing it: local Docker and Compose, exact panel identity, container health,
 helper mount and status, services enabled at boot, settings permissions and
-configured HTTPS origins. It never pulls, deploys, reloads, repairs or starts
+configured HTTPS origins. Installer HTTPS deployments also check Caddyfile
+and bcrypt-bearing backup permissions. Container inspection errors and invalid
+ports fail diagnostics rather than falling back to a healthy default.
+It never pulls, deploys, reloads, repairs or starts
 transient systemd units. It parses the Caddyfile with `caddy adapt` rather
 than `validate`, which can provision storage, so runtime sandbox readiness
 remains a check of `setup-caddy.sh --install`. Exit codes match the installer:

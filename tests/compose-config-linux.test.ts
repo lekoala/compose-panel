@@ -36,7 +36,10 @@ test.skipIf(process.platform !== "linux" || process.env.COMPOSE_PANEL_TEST_COMPO
         expect(panel.build).toBeUndefined();
         expect(panel.ports).toBeUndefined();
         expect(panel.network_mode).toBe("host");
-        expect(panel.environment.COMPOSE_PANEL_ADMIN_PASSWORD_HASH).toBe(hash);
+        // Compose escapes every literal $ when rendering config (JSON too), so
+        // its output can be loaded again without interpolating secret values.
+        // https://github.com/docker/compose/blob/v5.6.0/cmd/compose/config.go#L182-L184
+        expect(panel.environment.COMPOSE_PANEL_ADMIN_PASSWORD_HASH).toBe(hash.replaceAll("$", () => "$$"));
         expect(panel.environment.STACKS_DIR).toBe("/opt/stacks");
         expect(panel.volumes).toEqual(expect.arrayContaining([
             expect.objectContaining({ source: "/opt/stacks", target: "/opt/stacks", type: "bind" }),

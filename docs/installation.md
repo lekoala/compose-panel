@@ -18,8 +18,12 @@ self-updater refer to its absolute path. Use a path without spaces. Because
 root runs scripts from it, the installer refuses a checkout whose scripts,
 deployment files or parent directories another user could change: they must
 belong to root or to the user running `sudo`, without group or other write
-access. Ubuntu's private user group (umask 002) is accepted; sticky directories
-such as `/tmp` are accepted as parents.
+access except for a private user group with no other member (Ubuntu's usual
+umask 002). Sticky directories such as `/tmp` are accepted as parents.
+Use `sudo bash` as shown above; a root shell without `SUDO_UID` requires a
+root-owned checkout. The checks inspect Unix modes and group membership, not
+named POSIX ACL entries: do not grant other users write access through ACLs.
+`ss` (`iproute2`) and `getent` (`libc-bin`) must be available for preflight.
 
 The script first checks the server and shows a plan for this host: what is
 already present and kept, and what will be installed. It requires `yes` before
@@ -30,6 +34,8 @@ HTTPS password. Invalid answers are asked again; password prompts do not echo.
 but the first installation still requires a terminal for credentials.
 `--check` inspects the host without downloading packages or writing files; it
 does not prove that package repositories, registry, DNS or TLS are available.
+Existing repository files at the expected paths are compared with downloads
+during installation; their content is not verified by `--check`.
 
 Installation runs in seven numbered steps. Package, image and helper output
 goes to `/var/log/compose-panel-install.log` (root only, replaced on each run,
@@ -50,11 +56,14 @@ where settings and the log are.
   which needs Caddy 2.8 or later; the official repository provides it.
 - Ubuntu's `unattended-upgrades`, if absent, with daily package-list refresh and
   unattended upgrades, and automatic reboots disabled. Its APT timers are
-  enabled on every run while that policy file is in place. An existing
+  enabled on every run while that exact policy is in place. An existing
   installation keeps its policy; review any warning that its upgrade timer is
   disabled.
 - `/opt/stacks`, if absent, and the panel from
   `ghcr.io/lekoala/compose-panel:latest`, through `deploy/compose.prod.yaml`.
+- The Caddy helper using `setup-caddy.sh --install --yes --production`,
+  compiled from the image the panel actually runs. The helper socket is tested
+  from inside the container before success is reported.
 
 Packages already present are never upgraded (`apt-get install --no-upgrade`).
 An existing Docker or Caddy service that is not enabled at boot is reported,
@@ -64,9 +73,6 @@ Trust is based on HTTPS downloads and APT signatures: the Docker and Caddy
 repository keys are fetched over TLS without a pinned fingerprint, and the
 first panel image is the `latest` tag as served by GHCR. Its digest is not yet
 compared with `releases.json`; later updates through About do check it.
-- The Caddy helper using `setup-caddy.sh --install --yes --production`,
-  compiled from the image the panel actually runs. The helper socket is tested
-  from inside the container before success is reported.
 
 The installer never removes conflicting packages, adds users to the Docker
 group, modifies SSH or firewall rules, or reboots. Review the plan as root:
@@ -121,6 +127,11 @@ never process arguments or Docker container environment. The extra
 `COMPOSE_PANEL_INSTALLER_PROXY_HASH` setting is used by the installer; like
 other `COMPOSE_PANEL_*` settings it is removed from stack subprocesses.
 `/etc/caddy/Caddyfile` repeats the bcrypt hash, so it is `root:caddy`, `0640`.
+A rerun corrects older permissions without changing its content. Backups
+`Caddyfile.bak-setup.*` matching that configuration become `root:root`, `0600`.
+Other backups with publicly readable bcrypt hashes are reported for manual
+review; their content and permissions are left intact. Restrict or remove
+them after review, since they may contain earlier credentials.
 
 **Do not edit `compose-panel.env` or the Caddyfile by hand on an installer
 deployment.** A rerun compares both byte for byte with what it would write,
@@ -159,6 +170,12 @@ Docker and Caddy repository files left by an interrupted run are reused only
 when byte-identical to the fresh download, and only if no other APT source
 refers to that repository. A helper binary installed without its systemd units
 is rebuilt and completed by the rerun.
+Matching repository files have their ownership and mode restored to
+`root:root`, `0644`, so `_apt` can read them. A legitimate repository-key
+rotation also causes a byte mismatch: verify the new key through the
+vendor's official installation instructions and complete the repository
+configuration manually before rerunning. The installer never silently
+replaces a differing key.
 
 Some states remain manual: an installed Caddy that is not running, a stopped
 Docker daemon, or a partly installed package. Inspect and finish through the
@@ -166,6 +183,9 @@ manual procedure rather than deleting files blindly. Interruption by Ctrl-C,
 `TERM` or a closed SSH session (`HUP`) runs the Caddy rollback and releases its
 lock; `SIGKILL` or a power loss does not. The installer does not claim
 automatic crash recovery.
+If installation stopped after installing `unattended-upgrades` but before
+writing the installer policy, its existing policy is kept; inspect the
+reported timer and APT settings rather than assuming our policy was applied.
 
 Read-only diagnostics of the whole installation (Docker, panel identity and
 health, Caddy, helper, settings permissions, HTTPS origins):
@@ -220,6 +240,25 @@ They exercise credentials, exact identities, refusal paths, file modes,
 no-clobber publication and rollback, without touching a host daemon.
 CI also runs ShellCheck and real Compose configuration parsing with no daemon
 access. They do not establish that APT, systemd or public TLS work on a real VPS.
+The full host preflight and installer signal cleanup are not yet covered by
+an end-to-end automated fixture; the VM checks below cover those remaining
+release requirements.
+
+Local verification on 2026-10-20 used a disposable Debian arm64 container in
+Docker Desktop on macOS, Bun 1.4.3, no host mounts and no Docker socket:
+
+- `bun run test` as an unprivileged user: 847 passed, 25 skipped, none failed.
+  This included five real Caddy 2.8.4 integration tests with temporary
+  configuration, certificates and ports.
+- Opt-in Compose configuration tests with CLI 29.9.0 and Compose 5.6.0:
+  four passed, without a daemon.
+- Filesystem/editor/stack-creation tests as container root: 58 passed,
+  including ownership checks skipped by the unprivileged run.
+- Typechecking, ShellCheck, Bash syntax and documentation build passed.
+
+These checks do not run an Ubuntu installation or boot systemd. Direct writes
+of helper units and appended manual-deployment settings in `setup-caddy.sh`
+also remain candidates for atomic publication.
 
 The following **manual checks remain required** in disposable systemd VMs:
 
