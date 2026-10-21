@@ -46,6 +46,7 @@ const GUIDES: ReadonlyArray<{ src: string; label: string }> = [
   { src: "docs/deployment.md", label: "Deployment" },
   { src: "docs/operations.md", label: "Operations" },
   { src: "docs/integrations/libredb.md", label: "LibreDB explorer" },
+  { src: "docs/integrations/runtime-settings.md", label: "Runtime settings" },
   { src: "docs/migrating-from-dockge.md", label: "Migrating from Dockge" },
   { src: "docs/troubleshooting.md", label: "Troubleshooting" },
   { src: "docs/ci.md", label: "CI" },

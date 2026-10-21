@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Documentation: [runtime settings through `.env`](docs/integrations/runtime-settings.md),
+  a Compose convention to manage common PHP/Bun settings (and apply security
+  mitigations) from the existing `.env` editor and **Up**, without
+  runtime-specific panel code.
 - Interactive Ubuntu Server 24.04/26.04 installer (ADR 0031), targeting amd64
   and arm64: official Docker/Caddy packages, a separate production Compose
   file using the published image, private SSH access by default and optional
