@@ -12,6 +12,12 @@
       "digest": "sha256:0c965b1251efabe0d721a48a396b9ce32092f452b9c09b11b4111ba93569aabe",
       "revision": "df4f95b8aa55178266fc340170db4d7479d5ea32",
       "recordedAt": "2026-10-16T17:13:32.117Z"
+    },
+    {
+      "version": "0.6.0",
+      "digest": "sha256:53fae0bd4817cc341abdf829650b1540bad60dd226992b6262fa21fbc9b099e5",
+      "revision": "ec86fb000c5924c972f3aee96a761841e13bd36f",
+      "recordedAt": "2026-10-21T13:52:05.875Z"
     }
   ]
 }
