@@ -1,4 +1,4 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, toolboxPage, databaseSection, domainsSection, type AttachedDomain, type NavSection, type NavigationOptions, type NoteKind, type ToolboxSourceView } from "./html.ts";
+import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, toolboxPage, databaseSection, domainsSection, type AttachedDomain, type PublishedUpstream, type NavSection, type NavigationOptions, type NoteKind, type ToolboxSourceView } from "./html.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { managedBy } from "./deployment.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
@@ -11,9 +11,9 @@ import { createContainerInspector, isContainerId, sanitizeTailLines, type Contai
 import { createActionRunner, type ActionRunner } from "./action-runner.ts";
 import { buildCatalog, buildRunnerArgv, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
 import { buildExplorerUrl, parseDatabaseExplorer } from "./database.ts";
-import { buildSiteFile, isValidDomain, isValidServiceName, isValidStackName, isValidUpstreamPort, matchesGeneratedUpstream, normalizeDomain } from "./caddy.ts";
+import { buildSiteFile, isValidDomain, isValidServiceName, isValidStackName, isValidUpstreamPort, matchesGeneratedUpstream, normalizeDomain, splitHostBinding } from "./caddy.ts";
 import { CaddyHelperError, callCaddyHelper } from "./caddy-client.ts";
-import { parseContainerInspect, parseContainerLs } from "./container-state.ts";
+import { parseContainerInspect, parseContainerLs, type ContainerPort } from "./container-state.ts";
 import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { StackBusyError, StackLocks } from "./locks.ts";
@@ -146,6 +146,11 @@ async function readTextLimited(request: Request, maxBytes: number): Promise<stri
 /** Floor for attach/detach helper calls: the helper deadline with its default
  * per-command timeout (135 s, see `helperDeadlineMs`) plus slack. */
 const CADDY_MUTATION_MIN_TIMEOUT_MS = 150_000;
+
+type PublishedPortsRead =
+    | { kind: "no-answer" }
+    | { kind: "bad-answer" }
+    | { kind: "ok"; running: number; inspected: number; ports: { service: string; binding: ContainerPort }[] };
 
 const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"] as const;
 
@@ -769,6 +774,7 @@ export function createApp(options: AppOptions): App {
      */
     async function domainsCard(
         stackName: string,
+        project: string | null,
         csrf: string,
         serviceNames: string[],
         owner: string | null,
@@ -809,6 +815,7 @@ export function createApp(options: AppOptions): App {
             stackName,
             csrf,
             services: serviceNames,
+            published: owner ? null : await publishedUpstreams(project ?? stackName),
             owner,
             attached,
             statusError,
@@ -816,6 +823,39 @@ export function createApp(options: AppOptions): App {
             preview: { domain, service, port: portText, file: preview.file, error: preview.error, hasInput },
             confirmDetach,
         });
+    }
+
+    /**
+     * Host ports the running containers of a project publish, each marked
+     * eligible when it is exactly what the managed file dials. Offered as
+     * suggestions only: attach re-checks under the lock. Null when Docker
+     * cannot tell, so the card simply shows no suggestion.
+     */
+    async function publishedUpstreams(project: string): Promise<PublishedUpstream[] | null> {
+        const read = await readPublishedPorts(project, null);
+        if (read.kind !== "ok" || (read.running > 0 && read.inspected === 0)) return null;
+        const upstreams: PublishedUpstream[] = [];
+        for (const { service, binding } of read.ports) {
+            if (binding.host === null) continue;
+            const split = splitHostBinding(binding.host);
+            if (!split) continue;
+            upstreams.push({
+                service,
+                container: binding.container,
+                host: binding.host,
+                port: split.port,
+                eligible: matchesGeneratedUpstream(binding.container, binding.host, split.port),
+            });
+        }
+        const seen = new Set<string>();
+        return upstreams
+            .filter(entry => {
+                const key = `${entry.service} ${entry.container} ${entry.host}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            })
+            .sort((a, b) => a.service.localeCompare(b.service) || a.port - b.port);
     }
 
     /** Validate preview input and render the canonical file. No mutation. */
@@ -865,7 +905,7 @@ export function createApp(options: AppOptions): App {
             + operationPanel(operation, stack.name)
             + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" }, status.recreatePending)
             + databaseExplorerSection(stack.source)
-            + await domainsCard(stack.name, csrf, status.services.map(service => service.name), owner, query, extras.confirmDetach ?? null)
+            + await domainsCard(stack.name, status.project, csrf, status.services.map(service => service.name), owner, query, extras.confirmDetach ?? null)
             + deploymentSection(status.deployed, status.declared, status.state !== "not-created")
             + logsPanel(stack.name, config.logTailLines, config.timeZone, status.services.map(service => service.name))
             + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
@@ -1171,24 +1211,42 @@ export function createApp(options: AppOptions): App {
      * `StackError` (409/503) when the port cannot be proven eligible.
      */
     async function requireLoopbackPort(project: string, service: string, port: number): Promise<void> {
+        const read = await readPublishedPorts(project, service);
+        if (read.kind === "no-answer") {
+            throw new StackError("Docker did not respond, so the upstream port could not be checked. Nothing was changed.", 503);
+        }
+        if (read.kind === "bad-answer") {
+            throw new StackError("Docker gave an unexpected answer, so the upstream port could not be checked. Nothing was changed.", 503);
+        }
+        if (read.running === 0) {
+            throw new StackError("This service has no running container, so there is no upstream port to check. Start the stack first.", 409);
+        }
+        if (read.ports.some(({ binding }) => matchesGeneratedUpstream(binding.container, binding.host, port))) return;
+        if (read.inspected === 0) {
+            throw new StackError("Docker did not respond, so the upstream port could not be checked. Nothing was changed.", 503);
+        }
+        throw new StackError("This port is not published on 127.0.0.1 (TCP) by this service. Only such ports can be attached.", 409);
+    }
+
+    /**
+     * Published port bindings of the running containers of a project,
+     * optionally narrowed to one service. Read-only, through the existing
+     * `ContainerInspector` boundary; at most 16 containers are inspected.
+     */
+    async function readPublishedPorts(project: string, service: string | null): Promise<PublishedPortsRead> {
         let summaries;
         try {
             const listed = await inspector.list();
-            if (listed.code !== 0 || listed.timedOut) {
-                throw new StackError("Docker did not respond, so the upstream port could not be checked. Nothing was changed.", 503);
-            }
+            if (listed.code !== 0 || listed.timedOut) return { kind: "no-answer" };
             summaries = parseContainerLs(listed.stdout);
-        } catch (error) {
-            if (error instanceof StackError) throw error;
-            throw new StackError("Docker gave an unexpected answer, so the upstream port could not be checked. Nothing was changed.", 503);
+        } catch {
+            return { kind: "bad-answer" };
         }
         const candidates = summaries
-            .filter(entry => entry.project === project && entry.service === service && entry.state.toLowerCase() === "running")
+            .filter(entry => entry.project === project && entry.service !== null && (service === null || entry.service === service) && entry.state.toLowerCase() === "running")
             .slice(0, 16);
-        if (candidates.length === 0) {
-            throw new StackError("This service has no running container, so there is no upstream port to check. Start the stack first.", 409);
-        }
         let inspected = 0;
+        const ports: { service: string; binding: ContainerPort }[] = [];
         for (const candidate of candidates) {
             let details;
             try {
@@ -1199,14 +1257,9 @@ export function createApp(options: AppOptions): App {
                 continue;
             }
             inspected += 1;
-            for (const binding of details.ports) {
-                if (matchesGeneratedUpstream(binding.container, binding.host, port)) return;
-            }
+            for (const binding of details.ports) ports.push({ service: candidate.service ?? "", binding });
         }
-        if (inspected === 0) {
-            throw new StackError("Docker did not respond, so the upstream port could not be checked. Nothing was changed.", 503);
-        }
-        throw new StackError("This port is not published on 127.0.0.1 (TCP) by this service. Only such ports can be attached.", 409);
+        return { kind: "ok", running: candidates.length, inspected, ports };
     }
 
     /**

@@ -379,11 +379,25 @@ export interface AttachedDomain {
     port: number;
 }
 
+/** A host port a running container of the stack publishes (ADR 0030). */
+export interface PublishedUpstream {
+    service: string;
+    /** Container side, e.g. "3000/tcp". */
+    container: string;
+    /** Host binding as Docker reports it, e.g. "0.0.0.0:3080". */
+    host: string;
+    port: number;
+    /** Exactly what the managed file dials: TCP on 127.0.0.1. */
+    eligible: boolean;
+}
+
 export interface DomainsSectionOptions {
     stackName: string;
     csrf: string;
     /** Service names from Docker, offered as suggestions. */
     services: string[];
+    /** Ports published by running containers; null when Docker could not tell. */
+    published?: PublishedUpstream[] | null;
     /** Declared deployment owner (`stack.managed-by`), if any. */
     owner: string | null;
     /** Domains the helper reports for this stack. */
@@ -407,6 +421,7 @@ export interface DomainsSectionOptions {
  */
 export function domainsSection(options: DomainsSectionOptions): string {
     const { stackName, csrf, services, owner, attached, statusError, socketReady, preview, confirmDetach } = options;
+    const published = options.published ?? null;
     const href = `/stacks/${encodeURIComponent(stackName)}`;
     const list = attached.length === 0
         ? `<p class="muted">No domains attached.</p>`
@@ -430,7 +445,7 @@ export function domainsSection(options: DomainsSectionOptions): string {
         + `<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">`
         + `<label>Domain <input type="text" name="domain" value="${escapeHtml(preview.domain)}" placeholder="app.example.com" autocomplete="off" spellcheck="false" required></label>`
         + `<label>Target service <input type="text" name="service" value="${escapeHtml(preview.service)}" placeholder="web" list="caddy-services" autocomplete="off" spellcheck="false" required><datalist id="caddy-services">${services.map(name => `<option value="${escapeHtml(name)}">`).join("")}</datalist></label>`
-        + `<label>Local upstream port <input type="text" name="port" value="${escapeHtml(preview.port)}" placeholder="8080" autocomplete="off" spellcheck="false" inputmode="numeric" required></label>`
+        + `<label>Local upstream port <input type="text" name="port" value="${escapeHtml(preview.port)}" placeholder="8080" list="caddy-ports" autocomplete="off" spellcheck="false" inputmode="numeric" required>${portOptions("caddy-ports", published)}</label>`
         + `<div class="form-actions"><button type="submit" class="btn btn-primary">Attach domain</button></div></form>`
         + `<p class="muted">Attaching validates the service and port, publishes the Caddy file and reloads Caddy. Only TCP ports bound to 127.0.0.1 are eligible. DNS and HTTPS are not checked by the panel.</p>`
         : note("info", "Preview only: the helper is not configured, so nothing can be attached. See the deployment guide to enable domain management.");
@@ -438,14 +453,46 @@ export function domainsSection(options: DomainsSectionOptions): string {
     const form = `<form method="get" action="${href}" class="form domains-form">`
         + `<label>Domain <input type="text" name="caddyDomain" value="${escapeHtml(preview.domain)}" placeholder="app.example.com" autocomplete="off" spellcheck="false"></label>`
         + `<label>Target service <input type="text" name="caddyService" value="${escapeHtml(preview.service)}" placeholder="web" list="caddy-services-preview" autocomplete="off" spellcheck="false"><datalist id="caddy-services-preview">${previewOptions}</datalist></label>`
-        + `<label>Local upstream port <input type="text" name="caddyPort" value="${escapeHtml(preview.port)}" placeholder="8080" autocomplete="off" spellcheck="false" inputmode="numeric"></label>`
+        + `<label>Local upstream port <input type="text" name="caddyPort" value="${escapeHtml(preview.port)}" placeholder="8080" list="caddy-ports-preview" autocomplete="off" spellcheck="false" inputmode="numeric">${portOptions("caddy-ports-preview", published)}</label>`
         + `<div class="form-actions"><button type="submit" class="btn">Preview configuration</button></div></form>`;
     const output = preview.error
         ? note("warn", preview.error)
         : preview.file
             ? `<details open><summary>Generated Caddy configuration</summary><pre class="output">${escapeHtml(preview.file)}</pre></details>`
             : "";
-    return `<section class="card domains"><h2>Domains</h2>${status}${list}${attach}${form}${output}</section>`;
+    return `<section class="card domains"><h2>Domains</h2>${status}${list}${publishedPorts(published)}${attach}${form}${output}</section>`;
+}
+
+/** Eligible host ports as suggestions for the port field. */
+function portOptions(id: string, published: PublishedUpstream[] | null): string {
+    const eligible = (published ?? []).filter(entry => entry.eligible);
+    if (eligible.length === 0) return "";
+    const options = eligible
+        .map(entry => `<option value="${entry.port}" label="${escapeHtml(`${entry.service} → ${entry.container}`)}">`)
+        .join("");
+    return `<datalist id="${id}">${options}</datalist>`;
+}
+
+/**
+ * What the running containers publish, so the right host port can be picked:
+ * the host side (not the container side) and only on 127.0.0.1.
+ */
+function publishedPorts(published: PublishedUpstream[] | null): string {
+    if (published === null) return "";
+    if (published.length === 0) {
+        return `<p class="muted">No running container of this stack publishes a port. Publish one on 127.0.0.1 (for example <code>127.0.0.1:3080:3000</code>) and run Up.</p>`;
+    }
+    const items = published.map(entry => {
+        const mark = entry.eligible
+            ? `<span class="state state-running">Eligible</span>`
+            : `<span class="state">Not eligible</span>`;
+        return `<li><code>${escapeHtml(entry.service)}</code> · <code>${escapeHtml(entry.host)}</code> → <code>${escapeHtml(entry.container)}</code> ${mark}</li>`;
+    }).join("");
+    const other = published.find(entry => !entry.eligible);
+    const hint = other
+        ? `<p class="muted">Only TCP ports published on 127.0.0.1 can be attached, by their host-side port. To make one eligible, bind it to 127.0.0.1 in the Compose file (for example <code>127.0.0.1:${other.port}:${escapeHtml(other.container.split("/")[0] ?? "")}</code>), then run Up.</p>`
+        : "";
+    return `<details class="domains-ports" open><summary>Published ports</summary><ul>${items}</ul>${hint}</details>`;
 }
 
 /** "1.27.1 → 1.27.2"; when both sides read the same, the digests tell them apart. */

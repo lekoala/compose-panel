@@ -846,6 +846,26 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
         await rm(join(root, "demo", ".env"), { force: true });
     }
 
+    test("suggests the host ports a running service publishes on loopback", async () => {
+        await prepareDemo();
+        try {
+            const bindings = {
+                "3000/tcp": [{ HostIp: "127.0.0.1", HostPort: "3080" }],
+                "5432/tcp": [{ HostIp: "0.0.0.0", HostPort: "5433" }],
+            };
+            const app = makeApp({ caddyEnabled: true, caddySocketPath: "/nonexistent-dir/helper.sock" }, undefined, await providerWithService(), undefined, root, fakeInspector(bindings));
+            const session = await login(app);
+            const html = await (await authed(app, "/stacks/demo", session)).text();
+            const card = /<section class="card domains">[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
+            expect(card).toContain('<option value="3080"');
+            expect(card).not.toContain('<option value="3000"');
+            expect(card).not.toContain('<option value="5433"');
+            expect(card).toContain("0.0.0.0:5433");
+        } finally {
+            await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+        }
+    });
+
     test("refuses a port that is not exactly the generated upstream", async () => {
         await prepareDemo();
         const cases: Array<Record<string, Array<{ HostIp: string; HostPort: string }>>> = [

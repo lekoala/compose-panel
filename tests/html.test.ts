@@ -205,6 +205,29 @@ test("domains section renders a preview form with service suggestions", () => {
     expect(html).toContain('<option value="web">');
 });
 
+test("domains section suggests only eligible published host ports", () => {
+    const html = domainsSection({
+        stackName: "chatwoot",
+        csrf: "csrf-token",
+        services: ["rails", "postgres"],
+        published: [
+            { service: "rails", container: "3000/tcp", host: "127.0.0.1:3080", port: 3080, eligible: true },
+            { service: "postgres", container: "5432/tcp", host: "0.0.0.0:5433", port: 5433, eligible: false },
+        ],
+        owner: null,
+        attached: [],
+        statusError: null,
+        socketReady: true,
+        preview: { domain: "", service: "", port: "", file: null, error: null, hasInput: false },
+        confirmDetach: null,
+    });
+    expect(html).toContain('list="caddy-ports"');
+    expect(html).toContain('<option value="3080"');
+    expect(html).not.toContain('<option value="5433"');
+    expect(html).not.toContain('<option value="3000"');
+    expect(html).toContain("0.0.0.0:5433");
+});
+
 test("domains section escapes the generated file instead of interpreting it", () => {
     const file = "# compose-panel:managed v1\n# compose-panel:stack web\n# compose-panel:service <b>web</b>\n\napp.example.com {\n\treverse_proxy 127.0.0.1:8080\n}\n";
     const html = domainsSection({
