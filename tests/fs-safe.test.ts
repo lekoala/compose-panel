@@ -138,7 +138,8 @@ describe("writeFileAtomic", () => {
 
     // Regression: the temp file + rename used to leave the file owned by the
     // panel process (root in the image), locking the user out of their .env.
-    test.skipIf(foreignOwner === null)("keeps the owner and group of the replaced file", async () => {
+    // Ownership is only restored on Linux, the supported target (`writeFileAtomic`).
+    test.skipIf(process.platform !== "linux" || foreignOwner === null)("keeps the owner and group of the replaced file", async () => {
         const owner = foreignOwner!;
         const path = join(root, ".env");
         await writeFile(path, "A=1\n", { mode: 0o600 });

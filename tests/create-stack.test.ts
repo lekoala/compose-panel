@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmod, chown, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, chown, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createStack, StackCreationPartialError } from "../src/create-stack.ts";
@@ -24,7 +24,8 @@ function provider(overrides: Partial<ComposeProvider> = {}): ComposeProvider {
     return Object.assign(base, overrides);
 }
 async function fixture(work: (root: string) => Promise<void>) {
-    const root = await mkdtemp(join(tmpdir(), "cp-create-"));
+    // Canonical like `resolveRoot()`: macOS tmpdir() lives behind the /var symlink.
+    const root = await realpath(await mkdtemp(join(tmpdir(), "cp-create-")));
     try { await work(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 

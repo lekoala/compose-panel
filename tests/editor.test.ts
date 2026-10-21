@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chown, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chown, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -30,7 +30,8 @@ const asProvider = (runner: DockerRunner) => createComposeProvider({ runner });
 let root: string;
 
 beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "compose-panel-editor-"));
+    // Canonical like `resolveRoot()`: macOS tmpdir() lives behind the /var symlink.
+    root = await realpath(await mkdtemp(join(tmpdir(), "compose-panel-editor-")));
     await mkdir(join(root, "demo"));
     await writeFile(join(root, "demo", "compose.yaml"), COMPOSE);
     await writeFile(join(root, "demo", ".env"), ENV);
@@ -364,7 +365,7 @@ describe("saveEditableStack", () => {
     });
 
     // Regression: saves used to hand edited files to the panel's user (root in the image).
-    test.skipIf(foreignOwner === null)("keeps the owner of saved files and gives a new .env the Compose file's owner", async () => {
+    test.skipIf(process.platform !== "linux" || foreignOwner === null)("keeps the owner of saved files and gives a new .env the Compose file's owner", async () => {
         const owner = foreignOwner!;
         await rm(join(root, "demo", ".env"));
         await chown(join(root, "demo", "compose.yaml"), owner.uid, owner.gid);
