@@ -106,39 +106,81 @@ describe.skipIf(process.platform !== "linux")("setup-caddy.sh file steps", () =>
         expect(await unknown.exited).toBe(64);
     });
 
+    // The real timeout(1) runs a fake Docker executable in a private PATH.
+    async function fakeDocker(body: string) {
+        await mkdir(join(dir, "bin"), { recursive: true });
+        await writeFile(join(dir, "bin", "docker"), `#!/usr/bin/env bash\n${body}\n`);
+        await chmod(join(dir, "bin", "docker"), 0o755);
+    }
+
     test("only this checkout's single-file, non-oneoff Compose identity is accepted", async () => {
+        await fakeDocker(`eval "values=($VALUES)"
+case "$3" in
+    *project\\\"*) printf '%s' "\${values[0]}" ;;
+    *service\\\"*) printf '%s' "\${values[1]}" ;;
+    *working_dir*) printf '%s' "\${values[2]}" ;;
+    *config_files*) printf '%s' "\${values[3]}" ;;
+    *oneoff*) printf '%s' "\${values[4]}" ;;
+    *environment_file*) printf '%s' "\${values[5]}" ;;
+    *) exit 1 ;;
+esac`);
         const valid = ["compose-panel", "panel", `${dir}/deploy`, `${dir}/deploy/compose.yaml`, "False", ""];
-        const command = `
-REPO=$1; COMPOSE_FILE=$2; shift 2
-values=("$@")
-docker() {
-    case "$3" in
-        *project\\\"*) printf '%s' "\${values[0]}" ;;
-        *service\\\"*) printf '%s' "\${values[1]}" ;;
-        *working_dir*) printf '%s' "\${values[2]}" ;;
-        *config_files*) printf '%s' "\${values[3]}" ;;
-        *oneoff*) printf '%s' "\${values[4]}" ;;
-        *environment_file*) printf '%s' "\${values[5]}" ;;
-        *) return 1 ;;
-    esac
-}
-panel_identity_matches`;
-        expect((await shell(command, dir, valid[3]!, ...valid)).code).toBe(0);
+        // Bash array syntax: every value quoted, including empty ones.
+        const quote = (values: string[]) => values.map(value => `'${value}'`).join(" ");
+        const command = `REPO=$1; COMPOSE_FILE=$2; export PATH="$1/bin:$PATH" VALUES=$3; panel_identity_matches`;
+        const check = (file: string, values: string[]) => shell(command, dir, file, quote(values));
+        expect((await check(valid[3]!, valid)).code).toBe(0);
         const production = [...valid];
         production[3] = `${dir}/deploy/compose.prod.yaml`;
-        expect((await shell(command, dir, production[3]!, ...production)).code).toBe(0);
-        expect((await shell(command, dir, production[3]!, ...valid)).code).toBe(1);
+        expect((await check(production[3]!, production)).code).toBe(0);
+        expect((await check(production[3]!, valid)).code).toBe(1);
         for (const [index, value] of [
             [0, "foreign"], [0, ""], [1, "other"], [2, "/second-checkout/deploy"],
             [3, "/second-checkout/deploy/compose.yaml"], [3, `${valid[3]},/override.yaml`],
             [4, "True"], [5, "/other.env"],
         ] as const) {
             const values = [...valid]; values[index] = value;
-            expect((await shell(command, dir, valid[3]!, ...values)).code).not.toBe(0);
+            expect((await check(valid[3]!, values)).code).not.toBe(0);
         }
         await mkdir(join(dir, "deploy"));
         await writeFile(join(dir, "deploy", ".env"), "UNEXPECTED=value\n");
-        expect((await shell(command, dir, valid[3]!, ...valid)).code).not.toBe(0);
+        expect((await check(valid[3]!, valid)).code).not.toBe(0);
+    });
+
+    test("a stalled Docker daemon fails the identity check within its bound", async () => {
+        await fakeDocker("exec sleep 60");
+        const started = performance.now();
+        const result = await shell(`REPO=$1; COMPOSE_FILE=$1/deploy/compose.yaml; export PATH="$1/bin:$PATH"
+if panel_identity_matches; then echo matched; else echo refused; fi`, dir);
+        expect(result.stdout).toBe("refused");
+        // One bounded inspection, never six, never the whole hang.
+        expect(performance.now() - started).toBeLessThan(25_000);
+    }, 40_000);
+
+    test("the Caddy service must use exactly the expected --config file", async () => {
+        await mkdir(join(dir, "bin"));
+        await writeFile(join(dir, "bin", "systemctl"), `#!/usr/bin/env bash
+[ "$*" = "show caddy -p ExecStart --value" ] || exit 97
+printf '%s\\n' "$EXEC"; exit "\${STATUS:-0}"
+`);
+        await chmod(join(dir, "bin", "systemctl"), 0o755);
+        const file = "/etc/caddy/Caddyfile";
+        const check = (exec: string, status = "0") => shell(
+            `export PATH="$1/bin:$PATH" EXEC=$2 STATUS=$3; caddy_uses_config ${file}`, dir, exec, status);
+        for (const exec of [
+            `caddy run --environ --config ${file}`,
+            `{ path=/usr/bin/caddy ; argv[]=caddy run --environ --config=${file} ; ignore_errors=no }`,
+            `caddy run --config /elsewhere --config ${file}`,
+        ]) expect((await check(exec)).code).toBe(0);
+        for (const exec of [
+            "caddy run --config /elsewhere",
+            `caddy run --config ${file}.custom`,
+            `caddy run --config=${file}.custom`,
+            `caddy run --config ${file} --config /elsewhere`,
+            `caddy run --config=${file} --config=/elsewhere`,
+            "caddy run",
+        ]) expect((await check(exec)).code).not.toBe(0);
+        expect((await check(`caddy run --config ${file}`, "1")).code).not.toBe(0);
     });
 
     // Isolated Linux integration: the real Bash functions call a fake Docker

@@ -255,8 +255,16 @@ packaged_caddyfile() {
 # A rerun keeps the existing container, hence its image and settings. It only
 # starts it when an earlier run (an expired `up --wait`) or an administrator
 # left it stopped; recreating an unhealthy container identically would not help.
+# Only a successful `false` starts it: a failed or timed-out inspection is not
+# a stopped container.
 start_existing_panel() {
-    [ "$(timeout 20 docker inspect -f '{{.State.Running}}' compose-panel 2>/dev/null)" != true ] || return 0
+    local running
+    running="$(timeout --kill-after=5 20 docker inspect -f '{{.State.Running}}' compose-panel 2>/dev/null)" || return 1
+    case "$running" in
+        true) return 0 ;;
+        false) ;;
+        *) return 1 ;;
+    esac
     printf '  step  Starting the existing panel container (same image and settings).\n'
     timeout 60 docker start compose-panel >/dev/null
 }
@@ -268,15 +276,6 @@ replace_caddy() {
     # Keep the lock for the EXIT trap if rollback needs another attempt.
     [ -n "${caddy_pending_backup:-}" ] || release_caddy_lock || result=2
     return "$result"
-}
-
-# The exact --config argument, not a prefix such as Caddyfile.custom; the last
-# one wins when repeated, as for Caddy itself. systemctl shows ExecStart as
-# "{ path=... ; argv[]=caddy run --config FILE ; ... }".
-caddy_uses_config() {
-    timeout 20 systemctl show caddy -p ExecStart --value | awk -v file="$1" '
-        { for (i = 1; i <= NF; i++) if ($i == "--config") config = $(i + 1); else if (index($i, "--config=") == 1) config = substr($i, 10) }
-        END { exit config != file }'
 }
 
 check_installer_host() {
@@ -618,8 +617,10 @@ start_installation() {
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    # One run per log (root-only, umask 077): tool output only, never passwords.
-    : > "$LOG"
+    # One run per log, root-only: tool output only, never passwords. umask only
+    # applies to a new file, so an existing log is made private before reuse.
+    : >> "$LOG" && chown root:root "$LOG" && chmod 600 "$LOG" && : > "$LOG" ||
+        installer_die "Cannot make the installation log private: $LOG"
     printf 'Compose Panel installer, %s\n' "$(date -Is)" >> "$LOG"
     STEP=0
 }

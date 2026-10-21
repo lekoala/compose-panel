@@ -14,8 +14,11 @@
   HTTPS authentication challenge.
   An installation takes the installer lock before its checks, and existing
   Caddy must be started with exactly that Caddyfile path (`--config FILE` or
-  `--config=FILE`, the last one counting). Panel health waits have an overall
-  deadline.
+  `--config=FILE`, the last one counting); `setup-caddy.sh` applies the same
+  check. Panel health waits have an overall deadline, and panel identity
+  inspections are bounded. A rerun starts an existing panel only after a
+  successful inspection reports it stopped. An existing installation log is
+  made root-only (0600) before it is reused.
   Disposable VM validation remains pending; see
   [installation](docs/installation.md).
 - Caddy site management setup in one command (ADR 0030 amendment):

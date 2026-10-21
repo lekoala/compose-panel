@@ -497,6 +497,33 @@ printf '%s\\n' "$*" >> "$FIXTURE/docker-calls"
         });
     }
 
+    for (const [label, output, status] of [["failed", "", "1"], ["timed-out", "", "124"], ["unexpected", "maybe", "0"], ["empty", "", "0"]] as const) {
+        test(`a ${label} running-state inspection never starts the panel`, async () => {
+            await writeFile(join(dir, "bin", "docker"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$FIXTURE/docker-calls"
+[ "$1" != inspect ] || { printf '%s' "$OUTPUT"; exit "$STATUS"; }
+`);
+            await chmod(join(dir, "bin", "docker"), 0o755);
+            const result = await run("start_existing_panel", { OUTPUT: output, STATUS: status });
+            expect(result.code).not.toBe(0);
+            const calls = (await readFile(join(dir, "docker-calls"), "utf8")).trim().split("\n");
+            expect(calls.every(call => call.startsWith("inspect "))).toBe(true);
+        });
+    }
+
+    for (const existing of [false, true]) {
+        test(`the installation log is root-owned 0600 ${existing ? "even when it existed with other metadata" : "when created"}`, async () => {
+            const log = join(dir, "install.log");
+            if (existing) await writeFile(log, "previous run\n", { mode: 0o644 });
+            const result = await run(`umask 022; LOG=$1/install.log work=; installer_cleanup() { :; }
+start_installation; trap - EXIT; rm -rf "$work"`);
+            expect(result.code).toBe(0);
+            expect((await stat(log)).mode & 0o777).toBe(0o600);
+            expect((await readFile(join(dir, "chown"), "utf8")).split("\n")).toContain(`root:root ${log}`);
+            expect(await readFile(log, "utf8")).not.toContain("previous run");
+        });
+    }
+
     test("only the unmodified packaged Caddyfile can be resumed", async () => {
         const sum = new Bun.CryptoHasher("md5").update("original\n").digest("hex");
         expect((await run("packaged_caddyfile", { SUM: sum })).code).toBe(0);

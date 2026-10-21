@@ -132,14 +132,19 @@ ensure_env() {
 
 # Only the documented, single-file deployment from this checkout is supported.
 # Labels are checked before any host changes, never inferred from the name.
+panel_label() {
+    # Bounded: a stalled daemon fails the identity check instead of hanging.
+    timeout --kill-after=5 15 docker inspect -f "{{index .Config.Labels \"$1\"}}" "$CONTAINER"
+}
+
 panel_identity_matches() {
     local project service directory files oneoff env_files
-    project="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$CONTAINER")" || return 1
-    service="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$CONTAINER")" || return 1
-    directory="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$CONTAINER")" || return 1
-    files="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$CONTAINER")" || return 1
-    oneoff="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.oneoff"}}' "$CONTAINER")" || return 1
-    env_files="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.environment_file"}}' "$CONTAINER")" || return 1
+    project="$(panel_label com.docker.compose.project)" || return 1
+    service="$(panel_label com.docker.compose.service)" || return 1
+    directory="$(panel_label com.docker.compose.project.working_dir)" || return 1
+    files="$(panel_label com.docker.compose.project.config_files)" || return 1
+    oneoff="$(panel_label com.docker.compose.oneoff)" || return 1
+    env_files="$(panel_label com.docker.compose.project.environment_file)" || return 1
     [ "$project" = compose-panel ] && [ "$service" = panel ] &&
         [ "$directory" = "$REPO/deploy" ] && [ "$files" = "$COMPOSE_FILE" ] &&
         [ "$oneoff" = False ] || return 1
@@ -269,6 +274,16 @@ caddy_apply_candidate() {
     return "$result"
 }
 
+# The exact --config argument, not a prefix such as Caddyfile.custom; the last
+# one wins when repeated, as for Caddy itself. systemctl shows ExecStart as
+# "{ path=... ; argv[]=caddy run --config FILE ; ... }". Shared by the
+# installer preflight and this script so both accept the same services.
+caddy_uses_config() {
+    timeout --kill-after=5 20 systemctl show caddy -p ExecStart --value | awk -v file="$1" '
+        { for (i = 1; i <= NF; i++) if ($i == "--config") config = $(i + 1); else if (index($i, "--config=") == 1) config = substr($i, 10) }
+        END { exit config != file }'
+}
+
 helper_status_ok() {
     # Status only reads files. Never print a helper response (it may name sites).
     timeout --kill-after=5 20 docker exec "$CONTAINER" bun -e '
@@ -330,7 +345,7 @@ echo "Caddy:"
 if command -v caddy >/dev/null 2>&1 && systemctl cat caddy.service >/dev/null 2>&1; then
     ok "host Caddy ($(caddy version 2>/dev/null | cut -d' ' -f1)), systemd service caddy"
     if systemctl is-active --quiet caddy; then ok "caddy service active"; else bad "The caddy service is not running."; fi
-    if systemctl show caddy -p ExecStart --value 2>/dev/null | grep -- "--config $CADDYFILE" >/dev/null; then
+    if caddy_uses_config "$CADDYFILE" 2>/dev/null; then
         ok "caddy runs $CADDYFILE"
     else
         bad "The caddy service does not run --config $CADDYFILE. Only that layout is supported; see docs/deployment.md for a manual setup."
