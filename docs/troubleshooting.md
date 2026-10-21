@@ -95,6 +95,23 @@ Dockge switch-over, [migrating-from-dockge.md](migrating-from-dockge.md).
   still be unhealthy at the application level; add a `healthcheck:` to the
   service if you want Docker to judge it, then recreate the container with *Up*.
 
+## A `.env` change has no effect
+
+- **Cause:** saving only writes the file; running containers keep the
+  environment they were created with. **Restart** reuses the same container, so
+  it keeps the old values too. Less often, the variable is in `.env` but the
+  service never receives it (it is not listed under `environment:`).
+- **Diagnose:** the service is marked **Recreate pending** on the stack page
+  (Compose 5.5.0 or later). On the host, compare the container's creation time
+  with the save (`docker compose -p <project> ps`), or print only the variable
+  concerned, never the whole environment, which may hold secrets:
+  `docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' <container> | grep '^NAME='`.
+- **Fix:** run **Up** on the service (or the stack). It recreates the
+  container with the new values; expect a short interruption for a single
+  instance. For runtime settings such as PHP directives, `.env` also needs a
+  bridge to the runtime: see
+  [integrations/runtime-settings.md](integrations/runtime-settings.md).
+
 ## `docker compose` works on the host but not in another container
 
 - **Cause:** the Compose plugin is installed on the host and in the panel image,
