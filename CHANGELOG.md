@@ -1,7 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (preview)
 
+Preview release. The panel changes are covered by CI, but the new Ubuntu
+installer and `setup-caddy.sh` have not yet been validated on real systemd
+VMs: every row of the disposable VM checklist in
+[installation](docs/installation.md#verification-before-release) is still
+pending. Try them on a disposable machine first; until that validation is
+recorded, prefer the [manual deployment](docs/deployment.md) for an existing
+server.
+
+- Security: Docker CLI 29.9.2 and Compose plugin 5.6.1 in the image (and
+  Compose 5.6.1 in CI), both built with Go 1.26.10, which fixes
+  CVE-2026-111943 in the Go standard library. Two Trivy exceptions for
+  Compose (CVE-2026-78667, CVE-2026-97031) are fixed by the newer Go and
+  removed. CVE-2026-78669 stays excepted until 2026-11-10: Compose 5.6.1 still
+  ships `golang.org/x/net` v0.58.0.
 - "Recreate pending" (ADR 0032): the stack page marks services that **Up**
   would recreate with the current Compose file and `.env` (Restart would
   not). It compares each
@@ -17,7 +31,11 @@
 - Documentation: [runtime settings through `.env`](docs/integrations/runtime-settings.md),
   a Compose convention to manage common PHP/Bun settings (and apply security
   mitigations) from the existing `.env` editor and **Up**, without
-  runtime-specific panel code.
+  runtime-specific panel code. It starts with a table of which path applies,
+  and includes an emergency path for stacks that were not prepared (a
+  PHP-FPM `-d` launch flag set in `compose.yaml`), how to read the check
+  result, and what to verify when a value did not change. Troubleshooting has
+  a new entry: "A `.env` change has no effect".
 - Interactive Ubuntu Server 24.04/26.04 installer (ADR 0031), targeting amd64
   and arm64: official Docker/Caddy packages, a separate production Compose
   file using the published image, private SSH access by default and optional
@@ -48,7 +66,13 @@
   checks it reaches the helper. Idempotent; supports only a host Caddy
   systemd service with `/etc/caddy/Caddyfile` and refuses other layouts,
   including Caddy in a container. Re-run it after a panel update to rebuild
-  the helper.
+  the helper. Like the Ubuntu installer, it never overwrites an existing
+  `caddy-helper.socket` or `caddy-helper@.service` that differs from the
+  checkout's copy (or is a symlink or not a regular file): `--check` reports
+  it and `--install` refuses, also when such a unit appears between the
+  checks and the write. **Upgrade note:** if a later release changes these
+  units, review the installed unit and move it away before re-running
+  `--install`.
 - `deploy/compose.yaml` now always mounts `/run/compose-panel` read-only (an
   empty directory until the helper is installed), so enabling Caddy site
   management never requires editing that versioned file.
