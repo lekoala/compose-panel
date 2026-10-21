@@ -15,7 +15,7 @@ interface FollowCall {
 
 function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[] } {
     const calls: FollowCall[] = [];
-    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
+    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
     const provider: ComposeProvider = {
         engine: "fake",
         capabilities: () => caps,
@@ -27,6 +27,7 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         stackMetadata: async () => ({}),
         inspectImages: async () => ok,
         inspectContainers: async () => ok,
+        serviceConfigHashes: async () => null,
         validateConfig: async () => ok,
         listServices: async () => [],
         runningContainerIds: async () => [],
@@ -59,7 +60,7 @@ function deferredProvider(): {
 } {
     const calls: FollowCall[] = [];
     const resolvers: (() => void)[] = [];
-    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
+    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
     const provider: ComposeProvider = {
         engine: "fake",
         capabilities: () => caps,
@@ -71,6 +72,7 @@ function deferredProvider(): {
         stackMetadata: async () => ({}),
         inspectImages: async () => ok,
         inspectContainers: async () => ok,
+        serviceConfigHashes: async () => null,
         validateConfig: async () => ok,
         listServices: async () => [],
         runningContainerIds: async () => [],
@@ -227,7 +229,7 @@ test("a timed-out stream cannot kill or contaminate its replacement", async () =
 });
 
 test("shutdown stays bounded when a follow never settles", async () => {
-    const caps: ComposeCapabilities = { engine: "stuck", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
+    const caps: ComposeCapabilities = { engine: "stuck", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
     const stuck: ComposeProvider = {
         engine: "stuck",
         capabilities: () => caps,
@@ -239,6 +241,7 @@ test("shutdown stays bounded when a follow never settles", async () => {
         stackMetadata: async () => ({}),
         inspectImages: async () => ok,
         inspectContainers: async () => ok,
+        serviceConfigHashes: async () => null,
         validateConfig: async () => ok,
         listServices: async () => [],
         runningContainerIds: async () => [],

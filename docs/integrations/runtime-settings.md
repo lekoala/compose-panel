@@ -126,6 +126,9 @@ the image or of `compose.yaml`; edit them there.
    ([ADR 0021](../adr/0021-targeted-service-operations.md)), or **Up** on the
    whole stack when several services share the variable.
 
+The stack page marks services that **Up** would recreate with the current
+configuration as "Recreate pending" (ADR 0032, Compose 5.5.0 or later).
+
 Use **Up**, not **Restart**. `docker compose restart` restarts the existing
 container with its old environment: a changed `.env` value is ignored until
 the container is recreated. Editing the bind-mounted ini file itself (on the

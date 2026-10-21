@@ -27,7 +27,7 @@ const PASSWORD = "temporary-lab-password";
 const USER = "cplaboperator";
 const GRACE_MS = 15_000;
 const DELAY_S = 6;
-const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed", "cp-qa-self", "cp-qa-scoped", "cp-qa-pull", "cp-qa-panel", "cp-qa-metadata"];
+const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed", "cp-qa-self", "cp-qa-scoped", "cp-qa-pull", "cp-qa-panel", "cp-qa-metadata", "cp-qa-recreate"];
 // A PID 1 that exits on SIGTERM, so `down` does not wait for the kill timeout.
 const SERVICE = (name: string) => `  ${name}:\n    image: ${IMAGE}\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]\n`;
 
@@ -507,6 +507,58 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             expect((await provider.projectServices(target)).code).toBe(0);
             expect((await provider.projectImages(target)).code).toBe(0);
         }
+    }, 240_000);
+
+    test("recreate pending follows .env and env_file changes, survives Restart and clears on Up (ADR 0032)", async () => {
+        const p = panel!;
+        const dir = join(stacks, "recreate");
+        await mkdir(dir);
+        await writeFile(join(dir, "app.env"), "FROM_FILE=one\n");
+        await writeFile(join(dir, "compose.yaml"), [
+            "name: cp-qa-recreate",
+            "services:",
+            SERVICE("app").trimEnd(),
+            "    environment:",
+            "      MODE: ${MODE:-a}",
+            SERVICE("envfile").trimEnd(),
+            "    env_file: app.env",
+            SERVICE("parent").trimEnd(),
+            SERVICE("joined").trimEnd(),
+            "    network_mode: service:parent",
+            SERVICE("shared").trimEnd(),
+            "    volumes_from: [parent]",
+            SERVICE("inline").trimEnd(),
+            "    configs:",
+            "      - source: inline",
+            "        target: /inline.txt",
+            "configs:",
+            "  inline:",
+            "    content: ${INLINE:-x}",
+            "",
+        ].join("\n"));
+        await dockerOk(["compose", "-f", join(dir, "compose.yaml"), "up", "-d"]);
+        const provider = createComposeProvider({ runner: createDockerRunner() });
+        expect((await provider.detect()).configHashes).toBe(true); // the lab Compose must be 5.5.0+
+        const pending = async () => [...(await loadStackDetail(stacks, "recreate", provider)).recreatePending ?? []].sort();
+
+        // Freshly created, including services joined to another container's
+        // namespaces or volumes, whose hashes Compose resolves differently.
+        expect(await pending()).toEqual([]);
+        expect(await (await p.get("/stacks/recreate")).text()).not.toContain("data-recreate-pending");
+
+        await writeFile(join(dir, ".env"), "MODE=b\nINLINE=y\n");
+        await writeFile(join(dir, "app.env"), "FROM_FILE=two\n");
+        // The inline config change is the documented gap: not hashed, not marked.
+        expect(await pending()).toEqual(["app", "envfile"]);
+        expect(await (await p.get("/stacks/recreate")).text()).toContain("data-recreate-pending");
+
+        expect((await p.action("recreate", "restart", { service: "app" })).status).toBe(303);
+        expect(await p.operationResult("recreate", 60_000)).toBe("succeeded");
+        expect(await pending()).toEqual(["app", "envfile"]);
+
+        expect((await p.action("recreate", "up")).status).toBe(303);
+        expect(await p.operationResult("recreate", 120_000)).toBe("succeeded");
+        expect(await pending()).toEqual([]);
     }, 240_000);
 
     test("pull skips locally built services, including image + build (ADR 0022)", async () => {

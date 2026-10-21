@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- "Recreate pending" (ADR 0032): the stack page marks services that **Up**
+  would recreate with the current Compose file and `.env` (Restart would
+  not). It compares each
+  container's `com.docker.compose.config-hash` label, read through
+  `container inspect`, with `compose config --hash` in the stack's explicit
+  project context; only service names and hashes are kept. Enabled with
+  Compose 5.5.0 or later (`compose version --short` is now probed at
+  startup); services joined to another container's namespaces or volumes,
+  and any failed, partial or malformed read, show no marker. Inline `configs.content`
+  changes are not hashed by Compose and are not detected.
+- CI runs again on branch pushes: a `tags-ignore`-only push filter had
+  disabled them since the hardening pass; the filter now lists branches.
 - Documentation: [runtime settings through `.env`](docs/integrations/runtime-settings.md),
   a Compose convention to manage common PHP/Bun settings (and apply security
   mitigations) from the existing `.env` editor and **Up**, without

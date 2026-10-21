@@ -20,6 +20,11 @@ export interface ComposeCapabilities {
     /** Whether the provider answered a version probe at startup. */
     available: boolean;
     operations: ComposeOperations;
+    /**
+     * Whether `config --hash` hashes services the way containers are created
+     * (environment resolved, Compose 5.5.0+). Gates "Recreate pending" (ADR 0032).
+     */
+    configHashes: boolean;
 }
 
 export interface ComposeTarget {
@@ -92,6 +97,14 @@ export interface ComposeProvider {
      * look like container names are dropped, never passed to the CLI.
      */
     inspectContainers(names: string[]): Promise<CommandResult>;
+    /**
+     * Read-only: the configuration hash of each service as `up` would compute
+     * it now (`config --hash "*"`), in the same project context as a mutation
+     * (ADR 0032). Only service names and hashes leave the provider. `null` when
+     * the Compose version is not validated for it, or on any failure or
+     * unexpected line: callers show nothing, never a guess.
+     */
+    serviceConfigHashes(input: { project: string; composeFile: string; cwd: string; envFile?: string }): Promise<Map<string, string> | null>;
     /** Allow-listed resolved labels only; raw config and stderr remain private. */
     stackMetadata(target: ComposeTarget): Promise<DeclaredMetadata | null>;
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult>;
@@ -145,6 +158,7 @@ class DockerComposeProvider implements ComposeProvider {
         engine: "docker",
         available: false,
         operations: { ls: true, ps: true, config: true, logs: true },
+        configHashes: false,
     };
 
     constructor(
@@ -157,11 +171,13 @@ class DockerComposeProvider implements ComposeProvider {
     }
 
     async detect(): Promise<ComposeCapabilities> {
-        const result = await this.runner(["compose", "version"]);
+        const result = await this.runner(["compose", "version", "--short"]);
+        const available = result.code === 0 && !result.timedOut;
         this.caps = {
             engine: this.engine,
-            available: result.code === 0 && !result.timedOut,
+            available,
             operations: { ls: true, ps: true, config: true, logs: true },
+            configHashes: available && !result.truncated && hashesResolveEnvironment(result.stdout),
         };
         return this.caps;
     }
@@ -236,6 +252,14 @@ class DockerComposeProvider implements ComposeProvider {
         const safe = [...new Set(names)].filter(isContainerName);
         if (safe.length === 0) return Promise.resolve({ code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false });
         return this.runner(["container", "inspect", "--", ...safe]);
+    }
+
+    async serviceConfigHashes(input: { project: string; composeFile: string; cwd: string; envFile?: string }): Promise<Map<string, string> | null> {
+        if (!this.caps.configHashes || !this.caps.operations.config) return null;
+        const result = await this.readProject(input, ["config", "--hash", "*"]);
+        // stderr may echo interpolated values: it is never read.
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        return parseConfigHashes(result.stdout);
     }
 
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult> {
@@ -430,6 +454,34 @@ export function isContainerName(value: string): boolean {
 /** An image ID, or a reference like `registry:5000/ns/name:tag@sha256:…`. */
 export function isImageReference(value: string): boolean {
     return IMAGE_ID.test(value) || (IMAGE_REFERENCE.test(value) && !value.includes(".."));
+}
+
+/**
+ * `compose version --short` (e.g. "5.6.0", "v2.39.4", "2.40.3-desktop.1") is
+ * at least 5.5.0, the first release whose `config --hash` merges `env_file:`
+ * into the environment before hashing, like container creation does.
+ * Unparsable output counts as unsupported.
+ */
+export function hashesResolveEnvironment(version: string): boolean {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]*)?$/.exec(version.trim());
+    if (!match) return false;
+    const [major, minor] = [Number(match[1]), Number(match[2])];
+    return major > 5 || (major === 5 && minor >= 5);
+}
+
+/**
+ * `<service> <sha256 hex>` lines from `config --hash`. Any other non-empty
+ * line makes the whole answer unusable: nothing else is ever kept or shown.
+ */
+export function parseConfigHashes(stdout: string): Map<string, string> | null {
+    const hashes = new Map<string, string>();
+    for (const line of stdout.split("\n")) {
+        if (!line.trim()) continue;
+        const match = /^(\S+) ([0-9a-f]{64})$/.exec(line.trim());
+        if (!match || !isComposeServiceName(match[1]!) || hashes.has(match[1]!)) return null;
+        hashes.set(match[1]!, match[2]!);
+    }
+    return hashes;
 }
 
 export interface ComposeProviderOptions {

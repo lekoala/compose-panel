@@ -8,7 +8,7 @@ const ok: CommandResult = { code: 0, stdout: "done", stderr: "", timedOut: false
 const target: ComposeTarget = { composeFile: "/stacks/demo/compose.yaml", cwd: "/stacks/demo" };
 
 function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "start" | "restart" | "down", (target: ComposeTarget) => Promise<CommandResult>>> = {}): ComposeProvider {
-    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
+    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
     const run = (kind: "pull" | "up" | "stop" | "start" | "restart" | "down") =>
         async (target: ComposeTarget) => (handlers[kind] ?? (async () => ok))(target);
     return {
@@ -22,6 +22,7 @@ function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "start" 
         stackMetadata: async () => ({}),
         inspectImages: async () => ok,
         inspectContainers: async () => ok,
+        serviceConfigHashes: async () => null,
         validateConfig: async () => ok,
         listServices: async () => [],
         runningContainerIds: async () => [],

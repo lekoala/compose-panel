@@ -41,7 +41,7 @@ afterAll(async () => {
 });
 
 const ok: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
-const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
+const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
 
 function manifest(scripts: Record<string, string>, actions: Record<string, unknown>): string {
     return JSON.stringify({ scripts, extra: { "compose-panel": { version: 1, actions } } });
@@ -73,6 +73,7 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
         stackMetadata: async () => ({}),
         inspectImages: async () => ok,
         inspectContainers: async () => ok,
+        serviceConfigHashes: async () => null,
         validateConfig: async () => ok,
         listServices: async () => [],
         runningContainerIds: async () => {

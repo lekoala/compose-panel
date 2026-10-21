@@ -861,9 +861,9 @@ export function createApp(options: AppOptions): App {
             + `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}${healthSummaryBadge(status.services)}${managedByBadge(owner)}</p>`
             + (notice ? note(notice.kind, notice.text) : "")
             + (status.note ? note("warn", status.note) : "")
-            + operationControls(stack.name, csrf, { busy: operation?.status === "running", state: status.state, updatesReady: Object.keys(status.updates ?? {}), managedBy: owner })
+            + operationControls(stack.name, csrf, { busy: operation?.status === "running", state: status.state, updatesReady: Object.keys(status.updates ?? {}), recreatePending: status.recreatePending, managedBy: owner })
             + operationPanel(operation, stack.name)
-            + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" })
+            + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" }, status.recreatePending)
             + databaseExplorerSection(stack.source)
             + await domainsCard(stack.name, csrf, status.services.map(service => service.name), owner, query, extras.confirmDetach ?? null)
             + deploymentSection(status.deployed, status.declared, status.state !== "not-created")

@@ -6,8 +6,11 @@
 name: ci
 
 on:
+  # Branches only: a filter on branches alone excludes tag pushes, which
+  # release.yml already covers through workflow_call. A `tags-ignore` filter
+  # alone would instead disable branch pushes too.
   push:
-    tags-ignore: ["**"]
+    branches: ["**"]
   pull_request:
   workflow_call:
   # Weekly run on the default branch: new fixable CVEs and expired

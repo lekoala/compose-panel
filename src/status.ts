@@ -13,6 +13,7 @@ import {
 } from "./compose-state.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
 import { loadImageUpdates, type ServiceUpdate } from "./updates.ts";
+import { loadRecreatePending } from "./recreate-pending.ts";
 import type { DeclaredMetadata, DeployedImage } from "./deployment.ts";
 
 export const DOCKER_UNAVAILABLE = "Docker is not reachable, so statuses are shown as unknown. Check that the Docker daemon is running and its socket is available to the panel.";
@@ -41,6 +42,8 @@ export interface StackDetailStatus {
     services: ComposeService[];
     /** Services whose tag points to a newer local image than the container runs. */
     updates?: Record<string, ServiceUpdate>;
+    /** Services that `Up` would recreate from the current configuration (ADR 0032). */
+    recreatePending?: string[];
     deployed?: DeployedImage[];
     declared?: DeclaredMetadata | null;
 }
@@ -216,8 +219,12 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
             if (result.code !== 0) return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
             const services = parseComposePs(result.stdout);
             const deployed: DeployedImage[] = [];
-            const updates = await loadImageUpdates(provider, { project: project.name, composeFile: location.path, cwd, envFile }, services, deployed);
-            return { project: project.name, state: summarizeServices(services), note: null, services, updates, deployed };
+            const target = { project: project.name, composeFile: location.path, cwd, envFile };
+            const [updates, recreatePending] = await Promise.all([
+                loadImageUpdates(provider, target, services, deployed),
+                loadRecreatePending(provider, target, services),
+            ]);
+            return { project: project.name, state: summarizeServices(services), note: null, services, updates, recreatePending, deployed };
         } catch {
             return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
         }

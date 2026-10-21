@@ -478,7 +478,7 @@ function imageCell(service: ComposeService, update: ServiceUpdate | undefined): 
     return `${image}<div class="update"><span class="state state-update">Update ready</span> <span><span class="version">${escapeHtml(updateSides(update)[0])}</span> → <span class="version">${escapeHtml(updateSides(update)[1])}</span></span>${link}</div>`;
 }
 
-export function servicesSection(services: ComposeService[], state: string, updates: Record<string, ServiceUpdate> = {}, actions?: { name: string; csrf: string; busy: boolean }): string {
+export function servicesSection(services: ComposeService[], state: string, updates: Record<string, ServiceUpdate> = {}, actions?: { name: string; csrf: string; busy: boolean }, recreatePending: string[] = []): string {
     let content: string;
     if (services.length > 0) {
         // Only show the health column when at least one service declares a
@@ -491,7 +491,7 @@ export function servicesSection(services: ComposeService[], state: string, updat
         const rows = services
             .map(service => {
                 const health = showHealth ? `<td class="col-optional">${healthBadge(service.health)}</td>` : "";
-                const cell = scoped ? `<td>${serviceActions(actions, service.name)}</td>` : "";
+                const cell = scoped ? `<td>${serviceActions(actions, service.name, recreatePending.includes(service.name))}</td>` : "";
                 return `<tr><td>${escapeHtml(service.name)}</td><td>${serviceBadge(service)}</td>${health}<td>${imageCell(service, updates[service.name])}</td>${cell}</tr>`;
             })
             .join("");
@@ -506,14 +506,17 @@ export function servicesSection(services: ComposeService[], state: string, updat
     return `<section class="card"><h2>Services</h2>${content}</section>`;
 }
 
-/** Per-service Restart and Up for one table row (ADR 0021). */
-function serviceActions(actions: { name: string; csrf: string; busy: boolean }, service: string): string {
+/** Per-service Restart and Up for one table row (ADR 0021), with the ADR 0032 marker. */
+function serviceActions(actions: { name: string; csrf: string; busy: boolean }, service: string, pending: boolean): string {
     const buttons = (["restart", "up"] as const).map(action => {
         const label = action === "restart" ? "Restart" : "Up";
         const disabled = actions.busy ? " disabled" : "";
         return `<form method="post" action="/stacks/${encodeURIComponent(actions.name)}/operations" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(actions.csrf)}"><input type="hidden" name="action" value="${action}"><input type="hidden" name="service" value="${escapeHtml(service)}"><button type="submit" class="btn btn-quiet"${disabled} data-op-button data-busy-label="Starting…">${label}</button></form>`;
     }).join("");
-    return `<div class="row-actions">${buttons}</div>`;
+    const marker = pending
+        ? `<div class="update" data-recreate-pending><span class="state state-update">Recreate pending</span>${infoTip("Up recreates this service with the current Compose file and .env. Restart keeps the existing container as it is.")}</div>`
+        : "";
+    return `${marker}<div class="row-actions">${buttons}</div>`;
 }
 
 const OPERATIONS: { action: OperationAction; label: string; help: string; style: string; needsDeployment: boolean }[] = [
@@ -528,7 +531,7 @@ const OPERATIONS: { action: OperationAction; label: string; help: string; style:
 
 export const OPERATION_LABELS: Record<OperationAction, string> = Object.fromEntries(OPERATIONS.map(op => [op.action, op.label])) as Record<OperationAction, string>;
 
-export function operationControls(name: string, csrf: string, options: { busy: boolean; state: StackState; updatesReady?: string[]; managedBy?: string | null }): string {
+export function operationControls(name: string, csrf: string, options: { busy: boolean; state: StackState; updatesReady?: string[]; recreatePending?: string[]; managedBy?: string | null }): string {
     const action = `/stacks/${encodeURIComponent(name)}/operations`;
     // Which actions the panel offers for each honest state. `unknown` means the
     // panel cannot guarantee what it would manipulate, so nothing may run.
@@ -561,15 +564,24 @@ export function operationControls(name: string, csrf: string, options: { busy: b
             ? `<p class="muted">The panel could not determine this stack's state, so no action is available. The reason is shown above; reload the page to try again.</p>`
             : options.state === "not-created"
                 ? `<p class="muted">This stack is not deployed yet, so only <em>Up</em>, <em>Pull</em> and <em>Pull + up</em> are available.</p>`
-                : options.updatesReady && options.updatesReady.length > 0
-                    ? note("info", `Update ready for ${options.updatesReady.join(", ")}: Up recreates ${options.updatesReady.length === 1 ? "it" : "them"} with the newer image. The other services are not affected by the image change. Details under Services.`)
-                    : "";
+                : stackNotes(options.updatesReady ?? [], options.recreatePending ?? []);
     const managed = options.managedBy
         ? note("warn", `${options.managedBy} declares that it deploys this stack. Actions and edits made here stay possible, but its next deployment may overwrite them.`)
         : "";
     return `<section class="card"><h2>Actions</h2>`
         + `<p class="muted">These actions apply to this stack only. They run on the server and keep going if you close this page. Only one action or save runs at a time per stack.</p>`
         + `${managed}${status}<div class="op-list">${rows}</div></section>`;
+}
+
+function stackNotes(updatesReady: string[], recreatePending: string[]): string {
+    const updates = updatesReady.length > 0
+        ? note("info", `Update ready for ${updatesReady.join(", ")}: Up recreates ${updatesReady.length === 1 ? "it" : "them"} with the newer image. The other services are not affected by the image change. Details under Services.`)
+        : "";
+    // ADR 0032: states the consequence (Up recreates), not a cause.
+    const pending = recreatePending.length > 0
+        ? note("info", `Recreate pending for ${recreatePending.join(", ")}: Up recreates ${recreatePending.length === 1 ? "it" : "them"} with the current Compose file and .env. Restart does not apply configuration changes.`)
+        : "";
+    return updates + pending;
 }
 
 const OPERATION_STATUS_LABELS: Record<string, string> = {

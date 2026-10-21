@@ -185,6 +185,51 @@ export function parseContainerImages(stdout: string): Map<string, RecoveredImage
     return byContainer;
 }
 
+/** What `container inspect` says about how Compose created a container (ADR 0032). */
+export interface ContainerConfigState {
+    /** `com.docker.compose.service` label. */
+    service: string | null;
+    /** `com.docker.compose.config-hash` label, only when it is 64 hex characters. */
+    configHash: string | null;
+    /**
+     * Shares another container's network, IPC or PID namespace, or its
+     * volumes. Compose hashes such services with resolved container IDs, so
+     * `config --hash` can never match them. `null` when `HostConfig` is
+     * missing or malformed: sharing cannot be ruled out.
+     */
+    sharesContainer: boolean | null;
+}
+
+/**
+ * Only two labels and four `HostConfig` fields are read from each record;
+ * nothing else from `container inspect` is kept.
+ */
+export function parseContainerConfigStates(stdout: string): Map<string, ContainerConfigState> {
+    const byContainer = new Map<string, ContainerConfigState>();
+    for (const row of parseJsonRows(stdout)) {
+        if (!row || typeof row !== "object") continue;
+        const record = row as Record<string, unknown>;
+        if (typeof record.Name !== "string" || !record.Name) continue;
+        const config = record.Config && typeof record.Config === "object" ? record.Config as Record<string, unknown> : {};
+        const labels = config.Labels && typeof config.Labels === "object" ? config.Labels as Record<string, unknown> : {};
+        const host = record.HostConfig && typeof record.HostConfig === "object" ? record.HostConfig as Record<string, unknown> : {};
+        const service = labels["com.docker.compose.service"];
+        const hash = labels["com.docker.compose.config-hash"];
+        const modes = [host.NetworkMode, host.IpcMode, host.PidMode];
+        const volumesFrom = host.VolumesFrom;
+        const wellFormed = modes.every(mode => typeof mode === "string")
+            && (volumesFrom === null || (Array.isArray(volumesFrom) && volumesFrom.every(entry => typeof entry === "string")));
+        byContainer.set(record.Name.replace(/^\//, ""), {
+            service: typeof service === "string" && service ? service : null,
+            configHash: typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash) ? hash : null,
+            sharesContainer: wellFormed
+                ? modes.some(mode => (mode as string).startsWith("container:")) || (Array.isArray(volumesFrom) && volumesFrom.length > 0)
+                : null,
+        });
+    }
+    return byContainer;
+}
+
 export function summarizeServices(services: ComposeService[]): StackState {
     if (services.length === 0) return "not-created";
     const states = services.map(service => service.state.toLowerCase());

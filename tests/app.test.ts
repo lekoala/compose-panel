@@ -84,7 +84,7 @@ interface FollowCall {
 /** Provider with a controllable `logs --follow` for SSE tests. No subprocess. */
 function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[] } {
     const calls: FollowCall[] = [];
-    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true } };
+    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
     const empty: CommandResult = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
     const provider: ComposeProvider = {
         engine: "fake",
@@ -97,6 +97,7 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         stackMetadata: async () => ({}),
         inspectImages: async () => empty,
         inspectContainers: async () => empty,
+        serviceConfigHashes: async () => null,
         validateConfig: async () => empty,
         listServices: async () => [],
         runningContainerIds: async () => [],
