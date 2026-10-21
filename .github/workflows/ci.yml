@@ -42,8 +42,8 @@ jobs:
       # checksum is pinned here, not fetched from the same release.
       - name: Install pinned Compose plugin
         env:
-          COMPOSE_VERSION: v5.6.0
-          COMPOSE_SHA256: 40343e21ca777173e69cff5dbafeb37c6f81f3b0d57d9e597f036e95eb63e76a
+          COMPOSE_VERSION: v5.6.1
+          COMPOSE_SHA256: 47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0
         run: |
           set -e
           mkdir -p "$HOME/.docker/cli-plugins"

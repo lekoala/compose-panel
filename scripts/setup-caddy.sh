@@ -21,6 +21,7 @@
 #      (same version, host architecture; no Bun on the host, no download),
 #      installed to /usr/local/bin/compose-panel-caddy-helper.
 #   3. The systemd socket + service units from deploy/caddy/, socket enabled.
+#      An existing unit that differs is refused, never overwritten.
 #   4. `import /etc/caddy/compose-panel.d/*.caddy` appended to the Caddyfile
 #      (backup first, `caddy validate`, then `systemctl reload caddy`; the
 #      backup is restored if either fails).
@@ -74,6 +75,23 @@ caddy_import_state() {
         fi
     done < "$file"
     printf '%s\n' "$state"
+}
+
+# Print `absent`, `same`, `differs` or `unsafe` for an installed unit against
+# the checkout's copy. Only `absent` and `same` may be (re)installed: a unit
+# that differs may be a local edit or someone else's, and is never overwritten
+# (same rule as install.sh). `unsafe` is a symlink or a non-regular file.
+unit_state() {
+    local installed="$1" source="$2"
+    if [ -L "$installed" ] || { [ -e "$installed" ] && [ ! -f "$installed" ]; }; then
+        printf 'unsafe\n'
+    elif [ ! -e "$installed" ]; then
+        printf 'absent\n'
+    elif cmp -s "$installed" "$source"; then
+        printf 'same\n'
+    else
+        printf 'differs\n'
+    fi
 }
 
 # Append the managed import at the end of a Caddyfile (top level). Only called
@@ -385,10 +403,13 @@ echo "Helper:"
 for unit in caddy-helper.socket caddy-helper@.service; do
     if [ ! -f "$REPO/deploy/caddy/$unit" ]; then
         bad "deploy/caddy/$unit missing: run this script from the Compose Panel checkout."
-    elif cmp -s "$REPO/deploy/caddy/$unit" "$SYSTEMD_DIR/$unit"; then
-        ok "$SYSTEMD_DIR/$unit up to date"
     else
-        todo "install $SYSTEMD_DIR/$unit"
+        case "$(unit_state "$SYSTEMD_DIR/$unit" "$REPO/deploy/caddy/$unit")" in
+            same) ok "$SYSTEMD_DIR/$unit up to date" ;;
+            absent) todo "install $SYSTEMD_DIR/$unit" ;;
+            differs) bad "$SYSTEMD_DIR/$unit differs from deploy/caddy/$unit. It is never overwritten: review it, then move it away (or make it identical) and re-run." ;;
+            unsafe) bad "$SYSTEMD_DIR/$unit is a symbolic link or not a regular file." ;;
+        esac
     fi
 done
 if systemctl is-active --quiet caddy-helper.socket 2>/dev/null; then ok "caddy-helper.socket active"; else todo "enable and start caddy-helper.socket"; fi
@@ -491,8 +512,14 @@ fi
 atomic_host_file "$build_dir/compose-panel-caddy-helper" "$HELPER_BIN"
 
 echo "3/6 systemd units"
-install -m 0644 "$REPO/deploy/caddy/caddy-helper.socket" "$SYSTEMD_DIR/caddy-helper.socket"
-install -m 0644 "$REPO/deploy/caddy/caddy-helper@.service" "$SYSTEMD_DIR/caddy-helper@.service"
+# Re-checked here: a unit may have appeared or changed since the checks.
+for unit in caddy-helper.socket caddy-helper@.service; do
+    case "$(unit_state "$SYSTEMD_DIR/$unit" "$REPO/deploy/caddy/$unit")" in
+        absent) install -m 0644 "$REPO/deploy/caddy/$unit" "$SYSTEMD_DIR/$unit" ;;
+        same) ;;
+        *) die "$SYSTEMD_DIR/$unit changed since the checks; it was not overwritten." ;;
+    esac
+done
 timeout --kill-after=5 120 systemctl daemon-reload
 # The directory may predate the socket unit (created by Docker for the panel
 # mount, 0755): keep it root-only, like the unit's DirectoryMode.

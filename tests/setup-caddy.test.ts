@@ -2,7 +2,7 @@
 // script is sourced in library mode (COMPOSE_PANEL_SETUP_LIB=1): no systemd,
 // no Docker, no Caddy, nothing outside the temp directory. Linux only (bash).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,6 +57,23 @@ describe.skipIf(process.platform !== "linux")("setup-caddy.sh file steps", () =>
         // An unrelated import with a shared prefix is not ours.
         await writeFile(caddyfile, `import ${MANAGED}-other/*.caddy\n`);
         expect((await lib("caddy_import_state", caddyfile, MANAGED)).stdout).toBe("absent");
+    });
+
+    test("only an absent or identical systemd unit may be installed", async () => {
+        const source = join(dir, "source.socket");
+        const installed = join(dir, "installed.socket");
+        await writeFile(source, "[Socket]\nListenStream=/run/compose-panel/caddy-helper.sock\n");
+        expect((await lib("unit_state", installed, source)).stdout).toBe("absent");
+        await writeFile(installed, await readFile(source));
+        expect((await lib("unit_state", installed, source)).stdout).toBe("same");
+        await writeFile(installed, "[Socket]\nListenStream=/run/other.sock\n");
+        expect((await lib("unit_state", installed, source)).stdout).toBe("differs");
+        await rm(installed);
+        await symlink(source, installed);
+        expect((await lib("unit_state", installed, source)).stdout).toBe("unsafe");
+        await rm(installed);
+        await mkdir(installed);
+        expect((await lib("unit_state", installed, source)).stdout).toBe("unsafe");
     });
 
     test("appending the import keeps the file, ends it with the import, and is detected afterwards", async () => {
