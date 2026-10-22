@@ -13,7 +13,7 @@ ARG DOCKER_COMPOSE_VERSION=5.6.1-1~debian.13~trixie
 # A Bun version bump is manual: change it here, in the base.name label below
 # and in the workflows' `bun-version`, together. Resolve a digest with
 # `docker buildx imagetools inspect oven/bun:<version>-slim`.
-FROM oven/bun:1.4.3-slim@sha256:14a223fa35747ec728bce300ef85888bc5f7958164d15bbba6a54b22b52a3288 AS base
+FROM oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS base
 
 FROM base AS deps
 WORKDIR /app
@@ -63,7 +63,7 @@ LABEL org.opencontainers.image.title="Compose Panel" \
     org.opencontainers.image.vendor="LeKoala" \
     org.opencontainers.image.version="${VERSION}" \
     org.opencontainers.image.revision="${REVISION}" \
-    org.opencontainers.image.base.name="docker.io/oven/bun:1.4.3-slim"
+    org.opencontainers.image.base.name="docker.io/oven/bun:1.4.4-slim"
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT:-5081}/health/live" || exit 1
 ENTRYPOINT ["bun", "src/server.ts"]

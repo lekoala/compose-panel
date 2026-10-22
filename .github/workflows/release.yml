@@ -110,7 +110,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.3
+          bun-version: 1.4.4
       # Fetch master, not the tagged copy. The Contents API file SHA refuses a
       # concurrent external edit. A repeated digest leaves its original date.
       - name: Record the digest in the versioned release registry

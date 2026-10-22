@@ -9,7 +9,7 @@
 #
 # Safe on a host daemon: the Docker integration test stays disabled and the
 # Compose test only runs `docker compose config` against fixtures.
-# Requires Bun in WSL: curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.3"
+# Requires Bun in WSL: curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4"
 set -euo pipefail
 
 BUN="${BUN_INSTALL:-$HOME/.bun}/bin/bun"
@@ -17,7 +17,7 @@ DEST="${COMPOSE_PANEL_WSL_DIR:-/tmp/compose-panel-test}"
 
 if [ ! -x "$BUN" ]; then
     echo "Bun not found at $BUN. Install it in WSL first:" >&2
-    echo '  curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.3"' >&2
+    echo '  curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4"' >&2
     exit 1
 fi
 

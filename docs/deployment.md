@@ -16,7 +16,7 @@ for `deploy/compose.yaml` when maintaining an installer deployment, and pass
 - Linux host with Docker Engine + Compose v2 and the stacks directory
   (e.g. `/opt/stacks`) already managed by `docker compose`.
 - Docker to build or pull the image. No Bun install is needed on the host: the
-  image runs `hash-password` for you below. Bun 1.4.3+ is only needed to build
+  image runs `hash-password` for you below. Bun 1.4.4+ is only needed to build
   the image (pinned in CI and the Dockerfile).
 - A unique admin username (`COMPOSE_PANEL_ADMIN_USER`): common names
   (`admin`, `root`, …) are refused at startup unless `COMPOSE_PANEL_DEV=true`.

@@ -1,6 +1,6 @@
 # CI — pipeline
 
-The pipeline lives in `.github/workflows/ci.yml` (`ubuntu-24.04` runners, Bun 1.4.3
+The pipeline lives in `.github/workflows/ci.yml` (`ubuntu-24.04` runners, Bun 1.4.4
 pinned): `bun install --frozen-lockfile`, `bun audit`, `bun run typecheck`, `bun run test`,
 then a pinned image build, a socket-less smoke test (reads and auth
 only, no Docker socket mounted) and Trivy scans that fail on CRITICAL/HIGH.
@@ -52,8 +52,9 @@ Dependency audit: `bun audit` runs on every build (baseline 2026-10-10: no
 vulnerabilities, 4 packages). Fix advisories with deliberate version bumps,
 regenerate the lockfile and re-run `bun run verify`; never rewrite ranges
 blindly (`bun audit fix -L` needs the same review as a dependency change).
-`@types/bun` is type-only and stays one minor behind the runtime until
-`@types/bun@1.4.3` is published. The production-only boot step proves the
+`@types/bun` is type-only and may lag the runtime by a patch release
+(`@types/bun@1.4.3` with Bun 1.4.4); bump it when the matching version is
+published. The production-only boot step proves the
 server starts with devDependencies stripped (`bun install --production`,
 `node_modules/@types` asserted absent, `/health/live` reachable).
 

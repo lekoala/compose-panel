@@ -24,7 +24,7 @@ LAB_ID=""
 
 if [ ! -x "$BUN" ]; then
     echo "Bun not found at $BUN. Install it first:" >&2
-    echo '  curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.3"' >&2
+    echo '  curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4"' >&2
     exit 1
 fi
 

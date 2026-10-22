@@ -94,7 +94,7 @@ bun run preview          # http://127.0.0.1:5081, sign in as admin / preview
 
 The preview runs the real panel on demo stacks (in `.preview/`, git-ignored) with a **simulated** Docker: listing, stack creation, editing and validation, actions with live output, logs and the activity log all work, and no Docker command ever runs. **New stack** writes only demo files; validation is simulated. `bun run preview --reset` recreates the demo stacks.
 
-To run it against your own stacks and the real Docker CLI, you need Bun 1.4.3+, a stacks directory, and optionally the Docker CLI with Compose v2. Without Docker, stacks are simply listed as `unknown`.
+To run it against your own stacks and the real Docker CLI, you need Bun 1.4.4+, a stacks directory, and optionally the Docker CLI with Compose v2. Without Docker, stacks are simply listed as `unknown`.
 
 ```sh
 bun install

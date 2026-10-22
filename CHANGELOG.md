@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Toolchain: Bun 1.4.4 (image `oven/bun:1.4.4-slim`, CI, release and Pages
+  workflows, `engines.bun >=1.4.4`); `@types/bun` 1.4.3.
+
 ## 0.6.0 (preview)
 
 Preview release. The panel changes are covered by CI, but the new Ubuntu
