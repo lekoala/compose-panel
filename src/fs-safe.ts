@@ -78,8 +78,12 @@ export async function writeFileAtomic(path: string, content: string, attributes:
                     throw new FileSafetyError("The file owner and group could not be preserved. The original file was not replaced.");
                 }
             }
-            try { await handle.chmod(mode); }
-            catch { if (process.platform === "linux") throw new FileSafetyError("The file permissions could not be preserved. The original file was not replaced."); }
+            try {
+                await handle.chmod(mode);
+            } catch {
+                if (process.platform === "linux")
+                    throw new FileSafetyError("The file permissions could not be preserved. The original file was not replaced.");
+            }
             await handle.sync();
         } finally {
             await handle.close();
@@ -109,7 +113,8 @@ export interface DirIdentity {
 /** lstat a directory and refuse symlinks. The dev/ino pair names the object. */
 export async function dirIdentity(path: string): Promise<DirIdentity> {
     const info = await lstat(path);
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new FileSafetyError("This folder is a symbolic link or not a folder, so the panel will not use it.");
+    if (info.isSymbolicLink() || !info.isDirectory())
+        throw new FileSafetyError("This folder is a symbolic link or not a folder, so the panel will not use it.");
     return { dev: info.dev, ino: info.ino };
 }
 
@@ -165,5 +170,9 @@ export function checkManagedDir(root: string, components: string[], message: str
  * directories are owner-only (backups hold Compose files and .env secrets).
  */
 export function ensureBackupDir(root: string, name: string): Promise<string> {
-    return ensureManagedDir(root, [".compose-panel", "backups", name], "The backup folder is a symbolic link or not a folder, so nothing was saved.");
+    return ensureManagedDir(
+        root,
+        [".compose-panel", "backups", name],
+        "The backup folder is a symbolic link or not a folder, so nothing was saved.",
+    );
 }

@@ -1,13 +1,34 @@
 import { expect, test } from "bun:test";
-import { documentHtml, escapeHtml, healthSummaryBadge, htmlResponse, logsPanel, operationPanel, renderSidebar, servicesSection, usageBar, databaseSection, domainsSection } from "../src/html.ts";
+import {
+    documentHtml,
+    escapeHtml,
+    healthSummaryBadge,
+    htmlResponse,
+    logsPanel,
+    operationPanel,
+    renderSidebar,
+    servicesSection,
+    usageBar,
+    databaseSection,
+    domainsSection,
+} from "../src/html.ts";
 import { buildExplorerUrl } from "../src/database.ts";
 import type { ComposeService } from "../src/compose-state.ts";
 import type { OperationView } from "../src/operations.ts";
 
 function operation(overrides: Partial<OperationView>): OperationView {
     return {
-        id: "op1", stack: "demo", action: "up", label: "up", status: "succeeded",
-        startedAt: 0, endedAt: 1, exitCode: 0, output: "", truncated: false, timedOut: false,
+        id: "op1",
+        stack: "demo",
+        action: "up",
+        label: "up",
+        status: "succeeded",
+        startedAt: 0,
+        endedAt: 1,
+        exitCode: 0,
+        output: "",
+        truncated: false,
+        timedOut: false,
         ...overrides,
     };
 }
@@ -229,7 +250,8 @@ test("domains section suggests only eligible published host ports", () => {
 });
 
 test("domains section escapes the generated file instead of interpreting it", () => {
-    const file = "# compose-panel:managed v1\n# compose-panel:stack web\n# compose-panel:service <b>web</b>\n\napp.example.com {\n\treverse_proxy 127.0.0.1:8080\n}\n";
+    const file =
+        "# compose-panel:managed v1\n# compose-panel:stack web\n# compose-panel:service <b>web</b>\n\napp.example.com {\n\treverse_proxy 127.0.0.1:8080\n}\n";
     const html = domainsSection({
         stackName: "web",
         csrf: "csrf-token",

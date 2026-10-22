@@ -22,10 +22,10 @@ try {
     code = await runSelfUpdate(args, {
         runner,
         provider,
-        log: line => console.log(`${stamp()} ${line}`),
-        write: chunk => process.stdout.write(chunk),
-        fileExists: path => Bun.file(path).exists(),
-        sleep: ms => Bun.sleep(ms),
+        log: (line) => console.log(`${stamp()} ${line}`),
+        write: (chunk) => process.stdout.write(chunk),
+        fileExists: (path) => Bun.file(path).exists(),
+        sleep: (ms) => Bun.sleep(ms),
         now: () => Date.now(),
     });
 } catch (error) {

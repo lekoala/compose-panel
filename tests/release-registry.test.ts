@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { latestReleaseRecord, parseReleaseRegistry, recordRelease, type ReleaseRecord } from "../src/release-registry.ts";
 
-const first: ReleaseRecord = { version: "0.3.1", digest: `sha256:${"a".repeat(64)}`, revision: "b".repeat(40), recordedAt: "2026-10-13T10:00:00Z" };
+const first: ReleaseRecord = {
+    version: "0.3.1",
+    digest: `sha256:${"a".repeat(64)}`,
+    revision: "b".repeat(40),
+    recordedAt: "2026-10-13T10:00:00Z",
+};
 
 test("retries preserve the original registration and replacements preserve history", () => {
     const initial = recordRelease({ schema: 1, releases: [] }, first);

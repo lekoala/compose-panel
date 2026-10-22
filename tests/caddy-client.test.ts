@@ -11,13 +11,19 @@ describe("parseHelperResponse", () => {
     });
 
     test("passes refusals through as data", () => {
-        expect(parseHelperResponse({ ok: false, error: "No.", code: "conflict" }, "attach"))
-            .toEqual({ ok: false, error: "No.", code: "conflict" });
+        expect(parseHelperResponse({ ok: false, error: "No.", code: "conflict" }, "attach")).toEqual({
+            ok: false,
+            error: "No.",
+            code: "conflict",
+        });
     });
 
     test("rebuilds a status answer from validated sites only", () => {
         const site = { domain: "app.example.com", stack: "web", service: "web", port: 8080 };
-        const parsed = parseHelperResponse({ ok: true, action: "status", sites: [{ ...site, extra: "dropped" }], unparseable: ["x.caddy"], importConfigured: false }, "status");
+        const parsed = parseHelperResponse(
+            { ok: true, action: "status", sites: [{ ...site, extra: "dropped" }], unparseable: ["x.caddy"], importConfigured: false },
+            "status",
+        );
         expect(parsed).toEqual({ ok: true, action: "status", sites: [site], unparseable: ["x.caddy"], importConfigured: false });
     });
 
@@ -66,7 +72,9 @@ describe.skipIf(process.platform !== "linux")("callCaddyHelper", () => {
         const server = Bun.listen({
             unix: socketPath,
             socket: {
-                open(socket) { pending.set(socket, []); },
+                open(socket) {
+                    pending.set(socket, []);
+                },
                 data(socket, data) {
                     const seen = pending.get(socket) ?? [];
                     for (const byte of data) seen.push(byte);
@@ -80,18 +88,36 @@ describe.skipIf(process.platform !== "linux")("callCaddyHelper", () => {
                         } else {
                             socket.write(answer);
                         }
-                    } catch { /* the client may have gone */ }
-                    try { socket.end(); } catch { /* already gone */ }
+                    } catch {
+                        /* the client may have gone */
+                    }
+                    try {
+                        socket.end();
+                    } catch {
+                        /* already gone */
+                    }
                 },
-                close(socket) { pending.delete(socket); },
-                error(socket) { try { socket.end(); } catch { /* already gone */ } pending.delete(socket); },
+                close(socket) {
+                    pending.delete(socket);
+                },
+                error(socket) {
+                    try {
+                        socket.end();
+                    } catch {
+                        /* already gone */
+                    }
+                    pending.delete(socket);
+                },
             },
         });
         return { socketPath, close: () => server.stop() };
     }
 
     test("round-trips a request and a chunked answer", async () => {
-        const server = await serve(`${JSON.stringify({ ok: true, action: "status", sites: [], unparseable: [], importConfigured: true })}\n`, { chunked: true });
+        const server = await serve(
+            `${JSON.stringify({ ok: true, action: "status", sites: [], unparseable: [], importConfigured: true })}\n`,
+            { chunked: true },
+        );
         try {
             const response = await callCaddyHelper(server.socketPath, { action: "status" }, { timeoutMs: 5000 });
             expect(response).toEqual({ ok: true, action: "status", sites: [], unparseable: [], importConfigured: true });
@@ -110,8 +136,9 @@ describe.skipIf(process.platform !== "linux")("callCaddyHelper", () => {
     });
 
     test("refuses a missing socket, malformed JSON and oversized answers", async () => {
-        await expect(callCaddyHelper("/nonexistent-dir/helper.sock", { action: "status" }, { timeoutMs: 1000 }))
-            .rejects.toThrow(CaddyHelperError);
+        await expect(callCaddyHelper("/nonexistent-dir/helper.sock", { action: "status" }, { timeoutMs: 1000 })).rejects.toThrow(
+            CaddyHelperError,
+        );
         const broken = await serve("not json\n");
         try {
             await expect(callCaddyHelper(broken.socketPath, { action: "status" }, { timeoutMs: 2000 })).rejects.toThrow(CaddyHelperError);
@@ -120,8 +147,9 @@ describe.skipIf(process.platform !== "linux")("callCaddyHelper", () => {
         }
         const big = await serve(`${JSON.stringify({ ok: true, action: "status", sites: [], pad: "x".repeat(3000) })}\n`);
         try {
-            await expect(callCaddyHelper(big.socketPath, { action: "status" }, { timeoutMs: 2000, maxResponseBytes: 64 }))
-                .rejects.toThrow(CaddyHelperError);
+            await expect(callCaddyHelper(big.socketPath, { action: "status" }, { timeoutMs: 2000, maxResponseBytes: 64 })).rejects.toThrow(
+                CaddyHelperError,
+            );
         } finally {
             big.close();
         }

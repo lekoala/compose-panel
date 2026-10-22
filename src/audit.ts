@@ -116,7 +116,7 @@ export class AuditLog {
         this.maxFileBytes = Math.max(4 * MARKER_HEADROOM, options.maxFileBytes ?? 10 * 1024 * 1024);
         this.noisyPerMinute = options.noisyPerMinute ?? 60;
         this.now = options.now ?? Date.now;
-        this.onError = options.onError ?? (error => console.error("Audit log write failed", error));
+        this.onError = options.onError ?? ((error) => console.error("Audit log write failed", error));
     }
 
     /**
@@ -134,11 +134,13 @@ export class AuditLog {
             const minute = Math.floor(ts / 60_000);
             if (minute !== this.noisyMinute) {
                 if (this.noisyDropped > 0) {
-                    lines.push(this.format(ts, {
-                        event: "audit",
-                        result: "suppressed",
-                        detail: `${this.noisyDropped} more sign-in refusals or failures were not recorded individually (limit ${this.noisyPerMinute} per minute)`,
-                    }));
+                    lines.push(
+                        this.format(ts, {
+                            event: "audit",
+                            result: "suppressed",
+                            detail: `${this.noisyDropped} more sign-in refusals or failures were not recorded individually (limit ${this.noisyPerMinute} per minute)`,
+                        }),
+                    );
                 }
                 this.noisyMinute = minute;
                 this.noisyCount = 0;
@@ -193,11 +195,14 @@ export class AuditLog {
         }
         this.suspended.add(period);
         if (size > 0 && (await this.readTail(path, MARKER_HEADROOM * 2)).text.includes(SUSPENDED_MARKER)) return;
-        await this.appendLine(path, this.format(ts, {
-            event: "audit",
-            result: "suspended",
-            detail: `size limit of ${this.maxFileBytes} bytes reached; later events of this period are not recorded`,
-        }));
+        await this.appendLine(
+            path,
+            this.format(ts, {
+                event: "audit",
+                result: "suspended",
+                detail: `size limit of ${this.maxFileBytes} bytes reached; later events of this period are not recorded`,
+            }),
+        );
     }
 
     /** Period keys (most recent first) currently present on disk. */
@@ -262,15 +267,25 @@ export class AuditLog {
      */
     private async ensureDir(): Promise<void> {
         await mkdir(this.root, { recursive: true, mode: 0o700 });
-        try { await ensureManagedDir(this.root, this.components, LINKED_DIR); }
-        catch (error) { throw this.asAuditError(error); }
-        try { await chmod(this.dir, 0o700); } catch { /* Best effort (Windows ignores POSIX modes). */ }
+        try {
+            await ensureManagedDir(this.root, this.components, LINKED_DIR);
+        } catch (error) {
+            throw this.asAuditError(error);
+        }
+        try {
+            await chmod(this.dir, 0o700);
+        } catch {
+            /* Best effort (Windows ignores POSIX modes). */
+        }
     }
 
     /** Whether the audit folder exists, refusing symlinked components like `ensureDir`. */
     private async existingDir(): Promise<boolean> {
-        try { return (await checkManagedDir(this.root, this.components, LINKED_DIR)) !== null; }
-        catch (error) { throw this.asAuditError(error); }
+        try {
+            return (await checkManagedDir(this.root, this.components, LINKED_DIR)) !== null;
+        } catch (error) {
+            throw this.asAuditError(error);
+        }
     }
 
     private asAuditError(error: unknown): unknown {
@@ -285,16 +300,17 @@ export class AuditLog {
     private async periodsOnDisk(): Promise<string[]> {
         const entries = await readdir(this.dir, { withFileTypes: true });
         return entries
-            .filter(entry => entry.isFile() && entry.name.endsWith(".log") && this.isValidPeriod(basename(entry.name, ".log")))
-            .map(entry => basename(entry.name, ".log"))
+            .filter((entry) => entry.isFile() && entry.name.endsWith(".log") && this.isValidPeriod(basename(entry.name, ".log")))
+            .map((entry) => basename(entry.name, ".log"))
             .sort((a, b) => b.localeCompare(a));
     }
 
     /** Size of an existing regular log file, 0 when absent; refuses links and non-files. */
     private async regularFileSize(path: string): Promise<number> {
         let info: Stats;
-        try { info = await lstat(path); }
-        catch (error) {
+        try {
+            info = await lstat(path);
+        } catch (error) {
             if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
             throw error;
         }
@@ -306,8 +322,11 @@ export class AuditLog {
 
     private async appendLine(path: string, line: string): Promise<void> {
         const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0), 0o600);
-        try { await handle.write(line, undefined, "utf8"); }
-        finally { await handle.close(); }
+        try {
+            await handle.write(line, undefined, "utf8");
+        } finally {
+            await handle.close();
+        }
     }
 
     /** Read at most `maxBytes` from the end of a regular file. */
@@ -329,8 +348,11 @@ export class AuditLog {
 
     private async prune(): Promise<void> {
         for (const period of (await this.periodsOnDisk()).slice(this.retainFiles)) {
-            try { await unlink(join(this.dir, `${period}.log`)); }
-            catch (error) { this.onError(error); }
+            try {
+                await unlink(join(this.dir, `${period}.log`));
+            } catch (error) {
+                this.onError(error);
+            }
         }
     }
 }

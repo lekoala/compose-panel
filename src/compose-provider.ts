@@ -80,7 +80,13 @@ export interface ComposeProvider {
      * guess a container. Used to pin one container for the application toolbox
      * ([ADR 0026]).
      */
-    runningContainerIds(input: { project: string; composeFile: string; cwd: string; service: string; envFile?: string }): Promise<string[] | null>;
+    runningContainerIds(input: {
+        project: string;
+        composeFile: string;
+        cwd: string;
+        service: string;
+        envFile?: string;
+    }): Promise<string[] | null>;
     /** Read-only: which image ID each container of the project runs. */
     projectImages(input: { project: string; composeFile: string; cwd: string; envFile?: string }): Promise<CommandResult>;
     /**
@@ -104,7 +110,12 @@ export interface ComposeProvider {
      * the Compose version is not validated for it, or on any failure or
      * unexpected line: callers show nothing, never a guess.
      */
-    serviceConfigHashes(input: { project: string; composeFile: string; cwd: string; envFile?: string }): Promise<Map<string, string> | null>;
+    serviceConfigHashes(input: {
+        project: string;
+        composeFile: string;
+        cwd: string;
+        envFile?: string;
+    }): Promise<Map<string, string> | null>;
     /** Allow-listed resolved labels only; raw config and stderr remain private. */
     stackMetadata(target: ComposeTarget): Promise<DeclaredMetadata | null>;
     validateConfig(input: { directory: string; composeFile: string; envFile?: string; projectName?: string }): Promise<CommandResult>;
@@ -133,7 +144,9 @@ export interface ComposeProvider {
      * `up -d --no-deps --no-build --pull never <service>`. Nothing is pulled or
      * built, and no other service is touched.
      */
-    recreateService(input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void }): Promise<CommandResult>;
+    recreateService(
+        input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void },
+    ): Promise<CommandResult>;
     /**
      * One-shot history read: `compose logs --tail N --timestamps --no-color`,
      * bounded by the runner timeout and output cap and without following.
@@ -213,7 +226,10 @@ class DockerComposeProvider implements ComposeProvider {
         return this.readProject(input, ["images", "--format", "json"]);
     }
 
-    private readProject(input: { project: string; composeFile: string; cwd: string; envFile?: string }, command: string[]): Promise<CommandResult> {
+    private readProject(
+        input: { project: string; composeFile: string; cwd: string; envFile?: string },
+        command: string[],
+    ): Promise<CommandResult> {
         const args = ["compose", "-p", input.project];
         if (input.envFile) args.push("--env-file", input.envFile);
         args.push("--project-directory", input.cwd, "-f", input.composeFile, ...command);
@@ -225,7 +241,13 @@ class DockerComposeProvider implements ComposeProvider {
         });
     }
 
-    async runningContainerIds(input: { project: string; composeFile: string; cwd: string; service: string; envFile?: string }): Promise<string[] | null> {
+    async runningContainerIds(input: {
+        project: string;
+        composeFile: string;
+        cwd: string;
+        service: string;
+        envFile?: string;
+    }): Promise<string[] | null> {
         if (!this.caps.operations.ps) return null;
         if (!isComposeServiceName(input.service)) return null;
         const args = ["compose", "-p", input.project];
@@ -235,9 +257,12 @@ class DockerComposeProvider implements ComposeProvider {
         args.push("-f", input.composeFile, "ps", "--status", "running", "-q", input.service);
         const result = await this.runner(args, { cwd: input.cwd });
         if (result.code !== 0 || result.timedOut || result.truncated) return null;
-        const ids = result.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+        const ids = result.stdout
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean);
         // A partial or surprising answer must never be used to pick a container.
-        if (!ids.every(id => /^[0-9a-f]{12,64}$/.test(id))) return null;
+        if (!ids.every((id) => /^[0-9a-f]{12,64}$/.test(id))) return null;
         return [...new Set(ids)];
     }
 
@@ -254,7 +279,12 @@ class DockerComposeProvider implements ComposeProvider {
         return this.runner(["container", "inspect", "--", ...safe]);
     }
 
-    async serviceConfigHashes(input: { project: string; composeFile: string; cwd: string; envFile?: string }): Promise<Map<string, string> | null> {
+    async serviceConfigHashes(input: {
+        project: string;
+        composeFile: string;
+        cwd: string;
+        envFile?: string;
+    }): Promise<Map<string, string> | null> {
         if (!this.caps.configHashes || !this.caps.operations.config) return null;
         const result = await this.readProject(input, ["config", "--hash", "*"]);
         // stderr may echo interpolated values: it is never read.
@@ -275,8 +305,11 @@ class DockerComposeProvider implements ComposeProvider {
         if (!this.caps.operations.config) throw new ComposeUnsupportedError("config");
         const result = await this.runTarget(target, ["config", "--format", "json"]);
         if (result.code !== 0 || result.timedOut || result.truncated) return null;
-        try { return projectMetadata(JSON.parse(result.stdout)); }
-        catch { return null; }
+        try {
+            return projectMetadata(JSON.parse(result.stdout));
+        } catch {
+            return null;
+        }
     }
 
     private runTarget(target: ComposeTarget, command: string[]): Promise<CommandResult> {
@@ -299,9 +332,7 @@ class DockerComposeProvider implements ComposeProvider {
         if (target.service !== undefined && !isComposeServiceName(target.service)) {
             return Promise.reject(new Error("Invalid service name."));
         }
-        const command = target.service === undefined
-            ? ["up", "-d"]
-            : ["up", "-d", "--no-deps", "--", target.service];
+        const command = target.service === undefined ? ["up", "-d"] : ["up", "-d", "--no-deps", "--", target.service];
         return this.runTarget(target, command);
     }
 
@@ -318,9 +349,7 @@ class DockerComposeProvider implements ComposeProvider {
         if (target.service !== undefined && !isComposeServiceName(target.service)) {
             return Promise.reject(new Error("Invalid service name."));
         }
-        const command = target.service === undefined
-            ? ["restart"]
-            : ["restart", "--no-deps", "--", target.service];
+        const command = target.service === undefined ? ["restart"] : ["restart", "--no-deps", "--", target.service];
         return this.runTarget(target, command);
     }
 
@@ -350,12 +379,15 @@ class DockerComposeProvider implements ComposeProvider {
         }
     }
 
-    recreateService(input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void }): Promise<CommandResult> {
+    recreateService(
+        input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void },
+    ): Promise<CommandResult> {
         // `--` ends option parsing: the service name can never be read as a flag.
-        return this.runner(
-            [...this.projectArgs(input), "up", "-d", "--no-deps", "--no-build", "--pull", "never", "--", input.service],
-            { cwd: input.cwd, timeoutMs: input.timeoutMs, onChunk: input.onOutput },
-        );
+        return this.runner([...this.projectArgs(input), "up", "-d", "--no-deps", "--no-build", "--pull", "never", "--", input.service], {
+            cwd: input.cwd,
+            timeoutMs: input.timeoutMs,
+            onChunk: input.onOutput,
+        });
     }
 
     readLogs(target: ComposeTarget & { tailLines?: number }): Promise<CommandResult> {
@@ -368,9 +400,15 @@ class DockerComposeProvider implements ComposeProvider {
         if (target.project) args.push("-p", target.project);
         if (target.envFile) args.push("--env-file", target.envFile);
         args.push(
-            "--project-directory", target.cwd,
-            "-f", target.composeFile,
-            "logs", "--tail", String(tail), "--timestamps", "--no-color",
+            "--project-directory",
+            target.cwd,
+            "-f",
+            target.composeFile,
+            "logs",
+            "--tail",
+            String(tail),
+            "--timestamps",
+            "--no-color",
         );
         // `--` ends option parsing: a validated service name can never be read
         // as a flag. Verified against the embedded Compose in the lab suite.
@@ -387,7 +425,10 @@ class DockerComposeProvider implements ComposeProvider {
         args.push("--project-directory", target.cwd, "-f", target.composeFile, "config", "--services");
         const result = await this.runner(args, { cwd: target.cwd });
         if (result.code !== 0 || result.timedOut || result.truncated) return null;
-        const names = result.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+        const names = result.stdout
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean);
         // Refuse a partial or surprising list instead of validating against it.
         if (!names.every(isComposeServiceName)) return null;
         return [...new Set(names)];
@@ -406,16 +447,16 @@ class DockerComposeProvider implements ComposeProvider {
         const args = ["compose"];
         if (target.project) args.push("-p", target.project);
         if (target.envFile) args.push("--env-file", target.envFile);
-        args.push(
-            "--project-directory", target.cwd,
-            "-f", target.composeFile,
-            "logs", "--follow", "--tail", String(tail), "--timestamps",
-        );
+        args.push("--project-directory", target.cwd, "-f", target.composeFile, "logs", "--follow", "--tail", String(tail), "--timestamps");
         if (target.service !== undefined) args.push("--", target.service);
         // LogManager owns the follow timeout; the runner owns bounded abort,
         // signal escalation, pipe cleanup and stateful UTF-8 decoding.
         const result = await runCommand(this.dockerPath, args, {
-            cwd: target.cwd, timeoutMs: 0, maxBytes: 0, signal, onChunk,
+            cwd: target.cwd,
+            timeoutMs: 0,
+            maxBytes: 0,
+            signal,
+            onChunk,
         });
         return { code: result.code, timedOut: result.timedOut, terminationUnconfirmed: result.terminationUnconfirmed };
     }

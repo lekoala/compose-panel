@@ -21,7 +21,22 @@ import {
     type SelfIdentity,
 } from "../src/self-update.ts";
 import { parseUpdaterArgs, runSelfUpdate, updaterEnvironment, type UpdaterDeps } from "../src/self-update-run.ts";
-import { COMPOSE_FILE, IMAGE_REF, MOUNTINFO, NEW_DIGEST, NEW_IMAGE, NOW, OLD_IMAGE, PANEL_ID, WORKING_DIR, fakeDocker, fakeReleases, fakeSelfUpdater, panelInspect, releaseJson } from "./helpers/self-update.ts";
+import {
+    COMPOSE_FILE,
+    IMAGE_REF,
+    MOUNTINFO,
+    NEW_DIGEST,
+    NEW_IMAGE,
+    NOW,
+    OLD_IMAGE,
+    PANEL_ID,
+    WORKING_DIR,
+    fakeDocker,
+    fakeReleases,
+    fakeSelfUpdater,
+    panelInspect,
+    releaseJson,
+} from "./helpers/self-update.ts";
 
 const PLAN = { targetImageId: NEW_IMAGE, expectedDigest: NEW_DIGEST, targetVersion: "0.3.0", previousVersion: "0.2.0" };
 
@@ -63,14 +78,16 @@ describe("parseSelfInspect", () => {
     });
 
     test("keeps several Compose and env files in order, plus user and groups", () => {
-        const identity = identityOf(panelInspect({
-            labels: {
-                "com.docker.compose.project.config_files": `${COMPOSE_FILE},${WORKING_DIR}/override.yaml`,
-                "com.docker.compose.project.environment_file": `${WORKING_DIR}/.env`,
-            },
-            config: { User: "1000:1000" },
-            hostConfig: { GroupAdd: ["998"] },
-        }));
+        const identity = identityOf(
+            panelInspect({
+                labels: {
+                    "com.docker.compose.project.config_files": `${COMPOSE_FILE},${WORKING_DIR}/override.yaml`,
+                    "com.docker.compose.project.environment_file": `${WORKING_DIR}/.env`,
+                },
+                config: { User: "1000:1000" },
+                hostConfig: { GroupAdd: ["998"] },
+            }),
+        );
         expect(identity.composeFiles).toEqual([COMPOSE_FILE, `${WORKING_DIR}/override.yaml`]);
         expect(identity.envFiles).toEqual([`${WORKING_DIR}/.env`]);
         expect(identity.user).toBe("1000:1000");
@@ -112,7 +129,7 @@ describe("updater container arguments", () => {
         expect(args.slice(0, 3)).toEqual(["container", "run", "--detach"]);
         const pairs = new Map<string, string[]>();
         for (let index = 3; index < args.indexOf(OLD_IMAGE); index += 2) {
-            pairs.set(args[index]!, [...pairs.get(args[index]!) ?? [], args[index + 1]!]);
+            pairs.set(args[index]!, [...(pairs.get(args[index]!) ?? []), args[index + 1]!]);
         }
         expect(pairs.get("--name")).toEqual([UPDATER_NAME]);
         // The previous and target identities travel as labels, read back after the restart.
@@ -134,7 +151,7 @@ describe("updater container arguments", () => {
         // The image the panel runs now starts the updater, never the target.
         const imageAt = args.indexOf(OLD_IMAGE);
         expect(args.slice(imageAt + 1)).toEqual(["src/scripts/self-update.ts", ...updaterCommand(identity, PLAN)]);
-        expect(args.some(arg => /^(sh|bash)$/.test(arg) || arg === "-c")).toBe(false);
+        expect(args.some((arg) => /^(sh|bash)$/.test(arg) || arg === "-c")).toBe(false);
     });
 
     test("refuses a target that is not an image ID", () => {
@@ -195,18 +212,34 @@ describe("recovery commands", () => {
     });
 
     test("the updater logs the same commands as the About page", async () => {
-        const args = parseUpdaterArgs(updaterCommand(identityOf(panelInspect({
-            labels: {
-                "com.docker.compose.project.working_dir": target.workingDir,
-                "com.docker.compose.project.config_files": target.composeFiles[0]!,
-            },
-        })), PLAN));
+        const args = parseUpdaterArgs(
+            updaterCommand(
+                identityOf(
+                    panelInspect({
+                        labels: {
+                            "com.docker.compose.project.working_dir": target.workingDir,
+                            "com.docker.compose.project.config_files": target.composeFiles[0]!,
+                        },
+                    }),
+                ),
+                PLAN,
+            ),
+        );
         const lines: string[] = [];
-        const provider = { serviceImage: async () => IMAGE_REF, recreateService: async () => ({ code: 1, stdout: "", stderr: "", timedOut: false, truncated: false }) } as unknown as ComposeProvider;
+        const provider = {
+            serviceImage: async () => IMAGE_REF,
+            recreateService: async () => ({ code: 1, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        } as unknown as ComposeProvider;
         const code = await runSelfUpdate(args, {
-            runner: async command => ({ code: 0, stdout: command[1] === "inspect" ? JSON.stringify([{ Id: NEW_IMAGE, RepoDigests: [NEW_DIGEST] }]) : "", stderr: "", timedOut: false, truncated: false }),
+            runner: async (command) => ({
+                code: 0,
+                stdout: command[1] === "inspect" ? JSON.stringify([{ Id: NEW_IMAGE, RepoDigests: [NEW_DIGEST] }]) : "",
+                stderr: "",
+                timedOut: false,
+                truncated: false,
+            }),
             provider,
-            log: line => lines.push(line.trim()),
+            log: (line) => lines.push(line.trim()),
             write: () => {},
             fileExists: async () => false,
             sleep: async () => {},
@@ -221,7 +254,9 @@ describe("recovery commands", () => {
 
 describe("parseUpdaterInspect", () => {
     const inspect = (state: Record<string, unknown>, labels: Record<string, string> = { [UPDATER_LABEL]: "1" }) =>
-        JSON.stringify([{ Config: { Labels: labels }, State: { StartedAt: "2026-10-12T08:00:00Z", FinishedAt: "2026-10-12T08:01:00Z", ...state } }]);
+        JSON.stringify([
+            { Config: { Labels: labels }, State: { StartedAt: "2026-10-12T08:00:00Z", FinishedAt: "2026-10-12T08:01:00Z", ...state } },
+        ]);
 
     test("maps exit codes to outcomes", () => {
         const outcome = (state: Record<string, unknown>) => {
@@ -288,7 +323,7 @@ describe("SelfUpdater", () => {
         const docker = fakeDocker();
         docker.updater = { status: "exited", exitCode: 0 };
         await fakeSelfUpdater(docker).launch(identityOf(), PLAN);
-        const verbs = docker.calls.map(args => args.slice(0, 2).join(" "));
+        const verbs = docker.calls.map((args) => args.slice(0, 2).join(" "));
         expect(verbs).toEqual(["container inspect", "container rm", "container run"]);
         expect(docker.calls[1]).toEqual(["container", "rm", "--", UPDATER_NAME]);
     });
@@ -299,12 +334,18 @@ describe("SelfUpdater", () => {
         await expect(fakeSelfUpdater(docker).launch(identityOf(), PLAN)).rejects.toThrow(SelfUpdateError);
         docker.updater = { status: "exited", exitCode: 0, foreign: true };
         await expect(fakeSelfUpdater(docker).launch(identityOf(), PLAN)).rejects.toThrow(SelfUpdateError);
-        expect(docker.calls.some(args => args[1] === "rm" || args[1] === "run")).toBe(false);
+        expect(docker.calls.some((args) => args[1] === "rm" || args[1] === "run")).toBe(false);
     });
 
     test("launch reports a Docker refusal", async () => {
         const docker = fakeDocker();
-        docker.runResult = { code: 125, stdout: "", stderr: "docker: Error response from daemon: Conflict.\n", timedOut: false, truncated: false };
+        docker.runResult = {
+            code: 125,
+            stdout: "",
+            stderr: "docker: Error response from daemon: Conflict.\n",
+            timedOut: false,
+            truncated: false,
+        };
         await expect(fakeSelfUpdater(docker).launch(identityOf(), PLAN)).rejects.toThrow(/could not start the updater/);
     });
 });
@@ -312,18 +353,43 @@ describe("SelfUpdater", () => {
 describe("compose calls for the self-update", () => {
     function recording(stdout = ""): { runner: DockerRunner; calls: string[][] } {
         const calls: string[][] = [];
-        return { calls, runner: async args => { calls.push(args); return { code: 0, stdout, stderr: "", timedOut: false, truncated: false }; } };
+        return {
+            calls,
+            runner: async (args) => {
+                calls.push(args);
+                return { code: 0, stdout, stderr: "", timedOut: false, truncated: false };
+            },
+        };
     }
-    const files = { project: "compose-panel", cwd: WORKING_DIR, composeFiles: [COMPOSE_FILE, `${WORKING_DIR}/b.yaml`], envFiles: [`${WORKING_DIR}/.env`] };
+    const files = {
+        project: "compose-panel",
+        cwd: WORKING_DIR,
+        composeFiles: [COMPOSE_FILE, `${WORKING_DIR}/b.yaml`],
+        envFiles: [`${WORKING_DIR}/.env`],
+    };
 
     test("serviceImage returns only the service's image", async () => {
-        const { runner, calls } = recording(JSON.stringify({ name: "compose-panel", services: { panel: { image: IMAGE_REF, environment: { SECRET: "x" } } } }));
+        const { runner, calls } = recording(
+            JSON.stringify({ name: "compose-panel", services: { panel: { image: IMAGE_REF, environment: { SECRET: "x" } } } }),
+        );
         const provider = createComposeProvider({ runner });
         expect(await provider.serviceImage({ ...files, service: "panel" })).toBe(IMAGE_REF);
         expect(await provider.serviceImage({ ...files, service: "other" })).toBeNull();
         expect(calls[0]).toEqual([
-            "compose", "-p", "compose-panel", "--env-file", `${WORKING_DIR}/.env`, "--project-directory", WORKING_DIR,
-            "-f", COMPOSE_FILE, "-f", `${WORKING_DIR}/b.yaml`, "config", "--format", "json",
+            "compose",
+            "-p",
+            "compose-panel",
+            "--env-file",
+            `${WORKING_DIR}/.env`,
+            "--project-directory",
+            WORKING_DIR,
+            "-f",
+            COMPOSE_FILE,
+            "-f",
+            `${WORKING_DIR}/b.yaml`,
+            "config",
+            "--format",
+            "json",
         ]);
     });
 
@@ -331,8 +397,25 @@ describe("compose calls for the self-update", () => {
         const { runner, calls } = recording();
         await createComposeProvider({ runner }).recreateService({ ...files, service: "panel" });
         expect(calls[0]).toEqual([
-            "compose", "-p", "compose-panel", "--env-file", `${WORKING_DIR}/.env`, "--project-directory", WORKING_DIR,
-            "-f", COMPOSE_FILE, "-f", `${WORKING_DIR}/b.yaml`, "up", "-d", "--no-deps", "--no-build", "--pull", "never", "--", "panel",
+            "compose",
+            "-p",
+            "compose-panel",
+            "--env-file",
+            `${WORKING_DIR}/.env`,
+            "--project-directory",
+            WORKING_DIR,
+            "-f",
+            COMPOSE_FILE,
+            "-f",
+            `${WORKING_DIR}/b.yaml`,
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-build",
+            "--pull",
+            "never",
+            "--",
+            "panel",
         ]);
     });
 });
@@ -359,32 +442,50 @@ describe("runSelfUpdate", () => {
         let clock = 0;
         const tagged: string[][] = [];
         let ups = 0;
-        const runner: DockerRunner = async command => {
+        const runner: DockerRunner = async (command) => {
             const key = command.slice(0, 2).join(" ");
-            if (key === "image inspect") return ok(JSON.stringify([{ Id: scenario.tag ?? NEW_IMAGE, RepoDigests: scenario.digests ?? [NEW_DIGEST] }]));
-            if (key === "image tag") { tagged.push(command); return { ...ok(), code: scenario.tagCode ?? 0 }; }
+            if (key === "image inspect")
+                return ok(JSON.stringify([{ Id: scenario.tag ?? NEW_IMAGE, RepoDigests: scenario.digests ?? [NEW_DIGEST] }]));
+            if (key === "image tag") {
+                tagged.push(command);
+                return { ...ok(), code: scenario.tagCode ?? 0 };
+            }
             if (key === "container ls") return ok(`${(scenario.containers ?? [NEW_ID]).join("\n")}\n`);
             if (key === "container inspect") {
-                return ok(JSON.stringify([{
-                    Id: NEW_ID,
-                    Image: scenario.image ?? NEW_IMAGE,
-                    State: { Status: "running", Health: { Status: "healthy" }, StartedAt: "2026-10-12T08:00:30Z", ...scenario.state },
-                    Config: { Labels: { "org.opencontainers.image.version": "0.3.0" } },
-                }]));
+                return ok(
+                    JSON.stringify([
+                        {
+                            Id: NEW_ID,
+                            Image: scenario.image ?? NEW_IMAGE,
+                            State: {
+                                Status: "running",
+                                Health: { Status: "healthy" },
+                                StartedAt: "2026-10-12T08:00:30Z",
+                                ...scenario.state,
+                            },
+                            Config: { Labels: { "org.opencontainers.image.version": "0.3.0" } },
+                        },
+                    ]),
+                );
             }
             throw new Error(`unexpected ${command.join(" ")}`);
         };
         const provider = {
             serviceImage: async () => (scenario.composeImage === undefined ? IMAGE_REF : scenario.composeImage),
-            recreateService: async () => { ups += 1; return { ...ok(), code: scenario.upCode ?? 0 }; },
+            recreateService: async () => {
+                ups += 1;
+                return { ...ok(), code: scenario.upCode ?? 0 };
+            },
         } as unknown as ComposeProvider;
         const deps: UpdaterDeps = {
             runner,
             provider,
-            log: line => lines.push(line),
+            log: (line) => lines.push(line),
             write: () => {},
             fileExists: async () => scenario.envOnDisk ?? false,
-            sleep: async ms => { clock += ms; },
+            sleep: async (ms) => {
+                clock += ms;
+            },
             now: () => clock,
             stableMs: 10_000,
             readyTimeoutMs: 60_000,
@@ -398,8 +499,8 @@ describe("runSelfUpdate", () => {
         expect(run.ups()).toBe(1);
         // The exact previous image is kept for a rollback before the recreate.
         expect(run.tagged).toEqual([["image", "tag", "--", OLD_IMAGE, ROLLBACK_TAG]]);
-        expect(run.lines.some(line => line.includes("0.3.0"))).toBe(true);
-        expect(run.lines.some(line => line.includes(`docker image tag ${ROLLBACK_TAG} ${IMAGE_REF}`))).toBe(true);
+        expect(run.lines.some((line) => line.includes("0.3.0"))).toBe(true);
+        expect(run.lines.some((line) => line.includes(`docker image tag ${ROLLBACK_TAG} ${IMAGE_REF}`))).toBe(true);
     });
 
     test("without a health check, the new container must keep running", async () => {
@@ -435,19 +536,27 @@ describe("runSelfUpdate", () => {
         test(`fails with recovery steps when ${name}`, async () => {
             const run = setup(scenario);
             expect(await runSelfUpdate(args, run.deps)).toBe(UPDATER_EXIT.failed);
-            expect(run.lines.some(line => line.includes(`cd ${WORKING_DIR}`))).toBe(true);
+            expect(run.lines.some((line) => line.includes(`cd ${WORKING_DIR}`))).toBe(true);
         });
     }
 });
 
 describe("release policy (ADR 0018)", () => {
-    const registry = { schema: 1, releases: [{ version: "0.3.0", digest: `sha256:${"2".repeat(64)}`, revision: "a".repeat(40), recordedAt: "2026-10-08T12:00:00Z" }] };
+    const registry = {
+        schema: 1,
+        releases: [{ version: "0.3.0", digest: `sha256:${"2".repeat(64)}`, revision: "a".repeat(40), recordedAt: "2026-10-08T12:00:00Z" }],
+    };
     const found = (overrides: Record<string, unknown> = {}) => ({ kind: "found" as const, release: releaseJson(overrides), registry });
     const verdict = (input: Partial<Parameters<typeof evaluateRelease>[0]> = {}) =>
         evaluateRelease({ version: "0.3.0", repoDigests: [NEW_DIGEST], lookup: found(), now: NOW, ...input });
 
     test("a stable release older than 72 hours whose digest matches is installable", () => {
-        expect(verdict()).toEqual({ kind: "installable", version: "0.3.0", expectedDigest: NEW_DIGEST, publishedAt: "2026-10-08T12:00:00Z" });
+        expect(verdict()).toEqual({
+            kind: "installable",
+            version: "0.3.0",
+            expectedDigest: NEW_DIGEST,
+            publishedAt: "2026-10-08T12:00:00Z",
+        });
     });
 
     test("a younger release waits, counted from published_at", () => {
@@ -455,15 +564,25 @@ describe("release policy (ADR 0018)", () => {
         const result = verdict({ lookup: found({ published_at: published, created_at: "2026-09-01T00:00:00Z" }) });
         expect(result.kind).toBe("waiting");
         expect(result.kind === "waiting" && result.installableAt).toBe(Date.parse(published) + 72 * 3600 * 1000);
-        expect(verdict({ lookup: found({ published_at: published }), now: Date.parse(published) + 72 * 3600 * 1000 }).kind).toBe("installable");
+        expect(verdict({ lookup: found({ published_at: published }), now: Date.parse(published) + 72 * 3600 * 1000 }).kind).toBe(
+            "installable",
+        );
     });
 
     test("a replacement digest on an old release waits from its new registry record", () => {
         const recordedAt = "2026-10-12T11:59:00Z";
-        const result = verdict({ lookup: { ...found(), registry: { schema: 1, releases: [
-            { ...registry.releases[0]!, digest: `sha256:${"1".repeat(64)}` },
-            { ...registry.releases[0]!, recordedAt },
-        ] } } });
+        const result = verdict({
+            lookup: {
+                ...found(),
+                registry: {
+                    schema: 1,
+                    releases: [
+                        { ...registry.releases[0]!, digest: `sha256:${"1".repeat(64)}` },
+                        { ...registry.releases[0]!, recordedAt },
+                    ],
+                },
+            },
+        });
         expect(result.kind).toBe("waiting");
         expect(result.kind === "waiting" && result.installableAt).toBe(Date.parse(recordedAt) + 72 * 3600 * 1000);
     });
@@ -471,7 +590,12 @@ describe("release policy (ADR 0018)", () => {
     test("a missing record or a release edited independently of the registry refuses", () => {
         expect(verdict({ lookup: { ...found(), registry: { schema: 1, releases: [] } } }).kind).toBe("refused");
         const digest = `sha256:${"8".repeat(64)}`;
-        expect(verdict({ repoDigests: [`ghcr.io/lekoala/compose-panel@${digest}`], lookup: found({ body: `compose-panel-image-digest: ${digest}` }) }).kind).toBe("refused");
+        expect(
+            verdict({
+                repoDigests: [`ghcr.io/lekoala/compose-panel@${digest}`],
+                lookup: found({ body: `compose-panel-image-digest: ${digest}` }),
+            }).kind,
+        ).toBe("refused");
     });
 
     const refusals: [string, Partial<Parameters<typeof evaluateRelease>[0]>][] = [
@@ -495,11 +619,17 @@ describe("release policy (ADR 0018)", () => {
 
     test("the GitHub source asks the fixed repository, without following redirects", async () => {
         const requests: { url: string; init?: RequestInit }[] = [];
-        const reply = (status: number, body = "{}") => async (url: string | URL | Request, init?: RequestInit) => {
-            requests.push({ url: String(url), init });
-            return new Response(String(url).includes("contents/releases.json") && status === 200 ? JSON.stringify(registry) : body, { status });
-        };
-        expect(await githubReleaseSource(reply(200, JSON.stringify(releaseJson())) as typeof fetch)("0.3.0")).toMatchObject({ kind: "found" });
+        const reply =
+            (status: number, body = "{}") =>
+            async (url: string | URL | Request, init?: RequestInit) => {
+                requests.push({ url: String(url), init });
+                return new Response(String(url).includes("contents/releases.json") && status === 200 ? JSON.stringify(registry) : body, {
+                    status,
+                });
+            };
+        expect(await githubReleaseSource(reply(200, JSON.stringify(releaseJson())) as typeof fetch)("0.3.0")).toMatchObject({
+            kind: "found",
+        });
         expect(requests[0]!.url).toBe("https://api.github.com/repos/lekoala/compose-panel/releases/tags/0.3.0");
         expect(requests[0]!.init?.redirect).toBe("error");
         expect(requests[1]!.url).toBe("https://api.github.com/repos/lekoala/compose-panel/contents/releases.json?ref=master");
@@ -507,7 +637,9 @@ describe("release policy (ADR 0018)", () => {
         expect(await githubReleaseSource(reply(404) as typeof fetch)("0.3.0")).toEqual({ kind: "missing" });
         expect(await githubReleaseSource(reply(403) as typeof fetch)("0.3.0")).toEqual({ kind: "unavailable" });
         expect(await githubReleaseSource(reply(200, "not json") as typeof fetch)("0.3.0")).toEqual({ kind: "unavailable" });
-        const failing = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+        const failing = (async () => {
+            throw new Error("offline");
+        }) as unknown as typeof fetch;
         expect(await githubReleaseSource(failing)("0.3.0")).toEqual({ kind: "unavailable" });
         // A version that is not plain semver never reaches the network.
         const before = requests.length;
@@ -521,10 +653,20 @@ describe("release policy (ADR 0018)", () => {
             let canceled = false;
             const reply = (async (url: string | URL | Request) => {
                 if (oversizedRegistry && !String(url).includes("contents/")) return new Response(JSON.stringify(releaseJson()));
-                return new Response(new ReadableStream<Uint8Array>({
-                    pull(controller) { reads++; controller.enqueue(new Uint8Array(128 * 1024)); },
-                    cancel() { canceled = true; },
-                }, { highWaterMark: 0 }));
+                return new Response(
+                    new ReadableStream<Uint8Array>(
+                        {
+                            pull(controller) {
+                                reads++;
+                                controller.enqueue(new Uint8Array(128 * 1024));
+                            },
+                            cancel() {
+                                canceled = true;
+                            },
+                        },
+                        { highWaterMark: 0 },
+                    ),
+                );
             }) as typeof fetch;
             expect(await githubReleaseSource(reply)("0.3.0")).toEqual({ kind: "unavailable" });
             expect(reads).toBe(5);
@@ -534,9 +676,14 @@ describe("release policy (ADR 0018)", () => {
 
     test("the response deadline also bounds an unending body", async () => {
         let canceled = false;
-        const reply = (async () => new Response(new ReadableStream({
-            cancel() { canceled = true; },
-        }))) as unknown as typeof fetch;
+        const reply = (async () =>
+            new Response(
+                new ReadableStream({
+                    cancel() {
+                        canceled = true;
+                    },
+                }),
+            )) as unknown as typeof fetch;
         expect(await githubReleaseSource(reply, 30)("0.3.0")).toEqual({ kind: "unavailable" });
         expect(canceled).toBe(true);
     });
@@ -569,33 +716,54 @@ describe("release policy (ADR 0018)", () => {
     });
 
     test("the updater labels are read back, and invalid values dropped", () => {
-        const lookup = parseUpdaterInspect(JSON.stringify([{
-            Config: { Labels: {
-                [UPDATER_LABEL]: "1",
-                [`${UPDATER_LABEL}.previous-image`]: OLD_IMAGE,
-                [`${UPDATER_LABEL}.previous-version`]: "0.2.0",
-                [`${UPDATER_LABEL}.target-image`]: "not-an-id",
-                [`${UPDATER_LABEL}.target-version`]: "<b>",
-            } },
-            State: { Status: "exited", ExitCode: 0 },
-        }]));
-        expect(lookup.kind === "run" && lookup.run).toMatchObject({ previousImage: OLD_IMAGE, previousVersion: "0.2.0", targetImage: null, targetVersion: null });
+        const lookup = parseUpdaterInspect(
+            JSON.stringify([
+                {
+                    Config: {
+                        Labels: {
+                            [UPDATER_LABEL]: "1",
+                            [`${UPDATER_LABEL}.previous-image`]: OLD_IMAGE,
+                            [`${UPDATER_LABEL}.previous-version`]: "0.2.0",
+                            [`${UPDATER_LABEL}.target-image`]: "not-an-id",
+                            [`${UPDATER_LABEL}.target-version`]: "<b>",
+                        },
+                    },
+                    State: { Status: "exited", ExitCode: 0 },
+                },
+            ]),
+        );
+        expect(lookup.kind === "run" && lookup.run).toMatchObject({
+            previousImage: OLD_IMAGE,
+            previousVersion: "0.2.0",
+            targetImage: null,
+            targetVersion: null,
+        });
     });
 
     test("rollback commands re-tag the kept image and never download or build", () => {
         const commands = rollbackCommands(identityOf());
         expect(commands[0]).toBe(`docker image tag ${ROLLBACK_TAG} ${IMAGE_REF}`);
         expect(commands.at(-1)).toContain("up -d --no-deps --no-build --pull never panel");
-        expect(commands.some(line => line.includes(" pull "))).toBe(false);
+        expect(commands.some((line) => line.includes(" pull "))).toBe(false);
     });
 });
 
 describe("review regressions", () => {
     test("the updater's Docker calls never inherit the image ENV", () => {
-        const env = updaterEnvironment({ PATH: "/usr/bin", HOME: "/root", STACKS_DIR: "/stacks", PORT: "5081", COMPOSE_PROJECT_NAME: "x", COMPOSE_FILE: "/x.yaml" });
+        const env = updaterEnvironment({
+            PATH: "/usr/bin",
+            HOME: "/root",
+            STACKS_DIR: "/stacks",
+            PORT: "5081",
+            COMPOSE_PROJECT_NAME: "x",
+            COMPOSE_FILE: "/x.yaml",
+        });
         expect(env).toEqual({ PATH: "/usr/bin", HOME: "/root" });
         // Which daemon to use is kept when set, never a value for interpolation.
-        expect(updaterEnvironment({ PATH: "/usr/bin", DOCKER_HOST: "unix:///lab/docker.sock" })).toEqual({ PATH: "/usr/bin", DOCKER_HOST: "unix:///lab/docker.sock" });
+        expect(updaterEnvironment({ PATH: "/usr/bin", DOCKER_HOST: "unix:///lab/docker.sock" })).toEqual({
+            PATH: "/usr/bin",
+            DOCKER_HOST: "unix:///lab/docker.sock",
+        });
     });
 
     const TIMED_OUT = { code: -1, stdout: "", stderr: "", timedOut: true, truncated: false };
@@ -629,7 +797,11 @@ describe("review regressions", () => {
         const docker = fakeDocker();
         docker.updater = { status: "running", exitCode: 0 };
         let settled = false;
-        const settling = fakeSelfUpdater(docker).settle().then(() => { settled = true; });
+        const settling = fakeSelfUpdater(docker)
+            .settle()
+            .then(() => {
+                settled = true;
+            });
         await Bun.sleep(5);
         expect(settled).toBe(false);
         docker.updater = { status: "exited", exitCode: 0 };
@@ -640,11 +812,14 @@ describe("review regressions", () => {
 });
 
 describe("review regressions, round 2", () => {
-    const updater = (state: Record<string, unknown>, created?: string) => JSON.stringify([{
-        Created: created,
-        Config: { Labels: { [UPDATER_LABEL]: "1" } },
-        State: { StartedAt: "0001-01-01T00:00:00Z", FinishedAt: "0001-01-01T00:00:00Z", ExitCode: 0, ...state },
-    }]);
+    const updater = (state: Record<string, unknown>, created?: string) =>
+        JSON.stringify([
+            {
+                Created: created,
+                Config: { Labels: { [UPDATER_LABEL]: "1" } },
+                State: { StartedAt: "0001-01-01T00:00:00Z", FinishedAt: "0001-01-01T00:00:00Z", ExitCode: 0, ...state },
+            },
+        ]);
     const outcome = (stdout: string, now = Date.parse("2026-10-12T12:00:00Z")) => {
         const lookup = parseUpdaterInspect(stdout, now);
         return lookup.kind === "run" ? lookup.run.outcome : lookup.kind;
@@ -661,8 +836,8 @@ describe("review regressions, round 2", () => {
         docker.updater = { status: "created", exitCode: 128 };
         docker.updaterError = "OCI runtime create failed";
         await fakeSelfUpdater(docker).launch(identityOf(), PLAN);
-        expect(docker.calls.some(args => args[1] === "rm")).toBe(true);
-        expect(docker.calls.some(args => args[1] === "run")).toBe(true);
+        expect(docker.calls.some((args) => args[1] === "rm")).toBe(true);
+        expect(docker.calls.some((args) => args[1] === "run")).toBe(true);
     });
 
     test("settle pauses between polls when docker wait keeps failing", async () => {
@@ -674,13 +849,16 @@ describe("review regressions, round 2", () => {
             runner: docker.runner,
             provider: createComposeProvider({ runner: docker.runner }),
             readMountinfo: async () => MOUNTINFO,
-            sleep: async ms => { pauses.push(ms); if (pauses.length >= 3) docker.updater = { status: "exited", exitCode: 0 }; },
+            sleep: async (ms) => {
+                pauses.push(ms);
+                if (pauses.length >= 3) docker.updater = { status: "exited", exitCode: 0 };
+            },
             updaterTimeoutMs: 60_000,
             pullTimeoutMs: 1000,
             maxBytes: 1024 * 1024,
         });
         await updater.settle();
         expect(pauses).toEqual([5000, 5000, 5000]);
-        expect(docker.calls.filter(args => args[1] === "wait").length).toBe(3);
+        expect(docker.calls.filter((args) => args[1] === "wait").length).toBe(3);
     });
 });

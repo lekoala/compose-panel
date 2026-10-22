@@ -35,9 +35,20 @@
     function formatters() {
         var dateOpts, timeOpts;
         if (!zoneFormatters) {
-            dateOpts = { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
+            dateOpts = {
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                hour12: false,
+            };
             timeOpts = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
-            if (ZONE) { dateOpts.timeZone = ZONE; timeOpts.timeZone = ZONE; }
+            if (ZONE) {
+                dateOpts.timeZone = ZONE;
+                timeOpts.timeZone = ZONE;
+            }
             zoneFormatters = {
                 dateTime: new Intl.DateTimeFormat("sv-SE", dateOpts),
                 time: new Intl.DateTimeFormat("sv-SE", timeOpts),
@@ -61,7 +72,9 @@
         var dark = false;
         try {
             dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        } catch { /* keep the light variant */ }
+        } catch {
+            /* keep the light variant */
+        }
         return dark ? "/icon-active-on-dark.svg" : "/icon-active-on-light.svg";
     }
 
@@ -83,11 +96,15 @@
     /* Keep in sync with operationDetails() in src/html.ts. */
     function details(snap) {
         var parts = [];
-        if (typeof snap.endedAt === "number" && typeof snap.startedAt === "number") parts.push("took " + duration(snap.endedAt - snap.startedAt));
+        if (typeof snap.endedAt === "number" && typeof snap.startedAt === "number")
+            parts.push("took " + duration(snap.endedAt - snap.startedAt));
         if (snap.exitCode !== null && snap.exitCode !== undefined) parts.push("exit code " + snap.exitCode);
-        if (snap.timedOut) parts.push(snap.source
-            ? "stopped waiting at the time limit — the action may still be running in the container, so check it before retrying"
-            : "stopped at the time limit — the operation may still be applying changes, so check the stack before retrying");
+        if (snap.timedOut)
+            parts.push(
+                snap.source
+                    ? "stopped waiting at the time limit — the action may still be running in the container, so check it before retrying"
+                    : "stopped at the time limit — the operation may still be applying changes, so check the stack before retrying",
+            );
         if (snap.truncated) parts.push("output shortened (only the most recent part is kept)");
         return parts.join(" · ");
     }
@@ -115,13 +132,23 @@
                 snap = JSON.parse(e.data);
                 if (typeof snap.output === "string") output.textContent = snap.output;
                 renderStatus(snap);
-            } catch { /* keep the server-rendered content */ }
+            } catch {
+                /* keep the server-rendered content */
+            }
         });
         source.addEventListener("output", function (e) {
-            try { appendText(output, JSON.parse(e.data).text, MAX_OUTPUT_CHARS); } catch { /* invalid frame */ }
+            try {
+                appendText(output, JSON.parse(e.data).text, MAX_OUTPUT_CHARS);
+            } catch {
+                /* invalid frame */
+            }
         });
         source.addEventListener("done", function (e) {
-            try { renderStatus(JSON.parse(e.data)); } catch { /* ignore */ }
+            try {
+                renderStatus(JSON.parse(e.data));
+            } catch {
+                /* ignore */
+            }
             finish();
         });
         source.onerror = function () {
@@ -145,7 +172,11 @@
         function finish() {
             if (!open) return;
             open = false;
-            try { source.close(); } catch { /* ignore */ }
+            try {
+                source.close();
+            } catch {
+                /* ignore */
+            }
             setBusy(false);
             if (note) note.hidden = true;
             if (busyNote) busyNote.hidden = true;
@@ -189,8 +220,10 @@
         function loadSnapshot() {
             if (!snapshot || typeof fetch !== "function") return;
             setStatus("Loading recent lines…");
-            fetch(snapshot + selection(), { headers: { "Accept": "text/plain" } })
-                .then(function (response) { return response.text(); })
+            fetch(snapshot + selection(), { headers: { Accept: "text/plain" } })
+                .then(function (response) {
+                    return response.text();
+                })
                 .then(function (text) {
                     if (source) return;
                     output.textContent = localizeLogText(text);
@@ -209,7 +242,11 @@
                 carry = "";
             }
             if (source) {
-                try { source.close(); } catch { /* ignore */ }
+                try {
+                    source.close();
+                } catch {
+                    /* ignore */
+                }
                 source = null;
             }
             follow.disabled = false;
@@ -232,20 +269,28 @@
                 opened = true;
                 try {
                     payload = JSON.parse(e.data);
-                } catch { payload = null; }
+                } catch {
+                    payload = null;
+                }
                 carry = "";
                 output.textContent = payload && typeof payload.text === "string" ? localizeLogText(payload.text) : "";
                 output.scrollTop = output.scrollHeight;
-                setStatus(payload && payload.truncated
-                    ? "Following live. Older lines were dropped to stay within the size limit."
-                    : "Following live.");
+                setStatus(
+                    payload && payload.truncated
+                        ? "Following live. Older lines were dropped to stay within the size limit."
+                        : "Following live.",
+                );
             });
             source.addEventListener("chunk", function (e) {
                 // Buffer partial lines so a timestamp split across SSE frames is
                 // reassembled and localized only once.
                 var incoming;
                 var newline;
-                try { incoming = JSON.parse(e.data).text; } catch { return; }
+                try {
+                    incoming = JSON.parse(e.data).text;
+                } catch {
+                    return;
+                }
                 if (typeof incoming !== "string") return;
                 carry += incoming;
                 newline = carry.lastIndexOf("\n");
@@ -261,9 +306,11 @@
             source.onerror = function () {
                 if (source && source.readyState === 2) {
                     // CLOSED: the server refused the stream (not a dropped connection).
-                    setStatus(opened
-                        ? "The connection was closed. Click Follow live to reconnect."
-                        : "Could not start following logs. Reload the page: any problem with Docker or this stack is shown at the top.");
+                    setStatus(
+                        opened
+                            ? "The connection was closed. Click Follow live to reconnect."
+                            : "Could not start following logs. Reload the page: any problem with Docker or this stack is shown at the top.",
+                    );
                     shutdown(false);
                     return;
                 }
@@ -272,14 +319,18 @@
         }
 
         follow.addEventListener("click", openFollow);
-        if (refresh) refresh.addEventListener("click", function () { if (!source) loadSnapshot(); });
+        if (refresh)
+            refresh.addEventListener("click", function () {
+                if (!source) loadSnapshot();
+            });
         /* In-place refresh like Refresh: without JavaScript the form submits
          * natively to the plain-text snapshot. */
         var form = document.getElementById("logs-form");
-        if (form) form.addEventListener("submit", function (e) {
-            e.preventDefault();
-            if (!source) loadSnapshot();
-        });
+        if (form)
+            form.addEventListener("submit", function (e) {
+                e.preventDefault();
+                if (!source) loadSnapshot();
+            });
         stop.addEventListener("click", function () {
             setStatus("Stopped following.");
             shutdown(false);
@@ -294,7 +345,9 @@
         }
         if (service) service.addEventListener("change", reselect);
         if (tail) tail.addEventListener("change", reselect);
-        window.addEventListener("pagehide", function () { shutdown(false); });
+        window.addEventListener("pagehide", function () {
+            shutdown(false);
+        });
         // Show history on open, without starting a permanent follow.
         loadSnapshot();
     }
@@ -309,8 +362,10 @@
         if (!url || !output || typeof fetch !== "function") return;
         function load() {
             if (status) status.textContent = "Loading recent lines…";
-            fetch(url, { headers: { "Accept": "text/plain" } })
-                .then(function (response) { return response.text(); })
+            fetch(url, { headers: { Accept: "text/plain" } })
+                .then(function (response) {
+                    return response.text();
+                })
                 .then(function (text) {
                     output.textContent = localizeLogText(text);
                     output.scrollTop = output.scrollHeight;
@@ -356,8 +411,12 @@
         var dirty = false;
         var submitting = false;
         var hint;
-        form.addEventListener("input", function () { dirty = true; });
-        form.addEventListener("submit", function () { submitting = true; });
+        form.addEventListener("input", function () {
+            dirty = true;
+        });
+        form.addEventListener("submit", function () {
+            submitting = true;
+        });
         window.addEventListener("beforeunload", function (e) {
             if (dirty && !submitting) {
                 e.preventDefault();
@@ -386,7 +445,10 @@
     function wireIndent(area) {
         var release = false;
         area.addEventListener("keydown", function (e) {
-            if (e.key === "Escape") { release = true; return; }
+            if (e.key === "Escape") {
+                release = true;
+                return;
+            }
             if (e.key !== "Tab" || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || release) {
                 if (e.key !== "Shift") release = false;
                 return;
@@ -398,14 +460,18 @@
                 area.dispatchEvent(new Event("input", { bubbles: true }));
             }
         });
-        area.addEventListener("blur", function () { release = false; });
+        area.addEventListener("blur", function () {
+            release = false;
+        });
     }
 
     /* Hide secret values until asked, e.g. when the screen is shared. The field
      * is only hidden, not removed, so the form still submits it unchanged. */
     function maskSensitive(area) {
         if (!area.value) return;
-        var lines = area.value.split("\n").filter(function (line) { return line.trim() !== ""; }).length;
+        var lines = area.value.split("\n").filter(function (line) {
+            return line.trim() !== "";
+        }).length;
         var button = document.createElement("button");
         button.type = "button";
         button.className = "btn reveal";
@@ -430,7 +496,9 @@
         var mobile = null;
         try {
             mobile = window.matchMedia("(max-width: 52rem)");
-        } catch { mobile = null; }
+        } catch {
+            mobile = null;
+        }
         if (!mobile) return;
         function syncNavigation() {
             sidebar.open = !mobile.matches;
@@ -511,7 +579,9 @@
             if (!form) return;
             var fallback = form.querySelector("[data-auto-submit-fallback]");
             if (fallback) fallback.hidden = true;
-            select.addEventListener("change", function () { form.submit(); });
+            select.addEventListener("change", function () {
+                form.submit();
+            });
         });
     }
 
@@ -522,7 +592,7 @@
      * paused while the tab is hidden, aborted on disable or page hide. No
      * history is kept; every value is inserted via textContent, never HTML. */
     var SERVER_CATEGORY = { managed: "Managed", external: "External Compose", standalone: "Standalone" };
-    var SERVER_ISSUE = { "unhealthy": "Unhealthy", "restarting": "Restarting", "exited-nonzero": "Exited with an error" };
+    var SERVER_ISSUE = { unhealthy: "Unhealthy", restarting: "Restarting", "exited-nonzero": "Exited with an error" };
 
     function element(tag, className, text) {
         var node = document.createElement(tag);
@@ -554,15 +624,21 @@
 
     function setRows(tbody, nodes) {
         while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
-        Array.prototype.forEach.call(nodes, function (node) { tbody.appendChild(node); });
+        Array.prototype.forEach.call(nodes, function (node) {
+            tbody.appendChild(node);
+        });
     }
 
     function formatBytesValue(bytes) {
         if (bytes === null || bytes === undefined || !isFinite(bytes)) return "—";
         if (bytes < 1024) return Math.round(bytes) + " B";
         var units = ["KiB", "MiB", "GiB", "TiB", "PiB"];
-        var value = bytes / 1024, unit = 0;
-        while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+        var value = bytes / 1024,
+            unit = 0;
+        while (value >= 1024 && unit < units.length - 1) {
+            value /= 1024;
+            unit += 1;
+        }
         return (value >= 10 ? Math.round(value) : value.toFixed(1)) + " " + units[unit];
     }
 
@@ -588,8 +664,17 @@
         row.appendChild(element("td", "num", formatPercentValue(stat.cpuPercent)));
         /* Used memory only, the limit on hover: same as the server render. */
         var memoryTd = element("td", "num");
-        var memory = element("span", null, (stat.memUsedBytes === null || stat.memUsedBytes === undefined) ? "—" : formatBytesValue(stat.memUsedBytes));
-        if (stat.memUsedBytes !== null && stat.memUsedBytes !== undefined && stat.memLimitBytes !== null && stat.memLimitBytes !== undefined) {
+        var memory = element(
+            "span",
+            null,
+            stat.memUsedBytes === null || stat.memUsedBytes === undefined ? "—" : formatBytesValue(stat.memUsedBytes),
+        );
+        if (
+            stat.memUsedBytes !== null &&
+            stat.memUsedBytes !== undefined &&
+            stat.memLimitBytes !== null &&
+            stat.memLimitBytes !== undefined
+        ) {
             memory.setAttribute("title", "of " + formatBytesValue(stat.memLimitBytes));
         }
         memoryTd.appendChild(memory);
@@ -618,7 +703,10 @@
         svg.setAttribute("preserveAspectRatio", "none");
         svg.setAttribute("aria-hidden", "true");
         svg.setAttribute("focusable", "false");
-        [["bar-track", 100], ["bar-fill", Math.round(value * 1000) / 10]].forEach(function (part) {
+        [
+            ["bar-track", 100],
+            ["bar-fill", Math.round(value * 1000) / 10],
+        ].forEach(function (part) {
             var rect = document.createElementNS(SVG_NS, "rect");
             rect.setAttribute("class", part[0]);
             rect.setAttribute("width", String(part[1]));
@@ -641,7 +729,9 @@
         stackTd.appendChild(anchor("/stacks/" + encodeURIComponent(usage.stack), usage.stack));
         row.appendChild(stackTd);
         row.appendChild(element("td", "num", formatPercentValue(usage.cpuPercent)));
-        row.appendChild(withBar(element("td", "num", formatBytesValue(usage.memUsedBytes)), memoryTotal ? usage.memUsedBytes / memoryTotal : null));
+        row.appendChild(
+            withBar(element("td", "num", formatBytesValue(usage.memUsedBytes)), memoryTotal ? usage.memUsedBytes / memoryTotal : null),
+        );
         row.appendChild(element("td", "num", String(usage.containers)));
         return row;
     }
@@ -652,7 +742,13 @@
         nameTd.appendChild(anchor("/containers/" + encodeURIComponent(item.id), item.name));
         row.appendChild(nameTd);
         var issueTd = element("td");
-        issueTd.appendChild(element("span", "state " + (item.reason === "unhealthy" ? "state-failed" : "state-stopped"), SERVER_ISSUE[item.reason] || item.reason));
+        issueTd.appendChild(
+            element(
+                "span",
+                "state " + (item.reason === "unhealthy" ? "state-failed" : "state-stopped"),
+                SERVER_ISSUE[item.reason] || item.reason,
+            ),
+        );
         row.appendChild(issueTd);
         var stackTd = element("td");
         if (item.stack) stackTd.appendChild(anchor("/stacks/" + encodeURIComponent(item.stack), item.stack));
@@ -694,7 +790,10 @@
             if (attentionCount) attentionCount.textContent = String(payload.attention.length);
             const attentionBody = document.getElementById("live-attention-rows");
             if (attentionBody) {
-                setRows(attentionBody, payload.attention.length > 0 ? payload.attention.map(attentionRow) : [emptyRow(3, "No current issues.")]);
+                setRows(
+                    attentionBody,
+                    payload.attention.length > 0 ? payload.attention.map(attentionRow) : [emptyRow(3, "No current issues.")],
+                );
             }
         }
         if (payload.stats !== null && payload.stats !== undefined) {
@@ -710,7 +809,14 @@
             const stacksBody = document.getElementById("live-stacks");
             if (stacksBody) {
                 var memoryTotal = Number(stacksBody.getAttribute("data-mem-total")) || null;
-                setRows(stacksBody, payload.stacks.length > 0 ? payload.stacks.map(function (usage) { return stackRow(usage, memoryTotal); }) : [emptyRow(4, "No managed running containers.")]);
+                setRows(
+                    stacksBody,
+                    payload.stacks.length > 0
+                        ? payload.stacks.map(function (usage) {
+                              return stackRow(usage, memoryTotal);
+                          })
+                        : [emptyRow(4, "No managed running containers.")],
+                );
             }
         }
         const timeEl = document.getElementById("live-read-at");
@@ -727,12 +833,35 @@
         if (!url || !toggle || typeof fetch !== "function") return;
         var interval = parseInt(section.getAttribute("data-live-interval"), 10);
         if (!isFinite(interval) || interval < 1000) interval = 15000;
-        var enabled = false, timer = null, controller = null, lastSuccess = "";
+        var enabled = false,
+            timer = null,
+            controller = null,
+            lastSuccess = "";
 
-        function setStatus(text) { if (status) status.textContent = text; }
-        function clearTimer() { if (timer) { clearTimeout(timer); timer = null; } }
-        function abortInFlight() { if (controller) { try { controller.abort(); } catch (e) { /* ignore */ } controller = null; } }
-        function stop() { enabled = false; clearTimer(); abortInFlight(); }
+        function setStatus(text) {
+            if (status) status.textContent = text;
+        }
+        function clearTimer() {
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        }
+        function abortInFlight() {
+            if (controller) {
+                try {
+                    controller.abort();
+                } catch (e) {
+                    /* ignore */
+                }
+                controller = null;
+            }
+        }
+        function stop() {
+            enabled = false;
+            clearTimer();
+            abortInFlight();
+        }
 
         function schedule() {
             clearTimer();
@@ -743,7 +872,7 @@
         function tick() {
             if (!enabled || document.hidden) return;
             controller = new AbortController();
-            fetch(url, { headers: { "Accept": "application/json" }, signal: controller.signal })
+            fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal })
                 .then(function (response) {
                     if (response.status === 401) {
                         // The session ended: stop instead of polling forever.
@@ -765,20 +894,27 @@
                 .catch(function (error) {
                     if (error && error.name === "AbortError") return;
                     // Keep the last successful values visible, clearly marked as old.
-                    setStatus(lastSuccess
-                        ? "Live update failed · last successful refresh " + lastSuccess
-                        : "Live update failed.");
+                    setStatus(lastSuccess ? "Live update failed · last successful refresh " + lastSuccess : "Live update failed.");
                     schedule();
                 });
         }
 
         toggle.addEventListener("change", function () {
-            if (toggle.checked) { enabled = true; tick(); }
-            else { stop(); setStatus(""); }
+            if (toggle.checked) {
+                enabled = true;
+                tick();
+            } else {
+                stop();
+                setStatus("");
+            }
         });
         document.addEventListener("visibilitychange", function () {
-            if (document.hidden) { clearTimer(); abortInFlight(); }
-            else if (enabled) { tick(); }
+            if (document.hidden) {
+                clearTimer();
+                abortInFlight();
+            } else if (enabled) {
+                tick();
+            }
         });
         window.addEventListener("pagehide", stop);
     }
@@ -794,7 +930,10 @@
             fetch("/health/live", { cache: "no-store" })
                 .then(function (response) {
                     if (!response.ok) throw new Error("status " + response.status);
-                    if (wentDown || Date.now() - startedAt > 20000) { window.location.reload(); return; }
+                    if (wentDown || Date.now() - startedAt > 20000) {
+                        window.location.reload();
+                        return;
+                    }
                     setTimeout(tick, 2000);
                 })
                 .catch(function () {

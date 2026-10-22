@@ -7,10 +7,19 @@ import type { CommandResult } from "../src/docker.ts";
 const ok: CommandResult = { code: 0, stdout: "done", stderr: "", timedOut: false, truncated: false };
 const target: ComposeTarget = { composeFile: "/stacks/demo/compose.yaml", cwd: "/stacks/demo" };
 
-function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "start" | "restart" | "down", (target: ComposeTarget) => Promise<CommandResult>>> = {}): ComposeProvider {
-    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
-    const run = (kind: "pull" | "up" | "stop" | "start" | "restart" | "down") =>
-        async (target: ComposeTarget) => (handlers[kind] ?? (async () => ok))(target);
+function fakeProvider(
+    handlers: Partial<
+        Record<"pull" | "up" | "stop" | "start" | "restart" | "down", (target: ComposeTarget) => Promise<CommandResult>>
+    > = {},
+): ComposeProvider {
+    const caps: ComposeCapabilities = {
+        engine: "fake",
+        available: true,
+        operations: { ls: true, ps: true, config: true, logs: true },
+        configHashes: false,
+    };
+    const run = (kind: "pull" | "up" | "stop" | "start" | "restart" | "down") => async (target: ComposeTarget) =>
+        (handlers[kind] ?? (async () => ok))(target);
     return {
         engine: "fake",
         capabilities: () => caps,
@@ -41,7 +50,7 @@ function fakeProvider(handlers: Partial<Record<"pull" | "up" | "stop" | "start" 
 
 async function settle(manager: OperationManager): Promise<void> {
     for (let i = 0; i < 200 && manager.activeCount() > 0; i += 1) {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
     }
 }
 
@@ -87,7 +96,9 @@ test("treats a timeout as unknown, never as success", async () => {
 
 test("rejects a second concurrent operation on the same stack", async () => {
     let release!: () => void;
-    const gate = new Promise<CommandResult>(resolve => { release = () => resolve(ok); });
+    const gate = new Promise<CommandResult>((resolve) => {
+        release = () => resolve(ok);
+    });
     const manager = new OperationManager(new StackLocks(), fakeProvider({ up: () => gate }), { timeoutMs: 1000, maxBytes: 10_000 });
     manager.start({ stack: "demo", action: "up", target });
     expect(() => manager.start({ stack: "demo", action: "stop", target })).toThrow(StackBusyError);
@@ -101,8 +112,14 @@ test("rejects a second concurrent operation on the same stack", async () => {
 test("pull-up pulls first and does not up when the pull fails", async () => {
     const calls: string[] = [];
     const provider = fakeProvider({
-        pull: async () => { calls.push("pull"); return { code: 1, stdout: "", stderr: "no network", timedOut: false, truncated: false }; },
-        up: async () => { calls.push("up"); return ok; },
+        pull: async () => {
+            calls.push("pull");
+            return { code: 1, stdout: "", stderr: "no network", timedOut: false, truncated: false };
+        },
+        up: async () => {
+            calls.push("up");
+            return ok;
+        },
     });
     const manager = new OperationManager(new StackLocks(), provider, { timeoutMs: 1000, maxBytes: 10_000 });
     manager.start({ stack: "demo", action: "pull-up", target });
@@ -114,8 +131,14 @@ test("pull-up pulls first and does not up when the pull fails", async () => {
 test("pull-up pulls then ups on success", async () => {
     const calls: string[] = [];
     const provider = fakeProvider({
-        pull: async () => { calls.push("pull"); return ok; },
-        up: async () => { calls.push("up"); return ok; },
+        pull: async () => {
+            calls.push("pull");
+            return ok;
+        },
+        up: async () => {
+            calls.push("up");
+            return ok;
+        },
     });
     const manager = new OperationManager(new StackLocks(), provider, { timeoutMs: 1000, maxBytes: 10_000 });
     manager.start({ stack: "demo", action: "pull-up", target });
@@ -125,7 +148,9 @@ test("pull-up pulls then ups on success", async () => {
 });
 
 test("truncates oversized output", async () => {
-    const provider = fakeProvider({ up: async () => ({ code: 0, stdout: "x".repeat(1000), stderr: "", timedOut: false, truncated: false }) });
+    const provider = fakeProvider({
+        up: async () => ({ code: 0, stdout: "x".repeat(1000), stderr: "", timedOut: false, truncated: false }),
+    });
     const manager = new OperationManager(new StackLocks(), provider, { timeoutMs: 1000, maxBytes: 100 });
     manager.start({ stack: "demo", action: "up", target });
     await settle(manager);
@@ -148,10 +173,12 @@ test("refuses new operations immediately on refuseNew", () => {
 
 test("subscribers receive live updates and unsubscribe without cancelling", async () => {
     let release!: () => void;
-    const gate = new Promise<CommandResult>(resolve => { release = () => resolve(ok); });
+    const gate = new Promise<CommandResult>((resolve) => {
+        release = () => resolve(ok);
+    });
     const manager = new OperationManager(new StackLocks(), fakeProvider({ up: () => gate }), { timeoutMs: 1000, maxBytes: 10_000 });
     const seen: string[] = [];
-    const sub = manager.subscribe("demo", operation => seen.push(operation.status));
+    const sub = manager.subscribe("demo", (operation) => seen.push(operation.status));
     expect(sub.snapshot).toBeNull();
     expect(manager.subscriberCount("demo")).toBe(1);
     manager.start({ stack: "demo", action: "up", target });
@@ -177,9 +204,11 @@ test("subscribe returns the current snapshot for late observers", async () => {
 
 test("forwards live chunks before completion without duplicating the result", async () => {
     let resolveUp!: (result: CommandResult) => void;
-    const gate = new Promise<CommandResult>(resolve => { resolveUp = resolve; });
+    const gate = new Promise<CommandResult>((resolve) => {
+        resolveUp = resolve;
+    });
     const provider = fakeProvider({
-        up: target => {
+        up: (target) => {
             target.onOutput?.("pulling layer 1\n");
             target.onOutput?.("pulling layer 2\n");
             return gate;
@@ -187,7 +216,7 @@ test("forwards live chunks before completion without duplicating the result", as
     });
     const manager = new OperationManager(new StackLocks(), provider, { timeoutMs: 1000, maxBytes: 10_000 });
     const updates: string[] = [];
-    manager.subscribe("demo", operation => updates.push(operation.output));
+    manager.subscribe("demo", (operation) => updates.push(operation.output));
     const started = manager.start({ stack: "demo", action: "up", target });
     // Progress is visible while the command still runs.
     expect(started.output).toContain("pulling layer 1");
@@ -205,7 +234,7 @@ test("pull-up keeps buffered pull output alongside streamed up output", async ()
     const pulled: CommandResult = { code: 0, stdout: "pulled", stderr: "", timedOut: false, truncated: false };
     const provider = fakeProvider({
         pull: async () => pulled,
-        up: async target => {
+        up: async (target) => {
             target.onOutput?.("starting\n");
             return ok;
         },
@@ -221,10 +250,12 @@ test("pull-up keeps buffered pull output alongside streamed up output", async ()
 });
 
 test("preserves fragmented text and CRLF exactly", async () => {
-    const provider = fakeProvider({ up: async target => {
-        for (const chunk of ["hel", "lo\r", "\n", "é🙂\n"]) target.onOutput?.(chunk);
-        return ok;
-    } });
+    const provider = fakeProvider({
+        up: async (target) => {
+            for (const chunk of ["hel", "lo\r", "\n", "é🙂\n"]) target.onOutput?.(chunk);
+            return ok;
+        },
+    });
     const manager = new OperationManager(new StackLocks(), provider, { timeoutMs: 1000, maxBytes: 1000 });
     manager.start({ stack: "demo", action: "up", target });
     await settle(manager);
@@ -244,7 +275,12 @@ test("retains the stack lock after unconfirmed process termination", async () =>
 
 test("different stacks cannot mutate the same project concurrently", async () => {
     let finish!: (result: CommandResult) => void;
-    const provider = fakeProvider({ up: () => new Promise(resolve => { finish = resolve; }) });
+    const provider = fakeProvider({
+        up: () =>
+            new Promise((resolve) => {
+                finish = resolve;
+            }),
+    });
     const manager = new OperationManager(new StackLocks(), provider, { timeoutMs: 1000, maxBytes: 1000 });
     const shared = { ...target, project: "shared" };
     manager.start({ stack: "one", action: "up", target: shared });
@@ -259,10 +295,12 @@ test("startApp runs an application action under the same stack lock", async () =
     let finish!: (result: CommandResult) => void;
     const manager = new OperationManager(new StackLocks(), fakeProvider(), { timeoutMs: 1000, maxBytes: 10_000 });
     const seen: string[] = [];
-    manager.subscribe("demo", operation => seen.push(operation.status));
+    manager.subscribe("demo", (operation) => seen.push(operation.status));
     const run = (context: { onOutput: (chunk: string) => void }) => {
         context.onOutput("working\n");
-        return new Promise<CommandResult>(resolve => { finish = resolve; });
+        return new Promise<CommandResult>((resolve) => {
+            finish = resolve;
+        });
     };
     const started = manager.startApp({ stack: "demo", source: "backend", script: "db:migrate", label: "Apply migrations", run });
     expect(started.status).toBe("running");
@@ -320,7 +358,11 @@ test("startApp notifies the finish callback exactly once for a refusal", async (
     // is emitted once: a double emit would write two audit lines for one refusal.
     const finished: string[] = [];
     const manager = new OperationManager(new StackLocks(), fakeProvider(), {
-        timeoutMs: 1000, maxBytes: 10_000, onFinish: operation => { finished.push(operation.status); },
+        timeoutMs: 1000,
+        maxBytes: 10_000,
+        onFinish: (operation) => {
+            finished.push(operation.status);
+        },
     });
     const run = async () => ({ refused: "changed" });
     manager.startApp({ stack: "demo", source: "backend", script: "db:migrate", label: "x", run });

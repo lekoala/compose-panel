@@ -1,5 +1,12 @@
 import type { ComposeProvider } from "./compose-provider.ts";
-import { parseComposeImages, parseContainerImages, parseImageInspect, type ComposeService, type ImageDetails, type RecoveredImage } from "./compose-state.ts";
+import {
+    parseComposeImages,
+    parseContainerImages,
+    parseImageInspect,
+    type ComposeService,
+    type ImageDetails,
+    type RecoveredImage,
+} from "./compose-state.ts";
 import { deployedImage, type DeployedImage } from "./deployment.ts";
 
 /** What the panel shows about one side of an update. */
@@ -45,40 +52,48 @@ export async function loadImageUpdates(
     try {
         // A service whose `ps` image is a bare image ID most likely lost its tag
         // (see below), so it stays a candidate: its reference is recovered.
-        const candidates = services.filter(service => service.container && (deployed || (service.image && (isTagReference(service.image) || isImageId(service.image)))));
+        const candidates = services.filter(
+            (service) => service.container && (deployed || (service.image && (isTagReference(service.image) || isImageId(service.image)))),
+        );
         if (candidates.length === 0) return updates;
 
         const images = await provider.projectImages(input);
         if (images.code !== 0 || images.timedOut || images.truncated) return updates;
-        const running = new Map(parseComposeImages(images.stdout).map(row => [row.container, row.imageId]));
+        const running = new Map(parseComposeImages(images.stdout).map((row) => [row.container, row.imageId]));
 
-        const refs = candidates.filter(service => service.image && isTagReference(service.image)).map(service => service.image!);
-        const ids = candidates.map(service => running.get(service.container!)).filter((id): id is string => Boolean(id));
+        const refs = candidates.filter((service) => service.image && isTagReference(service.image)).map((service) => service.image!);
+        const ids = candidates.map((service) => running.get(service.container!)).filter((id): id is string => Boolean(id));
         // Missing references make the CLI exit non-zero while still printing
         // the others, so parse whatever came back.
         const inspected = await provider.inspectImages([...refs, ...ids]);
         if (inspected.timedOut || inspected.truncated) return updates;
         const details = parseImageInspect(inspected.stdout);
-        const byId = new Map(details.map(detail => [detail.id, detail]));
+        const byId = new Map(details.map((detail) => [detail.id, detail]));
 
         // With the containerd image store, an image disappears once its tag
         // moves, even while a container still runs it, and `compose ps` then
         // reports the bare image ID instead of the configured reference. The
         // container keeps both the OCI labels it inherited and that reference,
         // so read them from it, and only while it still reports the same image.
-        const orphaned = candidates.filter(service => {
+        const orphaned = candidates.filter((service) => {
             const id = running.get(service.container!);
             return id !== undefined && !byId.has(id);
         });
-        const fromContainers = orphaned.length > 0 ? await containerImages(provider, orphaned.map(service => service.container!)) : new Map<string, RecoveredImage>();
+        const fromContainers =
+            orphaned.length > 0
+                ? await containerImages(
+                      provider,
+                      orphaned.map((service) => service.container!),
+                  )
+                : new Map<string, RecoveredImage>();
         const recover = (service: ComposeService): RecoveredImage | undefined => {
             const recovered = fromContainers.get(service.container!);
             return recovered && recovered.detail.id === running.get(service.container!) ? recovered : undefined;
         };
 
         const recoveredRefs = orphaned
-            .filter(service => !service.image || !isTagReference(service.image))
-            .map(service => recover(service)?.reference)
+            .filter((service) => !service.image || !isTagReference(service.image))
+            .map((service) => recover(service)?.reference)
             .filter((ref): ref is string => Boolean(ref && isTagReference(ref) && !refs.includes(ref)));
         if (recoveredRefs.length > 0) {
             const more = await provider.inspectImages(recoveredRefs);
@@ -88,7 +103,7 @@ export async function loadImageUpdates(
         for (const service of candidates) {
             const runningId = running.get(service.container!);
             const recovered = recover(service);
-            const previous = runningId ? byId.get(runningId) ?? recovered?.detail : undefined;
+            const previous = runningId ? (byId.get(runningId) ?? recovered?.detail) : undefined;
             if (previous && deployed) deployed.push(deployedImage(service.name, service.container!, previous));
             const image = service.image && isTagReference(service.image) ? service.image : recovered?.reference;
             if (!image || !isTagReference(image)) continue;
@@ -125,7 +140,10 @@ function isImageId(image: string): boolean {
 
 /** `nginx` → `nginx:latest`; registry prefixes for Docker Hub are dropped like Docker does. */
 export function normalizeReference(ref: string): string {
-    let value = ref.replace(/^docker\.io\/library\//, "").replace(/^docker\.io\//, "").replace(/^index\.docker\.io\/(library\/)?/, "");
+    let value = ref
+        .replace(/^docker\.io\/library\//, "")
+        .replace(/^docker\.io\//, "")
+        .replace(/^index\.docker\.io\/(library\/)?/, "");
     const lastSlash = value.lastIndexOf("/");
     if (!value.slice(lastSlash + 1).includes(":")) value = `${value}:latest`;
     return value;
@@ -133,7 +151,7 @@ export function normalizeReference(ref: string): string {
 
 export function findByTag(details: ImageDetails[], ref: string): ImageDetails | undefined {
     const wanted = normalizeReference(ref);
-    return details.find(detail => detail.repoTags.some(tag => normalizeReference(tag) === wanted));
+    return details.find((detail) => detail.repoTags.some((tag) => normalizeReference(tag) === wanted));
 }
 
 export function versionOf(detail: ImageDetails | undefined): ImageVersion {

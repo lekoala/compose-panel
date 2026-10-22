@@ -3,7 +3,18 @@ import { open, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { locateComposeFile, StackError, ENV_FILENAME } from "./stacks.ts";
 import { resolveProjectContext } from "./status.ts";
-import { backupFile, dirIdentity, ensureBackupDir, hashContent, randomSuffix, readFileSafe, sameDirIdentity, writeFileAtomic, type FileAttributes, type SafeFile } from "./fs-safe.ts";
+import {
+    backupFile,
+    dirIdentity,
+    ensureBackupDir,
+    hashContent,
+    randomSuffix,
+    readFileSafe,
+    sameDirIdentity,
+    writeFileAtomic,
+    type FileAttributes,
+    type SafeFile,
+} from "./fs-safe.ts";
 import type { ComposeProvider } from "./compose-provider.ts";
 import type { CommandResult } from "./docker.ts";
 
@@ -178,7 +189,14 @@ export function redactSecrets(text: string, secrets: string[]): string {
 }
 
 function firstLines(text: string, maxLines = 6, maxChars = 1000): string {
-    return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(0, maxLines).join("\n").slice(0, maxChars).trim();
+    return text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, maxLines)
+        .join("\n")
+        .slice(0, maxChars)
+        .trim();
 }
 
 export interface ValidationResult {
@@ -188,11 +206,21 @@ export interface ValidationResult {
 
 /** Shared creation/edit diagnostics: redact before shortening, never show cut output. */
 export function configValidationResult(result: CommandResult, secrets: string[]): ValidationResult {
-    if (result.timedOut) return { ok: false, message: "docker compose config did not answer in time. Check that Docker is responsive, then try again." };
+    if (result.timedOut)
+        return { ok: false, message: "docker compose config did not answer in time. Check that Docker is responsive, then try again." };
     // A secret crossing the runner's output cap may survive as a fragment.
-    if (result.truncated) return { ok: false, message: "docker compose config output was too long to show safely. Check the draft with docker compose config --quiet using the CLI." };
+    if (result.truncated)
+        return {
+            ok: false,
+            message:
+                "docker compose config output was too long to show safely. Check the draft with docker compose config --quiet using the CLI.",
+        };
     if (result.code !== 0) {
-        return { ok: false, message: firstLines(redactSecrets(result.stderr, secrets)) || "docker compose config rejected the file without giving a reason." };
+        return {
+            ok: false,
+            message:
+                firstLines(redactSecrets(result.stderr, secrets)) || "docker compose config rejected the file without giving a reason.",
+        };
     }
     return { ok: true, message: null };
 }
@@ -286,9 +314,8 @@ export async function saveEditableStack(
     // Keep the original Linux directory inode alive across validation. A
     // deleted inode may otherwise be recycled immediately for a replacement,
     // defeating a later dev/ino comparison even with identical file content.
-    const pinned = process.platform === "linux"
-        ? await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
-        : null;
+    const pinned =
+        process.platform === "linux" ? await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW) : null;
     try {
         const stackIdentity = pinned ? await pinned.stat() : await dirIdentity(directory);
 
@@ -298,18 +325,25 @@ export async function saveEditableStack(
         const currentEnvExists = currentEnv !== null;
         const currentEnvHash = currentEnv ? currentEnv.hash : ABSENT_HASH;
 
-        if (currentCompose.hash !== request.baseComposeHash) throw new StackConflictError("The Compose file changed on disk after you opened the editor.");
+        if (currentCompose.hash !== request.baseComposeHash)
+            throw new StackConflictError("The Compose file changed on disk after you opened the editor.");
         if (currentEnvExists !== request.baseEnvExists || currentEnvHash !== request.baseEnvHash) {
             throw new StackConflictError("The .env file changed on disk after you opened the editor.");
         }
 
         const composeChanged = request.composeSource !== currentCompose.source;
         const envDesiredExists = request.baseEnvExists || request.envSource.length > 0;
-        const envChanged = envDesiredExists !== currentEnvExists
-            || (envDesiredExists && currentEnv !== null && request.envSource !== currentEnv.source);
+        const envChanged =
+            envDesiredExists !== currentEnvExists || (envDesiredExists && currentEnv !== null && request.envSource !== currentEnv.source);
 
         if (!composeChanged && !envChanged) {
-            return { changed: false, composeHash: currentCompose.hash, envHash: currentEnvHash, envExists: currentEnvExists, backupPaths: [] };
+            return {
+                changed: false,
+                composeHash: currentCompose.hash,
+                envHash: currentEnvHash,
+                envExists: currentEnvExists,
+                backupPaths: [],
+            };
         }
 
         const secrets = [...collectSecrets(currentEnv?.source ?? ""), ...collectSecrets(request.envSource)];
@@ -324,10 +358,11 @@ export async function saveEditableStack(
             request.composeSource,
             envChanged ? request.envSource : undefined,
             secrets,
-            context?.kind === "resolved" ? context.project ?? undefined : undefined,
+            context?.kind === "resolved" ? (context.project ?? undefined) : undefined,
             currentEnvExists ? envPath : null,
         );
-        if (!validation.ok) throw new StackValidationError(validation.message ?? "docker compose config rejected the file without giving a reason.");
+        if (!validation.ok)
+            throw new StackValidationError(validation.message ?? "docker compose config rejected the file without giving a reason.");
 
         // Validation awaits a subprocess for seconds; an external writer may have
         // acted meanwhile. Re-locate (presence/identity) and re-read both files:
@@ -377,7 +412,8 @@ export async function saveEditableStack(
                 composeWritten = true;
             }
             // A new .env is private and belongs to whoever owns the Compose file.
-            if (envChanged) await writer(envPath, request.envSource, freshEnv ?? { mode: 0o600, uid: freshCompose.uid, gid: freshCompose.gid });
+            if (envChanged)
+                await writer(envPath, request.envSource, freshEnv ?? { mode: 0o600, uid: freshCompose.uid, gid: freshCompose.gid });
         } catch (error) {
             if (!composeWritten) throw error;
             try {
@@ -401,5 +437,7 @@ export async function saveEditableStack(
             envExists: envDesiredExists,
             backupPaths,
         };
-    } finally { await pinned?.close(); }
+    } finally {
+        await pinned?.close();
+    }
 }

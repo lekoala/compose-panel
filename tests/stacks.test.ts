@@ -14,13 +14,32 @@ async function root(): Promise<string> {
     return resolveRoot(p);
 }
 afterEach(async () => {
-    await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
+    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe("stack name safety", () => {
-    for (const value of ["../secret", "..", ".", "UPPER", "with space", "x/y", "x\\y", "", "a".repeat(64),
+    for (const value of [
+        "../secret",
+        "..",
+        ".",
+        "UPPER",
+        "with space",
+        "x/y",
+        "x\\y",
+        "",
+        "a".repeat(64),
         // Trapped by single-decode then allow-list: `$` anchors never accept these.
-        "a\n", "a\r", "a\r\n", "a\0b", "a%0A", "a%00", "a%2fb", "a.", "-lead", ".env"]) {
+        "a\n",
+        "a\r",
+        "a\r\n",
+        "a\0b",
+        "a%0A",
+        "a%00",
+        "a%2fb",
+        "a.",
+        "-lead",
+        ".env",
+    ]) {
         test(`rejects ${JSON.stringify(value)}`, () => expect(() => validateStackName(value)).toThrow());
     }
     test("accepts ordinary folder names", () => expect(() => validateStackName("backend_2-prod")).not.toThrow());

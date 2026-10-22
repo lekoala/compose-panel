@@ -31,7 +31,7 @@ interface FakeCaddyOptions {
 function fakeCaddyRunner(options: FakeCaddyOptions = {}): { run: HelperDeps["runCaddy"]; calls: string[][] } {
     const calls: string[][] = [];
     const reloads = [...(options.reload ?? ["ok"])];
-    const run: HelperDeps["runCaddy"] = async args => {
+    const run: HelperDeps["runCaddy"] = async (args) => {
         calls.push(args);
         const [command] = args;
         if (command === "validate") {
@@ -41,11 +41,17 @@ function fakeCaddyRunner(options: FakeCaddyOptions = {}): { run: HelperDeps["run
             if (options.adaptHosts === "fail") return { ...okResult, code: 1 };
             // Like a real import: every managed file present on disk routes
             // its domain, on top of what the rest of the config declares.
-            const managed = options.adaptRoute === false ? [] : readdirSync(managedDir)
-                .filter(name => name.endsWith(".caddy"))
-                .map(name => name.slice(0, -".caddy".length));
+            const managed =
+                options.adaptRoute === false
+                    ? []
+                    : readdirSync(managedDir)
+                          .filter((name) => name.endsWith(".caddy"))
+                          .map((name) => name.slice(0, -".caddy".length));
             const hosts = [...(options.adaptHosts ?? []), ...managed];
-            return { ...okResult, stdout: JSON.stringify({ apps: { http: { servers: { srv0: { routes: [{ match: [{ host: hosts }] }] } } } } }) };
+            return {
+                ...okResult,
+                stdout: JSON.stringify({ apps: { http: { servers: { srv0: { routes: [{ match: [{ host: hosts }] }] } } } } }),
+            };
         }
         if (command === "reload") {
             const next = reloads.shift() ?? "ok";
@@ -80,7 +86,7 @@ afterEach(async () => {
 });
 
 async function managedFiles(): Promise<string[]> {
-    return (await readdir(managedDir)).filter(name => name.endsWith(".caddy")).sort();
+    return (await readdir(managedDir)).filter((name) => name.endsWith(".caddy")).sort();
 }
 
 describe("parseHelperEnv", () => {
@@ -122,7 +128,8 @@ describe("importConfiguredIn and adaptContainsDomain", () => {
     });
 
     test("detects a domain declared exactly or through a single-level wildcard", () => {
-        const adapted = (hosts: string[]): string => JSON.stringify({ apps: { http: { servers: { srv0: { routes: [{ match: [{ host: hosts }] }] } } } } });
+        const adapted = (hosts: string[]): string =>
+            JSON.stringify({ apps: { http: { servers: { srv0: { routes: [{ match: [{ host: hosts }] }] } } } } });
         expect(adaptDeclaresDomain(adapted(["app.example.com"]), "app.example.com")).toBe(true);
         expect(adaptDeclaresDomain(adapted(["*.example.com"]), "app.example.com")).toBe(true);
         expect(adaptDeclaresDomain(adapted(["*.example.com"]), "a.b.example.com")).toBe(false);
@@ -139,9 +146,10 @@ describe("attach", () => {
         const fake = fakeCaddyRunner();
         const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
         expect(response).toEqual({ ok: true, action: "attach", unchanged: false });
-        expect(await readFile(join(managedDir, "app.example.com.caddy"), "utf8"))
-            .toBe(buildSiteFile({ domain: "app.example.com", stack: "web", service: "web", port: 8080 }));
-        expect(fake.calls.map(call => call[0])).toEqual(["adapt", "validate", "adapt", "reload"]);
+        expect(await readFile(join(managedDir, "app.example.com.caddy"), "utf8")).toBe(
+            buildSiteFile({ domain: "app.example.com", stack: "web", service: "web", port: 8080 }),
+        );
+        expect(fake.calls.map((call) => call[0])).toEqual(["adapt", "validate", "adapt", "reload"]);
     });
 
     test("repeating the same attach is a no-op without reload", async () => {
@@ -155,7 +163,11 @@ describe("attach", () => {
 
     test("refuses invalid input without touching the directory or Caddy", async () => {
         const fake = fakeCaddyRunner();
-        const response = await runHelperRequest({ action: "attach", domain: "*.example.com", stack: "web", service: "web", port: 8080 }, env, { runCaddy: fake.run });
+        const response = await runHelperRequest(
+            { action: "attach", domain: "*.example.com", stack: "web", service: "web", port: 8080 },
+            env,
+            { runCaddy: fake.run },
+        );
         expect(response.ok).toBe(false);
         expect((response as { code: string }).code).toBe("invalid");
         expect(await managedFiles()).toEqual([]);
@@ -165,10 +177,18 @@ describe("attach", () => {
     test("refuses a foreign file and a differing managed file", async () => {
         const fake = fakeCaddyRunner();
         await writeFile(join(managedDir, "shop.example.com.caddy"), "shop.example.com {\n\treverse_proxy 127.0.0.1:8080\n}\n");
-        const foreign = await runHelperRequest({ action: "attach", domain: "shop.example.com", stack: "web", service: "web", port: 8080 }, env, { runCaddy: fake.run });
+        const foreign = await runHelperRequest(
+            { action: "attach", domain: "shop.example.com", stack: "web", service: "web", port: 8080 },
+            env,
+            { runCaddy: fake.run },
+        );
         expect(foreign.ok).toBe(false);
         await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
-        const changed = await runHelperRequest({ action: "attach", domain: "app.example.com", stack: "web", service: "web", port: 9090 }, env, { runCaddy: fake.run });
+        const changed = await runHelperRequest(
+            { action: "attach", domain: "app.example.com", stack: "web", service: "web", port: 9090 },
+            env,
+            { runCaddy: fake.run },
+        );
         expect(changed.ok).toBe(false);
         expect(await readFile(join(managedDir, "app.example.com.caddy"), "utf8")).toContain("8080");
     });
@@ -188,7 +208,7 @@ describe("attach", () => {
             const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
             expect(response).toMatchObject({ ok: false, code: "conflict" });
             expect(await managedFiles()).toEqual([]);
-            expect(fake.calls.map(call => call[0])).toEqual(["adapt"]);
+            expect(fake.calls.map((call) => call[0])).toEqual(["adapt"]);
         }
     });
 
@@ -197,7 +217,7 @@ describe("attach", () => {
         const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
         expect(response).toMatchObject({ ok: false, code: "failed" });
         expect(await managedFiles()).toEqual([]);
-        expect(fake.calls.map(call => call[0])).toEqual(["adapt"]);
+        expect(fake.calls.map((call) => call[0])).toEqual(["adapt"]);
     });
 
     test("never overwrites a file that appears between the checks and the publish", async () => {
@@ -213,8 +233,8 @@ describe("attach", () => {
         const response = await runHelperRequest({ ...attach }, env, { runCaddy: racing });
         expect(response).toMatchObject({ ok: false, code: "conflict" });
         expect(await readFile(sitePath, "utf8")).toBe("external");
-        expect((await readdir(managedDir)).filter(name => name !== "app.example.com.caddy")).toEqual([]);
-        expect(fake.calls.map(call => call[0])).toEqual(["adapt"]);
+        expect((await readdir(managedDir)).filter((name) => name !== "app.example.com.caddy")).toEqual([]);
+        expect(fake.calls.map((call) => call[0])).toEqual(["adapt"]);
     });
 
     test("a failed validation removes the file without reloading", async () => {
@@ -222,7 +242,7 @@ describe("attach", () => {
         const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
         expect(response.ok).toBe(false);
         expect(await managedFiles()).toEqual([]);
-        expect(fake.calls.map(call => call[0])).toEqual(["adapt", "validate"]);
+        expect(fake.calls.map((call) => call[0])).toEqual(["adapt", "validate"]);
     });
 
     test("a route missing from the adapted config removes the file", async () => {
@@ -230,7 +250,7 @@ describe("attach", () => {
         const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
         expect(response.ok).toBe(false);
         expect(await managedFiles()).toEqual([]);
-        expect(fake.calls.map(call => call[0])).toEqual(["adapt", "validate", "adapt"]);
+        expect(fake.calls.map((call) => call[0])).toEqual(["adapt", "validate", "adapt"]);
     });
 
     test("a failed reload rolls back and reports failure", async () => {
@@ -238,7 +258,7 @@ describe("attach", () => {
         const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
         expect(response).toEqual({ ok: false, error: expect.stringContaining("restored"), code: "failed" });
         expect(await managedFiles()).toEqual([]);
-        expect(fake.calls.filter(call => call[0] === "reload")).toHaveLength(2);
+        expect(fake.calls.filter((call) => call[0] === "reload")).toHaveLength(2);
     });
 
     test("a failed rollback reports unknown", async () => {
@@ -250,8 +270,12 @@ describe("attach", () => {
     test("concurrent attaches serialize behind the lock", async () => {
         const fake = fakeCaddyRunner();
         const [first, second] = await Promise.all([
-            runHelperRequest({ action: "attach", domain: "a.example.com", stack: "web", service: "web", port: 8080 }, env, { runCaddy: fake.run }),
-            runHelperRequest({ action: "attach", domain: "b.example.com", stack: "web", service: "web", port: 8081 }, env, { runCaddy: fake.run }),
+            runHelperRequest({ action: "attach", domain: "a.example.com", stack: "web", service: "web", port: 8080 }, env, {
+                runCaddy: fake.run,
+            }),
+            runHelperRequest({ action: "attach", domain: "b.example.com", stack: "web", service: "web", port: 8081 }, env, {
+                runCaddy: fake.run,
+            }),
         ]);
         expect(first.ok).toBe(true);
         expect(second.ok).toBe(true);
@@ -334,7 +358,10 @@ describe("attach", () => {
 
     test("a managed file whose domain differs from its name is not adopted", async () => {
         const fake = fakeCaddyRunner();
-        await writeFile(join(managedDir, "app.example.com.caddy"), buildSiteFile({ domain: "shop.example.com", stack: "web", service: "web", port: 8080 }));
+        await writeFile(
+            join(managedDir, "app.example.com.caddy"),
+            buildSiteFile({ domain: "shop.example.com", stack: "web", service: "web", port: 8080 }),
+        );
         const response = await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
         expect(response).toMatchObject({ ok: false, code: "conflict" });
         expect(fake.calls).toEqual([]);
@@ -342,22 +369,27 @@ describe("attach", () => {
 
     // Needs a directory the helper cannot write: chmod is not honored for root
     // nor on Windows.
-    test.skipIf(process.platform !== "linux" || process.getuid?.() === 0)("an unwritable managed directory fails fast instead of waiting on a lock", async () => {
-        const fake = fakeCaddyRunner();
-        let sleeps = 0;
-        await chmod(managedDir, 0o555);
-        try {
-            const response = await runHelperRequest({ ...attach }, env, {
-                runCaddy: fake.run,
-                sleep: async () => { sleeps += 1; },
-            });
-            expect(response).toMatchObject({ ok: false, code: "unavailable" });
-        } finally {
-            await chmod(managedDir, 0o755);
-        }
-        expect(sleeps).toBe(0);
-        expect(fake.calls).toEqual([]);
-    });
+    test.skipIf(process.platform !== "linux" || process.getuid?.() === 0)(
+        "an unwritable managed directory fails fast instead of waiting on a lock",
+        async () => {
+            const fake = fakeCaddyRunner();
+            let sleeps = 0;
+            await chmod(managedDir, 0o555);
+            try {
+                const response = await runHelperRequest({ ...attach }, env, {
+                    runCaddy: fake.run,
+                    sleep: async () => {
+                        sleeps += 1;
+                    },
+                });
+                expect(response).toMatchObject({ ok: false, code: "unavailable" });
+            } finally {
+                await chmod(managedDir, 0o755);
+            }
+            expect(sleeps).toBe(0);
+            expect(fake.calls).toEqual([]);
+        },
+    );
 
     test("a validation failure with an unremovable candidate reports unknown", async () => {
         const sitePath = join(managedDir, "app.example.com.caddy");
@@ -383,7 +415,7 @@ describe("attach", () => {
         const sitePath = join(managedDir, "app.example.com.caddy");
         const blocking: HelperDeps["runCaddy"] = async (args, options) => {
             const result = await fake.run(args, options);
-            if (args[0] === "reload" && fake.calls.filter(call => call[0] === "reload").length === 2) {
+            if (args[0] === "reload" && fake.calls.filter((call) => call[0] === "reload").length === 2) {
                 // Occupy the site path so rename(backup, path) fails.
                 await mkdir(sitePath, { recursive: true });
                 await writeFile(join(sitePath, "kept.txt"), "kept");
@@ -393,7 +425,7 @@ describe("attach", () => {
         const blockingCalls: string[][] = fake.calls;
         const response = await runHelperRequest({ action: "detach", domain: "app.example.com", stack: "web" }, env, { runCaddy: blocking });
         expect(response).toEqual({ ok: false, error: expect.stringContaining("unknown"), code: "unknown" });
-        expect(blockingCalls.filter(call => call[0] === "reload")).toHaveLength(2);
+        expect(blockingCalls.filter((call) => call[0] === "reload")).toHaveLength(2);
         await rm(sitePath, { recursive: true, force: true });
     });
 
@@ -451,21 +483,25 @@ describe("detach", () => {
         const response = await runHelperRequest({ action: "detach", domain: "app.example.com", stack: "web" }, env, { runCaddy: fake.run });
         expect(response).toEqual({ ok: true, action: "detach" });
         expect(await managedFiles()).toEqual([]);
-        expect(fake.calls.slice(calls).map(call => call[0])).toEqual(["reload"]);
+        expect(fake.calls.slice(calls).map((call) => call[0])).toEqual(["reload"]);
     });
 
     test("refuses a missing, foreign or other-stack domain", async () => {
         const fake = fakeCaddyRunner();
-        expect((await runHelperRequest({ action: "detach", domain: "missing.example.com", stack: "web" }, env, { runCaddy: fake.run })).ok).toBe(false);
+        expect(
+            (await runHelperRequest({ action: "detach", domain: "missing.example.com", stack: "web" }, env, { runCaddy: fake.run })).ok,
+        ).toBe(false);
         await writeFile(join(managedDir, "shop.example.com.caddy"), "not managed\n");
-        expect((await runHelperRequest({ action: "detach", domain: "shop.example.com", stack: "web" }, env, { runCaddy: fake.run })).ok).toBe(false);
+        expect(
+            (await runHelperRequest({ action: "detach", domain: "shop.example.com", stack: "web" }, env, { runCaddy: fake.run })).ok,
+        ).toBe(false);
         expect(await managedFiles()).toEqual(["shop.example.com.caddy"]);
         await runHelperRequest({ ...attach }, env, { runCaddy: fake.run });
-        const reloads = fake.calls.filter(call => call[0] === "reload").length;
+        const reloads = fake.calls.filter((call) => call[0] === "reload").length;
         const other = await runHelperRequest({ action: "detach", domain: "app.example.com", stack: "other" }, env, { runCaddy: fake.run });
         expect(other.ok).toBe(false);
         expect(await managedFiles()).toContain("app.example.com.caddy");
-        expect(fake.calls.filter(call => call[0] === "reload")).toHaveLength(reloads);
+        expect(fake.calls.filter((call) => call[0] === "reload")).toHaveLength(reloads);
     });
 
     test("refuses a managed file whose domain differs from its name", async () => {
@@ -498,7 +534,9 @@ describe("detach", () => {
 describe("status and unknown shapes", () => {
     test("lists managed sites and flags unparseable files", async () => {
         const fake = fakeCaddyRunner();
-        await runHelperRequest({ action: "attach", domain: "app.example.com", stack: "web", service: "web", port: 8080 }, env, { runCaddy: fake.run });
+        await runHelperRequest({ action: "attach", domain: "app.example.com", stack: "web", service: "web", port: 8080 }, env, {
+            runCaddy: fake.run,
+        });
         await writeFile(join(managedDir, "broken.example.com.caddy"), "not managed\n");
         const response = await runHelperRequest({ action: "status" }, env, { runCaddy: fake.run });
         expect(response).toEqual({
@@ -512,7 +550,10 @@ describe("status and unknown shapes", () => {
     });
 
     test("flags a managed file whose domain differs from its name", async () => {
-        await writeFile(join(managedDir, "app.example.com.caddy"), buildSiteFile({ domain: "shop.example.com", stack: "web", service: "web", port: 8080 }));
+        await writeFile(
+            join(managedDir, "app.example.com.caddy"),
+            buildSiteFile({ domain: "shop.example.com", stack: "web", service: "web", port: 8080 }),
+        );
         const response = await runHelperRequest({ action: "status" }, env, { runCaddy: fakeCaddyRunner().run });
         expect(response).toMatchObject({ ok: true, action: "status", sites: [], unparseable: ["app.example.com.caddy"] });
     });
@@ -520,7 +561,10 @@ describe("status and unknown shapes", () => {
     test("reports a missing import without failing", async () => {
         await writeFile(mainConfig, "# no import here\n");
         const fake = fakeCaddyRunner();
-        const response = (await runHelperRequest({ action: "status" }, env, { runCaddy: fake.run })) as Extract<HelperResponse, { ok: true }>;
+        const response = (await runHelperRequest({ action: "status" }, env, { runCaddy: fake.run })) as Extract<
+            HelperResponse,
+            { ok: true }
+        >;
         expect(response.ok).toBe(true);
         if (response.ok && response.action === "status") expect(response.importConfigured).toBe(false);
     });
@@ -557,7 +601,7 @@ describe.skipIf(process.platform !== "linux")("caddy helper stdio entry", () => 
         '  for h in $CADDY_FAKE_HOSTS; do hosts_json="$hosts_json\\"$h\\","; done',
         '  for f in "$CADDY_MANAGED_DIR"/*.caddy; do [ -e "$f" ] && h=$(basename "$f" .caddy) && hosts_json="$hosts_json\\"$h\\","; done',
         '  hosts_json="[${hosts_json%,}]"',
-        "  echo '{\"apps\":{\"http\":{\"servers\":{\"srv0\":{\"routes\":[{\"match\":[{\"host\":'\"$hosts_json\"'}]}]}}}}}'",
+        '  echo \'{"apps":{"http":{"servers":{"srv0":{"routes":[{"match":[{"host":\'"$hosts_json"\'}]}]}}}}}\'',
         "  exit 0",
         "fi",
         'if [ "$cmd" = "reload" ]; then',
@@ -618,8 +662,9 @@ describe.skipIf(process.platform !== "linux")("caddy helper stdio entry", () => 
         const { code, stdout } = await invoke(`{"action":"attach","domain":"app.example.com","stack":"web","service":"web","port":8080}\n`);
         expect(code).toBe(0);
         expect(JSON.parse(stdout)).toEqual({ ok: true, action: "attach", unchanged: false });
-        expect(await readFile(join(entryManaged, "app.example.com.caddy"), "utf8"))
-            .toBe(buildSiteFile({ domain: "app.example.com", stack: "web", service: "web", port: 8080 }));
+        expect(await readFile(join(entryManaged, "app.example.com.caddy"), "utf8")).toBe(
+            buildSiteFile({ domain: "app.example.com", stack: "web", service: "web", port: 8080 }),
+        );
     });
 
     test("refuses without applying when the import is missing", async () => {
@@ -644,7 +689,12 @@ describe.skipIf(process.platform !== "linux")("caddy helper stdio entry", () => 
         expect(code).toBe(0);
         expect(JSON.parse(stdout)).toEqual({ ok: true, action: "attach", unchanged: false });
         // The attach could only finish after the external command released.
-        expect(await lstat(marker).then(() => true, () => false)).toBe(true);
+        expect(
+            await lstat(marker).then(
+                () => true,
+                () => false,
+            ),
+        ).toBe(true);
         expect(await external.exited).toBe(0);
         expect(await lstat(join(entryManaged, ".lock")).catch(() => null)).toBeNull();
     });

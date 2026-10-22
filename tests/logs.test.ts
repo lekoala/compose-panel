@@ -15,7 +15,12 @@ interface FollowCall {
 
 function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[] } {
     const calls: FollowCall[] = [];
-    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
+    const caps: ComposeCapabilities = {
+        engine: "fake",
+        available: true,
+        operations: { ls: true, ps: true, config: true, logs: true },
+        configHashes: false,
+    };
     const provider: ComposeProvider = {
         engine: "fake",
         capabilities: () => caps,
@@ -40,10 +45,11 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         down: async () => ok,
         serviceImage: async () => null,
         recreateService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
-        followLogs: (followTarget, onChunk, signal) => new Promise(resolve => {
-            calls.push({ target: followTarget, onChunk, signal });
-            signal.addEventListener("abort", () => resolve({ code: 137, timedOut: false }), { once: true });
-        }),
+        followLogs: (followTarget, onChunk, signal) =>
+            new Promise((resolve) => {
+                calls.push({ target: followTarget, onChunk, signal });
+                signal.addEventListener("abort", () => resolve({ code: 137, timedOut: false }), { once: true });
+            }),
     };
     return { provider, calls };
 }
@@ -60,7 +66,12 @@ function deferredProvider(): {
 } {
     const calls: FollowCall[] = [];
     const resolvers: (() => void)[] = [];
-    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
+    const caps: ComposeCapabilities = {
+        engine: "fake",
+        available: true,
+        operations: { ls: true, ps: true, config: true, logs: true },
+        configHashes: false,
+    };
     const provider: ComposeProvider = {
         engine: "fake",
         capabilities: () => caps,
@@ -85,11 +96,12 @@ function deferredProvider(): {
         down: async () => ok,
         serviceImage: async () => null,
         recreateService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
-        followLogs: (followTarget, onChunk, signal) => new Promise(resolve => {
-            calls.push({ target: followTarget, onChunk, signal });
-            resolvers.push(() => resolve({ code: 0, timedOut: false }));
-            signal.addEventListener("abort", () => resolve({ code: 137, timedOut: false }), { once: true });
-        }),
+        followLogs: (followTarget, onChunk, signal) =>
+            new Promise((resolve) => {
+                calls.push({ target: followTarget, onChunk, signal });
+                resolvers.push(() => resolve({ code: 0, timedOut: false }));
+                signal.addEventListener("abort", () => resolve({ code: 137, timedOut: false }), { once: true });
+            }),
     };
     return { provider, calls, resolvers };
 }
@@ -103,9 +115,19 @@ test("readers share one subprocess and late readers get a replay", () => {
     const logs = manager(provider);
     const first: string[] = [];
     const second: string[] = [];
-    const a = logs.subscribe("demo", target, chunk => first.push(chunk), () => {});
+    const a = logs.subscribe(
+        "demo",
+        target,
+        (chunk) => first.push(chunk),
+        () => {},
+    );
     calls[0]!.onChunk("line 1\n");
-    const b = logs.subscribe("demo", target, chunk => second.push(chunk), () => {});
+    const b = logs.subscribe(
+        "demo",
+        target,
+        (chunk) => second.push(chunk),
+        () => {},
+    );
     expect(calls.length).toBe(1);
     expect(calls[0]!.target.tailLines).toBe(50);
     expect(b.replay.text).toContain("line 1");
@@ -119,9 +141,24 @@ test("readers share one subprocess and late readers get a replay", () => {
 test("different selections run their own subprocess and share identical ones", () => {
     const { provider, calls } = controllableProvider();
     const logs = manager(provider);
-    const all = logs.subscribe("demo", target, () => {}, () => {});
-    const web = logs.subscribe("demo", { ...target, service: "web", tailLines: 500 }, () => {}, () => {});
-    const webAgain = logs.subscribe("demo", { ...target, service: "web", tailLines: 500 }, () => {}, () => {});
+    const all = logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        () => {},
+    );
+    const web = logs.subscribe(
+        "demo",
+        { ...target, service: "web", tailLines: 500 },
+        () => {},
+        () => {},
+    );
+    const webAgain = logs.subscribe(
+        "demo",
+        { ...target, service: "web", tailLines: 500 },
+        () => {},
+        () => {},
+    );
     expect(calls.length).toBe(2);
     expect(calls[1]!.target.service).toBe("web");
     expect(calls[1]!.target.tailLines).toBe(500);
@@ -137,13 +174,35 @@ test("different selections run their own subprocess and share identical ones", (
 test("a third live selection for one stack is refused", () => {
     const { provider, calls } = controllableProvider();
     const logs = manager(provider);
-    const a = logs.subscribe("demo", target, () => {}, () => {});
-    const b = logs.subscribe("demo", { ...target, service: "web" }, () => {}, () => {});
+    const a = logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        () => {},
+    );
+    const b = logs.subscribe(
+        "demo",
+        { ...target, service: "web" },
+        () => {},
+        () => {},
+    );
     expect(calls.length).toBe(2);
-    expect(() => logs.subscribe("demo", { ...target, service: "db" }, () => {}, () => {})).toThrow(StackError);
+    expect(() =>
+        logs.subscribe(
+            "demo",
+            { ...target, service: "db" },
+            () => {},
+            () => {},
+        ),
+    ).toThrow(StackError);
     // After one selection ends, a new one fits again.
     a.unsubscribe();
-    const c = logs.subscribe("demo", { ...target, service: "db" }, () => {}, () => {});
+    const c = logs.subscribe(
+        "demo",
+        { ...target, service: "db" },
+        () => {},
+        () => {},
+    );
     expect(calls.length).toBe(3);
     b.unsubscribe();
     c.unsubscribe();
@@ -152,8 +211,18 @@ test("a third live selection for one stack is refused", () => {
 test("leaving the last reader aborts the follow subprocess", async () => {
     const { provider, calls } = controllableProvider();
     const logs = manager(provider);
-    const a = logs.subscribe("demo", target, () => {}, () => {});
-    const b = logs.subscribe("demo", target, () => {}, () => {});
+    const a = logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        () => {},
+    );
+    const b = logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        () => {},
+    );
     expect(logs.isActive("demo")).toBe(true);
     a.unsubscribe();
     // One reader left: the process keeps running.
@@ -168,10 +237,20 @@ test("leaving the last reader aborts the follow subprocess", async () => {
 test("the retained buffer is capped and keeps the tail", () => {
     const { provider, calls } = controllableProvider();
     const logs = manager(provider, { maxBytes: 16 });
-    const sub = logs.subscribe("demo", target, () => {}, () => {});
+    const sub = logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        () => {},
+    );
     calls[0]!.onChunk("0123456789abcdef tail");
     expect(sub.replay.truncated).toBe(false);
-    const late = logs.subscribe("demo", target, () => {}, () => {});
+    const late = logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        () => {},
+    );
     expect(late.replay.truncated).toBe(true);
     expect(Buffer.byteLength(late.replay.text, "utf8")).toBeLessThanOrEqual(16);
     expect(late.replay.text).toContain("tail");
@@ -183,8 +262,15 @@ test("the explicit timeout ends the stream", async () => {
     const { provider } = controllableProvider();
     const logs = manager(provider, { timeoutMs: 20 });
     let reason: string | null = null;
-    const sub = logs.subscribe("demo", target, () => {}, end => { reason = end; });
-    await new Promise(resolve => setTimeout(resolve, 60));
+    const sub = logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        (end) => {
+            reason = end;
+        },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 60));
     expect(reason!).toBe("timeout");
     expect(logs.isActive("demo")).toBe(false);
     sub.unsubscribe();
@@ -193,7 +279,12 @@ test("the explicit timeout ends the stream", async () => {
 test("shutdown kills active follows", async () => {
     const { provider, calls } = controllableProvider();
     const logs = manager(provider);
-    logs.subscribe("demo", target, () => {}, () => {});
+    logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        () => {},
+    );
     await logs.shutdown(1000);
     expect(calls[0]!.signal.aborted).toBe(true);
     expect(logs.isActive("demo")).toBe(false);
@@ -204,19 +295,31 @@ test("a timed-out stream cannot kill or contaminate its replacement", async () =
     const { provider, calls, resolvers } = deferredProvider();
     const logs = manager(provider, { timeoutMs: 20 });
     let reasonA: string | null = null;
-    const subA = logs.subscribe("demo", target, () => {}, end => { reasonA = end; });
-    await new Promise(resolve => setTimeout(resolve, 60));
+    const subA = logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        (end) => {
+            reasonA = end;
+        },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 60));
     expect(reasonA!).toBe("timeout");
     expect(logs.isActive("demo")).toBe(false);
 
     const receivedB: string[] = [];
-    const subB = logs.subscribe("demo", target, chunk => receivedB.push(chunk), () => {});
+    const subB = logs.subscribe(
+        "demo",
+        target,
+        (chunk) => receivedB.push(chunk),
+        () => {},
+    );
     expect(calls.length).toBe(2);
 
     // The old stream settles late and emits stale output: both are dropped.
     resolvers[0]!();
     calls[0]!.onChunk("stale\n");
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(logs.isActive("demo")).toBe(true);
     expect(receivedB.join("")).not.toContain("stale");
 
@@ -229,7 +332,12 @@ test("a timed-out stream cannot kill or contaminate its replacement", async () =
 });
 
 test("shutdown stays bounded when a follow never settles", async () => {
-    const caps: ComposeCapabilities = { engine: "stuck", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
+    const caps: ComposeCapabilities = {
+        engine: "stuck",
+        available: true,
+        operations: { ls: true, ps: true, config: true, logs: true },
+        configHashes: false,
+    };
     const stuck: ComposeProvider = {
         engine: "stuck",
         capabilities: () => caps,
@@ -258,7 +366,14 @@ test("shutdown stays bounded when a follow never settles", async () => {
     };
     const logs = manager(stuck, { timeoutMs: 60_000 });
     let ended = false;
-    logs.subscribe("demo", target, () => {}, () => { ended = true; });
+    logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        () => {
+            ended = true;
+        },
+    );
     const started = Date.now();
     await logs.shutdown(50);
     expect(Date.now() - started).toBeLessThan(5000);
@@ -271,7 +386,12 @@ test("refuses new subscriptions once shutdown started", async () => {
     const logs = manager(provider);
     logs.refuseNew();
     try {
-        logs.subscribe("demo", target, () => {}, () => {});
+        logs.subscribe(
+            "demo",
+            target,
+            () => {},
+            () => {},
+        );
         throw new Error("expected subscribe to fail");
     } catch (error) {
         expect(error).toBeInstanceOf(StackError);
@@ -282,19 +402,37 @@ test("refuses new subscriptions once shutdown started", async () => {
 test("does not replace an aborted follow until its process exit is confirmed", async () => {
     const { provider, calls } = controllableProvider();
     let finish!: (result: { code: number; timedOut: boolean }) => void;
-    provider.followLogs = (target, onChunk, signal) => new Promise(resolve => {
-        calls.push({ target, onChunk, signal });
-        finish = resolve;
-    });
+    provider.followLogs = (target, onChunk, signal) =>
+        new Promise((resolve) => {
+            calls.push({ target, onChunk, signal });
+            finish = resolve;
+        });
     const logs = manager(provider);
-    const sub = logs.subscribe("demo", target, () => {}, () => {});
+    const sub = logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        () => {},
+    );
     sub.unsubscribe();
     expect(calls[0]!.signal.aborted).toBe(true);
-    expect(() => logs.subscribe("demo", target, () => {}, () => {})).toThrow(StackError);
+    expect(() =>
+        logs.subscribe(
+            "demo",
+            target,
+            () => {},
+            () => {},
+        ),
+    ).toThrow(StackError);
     expect(calls).toHaveLength(1);
     finish({ code: 137, timedOut: false });
     await Promise.resolve();
-    const replacement = logs.subscribe("demo", target, () => {}, () => {});
+    const replacement = logs.subscribe(
+        "demo",
+        target,
+        () => {},
+        () => {},
+    );
     expect(calls).toHaveLength(2);
     replacement.unsubscribe();
     finish({ code: 137, timedOut: false });

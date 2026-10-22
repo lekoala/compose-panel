@@ -4,7 +4,7 @@ import type { ComposeProvider, ComposeTarget } from "./compose-provider.ts";
 import { StackLocks, StackBusyError } from "./locks.ts";
 
 export const OPERATION_ACTIONS = ["up", "pull", "stop", "start", "restart", "down", "pull-up"] as const;
-export type OperationAction = typeof OPERATION_ACTIONS[number];
+export type OperationAction = (typeof OPERATION_ACTIONS)[number];
 
 export function isOperationAction(value: string): value is OperationAction {
     return (OPERATION_ACTIONS as readonly string[]).includes(value);
@@ -183,7 +183,9 @@ export class OperationManager {
         if (!release) throw new StackBusyError();
         if (input.project && this.projects.has(input.project)) {
             release();
-            throw new StackBusyError("Another action is already running for the same Compose project. Wait for it to finish, then try again.");
+            throw new StackBusyError(
+                "Another action is already running for the same Compose project. Wait for it to finish, then try again.",
+            );
         }
         if (input.project) this.projects.add(input.project);
 
@@ -219,16 +221,18 @@ export class OperationManager {
         const drained = Promise.allSettled([...this.tasks]);
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-            await Promise.race([drained, new Promise<void>(resolve => { timer = setTimeout(resolve, graceMs); })]);
-        } finally { clearTimeout(timer); }
+            await Promise.race([
+                drained,
+                new Promise<void>((resolve) => {
+                    timer = setTimeout(resolve, graceMs);
+                }),
+            ]);
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
-    private async execute(
-        operation: OperationView,
-        action: OperationAction,
-        target: ComposeTarget,
-        release: () => void,
-    ): Promise<void> {
+    private async execute(operation: OperationView, action: OperationAction, target: ComposeTarget, release: () => void): Promise<void> {
         // Live pipe chunks land here while the command runs. When any flowed
         // for a call, the retained output is already complete and the bulk
         // append for that call is skipped (it would duplicate). Buffered
@@ -238,7 +242,7 @@ export class OperationManager {
         let terminationUnconfirmed = false;
         const streaming: ComposeTarget = {
             ...target,
-            onOutput: chunk => {
+            onOutput: (chunk) => {
                 live = true;
                 this.appendText(operation, chunk);
             },
@@ -256,14 +260,14 @@ export class OperationManager {
         try {
             let result: CommandResult;
             if (action === "pull-up") {
-                const pulled = await runStreamed(target => this.provider.pull(target));
+                const pulled = await runStreamed((target) => this.provider.pull(target));
                 if (pulled.code !== 0 || pulled.timedOut) {
                     this.finalize(operation, pulled);
                     return;
                 }
-                result = await runStreamed(target => this.provider.up(target));
+                result = await runStreamed((target) => this.provider.up(target));
             } else {
-                result = await runStreamed(target => runAction(this.provider, action, target));
+                result = await runStreamed((target) => runAction(this.provider, action, target));
             }
             this.finalize(operation, result);
         } catch (error) {
@@ -341,14 +345,20 @@ export class OperationManager {
 
     private emit(operation: OperationView): void {
         if (operation.status !== "running" && this.options.onFinish) {
-            try { this.options.onFinish(operation); }
-            catch { /* recording must not fail the operation */ }
+            try {
+                this.options.onFinish(operation);
+            } catch {
+                /* recording must not fail the operation */
+            }
         }
         const set = this.listeners.get(operation.stack);
         if (!set || set.size === 0) return;
         for (const listener of [...set]) {
-            try { listener(operation); }
-            catch { /* a slow/broken observer must not fail the operation */ }
+            try {
+                listener(operation);
+            } catch {
+                /* a slow/broken observer must not fail the operation */
+            }
         }
     }
 
@@ -364,7 +374,7 @@ export class OperationManager {
     }
 
     private append(operation: OperationView, result: CommandResult): void {
-        const chunk = [result.stdout, result.stderr].filter(text => text.length > 0).join("\n");
+        const chunk = [result.stdout, result.stderr].filter((text) => text.length > 0).join("\n");
         this.appendText(operation, chunk);
         operation.truncated ||= result.truncated;
     }
@@ -385,11 +395,17 @@ export class OperationManager {
 
 function runAction(provider: ComposeProvider, action: Exclude<OperationAction, "pull-up">, target: ComposeTarget): Promise<CommandResult> {
     switch (action) {
-        case "up": return provider.up(target);
-        case "pull": return provider.pull(target);
-        case "stop": return provider.stop(target);
-        case "start": return provider.start(target);
-        case "restart": return provider.restart(target);
-        case "down": return provider.down(target);
+        case "up":
+            return provider.up(target);
+        case "pull":
+            return provider.pull(target);
+        case "stop":
+            return provider.stop(target);
+        case "start":
+            return provider.start(target);
+        case "restart":
+            return provider.restart(target);
+        case "down":
+            return provider.down(target);
     }
 }

@@ -10,7 +10,14 @@
  */
 
 import type { HelperRequest, HelperResponse } from "./caddy-helper.ts";
-import { isValidDomain, isValidServiceName, isValidStackName, isValidUpstreamPort, normalizeDomain, type CaddySiteRequest } from "./caddy.ts";
+import {
+    isValidDomain,
+    isValidServiceName,
+    isValidStackName,
+    isValidUpstreamPort,
+    normalizeDomain,
+    type CaddySiteRequest,
+} from "./caddy.ts";
 
 export class CaddyHelperError extends Error {
     constructor(message: string) {
@@ -42,9 +49,11 @@ const CODES = new Set(["invalid", "conflict", "unavailable", "failed", "unknown"
  * helper itself enforces.
  */
 function parseStatus(raw: Record<string, unknown>): HelperResponse {
-    const unexpected = (): never => { throw new CaddyHelperError("The Caddy helper gave an unexpected answer."); };
+    const unexpected = (): never => {
+        throw new CaddyHelperError("The Caddy helper gave an unexpected answer.");
+    };
     if (!Array.isArray(raw.sites) || !Array.isArray(raw.unparseable) || typeof raw.importConfigured !== "boolean") unexpected();
-    const sites: CaddySiteRequest[] = (raw.sites as unknown[]).map(site => {
+    const sites: CaddySiteRequest[] = (raw.sites as unknown[]).map((site) => {
         if (!isRecord(site)) return unexpected();
         const { domain, stack, service, port } = site;
         if (typeof domain !== "string" || !isValidDomain(domain) || normalizeDomain(domain) !== domain) return unexpected();
@@ -53,7 +62,7 @@ function parseStatus(raw: Record<string, unknown>): HelperResponse {
         if (typeof port !== "number" || !isValidUpstreamPort(port)) return unexpected();
         return { domain, stack, service, port };
     });
-    const unparseable = (raw.unparseable as unknown[]).map(entry => typeof entry === "string" ? entry : unexpected());
+    const unparseable = (raw.unparseable as unknown[]).map((entry) => (typeof entry === "string" ? entry : unexpected()));
     return { ok: true, action: "status", sites, unparseable, importConfigured: raw.importConfigured as boolean };
 }
 
@@ -75,11 +84,7 @@ export function parseHelperResponse(raw: unknown, action: string): HelperRespons
     return raw as HelperResponse;
 }
 
-export async function callCaddyHelper(
-    socketPath: string,
-    request: HelperRequest,
-    options: CaddyCallOptions,
-): Promise<HelperResponse> {
+export async function callCaddyHelper(socketPath: string, request: HelperRequest, options: CaddyCallOptions): Promise<HelperResponse> {
     if (!socketPath.startsWith("/")) throw new CaddyHelperError("The Caddy helper socket is not configured.");
     const maxRequest = options.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES;
     const maxResponse = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -90,7 +95,11 @@ export async function callCaddyHelper(
         const fail = (error: Error): void => {
             if (settled) return;
             settled = true;
-            try { socket.end(); } catch { /* already gone */ }
+            try {
+                socket.end();
+            } catch {
+                /* already gone */
+            }
             reject(error);
         };
         const timer = setTimeout(() => fail(new CaddyHelperError("The Caddy helper did not answer in time.")), options.timeoutMs);
@@ -101,7 +110,11 @@ export async function callCaddyHelper(
             if (settled) return;
             settled = true;
             clearTimeout(timer);
-            try { socket.end(); } catch { /* already gone */ }
+            try {
+                socket.end();
+            } catch {
+                /* already gone */
+            }
             let parsed: unknown;
             try {
                 parsed = JSON.parse(line);
@@ -139,9 +152,15 @@ export async function callCaddyHelper(
                         fail(new CaddyHelperError("The Caddy helper socket is not reachable."));
                     }
                 },
-                data(_socket, data) { feed(data); },
-                close() { fail(new CaddyHelperError("The Caddy helper closed the connection.")); },
-                error(_socket, _error) { fail(new CaddyHelperError("The Caddy helper socket is not reachable.")); },
+                data(_socket, data) {
+                    feed(data);
+                },
+                close() {
+                    fail(new CaddyHelperError("The Caddy helper closed the connection."));
+                },
+                error(_socket, _error) {
+                    fail(new CaddyHelperError("The Caddy helper socket is not reachable."));
+                },
             },
         }).catch(() => fail(new CaddyHelperError("The Caddy helper socket is not reachable.")));
     });

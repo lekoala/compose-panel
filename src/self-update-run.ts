@@ -41,7 +41,16 @@ export interface UpdaterArgs {
 
 export class UpdaterArgsError extends Error {}
 
-const SINGLE = ["--panel-container", "--image-ref", "--target-image", "--expected-digest", "--previous-image", "--project", "--service", "--working-dir"] as const;
+const SINGLE = [
+    "--panel-container",
+    "--image-ref",
+    "--target-image",
+    "--expected-digest",
+    "--previous-image",
+    "--project",
+    "--service",
+    "--working-dir",
+] as const;
 
 /** Strict argv parsing: every value validated, unknown or repeated flags refused. */
 export function parseUpdaterArgs(argv: string[]): UpdaterArgs {
@@ -57,7 +66,7 @@ export function parseUpdaterArgs(argv: string[]): UpdaterArgs {
         else if ((SINGLE as readonly string[]).includes(flag) && !single.has(flag)) single.set(flag, value);
         else throw new UpdaterArgsError(`Unexpected argument ${flag}.`);
     }
-    const get = (flag: typeof SINGLE[number]): string => {
+    const get = (flag: (typeof SINGLE)[number]): string => {
         const value = single.get(flag);
         if (value === undefined) throw new UpdaterArgsError(`Missing ${flag}.`);
         return value;
@@ -176,7 +185,12 @@ export async function runSelfUpdate(args: UpdaterArgs, deps: UpdaterDeps): Promi
         rollback();
         return UPDATER_EXIT.failed;
     };
-    const files: ComposeProjectFiles = { project: args.project, cwd: args.workingDir, composeFiles: args.composeFiles, envFiles: args.envFiles };
+    const files: ComposeProjectFiles = {
+        project: args.project,
+        cwd: args.workingDir,
+        composeFiles: args.composeFiles,
+        envFiles: args.envFiles,
+    };
 
     log(`Updating Compose project ${args.project}, service ${args.service}.`);
     log(`Previous image: ${args.previousImage}`);
@@ -186,28 +200,42 @@ export async function runSelfUpdate(args: UpdaterArgs, deps: UpdaterDeps): Promi
     //    image must carry the digest its release published.
     const tag = await runner(["image", "inspect", "--", args.imageRef]);
     let tagged: { Id?: unknown; RepoDigests?: unknown } | null = null;
-    try { tagged = tag.code === 0 ? (JSON.parse(tag.stdout) as { Id?: unknown; RepoDigests?: unknown }[])[0] ?? null : null; } catch { tagged = null; }
+    try {
+        tagged = tag.code === 0 ? ((JSON.parse(tag.stdout) as { Id?: unknown; RepoDigests?: unknown }[])[0] ?? null) : null;
+    } catch {
+        tagged = null;
+    }
     if (tagged?.Id !== args.targetImage) return refuse(`${args.imageRef} no longer points to the approved image. Check for updates again.`);
     const digests = Array.isArray(tagged.RepoDigests) ? tagged.RepoDigests : [];
-    if (!digests.includes(args.expectedDigest)) return refuse(`The approved image does not carry the release digest ${args.expectedDigest}.`);
+    if (!digests.includes(args.expectedDigest))
+        return refuse(`The approved image does not carry the release digest ${args.expectedDigest}.`);
 
     // 2. Interpolation must be explicit: an unrecorded .env would be read implicitly.
-    if (args.envFiles.length === 0 && await deps.fileExists(join(args.workingDir, ".env"))) {
+    if (args.envFiles.length === 0 && (await deps.fileExists(join(args.workingDir, ".env")))) {
         return refuse(`${args.workingDir}/.env exists but Docker did not record it for this deployment.`);
     }
 
     // 3. The deployment files must still resolve the service to the same tag.
     const image = await provider.serviceImage({ ...files, service: args.service });
     if (image === null) return refuse("docker compose config failed for the panel deployment.");
-    if (image !== args.imageRef) return refuse(`The Compose file now sets image ${image} for ${args.service}, not ${args.imageRef}. Apply that change from the host.`);
+    if (image !== args.imageRef)
+        return refuse(
+            `The Compose file now sets image ${image} for ${args.service}, not ${args.imageRef}. Apply that change from the host.`,
+        );
 
     // 4. Keep the exact previous image reachable for a rollback.
     const kept = await runner(["image", "tag", "--", args.previousImage, ROLLBACK_TAG]);
-    if (kept.code !== 0 || kept.timedOut) return refuse(`Docker could not tag the previous image as ${ROLLBACK_TAG}, so a rollback would not be possible.`);
+    if (kept.code !== 0 || kept.timedOut)
+        return refuse(`Docker could not tag the previous image as ${ROLLBACK_TAG}, so a rollback would not be possible.`);
 
     // 5. Recreate the panel service from the local image only.
     log("Recreating the panel container. The panel stops now.");
-    const up = await provider.recreateService({ ...files, service: args.service, timeoutMs: deps.upTimeoutMs ?? 5 * 60 * 1000, onOutput: deps.write });
+    const up = await provider.recreateService({
+        ...files,
+        service: args.service,
+        timeoutMs: deps.upTimeoutMs ?? 5 * 60 * 1000,
+        onOutput: deps.write,
+    });
     if (up.timedOut) return fail("docker compose up did not finish in time.");
     if (up.code !== 0) return fail(`docker compose up exited with code ${up.code}.`);
 
@@ -219,12 +247,21 @@ export async function runSelfUpdate(args: UpdaterArgs, deps: UpdaterDeps): Promi
     while (deps.now() < deadline) {
         await deps.sleep(deps.pollMs ?? 2000);
         const listed = await runner([
-            "container", "ls", "--all", "--no-trunc", "--quiet",
-            "--filter", `label=com.docker.compose.project=${args.project}`,
-            "--filter", `label=com.docker.compose.service=${args.service}`,
+            "container",
+            "ls",
+            "--all",
+            "--no-trunc",
+            "--quiet",
+            "--filter",
+            `label=com.docker.compose.project=${args.project}`,
+            "--filter",
+            `label=com.docker.compose.service=${args.service}`,
         ]);
         if (listed.code !== 0) continue;
-        const ids = listed.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+        const ids = listed.stdout
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean);
         if (ids.length !== 1 || !isUpdaterContainerId(ids[0]!)) continue;
         if (ids[0] === args.panelContainer) return fail("Compose kept the previous panel container.");
         const inspected = await runner(["container", "inspect", "--", ids[0]!]);

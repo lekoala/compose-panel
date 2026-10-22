@@ -24,10 +24,17 @@ export function parseReleaseRegistry(value: unknown): ReleaseRegistry | null {
     for (const entry of registry.releases) {
         if (!entry || typeof entry !== "object") return null;
         const { version, digest, revision, recordedAt } = entry;
-        if (typeof version !== "string" || !RELEASE_VERSION.test(version)
-            || typeof digest !== "string" || !DIGEST.test(digest)
-            || typeof revision !== "string" || !REVISION.test(revision)
-            || typeof recordedAt !== "string" || !DATE.test(recordedAt)) return null;
+        if (
+            typeof version !== "string" ||
+            !RELEASE_VERSION.test(version) ||
+            typeof digest !== "string" ||
+            !DIGEST.test(digest) ||
+            typeof revision !== "string" ||
+            !REVISION.test(revision) ||
+            typeof recordedAt !== "string" ||
+            !DATE.test(recordedAt)
+        )
+            return null;
         const date = Date.parse(recordedAt);
         if (!Number.isFinite(date) || date < previous) return null;
         previous = date;

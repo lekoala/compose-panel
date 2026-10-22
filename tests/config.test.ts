@@ -60,7 +60,9 @@ describe("loadConfig audit and login backoff", () => {
     });
 
     test("rejects an unknown rotation", () => {
-        expect(() => loadConfig({ ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala", COMPOSE_PANEL_AUDIT_ROTATION: "hourly" })).toThrow(/ROTATION/);
+        expect(() => loadConfig({ ...base, COMPOSE_PANEL_ADMIN_USER: "lekoala", COMPOSE_PANEL_AUDIT_ROTATION: "hourly" })).toThrow(
+            /ROTATION/,
+        );
     });
 });
 
@@ -91,7 +93,10 @@ describe("loadConfig proxy origins", () => {
     });
 
     test("parses a comma-separated origin list, normalized", () => {
-        const config = loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "https://panel.example.com, https://oracle.example.ts.net:8443/" });
+        const config = loadConfig({
+            ...user,
+            COMPOSE_PANEL_PROXY_ORIGINS: "https://panel.example.com, https://oracle.example.ts.net:8443/",
+        });
         expect(config.proxyOrigins).toEqual(["https://panel.example.com", "https://oracle.example.ts.net:8443"]);
     });
 
@@ -105,7 +110,9 @@ describe("loadConfig proxy origins", () => {
     test("refuses credentials, empty entries and duplicates", () => {
         expect(() => loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "https://user:pass@panel.example.com" })).toThrow(/credentials/);
         expect(() => loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "https://panel.example.com," })).toThrow(/empty/);
-        expect(() => loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "https://panel.example.com,https://panel.example.com" })).toThrow(/twice/);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_PROXY_ORIGINS: "https://panel.example.com,https://panel.example.com" })).toThrow(
+            /twice/,
+        );
     });
 
     test("parses allowLoopback, off by default", () => {
@@ -177,14 +184,19 @@ describe("loadConfig external database explorer", () => {
     });
 
     test("normalizes a valid https URL to its origin", () => {
-        expect(loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "https://db.example.com/" }).databaseExplorerUrl)
-            .toBe("https://db.example.com");
+        expect(loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "https://db.example.com/" }).databaseExplorerUrl).toBe(
+            "https://db.example.com",
+        );
     });
 
     test("refuses an invalid explorer URL at startup", () => {
         expect(() => loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "http://db.example.com" })).toThrow(/https/i);
-        expect(() => loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "https://db.example.com/app" })).toThrow(/path, query or fragment/i);
-        expect(() => loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "https://user:pass@db.example.com" })).toThrow(/credentials/i);
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "https://db.example.com/app" })).toThrow(
+            /path, query or fragment/i,
+        );
+        expect(() => loadConfig({ ...user, COMPOSE_PANEL_DATABASE_EXPLORER_URL: "https://user:pass@db.example.com" })).toThrow(
+            /credentials/i,
+        );
     });
 });
 
@@ -203,12 +215,18 @@ describe("loadConfig Caddy domains preview", () => {
     });
 
     test("parses the helper socket path when enabled", () => {
-        const config = loadConfig({ ...user, COMPOSE_PANEL_CADDY_ENABLED: "true", COMPOSE_PANEL_CADDY_SOCKET_PATH: "/run/compose-panel/caddy-helper.sock" });
+        const config = loadConfig({
+            ...user,
+            COMPOSE_PANEL_CADDY_ENABLED: "true",
+            COMPOSE_PANEL_CADDY_SOCKET_PATH: "/run/compose-panel/caddy-helper.sock",
+        });
         expect(config.caddySocketPath).toBe("/run/compose-panel/caddy-helper.sock");
     });
 
     test("refuses a socket path without the opt-in flag or with a bad shape", () => {
         expect(() => loadConfig({ ...user, COMPOSE_PANEL_CADDY_SOCKET_PATH: "/run/caddy.sock" })).toThrow(/COMPOSE_PANEL_CADDY_ENABLED/);
-        expect(() => loadConfig({ ...user, COMPOSE_PANEL_CADDY_ENABLED: "true", COMPOSE_PANEL_CADDY_SOCKET_PATH: "run/caddy.sock" })).toThrow(/absolute/);
+        expect(() =>
+            loadConfig({ ...user, COMPOSE_PANEL_CADDY_ENABLED: "true", COMPOSE_PANEL_CADDY_SOCKET_PATH: "run/caddy.sock" }),
+        ).toThrow(/absolute/);
     });
 });

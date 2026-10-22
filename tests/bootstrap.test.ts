@@ -26,15 +26,30 @@ const ok = (stdout = ""): CommandResult => ({ code: 0, stdout, stderr: "", timed
 
 test("every Docker boundary of the production app uses the real runner", async () => {
     const calls: string[][] = [];
-    const runner: DockerRunner = async args => {
+    const runner: DockerRunner = async (args) => {
         calls.push(args);
         if (args[0] === "compose" && args[1] === "version") return ok("Docker Compose version v5.6.0");
         if (args[0] === "compose" && args[1] === "ls") return ok("[]");
         if (args[0] === "container" && args[1] === "ls") {
-            const fields = [`b${"0".repeat(63)}`, "lonely-standalone", "busybox", "running", "Up 1 hour", "none", "2026-10-12T00:00:00Z", "1 hour ago", "", "", "", "", ""];
-            return ok(`${fields.map(field => JSON.stringify(field)).join("\t")}\n`);
+            const fields = [
+                `b${"0".repeat(63)}`,
+                "lonely-standalone",
+                "busybox",
+                "running",
+                "Up 1 hour",
+                "none",
+                "2026-10-12T00:00:00Z",
+                "1 hour ago",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ];
+            return ok(`${fields.map((field) => JSON.stringify(field)).join("\t")}\n`);
         }
-        if (args[0] === "container" && args[1] === "inspect") return { code: 1, stdout: "[]", stderr: `Error: No such container: ${args[3]}`, timedOut: false, truncated: false };
+        if (args[0] === "container" && args[1] === "inspect")
+            return { code: 1, stdout: "[]", stderr: `Error: No such container: ${args[3]}`, timedOut: false, truncated: false };
         return { code: 1, stdout: "", stderr: "unexpected", timedOut: false, truncated: false };
     };
     const config = loadConfig({
@@ -48,14 +63,22 @@ test("every Docker boundary of the production app uses the real runner", async (
 
     const origin = "http://127.0.0.1:5081";
     const login = await app.fetch(new Request(`${origin}/login`));
-    const csrfCookie = login.headers.getSetCookie().find(cookie => cookie.startsWith("cp_csrf="))!.split(";")[0]!;
+    const csrfCookie = login.headers
+        .getSetCookie()
+        .find((cookie) => cookie.startsWith("cp_csrf="))!
+        .split(";")[0]!;
     const csrf = /name="csrf" value="([^"]+)"/.exec(await login.text())![1]!;
-    const signedIn = await app.fetch(new Request(`${origin}/login`, {
-        method: "POST",
-        headers: { origin, cookie: csrfCookie, "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ csrf, user: "bootstrapper", password: PASSWORD }).toString(),
-    }));
-    const session = signedIn.headers.getSetCookie().find(cookie => cookie.startsWith("cp_session="))!.split(";")[0]!;
+    const signedIn = await app.fetch(
+        new Request(`${origin}/login`, {
+            method: "POST",
+            headers: { origin, cookie: csrfCookie, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, user: "bootstrapper", password: PASSWORD }).toString(),
+        }),
+    );
+    const session = signedIn.headers
+        .getSetCookie()
+        .find((cookie) => cookie.startsWith("cp_session="))!
+        .split(";")[0]!;
 
     // Container inspector: the home page lists a container outside any stack.
     const home = await (await app.fetch(new Request(`${origin}/`, { headers: { cookie: session } }))).text();

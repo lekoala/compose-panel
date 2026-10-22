@@ -85,7 +85,10 @@ function cleanName(value: string): string {
 }
 
 function splitConfigFiles(value: string): string[] {
-    return value.split(",").map(entry => entry.trim()).filter(Boolean);
+    return value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
 }
 
 /**
@@ -101,10 +104,8 @@ export function parseContainerLs(stdout: string): ContainerSummary[] {
         if (parts.length !== CONTAINER_LIST_FIELD_COUNT) {
             throw new ContainerStateError("Unexpected docker container ls output.");
         }
-        const [
-            id, names, image, state, status, health, createdAt, runningFor, ports,
-            project, service, configFiles, workingDir,
-        ] = parts.map(jsonField);
+        const [id, names, image, state, status, health, createdAt, runningFor, ports, project, service, configFiles, workingDir] =
+            parts.map(jsonField);
         if (!CONTAINER_ID.test(id!)) throw new ContainerStateError("Unexpected docker container ls output.");
         const healthValue = (health ?? "").trim();
         containers.push({
@@ -170,7 +171,7 @@ export interface ContainerDetails {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function asText(value: unknown): string | null {
@@ -305,11 +306,11 @@ export function classifyContainers(
         }
     }
 
-    return containers.map(container => {
-        const files = container.configFiles.map(file => normalizeComposePath(file, aliases));
+    return containers.map((container) => {
+        const files = container.configFiles.map((file) => normalizeComposePath(file, aliases));
         if (files.length > 0) {
-            const owner = files.map(file => fileOwners.get(file)).find(name => name !== undefined);
-            return { ...container, category: owner ? "managed" as const : "external" as const, stack: owner ?? null };
+            const owner = files.map((file) => fileOwners.get(file)).find((name) => name !== undefined);
+            return { ...container, category: owner ? ("managed" as const) : ("external" as const), stack: owner ?? null };
         }
         if (container.project) {
             const owners = projectsByName.get(container.project) ?? [];
@@ -342,5 +343,5 @@ const FILTERS: readonly ContainerFilter[] = ["running", "stopped", "all"];
 
 /** Parse a `?state=` value, falling back to the default "running" view. */
 export function parseContainerFilter(value: string | null): ContainerFilter {
-    return FILTERS.includes(value as ContainerFilter) ? value as ContainerFilter : "running";
+    return FILTERS.includes(value as ContainerFilter) ? (value as ContainerFilter) : "running";
 }

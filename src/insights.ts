@@ -129,8 +129,16 @@ export interface DiskUsageCache {
 
 const UNITS: Record<string, number> = {
     b: 1,
-    kb: 1000, mb: 1000 ** 2, gb: 1000 ** 3, tb: 1000 ** 4, pb: 1000 ** 5,
-    kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4, pib: 1024 ** 5,
+    kb: 1000,
+    mb: 1000 ** 2,
+    gb: 1000 ** 3,
+    tb: 1000 ** 4,
+    pb: 1000 ** 5,
+    kib: 1024,
+    mib: 1024 ** 2,
+    gib: 1024 ** 3,
+    tib: 1024 ** 4,
+    pib: 1024 ** 5,
 };
 
 /**
@@ -167,7 +175,7 @@ function asInt(value: unknown): number | null {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 /** Parse one JSON object per line; blank lines are skipped. */
@@ -188,14 +196,14 @@ function parseLines(stdout: string): unknown[] {
 function parseMemoryUsage(value: unknown): { used: number | null; limit: number | null } {
     const text = asText(value);
     if (!text) return { used: null, limit: null };
-    const [used, limit] = text.split("/").map(part => part.trim());
+    const [used, limit] = text.split("/").map((part) => part.trim());
     return { used: parseHumanBytes(used ?? ""), limit: parseHumanBytes(limit ?? "") };
 }
 
 // ---- Parsers ----------------------------------------------------------------
 
 export function parseDockerStats(stdout: string): ContainerStat[] {
-    return parseLines(stdout).map(value => {
+    return parseLines(stdout).map((value) => {
         const row = asRecord(value);
         const id = asText(row.ID);
         if (!id) throw new InsightsParseError();
@@ -216,7 +224,7 @@ export function parseDockerStats(stdout: string): ContainerStat[] {
 }
 
 export function parseSystemDf(stdout: string): DiskUsageRow[] {
-    return parseLines(stdout).map(value => {
+    return parseLines(stdout).map((value) => {
         const row = asRecord(value);
         const type = asText(row.Type);
         if (!type) throw new InsightsParseError();
@@ -320,7 +328,7 @@ export function statDisplayName(stat: ClassifiedStat): string {
 export function attachStats(containers: ClassifiedContainer[] | null, stats: ContainerStat[]): ClassifiedStat[] {
     const byId = new Map<string, ClassifiedContainer>();
     for (const container of containers ?? []) byId.set(container.id, container);
-    return stats.map(stat => ({ ...stat, container: byId.get(stat.id) ?? null }));
+    return stats.map((stat) => ({ ...stat, container: byId.get(stat.id) ?? null }));
 }
 
 /**
@@ -331,7 +339,7 @@ export function attachStats(containers: ClassifiedContainer[] | null, stats: Con
  */
 export function buildStacks(containers: ClassifiedContainer[] | null, stats: ContainerStat[]): StackUsage[] | null {
     if (containers === null) return null;
-    const byId = new Map(containers.map(container => [container.id, container]));
+    const byId = new Map(containers.map((container) => [container.id, container]));
     const totals = new Map<string, StackUsage>();
     for (const stat of stats) {
         const container = byId.get(stat.id);
@@ -395,8 +403,8 @@ export async function loadInsights(
 ): Promise<Insights> {
     const notes: string[] = [];
     const [infoResult, statsResult] = await Promise.all([
-        options.includeInfo === false ? Promise.resolve(null) : readInspector(opts => inspector.info(opts), options, notes),
-        readInspector(opts => inspector.stats(opts), options, notes),
+        options.includeInfo === false ? Promise.resolve(null) : readInspector((opts) => inspector.info(opts), options, notes),
+        readInspector((opts) => inspector.stats(opts), options, notes),
     ]);
 
     let info: EngineInfo | null = null;
@@ -424,9 +432,8 @@ export async function loadInsights(
 
     const attention = containers === null ? null : buildAttention(containers);
     const exited = containers === null ? null : buildExited(containers);
-    const runningContainers = containers === null
-        ? null
-        : containers.filter(container => matchesContainerFilter(container.state, "running")).length;
+    const runningContainers =
+        containers === null ? null : containers.filter((container) => matchesContainerFilter(container.state, "running")).length;
     return { info, stats, stacks, attention, exited, runningContainers, notes, readAt: Date.now() };
 }
 
@@ -436,7 +443,7 @@ export async function loadInsights(
  */
 export async function loadDiskUsage(inspector: ContainerInspector, options: InspectorReadOptions = {}): Promise<DiskUsage> {
     const notes: string[] = [];
-    const result = await readInspector(opts => inspector.diskUsage(opts), options, notes);
+    const result = await readInspector((opts) => inspector.diskUsage(opts), options, notes);
     if (!result) return { rows: null, readAt: null, note: notes[0] ?? INSIGHTS_UNAVAILABLE };
     try {
         return { rows: parseSystemDf(result.stdout), readAt: Date.now(), note: null };

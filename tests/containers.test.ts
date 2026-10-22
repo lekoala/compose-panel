@@ -15,7 +15,10 @@ const ID = "df48a7b63a0a611b2a1b7050ac56f05338b4eaf24ee1ef83c456fa56beecc10d";
 
 function recording(result: CommandResult = ok) {
     const calls: { args: string[]; options?: Parameters<DockerRunner>[1] }[] = [];
-    const runner: DockerRunner = async (args, options) => { calls.push({ args, options }); return result; };
+    const runner: DockerRunner = async (args, options) => {
+        calls.push({ args, options });
+        return result;
+    };
     return { runner, calls };
 }
 
@@ -100,11 +103,19 @@ describe("isContainerId", () => {
 describe("list output round-trips through the parser", () => {
     test("a realistic line parses with its Compose labels", async () => {
         const line = [
-            JSON.stringify(ID), JSON.stringify("demo-app-1"), JSON.stringify("nginx:1.27"),
-            JSON.stringify("running"), JSON.stringify("Up 2 hours (healthy)"), JSON.stringify("healthy"),
-            JSON.stringify("2026-10-05 08:31:11 +0200 CEST"), JSON.stringify("5 days ago"),
-            JSON.stringify("0.0.0.0:8080->80/tcp"), JSON.stringify("demo"), JSON.stringify("app"),
-            JSON.stringify("/app/stacks/demo/compose.yaml"), JSON.stringify("/app/stacks/demo"),
+            JSON.stringify(ID),
+            JSON.stringify("demo-app-1"),
+            JSON.stringify("nginx:1.27"),
+            JSON.stringify("running"),
+            JSON.stringify("Up 2 hours (healthy)"),
+            JSON.stringify("healthy"),
+            JSON.stringify("2026-10-05 08:31:11 +0200 CEST"),
+            JSON.stringify("5 days ago"),
+            JSON.stringify("0.0.0.0:8080->80/tcp"),
+            JSON.stringify("demo"),
+            JSON.stringify("app"),
+            JSON.stringify("/app/stacks/demo/compose.yaml"),
+            JSON.stringify("/app/stacks/demo"),
         ].join("\t");
         const { runner } = recording({ ...ok, stdout: line });
         const result = await createContainerInspector({ runner }).list();

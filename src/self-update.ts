@@ -48,7 +48,10 @@ const RELEASE_VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}$/;
 const LABEL_VERSION = /^[0-9A-Za-z.+_-]{1,64}$/;
 
 export class SelfUpdateError extends Error {
-    constructor(message: string, readonly status = 409) {
+    constructor(
+        message: string,
+        readonly status = 409,
+    ) {
         super(message);
         this.name = "SelfUpdateError";
     }
@@ -73,9 +76,7 @@ export interface SelfIdentity {
     groupAdd: string[];
 }
 
-export type SelfSupport =
-    | { kind: "ready"; identity: SelfIdentity }
-    | { kind: "unsupported"; reason: string };
+export type SelfSupport = { kind: "ready"; identity: SelfIdentity } | { kind: "unsupported"; reason: string };
 
 export function isUpdaterContainerId(value: string): boolean {
     return CONTAINER_ID.test(value);
@@ -139,11 +140,14 @@ export function containerIdFromMountinfo(text: string): string | null {
 
 function commaList(value: string | undefined): string[] {
     if (!value) return [];
-    return value.split(",").map(part => part.trim()).filter(Boolean);
+    return value
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean);
 }
 
 function record(value: unknown): Record<string, unknown> {
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function stringRecord(value: unknown): Record<string, string> {
@@ -163,8 +167,11 @@ const unsupported = (reason: string): SelfSupport => ({ kind: "unsupported", rea
  */
 export function parseSelfInspect(stdout: string, expectedId: string): SelfSupport {
     let rows: unknown;
-    try { rows = JSON.parse(stdout); }
-    catch { return unsupported("Docker returned an unreadable description of the panel container."); }
+    try {
+        rows = JSON.parse(stdout);
+    } catch {
+        return unsupported("Docker returned an unreadable description of the panel container.");
+    }
     const row = record(Array.isArray(rows) ? rows[0] : null);
     if (row.Id !== expectedId) return unsupported("Docker did not describe the panel's own container.");
     const config = record(row.Config);
@@ -176,13 +183,19 @@ export function parseSelfInspect(stdout: string, expectedId: string): SelfSuppor
     const service = labels["com.docker.compose.service"] ?? "";
     const workingDir = labels["com.docker.compose.project.working_dir"] ?? "";
     if (!project || !service || !workingDir) {
-        return unsupported("The panel was not started by Docker Compose, so it cannot tell how to recreate itself. Update it from the host.");
+        return unsupported(
+            "The panel was not started by Docker Compose, so it cannot tell how to recreate itself. Update it from the host.",
+        );
     }
-    if (labels["com.docker.compose.oneoff"] !== "False") return unsupported("The panel runs in a one-off container (compose run). Update it from the host.");
-    if (!isProjectName(project) || !isServiceName(service)) return unsupported("The panel's Compose project or service name has an unexpected format.");
+    if (labels["com.docker.compose.oneoff"] !== "False")
+        return unsupported("The panel runs in a one-off container (compose run). Update it from the host.");
+    if (!isProjectName(project) || !isServiceName(service))
+        return unsupported("The panel's Compose project or service name has an unexpected format.");
     if (!isImageId(imageId)) return unsupported("Docker did not report which image the panel runs.");
     if (!isTagReference(imageRef)) {
-        return unsupported("The panel runs from an image pinned by digest or ID, so there is no tag to update. Change the image reference on the host.");
+        return unsupported(
+            "The panel runs from an image pinned by digest or ID, so there is no tag to update. Change the image reference on the host.",
+        );
     }
     if (!isSafePath(workingDir)) return unsupported("The panel's deployment directory is not a plain absolute path.");
     const composeFiles = commaList(labels["com.docker.compose.project.config_files"]);
@@ -190,24 +203,40 @@ export function parseSelfInspect(stdout: string, expectedId: string): SelfSuppor
     if (composeFiles.length === 0) return unsupported("Docker did not record which Compose files started the panel.");
     for (const file of [...composeFiles, ...envFiles]) {
         if (!isSafePath(file) || !isInside(workingDir, file)) {
-            return unsupported("A Compose or env file of the panel's deployment is outside its deployment directory, or not a plain absolute path. Update it from the host.");
+            return unsupported(
+                "A Compose or env file of the panel's deployment is outside its deployment directory, or not a plain absolute path. Update it from the host.",
+            );
         }
     }
 
     const mounts = Array.isArray(row.Mounts) ? row.Mounts.map(record) : [];
-    const socket = mounts.find(mount => mount.Destination === DOCKER_SOCKET && mount.Type === "bind");
+    const socket = mounts.find((mount) => mount.Destination === DOCKER_SOCKET && mount.Type === "bind");
     const socketSource = typeof socket?.Source === "string" ? socket.Source : "";
     if (!isSafePath(socketSource)) return unsupported(`The Docker socket is not bind-mounted at ${DOCKER_SOCKET} in the panel container.`);
 
     const user = typeof config.User === "string" && config.User !== "" ? config.User : null;
     if (user !== null && !USER_SPEC.test(user)) return unsupported("The panel container's user has an unexpected format.");
     const hostConfig = record(row.HostConfig);
-    const groupAdd = Array.isArray(hostConfig.GroupAdd) ? hostConfig.GroupAdd.filter((group): group is string => typeof group === "string") : [];
-    if (!groupAdd.every(group => GROUP.test(group))) return unsupported("The panel container's extra groups have an unexpected format.");
+    const groupAdd = Array.isArray(hostConfig.GroupAdd)
+        ? hostConfig.GroupAdd.filter((group): group is string => typeof group === "string")
+        : [];
+    if (!groupAdd.every((group) => GROUP.test(group))) return unsupported("The panel container's extra groups have an unexpected format.");
 
     return {
         kind: "ready",
-        identity: { containerId: expectedId, imageId, imageRef, project, service, workingDir, composeFiles, envFiles, socketSource, user, groupAdd },
+        identity: {
+            containerId: expectedId,
+            imageId,
+            imageRef,
+            project,
+            service,
+            workingDir,
+            composeFiles,
+            envFiles,
+            socketSource,
+            user,
+            groupAdd,
+        },
     };
 }
 
@@ -228,10 +257,15 @@ export interface ComposeIdentity {
 
 function composeCommand(target: ComposeIdentity): string {
     return [
-        "docker", "compose", "-p", target.project,
-        ...target.envFiles.flatMap(file => ["--env-file", file]),
-        ...target.composeFiles.flatMap(file => ["-f", file]),
-    ].map(shellQuote).join(" ");
+        "docker",
+        "compose",
+        "-p",
+        target.project,
+        ...target.envFiles.flatMap((file) => ["--env-file", file]),
+        ...target.composeFiles.flatMap((file) => ["-f", file]),
+    ]
+        .map(shellQuote)
+        .join(" ");
 }
 
 /**
@@ -274,14 +308,22 @@ export interface UpdatePlan {
 /** Arguments of the updater script, in the order `parseUpdaterArgs` reads them. */
 export function updaterCommand(identity: SelfIdentity, plan: Pick<UpdatePlan, "targetImageId" | "expectedDigest">): string[] {
     const args = [
-        "--panel-container", identity.containerId,
-        "--image-ref", identity.imageRef,
-        "--target-image", plan.targetImageId,
-        "--expected-digest", plan.expectedDigest,
-        "--previous-image", identity.imageId,
-        "--project", identity.project,
-        "--service", identity.service,
-        "--working-dir", identity.workingDir,
+        "--panel-container",
+        identity.containerId,
+        "--image-ref",
+        identity.imageRef,
+        "--target-image",
+        plan.targetImageId,
+        "--expected-digest",
+        plan.expectedDigest,
+        "--previous-image",
+        identity.imageId,
+        "--project",
+        identity.project,
+        "--service",
+        identity.service,
+        "--working-dir",
+        identity.workingDir,
     ];
     for (const file of identity.composeFiles) args.push("--compose-file", file);
     for (const file of identity.envFiles) args.push("--env-file", file);
@@ -312,15 +354,24 @@ export function updaterRunArgs(identity: SelfIdentity, plan: UpdatePlan): string
         [RUN_LABELS.targetVersion, isLabelVersion(plan.targetVersion) ? plan.targetVersion : null],
     ];
     const args = [
-        "container", "run", "--detach",
-        "--name", UPDATER_NAME,
+        "container",
+        "run",
+        "--detach",
+        "--name",
+        UPDATER_NAME,
         ...labels.flatMap(([key, value]) => (value === null ? [] : ["--label", `${key}=${value}`])),
-        "--network", "none",
-        "--pull", "never",
-        "--restart", "no",
-        "--mount", `type=bind,source=${identity.socketSource},target=${DOCKER_SOCKET}`,
-        "--mount", `type=bind,source=${identity.workingDir},target=${identity.workingDir},readonly`,
-        "--entrypoint", "bun",
+        "--network",
+        "none",
+        "--pull",
+        "never",
+        "--restart",
+        "no",
+        "--mount",
+        `type=bind,source=${identity.socketSource},target=${DOCKER_SOCKET}`,
+        "--mount",
+        `type=bind,source=${identity.workingDir},target=${identity.workingDir},readonly`,
+        "--entrypoint",
+        "bun",
     ];
     if (identity.user) args.push("--user", identity.user);
     for (const group of identity.groupAdd) args.push("--group-add", group);
@@ -342,10 +393,7 @@ export interface UpdaterRun {
     targetVersion: string | null;
 }
 
-export type UpdaterLookup =
-    | { kind: "none" }
-    | { kind: "foreign" }
-    | { kind: "run"; run: UpdaterRun };
+export type UpdaterLookup = { kind: "none" } | { kind: "foreign" } | { kind: "run"; run: UpdaterRun };
 
 function isoTime(value: unknown): string | null {
     // Docker reports "0001-01-01T00:00:00Z" for a time that never happened.
@@ -358,8 +406,11 @@ const CREATED_GRACE_MS = 2 * 60 * 1000;
 
 export function parseUpdaterInspect(stdout: string, now: number = Date.now()): UpdaterLookup {
     let rows: unknown;
-    try { rows = JSON.parse(stdout); }
-    catch { return { kind: "none" }; }
+    try {
+        rows = JSON.parse(stdout);
+    } catch {
+        return { kind: "none" };
+    }
     if (!Array.isArray(rows) || rows.length === 0) return { kind: "none" };
     const row = record(rows[0]);
     const labels = stringRecord(record(row.Config).Labels);
@@ -397,10 +448,7 @@ export function parseUpdaterInspect(stdout: string, now: number = Date.now()): U
 }
 
 /** What the release source answered for one version. */
-export type ReleaseLookup =
-    | { kind: "found"; release: unknown; registry: unknown }
-    | { kind: "missing" }
-    | { kind: "unavailable" };
+export type ReleaseLookup = { kind: "found"; release: unknown; registry: unknown } | { kind: "missing" } | { kind: "unavailable" };
 
 export type ReleaseSource = (version: string) => Promise<ReleaseLookup>;
 
@@ -415,16 +463,26 @@ export type ReleaseVerdict =
  * index digest matches the registry and the image's `RepoDigests`, with both
  * publication and registration at least `MIN_RELEASE_AGE_MS` ago.
  */
-export function evaluateRelease(input: { version: string | null; repoDigests: string[]; lookup: ReleaseLookup; now: number }): ReleaseVerdict {
+export function evaluateRelease(input: {
+    version: string | null;
+    repoDigests: string[];
+    lookup: ReleaseLookup;
+    now: number;
+}): ReleaseVerdict {
     const { version, lookup } = input;
     if (version === null || !RELEASE_VERSION.test(version)) {
-        return { kind: "refused", reason: "The downloaded image does not declare a release version, so it cannot be matched to a release." };
+        return {
+            kind: "refused",
+            reason: "The downloaded image does not declare a release version, so it cannot be matched to a release.",
+        };
     }
-    if (lookup.kind === "unavailable") return { kind: "refused", reason: `GitHub could not be reached to verify release ${version}. Check again later.` };
+    if (lookup.kind === "unavailable")
+        return { kind: "refused", reason: `GitHub could not be reached to verify release ${version}. Check again later.` };
     if (lookup.kind === "missing") return { kind: "refused", reason: `No published release ${version} was found for the official image.` };
     const release = record(lookup.release);
     if (release.tag_name !== version) return { kind: "refused", reason: `GitHub answered with a release that is not ${version}.` };
-    if (release.draft !== false || release.prerelease !== false) return { kind: "refused", reason: `Release ${version} is a draft or a prerelease.` };
+    if (release.draft !== false || release.prerelease !== false)
+        return { kind: "refused", reason: `Release ${version} is a draft or a prerelease.` };
     const publishedAt = typeof release.published_at === "string" ? release.published_at : "";
     const published = Date.parse(publishedAt);
     if (!/^\d{4}-\d{2}-\d{2}T/.test(publishedAt) || !Number.isFinite(published)) {
@@ -436,12 +494,22 @@ export function evaluateRelease(input: { version: string | null; repoDigests: st
     const expectedDigest = `${OFFICIAL_IMAGE}@${marker[1]}`;
     const registry = parseReleaseRegistry(lookup.registry);
     const registered = registry ? latestReleaseRecord(registry, version) : undefined;
-    if (!registered) return { kind: "refused", reason: `Release ${version} has no valid registry record. Update it from the host or check again after publication completes.` };
+    if (!registered)
+        return {
+            kind: "refused",
+            reason: `Release ${version} has no valid registry record. Update it from the host or check again after publication completes.`,
+        };
     if (registered.digest !== marker[1]) {
-        return { kind: "refused", reason: `Release ${version} does not match the versioned release registry. Do not install it; review the registry history.` };
+        return {
+            kind: "refused",
+            reason: `Release ${version} does not match the versioned release registry. Do not install it; review the registry history.`,
+        };
     }
     if (!input.repoDigests.includes(expectedDigest)) {
-        return { kind: "refused", reason: `The downloaded image does not match the digest published with release ${version}. Do not install it; check the image on the host.` };
+        return {
+            kind: "refused",
+            reason: `The downloaded image does not match the digest published with release ${version}. Do not install it; check the image on the host.`,
+        };
     }
     const installableAt = Math.max(published, Date.parse(registered.recordedAt)) + MIN_RELEASE_AGE_MS;
     if (input.now < installableAt) return { kind: "waiting", version, publishedAt, installableAt };
@@ -458,7 +526,9 @@ async function readReleaseJson(response: Response, signal: AbortSignal): Promise
         throw new Error("Invalid release response.");
     }
     const reader = response.body.getReader();
-    const abort = () => { void reader.cancel().catch(() => {}); };
+    const abort = () => {
+        void reader.cancel().catch(() => {});
+    };
     signal.addEventListener("abort", abort, { once: true });
     const chunks: Uint8Array[] = [];
     let bytes = 0;
@@ -482,7 +552,7 @@ async function readReleaseJson(response: Response, signal: AbortSignal): Promise
 
 /** Two fixed GitHub reads, each size-bounded and sharing one deadline. */
 export function githubReleaseSource(fetchImpl: typeof fetch = fetch, timeoutMs = 10_000): ReleaseSource {
-    return async version => {
+    return async (version) => {
         if (!RELEASE_VERSION.test(version)) return { kind: "missing" };
         try {
             const signal = AbortSignal.timeout(timeoutMs);
@@ -554,12 +624,19 @@ export interface SelfUpdaterOptions {
 }
 
 async function defaultMountinfo(): Promise<string | null> {
-    try { return await Bun.file("/proc/self/mountinfo").text(); }
-    catch { return null; }
+    try {
+        return await Bun.file("/proc/self/mountinfo").text();
+    } catch {
+        return null;
+    }
 }
 
 function firstLine(text: string): string {
-    const line = text.split("\n").map(part => part.trim()).find(Boolean) ?? "";
+    const line =
+        text
+            .split("\n")
+            .map((part) => part.trim())
+            .find(Boolean) ?? "";
     return line.length > 300 ? `${line.slice(0, 300)}…` : line;
 }
 
@@ -588,9 +665,11 @@ export class SelfUpdater {
         try {
             const mountinfo = await this.readMountinfo();
             const id = mountinfo ? containerIdFromMountinfo(mountinfo) : null;
-            if (!id) return unsupported("The panel is not running in a Docker container, so it cannot update itself. Update it from the host.");
+            if (!id)
+                return unsupported("The panel is not running in a Docker container, so it cannot update itself. Update it from the host.");
             const result = await this.run(["container", "inspect", "--", id]);
-            if (result.code !== 0 || result.timedOut || result.truncated) return unsupported("Docker could not describe the panel container.");
+            if (result.code !== 0 || result.timedOut || result.truncated)
+                return unsupported("Docker could not describe the panel container.");
             const support = parseSelfInspect(result.stdout, id);
             if (support.kind !== "ready") return support;
             // Releases are verified against a fixed source, so only the
@@ -599,9 +678,10 @@ export class SelfUpdater {
                 return unsupported(`Self-update only installs releases of ${OFFICIAL_IMAGE}. Update this image from the host.`);
             }
             const images = await this.options.provider.inspectImages([support.identity.imageId]);
-            const current = images.timedOut || images.truncated
-                ? undefined
-                : parseImageInspect(images.stdout).find(detail => detail.id === support.identity.imageId);
+            const current =
+                images.timedOut || images.truncated
+                    ? undefined
+                    : parseImageInspect(images.stdout).find((detail) => detail.id === support.identity.imageId);
             // Fail closed: without the image description the panel cannot tell
             // a pulled image from a local build.
             if (!current) return unsupported("Docker could not describe the image the panel runs.");
@@ -628,7 +708,7 @@ export class SelfUpdater {
             const inspected = await this.options.provider.inspectImages([imageId, imageRef]);
             if (!inspected.timedOut && !inspected.truncated) {
                 const details = parseImageInspect(inspected.stdout);
-                const running = details.find(detail => detail.id === imageId);
+                const running = details.find((detail) => detail.id === imageId);
                 current = running ? versionOf(running) : null;
                 const tagged = findByTag(details, imageRef);
                 if (tagged && tagged.id !== imageId && isImageId(tagged.id)) {
@@ -642,21 +722,28 @@ export class SelfUpdater {
                     };
                 }
             }
-        } catch { /* no information, never an invented update */ }
+        } catch {
+            /* no information, never an invented update */
+        }
         const checked = available && this.checked?.imageId === available.imageId ? this.checked.lookup : null;
         // Re-evaluated on every render: the waiting period depends on the clock.
-        const verdict = available && checked
-            ? evaluateRelease({ version: available.releaseVersion, repoDigests: available.repoDigests, lookup: checked, now: this.now() })
-            : null;
+        const verdict =
+            available && checked
+                ? evaluateRelease({
+                      version: available.releaseVersion,
+                      repoDigests: available.repoDigests,
+                      lookup: checked,
+                      now: this.now(),
+                  })
+                : null;
         return { support, current, available, verdict, lastRun };
     }
 
     /** Read the release and registry, remember and evaluate the answer. */
     async verifyRelease(available: AvailableUpdate): Promise<ReleaseVerdict> {
         const version = available.releaseVersion;
-        const lookup: ReleaseLookup = version !== null && RELEASE_VERSION.test(version)
-            ? await this.releases(version)
-            : { kind: "missing" };
+        const lookup: ReleaseLookup =
+            version !== null && RELEASE_VERSION.test(version) ? await this.releases(version) : { kind: "missing" };
         this.checked = { imageId: available.imageId, lookup };
         return evaluateRelease({ version, repoDigests: available.repoDigests, lookup, now: this.now() });
     }
@@ -697,22 +784,28 @@ export class SelfUpdater {
         const args = updaterRunArgs(identity, plan);
         const previous = await this.lookup();
         if (previous.kind === "foreign") {
-            throw new SelfUpdateError(`A container named ${UPDATER_NAME} exists and was not created by the panel. Remove or rename it on the host, then try again.`);
+            throw new SelfUpdateError(
+                `A container named ${UPDATER_NAME} exists and was not created by the panel. Remove or rename it on the host, then try again.`,
+            );
         }
         if (previous.kind === "run" && previous.run.outcome === "running") {
             throw new SelfUpdateError("An update is already running.");
         }
         if (previous.kind === "run") {
             const removed = await this.run(["container", "rm", "--", UPDATER_NAME]);
-            if (removed.code !== 0 || removed.timedOut) throw new SelfUpdateError("Docker could not remove the previous updater container. Nothing was changed.", 503);
+            if (removed.code !== 0 || removed.timedOut)
+                throw new SelfUpdateError("Docker could not remove the previous updater container. Nothing was changed.", 503);
         }
         const started = await this.run(args);
         if (started.code === 0 && !started.timedOut) return "started";
         // The client gave up, but the daemon may still have created and
         // started the updater: ask Docker before calling it a non-start.
         let after: UpdaterLookup | null;
-        try { after = await this.lookup(); }
-        catch { after = null; }
+        try {
+            after = await this.lookup();
+        } catch {
+            after = null;
+        }
         if (after?.kind === "run") return "started";
         if (after?.kind === "none" && !started.timedOut) {
             const reason = firstLine(started.stderr);
@@ -723,7 +816,9 @@ export class SelfUpdater {
 
     /** Resolves when the updater container stops (or the bound elapses). False when `wait` itself failed. */
     async wait(): Promise<boolean> {
-        const result = await this.run(["container", "wait", "--", UPDATER_NAME], { timeoutMs: this.options.updaterTimeoutMs ?? 20 * 60 * 1000 }).catch(() => null);
+        const result = await this.run(["container", "wait", "--", UPDATER_NAME], {
+            timeoutMs: this.options.updaterTimeoutMs ?? 20 * 60 * 1000,
+        }).catch(() => null);
         return result !== null && result.code === 0 && !result.timedOut;
     }
 
@@ -738,8 +833,12 @@ export class SelfUpdater {
         let absent = 0;
         while (Date.now() < end) {
             let lookup: UpdaterLookup;
-            try { lookup = await this.lookup(); }
-            catch { await sleep(5000); continue; }
+            try {
+                lookup = await this.lookup();
+            } catch {
+                await sleep(5000);
+                continue;
+            }
             if (lookup.kind !== "run") {
                 // A start still in flight shows up within seconds; absent
                 // several times in a row means it never started.
@@ -751,7 +850,7 @@ export class SelfUpdater {
             if (lookup.run.outcome !== "running") return;
             // A failing `wait` (Docker unreachable, container gone) must not
             // turn this into a tight inspect/wait loop.
-            if (!await this.wait()) await sleep(5000);
+            if (!(await this.wait())) await sleep(5000);
         }
     }
 }

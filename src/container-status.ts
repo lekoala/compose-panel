@@ -60,7 +60,7 @@ export async function loadManagedStacks(root: string, provider: ComposeProvider,
             managed.push({
                 name: stack.name,
                 composeFile: location.path,
-                project: match.ambiguous ? null : match.project?.name ?? null,
+                project: match.ambiguous ? null : (match.project?.name ?? null),
             });
         } catch {
             // Skip an unreadable stack: it cannot own a container.
@@ -110,9 +110,7 @@ export interface ContainerDetailStatus {
  * reported: the container may exist but Docker is unreachable.
  */
 export type ContainerDetailResult =
-    | { kind: "found"; detail: ContainerDetailStatus }
-    | { kind: "not-found" }
-    | { kind: "unavailable"; note: string };
+    { kind: "found"; detail: ContainerDetailStatus } | { kind: "not-found" } | { kind: "unavailable"; note: string };
 
 /**
  * Resolve one container for its detail page: find it in the classified list
@@ -131,7 +129,7 @@ export async function loadContainerDetail(
     if (!isContainerId(id)) throw new ContainerRefError();
     const { containers, note } = await loadContainers(root, provider, inspector, aliases);
     if (note) return { kind: "unavailable", note };
-    const container = containers.find(entry => entry.id === id || entry.id.startsWith(id));
+    const container = containers.find((entry) => entry.id === id || entry.id.startsWith(id));
     if (!container) return { kind: "not-found" };
     let result: Awaited<ReturnType<ContainerInspector["inspect"]>>;
     try {

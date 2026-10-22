@@ -21,11 +21,8 @@ export async function loadRecreatePending(
     try {
         if (!provider.capabilities().configHashes) return [];
         if (services.length === 0) return [];
-        const names = services.map(service => service.container).filter((name): name is string => Boolean(name));
-        const [hashes, inspected] = await Promise.all([
-            provider.serviceConfigHashes(input),
-            provider.inspectContainers(names),
-        ]);
+        const names = services.map((service) => service.container).filter((name): name is string => Boolean(name));
+        const [hashes, inspected] = await Promise.all([provider.serviceConfigHashes(input), provider.inspectContainers(names)]);
         // A container that vanished meanwhile makes inspect exit non-zero:
         // the snapshot is no longer coherent, so nothing is reported.
         if (!hashes || inspected.code !== 0 || inspected.timedOut || inspected.truncated) return [];

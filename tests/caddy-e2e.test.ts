@@ -41,7 +41,9 @@ describe.skipIf(process.platform !== "linux" || CADDY_BIN === "")("caddy helper 
             stderr: "ignore",
         });
         for (let i = 0; i < 100; i += 1) {
-            const ready = await fetch(`http://127.0.0.1:${adminPort}/config/`).then(r => r.ok).catch(() => false);
+            const ready = await fetch(`http://127.0.0.1:${adminPort}/config/`)
+                .then((r) => r.ok)
+                .catch(() => false);
             if (ready) return;
             await Bun.sleep(100);
         }
@@ -58,13 +60,16 @@ describe.skipIf(process.platform !== "linux" || CADDY_BIN === "")("caddy helper 
     /** Hosts in the configuration Caddy is running right now. */
     async function runningHosts(): Promise<string[]> {
         const config = await (await fetch(`http://127.0.0.1:${adminPort}/config/`)).text();
-        return [...config.matchAll(/"host":\[([^\]]*)\]/g)].flatMap(match => JSON.parse(`[${match[1]}]`) as string[]);
+        return [...config.matchAll(/"host":\[([^\]]*)\]/g)].flatMap((match) => JSON.parse(`[${match[1]}]`) as string[]);
     }
 
     /** One HTTPS request through Caddy for a host, trusting nothing but the
      * loopback address (internal CA, so verification is skipped). */
     async function through(host: string): Promise<string> {
-        const proc = Bun.spawn(["curl", "-sk", "--max-time", "5", "--resolve", `${host}:${httpsPort}:127.0.0.1`, `https://${host}:${httpsPort}/`], { stdout: "pipe", stderr: "ignore" });
+        const proc = Bun.spawn(
+            ["curl", "-sk", "--max-time", "5", "--resolve", `${host}:${httpsPort}:127.0.0.1`, `https://${host}:${httpsPort}/`],
+            { stdout: "pipe", stderr: "ignore" },
+        );
         const [body] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
         return body;
     }
@@ -88,7 +93,9 @@ describe.skipIf(process.platform !== "linux" || CADDY_BIN === "")("caddy helper 
         httpsPort = freePort();
         const httpPort = freePort();
         await mkdir(managedDir);
-        await writeFile(mainConfig, `{
+        await writeFile(
+            mainConfig,
+            `{
 \tadmin 127.0.0.1:${adminPort}
 \tpersist_config off
 \tlocal_certs
@@ -103,7 +110,8 @@ taken.example.com {
 }
 
 import ${managedDir}/*.caddy
-`);
+`,
+        );
         env = parseHelperEnv({ CADDY_MANAGED_DIR: managedDir, CADDY_MAIN_CONFIG: mainConfig, CADDY_BIN });
         runCaddy = createCaddyRunner(env);
         await startCaddy();
@@ -173,7 +181,9 @@ import ${managedDir}/*.caddy
             }
             return runCaddy(args, options);
         };
-        const response = await runHelperRequest({ action: "detach", domain: "app.example.com", stack: "web" }, env, { runCaddy: failingFirstReload });
+        const response = await runHelperRequest({ action: "detach", domain: "app.example.com", stack: "web" }, env, {
+            runCaddy: failingFirstReload,
+        });
         expect(response).toMatchObject({ ok: false, code: "failed" });
         expect(await managedFiles()).toEqual(["app.example.com.caddy"]);
         expect(await through("app.example.com")).toBe("upstream-ok");

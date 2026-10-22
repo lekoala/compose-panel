@@ -111,10 +111,10 @@ class DockerContainerInspector implements ContainerInspector {
         // `docker logs` has no `--no-color`; ANSI escapes are stripped by the
         // panel before display. A bounded read: the runner applies its timeout
         // and output cap.
-        return this.runner(
-            ["container", "logs", "--tail", String(tail), "--timestamps", "--", target.id],
-            { timeoutMs: target.timeoutMs, maxBytes: target.maxBytes },
-        );
+        return this.runner(["container", "logs", "--tail", String(tail), "--timestamps", "--", target.id], {
+            timeoutMs: target.timeoutMs,
+            maxBytes: target.maxBytes,
+        });
     }
 
     info(options: InspectorReadOptions = {}): Promise<CommandResult> {

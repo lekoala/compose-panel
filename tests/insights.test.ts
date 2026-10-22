@@ -214,11 +214,11 @@ describe("exitCodeFromStatus / buildAttention", () => {
     ];
 
     test("attention is what is wrong now: unhealthy or restarting", () => {
-        expect(buildAttention(mixed()).map(item => item.name)).toEqual(["unhealthy", "restarting"]);
+        expect(buildAttention(mixed()).map((item) => item.name)).toEqual(["unhealthy", "restarting"]);
     });
 
     test("non-zero exits are listed apart, never as attention", () => {
-        expect(buildExited(mixed()).map(item => item.name)).toEqual(["failed-job"]);
+        expect(buildExited(mixed()).map((item) => item.name)).toEqual(["failed-job"]);
     });
 });
 
@@ -242,20 +242,24 @@ describe("attachStats / buildStacks", () => {
     ];
 
     test("joins stats with their container, leaving unknown ones unattached", () => {
-        const stats = parseDockerStats([
-            statsLine(),
-            statsLine({ ID: "b".repeat(64), Container: "watchtower", CPUPerc: "40%", MemUsage: "50MiB / 1GiB" }),
-            statsLine({ ID: "c".repeat(64), Container: "ghost", CPUPerc: "5%", MemUsage: "1MiB / 1GiB" }),
-        ].join("\n"));
+        const stats = parseDockerStats(
+            [
+                statsLine(),
+                statsLine({ ID: "b".repeat(64), Container: "watchtower", CPUPerc: "40%", MemUsage: "50MiB / 1GiB" }),
+                statsLine({ ID: "c".repeat(64), Container: "ghost", CPUPerc: "5%", MemUsage: "1MiB / 1GiB" }),
+            ].join("\n"),
+        );
         const attached = attachStats(containers, stats);
-        expect(attached.map(stat => stat.container?.name ?? null)).toEqual(["demo-web-1", "watchtower", null]);
+        expect(attached.map((stat) => stat.container?.name ?? null)).toEqual(["demo-web-1", "watchtower", null]);
     });
 
     test("aggregates only managed stacks and sorts by CPU", () => {
-        const stats = parseDockerStats([
-            statsLine({ ID: "a".repeat(64), CPUPerc: "12.5%", MemUsage: "100MiB / 1GiB" }),
-            statsLine({ ID: "b".repeat(64), Container: "watchtower", CPUPerc: "40%", MemUsage: "50MiB / 1GiB" }),
-        ].join("\n"));
+        const stats = parseDockerStats(
+            [
+                statsLine({ ID: "a".repeat(64), CPUPerc: "12.5%", MemUsage: "100MiB / 1GiB" }),
+                statsLine({ ID: "b".repeat(64), Container: "watchtower", CPUPerc: "40%", MemUsage: "50MiB / 1GiB" }),
+            ].join("\n"),
+        );
         const stacks = buildStacks(containers, stats);
         expect(stacks).toEqual([{ stack: "demo", cpuPercent: 12.5, memUsedBytes: 100 * 1024 ** 2, containers: 1 }]);
     });
@@ -348,7 +352,12 @@ describe("loadDiskUsage / cache", () => {
 
     test("serves from cache within the TTL and rereads after it", async () => {
         let calls = 0;
-        const inspector = fakeInspector({ diskUsage: async () => { calls += 1; return ok(df); } });
+        const inspector = fakeInspector({
+            diskUsage: async () => {
+                calls += 1;
+                return ok(df);
+            },
+        });
         const cache = createDiskUsageCache();
         await cache.read(inspector, 1000, 300_000);
         await cache.read(inspector, 2000, 300_000);
@@ -359,7 +368,12 @@ describe("loadDiskUsage / cache", () => {
 
     test("does not cache a failure, so a later attempt retries", async () => {
         let calls = 0;
-        const inspector = fakeInspector({ diskUsage: async () => { calls += 1; return { ...ok(""), code: 1 }; } });
+        const inspector = fakeInspector({
+            diskUsage: async () => {
+                calls += 1;
+                return { ...ok(""), code: 1 };
+            },
+        });
         const cache = createDiskUsageCache();
         await cache.read(inspector, 0, 300_000);
         await cache.read(inspector, 1, 300_000);

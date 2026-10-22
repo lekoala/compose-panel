@@ -58,7 +58,10 @@ function req(stack: Awaited<ReturnType<typeof current>>, overrides: Partial<Save
 
 function recordingRunner(result: CommandResult = okResult) {
     const calls: string[][] = [];
-    const runner: DockerRunner = async args => { calls.push(args); return result; };
+    const runner: DockerRunner = async (args) => {
+        calls.push(args);
+        return result;
+    };
     return { runner, calls };
 }
 
@@ -88,13 +91,15 @@ describe("secret handling", () => {
     });
 
     test("strips inline comments, quotes and export prefixes when collecting secrets", () => {
-        const secrets = collectSecrets([
-            "TOKEN=audit-secret # comment",
-            'PASS="quoted # not a comment"',
-            "SINGLE='literal value'",
-            "export EXPORTED=exportvalue",
-            "# comment line",
-        ].join("\n"));
+        const secrets = collectSecrets(
+            [
+                "TOKEN=audit-secret # comment",
+                'PASS="quoted # not a comment"',
+                "SINGLE='literal value'",
+                "export EXPORTED=exportvalue",
+                "# comment line",
+            ].join("\n"),
+        );
         expect(secrets).toContain("audit-secret");
         expect(secrets).toContain("quoted # not a comment");
         expect(secrets).toContain("literal value");
@@ -139,7 +144,7 @@ describe("saveEditableStack", () => {
         expect(result.changed).toBe(true);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(nextCompose);
         // The draft is validated with an explicit -f and --project-directory.
-        const args = calls.find(call => call.includes("config"))!;
+        const args = calls.find((call) => call.includes("config"))!;
         expect(args).toContain("config");
         expect(args).toContain("--quiet");
         expect(args).toContain("--project-directory");
@@ -152,15 +157,21 @@ describe("saveEditableStack", () => {
         const { runner, calls } = recordingRunner();
         const stack = await current();
         await saveEditableStack(root, "demo", req(stack, { envSource: "DB_PASSWORD=changedvalue\n" }), asProvider(runner), MAX);
-        expect(calls.find(call => call.includes("config"))!).toContain("--env-file");
+        expect(calls.find((call) => call.includes("config"))!).toContain("--env-file");
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe("DB_PASSWORD=changedvalue\n");
     });
 
     test("validates against the live .env when only the Compose file changes", async () => {
         const { runner, calls } = recordingRunner();
         const stack = await current();
-        await saveEditableStack(root, "demo", req(stack, { composeSource: COMPOSE.replace("nginx:alpine", "nginx:1.27-alpine") }), asProvider(runner), MAX);
-        const args = calls.find(call => call.includes("config") && call.includes("--quiet"))!;
+        await saveEditableStack(
+            root,
+            "demo",
+            req(stack, { composeSource: COMPOSE.replace("nginx:alpine", "nginx:1.27-alpine") }),
+            asProvider(runner),
+            MAX,
+        );
+        const args = calls.find((call) => call.includes("config") && call.includes("--quiet"))!;
         const position = args.indexOf("--env-file");
         expect(position).toBeGreaterThan(-1);
         expect(args[position + 1]).toBe(join(root, "demo", ".env"));
@@ -170,8 +181,14 @@ describe("saveEditableStack", () => {
         await rm(join(root, "demo", ".env"));
         const { runner, calls } = recordingRunner();
         const stack = await current();
-        await saveEditableStack(root, "demo", req(stack, { composeSource: COMPOSE.replace("nginx:alpine", "nginx:1.28-alpine") }), asProvider(runner), MAX);
-        const args = calls.find(call => call.includes("config") && call.includes("--quiet"))!;
+        await saveEditableStack(
+            root,
+            "demo",
+            req(stack, { composeSource: COMPOSE.replace("nginx:alpine", "nginx:1.28-alpine") }),
+            asProvider(runner),
+            MAX,
+        );
+        const args = calls.find((call) => call.includes("config") && call.includes("--quiet"))!;
         expect(args.includes("--env-file")).toBe(false);
     });
 
@@ -185,23 +202,31 @@ describe("saveEditableStack", () => {
     test("refuses to overwrite an external change", async () => {
         const stack = await current();
         await writeFile(join(root, "demo", "compose.yaml"), "services: {}\n");
-        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), asProvider(okRunner), MAX))
-            .rejects.toThrow(StackConflictError);
+        await expect(
+            saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), asProvider(okRunner), MAX),
+        ).rejects.toThrow(StackConflictError);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe("services: {}\n");
     });
 
     test("refuses a save when compose changes during validation", async () => {
         const stack = await current();
         const external = "services:\n  external: true\n";
-        const racingRunner: DockerRunner = async args => {
+        const racingRunner: DockerRunner = async (args) => {
             if (args.includes("config")) {
                 await writeFile(join(root, "demo", "compose.yaml"), external);
                 return okResult;
             }
             return okResult;
         };
-        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), asProvider(racingRunner), MAX))
-            .rejects.toThrow(StackConflictError);
+        await expect(
+            saveEditableStack(
+                root,
+                "demo",
+                req(stack, { composeSource: "services:\n  app:\n    image: x\n" }),
+                asProvider(racingRunner),
+                MAX,
+            ),
+        ).rejects.toThrow(StackConflictError);
         // The external change is preserved; the draft was never published.
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(external);
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe(ENV);
@@ -209,7 +234,7 @@ describe("saveEditableStack", () => {
 
     test("refuses when compose is removed during validation", async () => {
         const stack = await current();
-        const racingRunner: DockerRunner = async args => {
+        const racingRunner: DockerRunner = async (args) => {
             if (args.includes("config")) {
                 await rm(join(root, "demo", "compose.yaml"));
                 return okResult;
@@ -217,7 +242,13 @@ describe("saveEditableStack", () => {
             return okResult;
         };
         try {
-            await saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), asProvider(racingRunner), MAX);
+            await saveEditableStack(
+                root,
+                "demo",
+                req(stack, { composeSource: "services:\n  app:\n    image: x\n" }),
+                asProvider(racingRunner),
+                MAX,
+            );
             throw new Error("expected the save to fail");
         } catch (error) {
             expect(error).toBeInstanceOf(StackError);
@@ -231,10 +262,18 @@ describe("saveEditableStack", () => {
         await mkdir(join(root, ".compose-panel", "backups"), { recursive: true });
         await writeFile(join(root, ".compose-panel", "backups", "demo"), "blocker");
         const stack = await current();
-        await expect(saveEditableStack(root, "demo", req(stack, {
-            composeSource: "services:\n  app:\n    image: x\n",
-            envSource: "DB_PASSWORD=changedvalue\n",
-        }), asProvider(okRunner), MAX)).rejects.toThrow();
+        await expect(
+            saveEditableStack(
+                root,
+                "demo",
+                req(stack, {
+                    composeSource: "services:\n  app:\n    image: x\n",
+                    envSource: "DB_PASSWORD=changedvalue\n",
+                }),
+                asProvider(okRunner),
+                MAX,
+            ),
+        ).rejects.toThrow();
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe(ENV);
     });
@@ -245,9 +284,17 @@ describe("saveEditableStack", () => {
             await writeFile(join(outside, "planted.txt"), "outside\n");
             await symlink(outside, join(root, ".compose-panel"));
             const stack = await current();
-            await expect(saveEditableStack(root, "demo", req(stack, {
-                composeSource: "services:\n  app:\n    image: x\n",
-            }), asProvider(okRunner), MAX)).rejects.toThrow(FileSafetyError);
+            await expect(
+                saveEditableStack(
+                    root,
+                    "demo",
+                    req(stack, {
+                        composeSource: "services:\n  app:\n    image: x\n",
+                    }),
+                    asProvider(okRunner),
+                    MAX,
+                ),
+            ).rejects.toThrow(FileSafetyError);
             expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
             expect(await readdir(outside)).toEqual(["planted.txt"]);
         } finally {
@@ -257,7 +304,7 @@ describe("saveEditableStack", () => {
 
     test("refuses a replaced stack directory even with identical content", async () => {
         const stack = await current();
-        const racingRunner: DockerRunner = async args => {
+        const racingRunner: DockerRunner = async (args) => {
             if (args.includes("config")) {
                 const compose = await readFile(join(root, "demo", "compose.yaml"), "utf8");
                 const env = await readFile(join(root, "demo", ".env"), "utf8");
@@ -270,8 +317,15 @@ describe("saveEditableStack", () => {
             return okResult;
         };
         // Hashes still match: only the directory identity check can fire.
-        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services:\n  app:\n    image: x\n" }), asProvider(racingRunner), MAX))
-            .rejects.toThrow(StackConflictError);
+        await expect(
+            saveEditableStack(
+                root,
+                "demo",
+                req(stack, { composeSource: "services:\n  app:\n    image: x\n" }),
+                asProvider(racingRunner),
+                MAX,
+            ),
+        ).rejects.toThrow(StackConflictError);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
     });
 
@@ -283,17 +337,24 @@ describe("saveEditableStack", () => {
             if (path.endsWith(".env")) throw new Error("disk full");
             await writeFileAtomic(path, content, attributes);
         };
-        const error = await saveEditableStack(root, "demo", req(stack, {
-            composeSource: "services:\n  app:\n    image: x\n",
-            envSource: "DB_PASSWORD=changedvalue\n",
-        }), asProvider(okRunner), MAX, { writer }).catch(error => error);
+        const error = await saveEditableStack(
+            root,
+            "demo",
+            req(stack, {
+                composeSource: "services:\n  app:\n    image: x\n",
+                envSource: "DB_PASSWORD=changedvalue\n",
+            }),
+            asProvider(okRunner),
+            MAX,
+            { writer },
+        ).catch((error) => error);
         expect(error).toBeInstanceOf(StackPartialError);
         expect((error as StackPartialError).backupPaths.length).toBe(2);
         expect((error as Error).message).toContain("put back to its previous version");
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
         expect(await readFile(join(root, "demo", ".env"), "utf8")).toBe(ENV);
         // Compose was written, then written back by the restore.
-        expect(written.filter(path => path.endsWith("compose.yaml")).length).toBe(2);
+        expect(written.filter((path) => path.endsWith("compose.yaml")).length).toBe(2);
     });
 
     test("reports manual recovery when the restore also fails", async () => {
@@ -308,10 +369,17 @@ describe("saveEditableStack", () => {
             }
             throw new Error("disk full");
         };
-        const error = await saveEditableStack(root, "demo", req(stack, {
-            composeSource: draft,
-            envSource: "DB_PASSWORD=changedvalue\n",
-        }), asProvider(okRunner), MAX, { writer }).catch(error => error);
+        const error = await saveEditableStack(
+            root,
+            "demo",
+            req(stack, {
+                composeSource: draft,
+                envSource: "DB_PASSWORD=changedvalue\n",
+            }),
+            asProvider(okRunner),
+            MAX,
+            { writer },
+        ).catch((error) => error);
         expect(error).toBeInstanceOf(StackPartialError);
         expect((error as Error).message).toContain("could not be put back");
         expect((error as StackPartialError).backupPaths.length).toBe(2);
@@ -320,18 +388,26 @@ describe("saveEditableStack", () => {
     });
 
     test("does not publish an invalid draft", async () => {
-        const failing: DockerRunner = async () => ({ code: 1, stdout: "", stderr: "services.app.ports must be a list", timedOut: false, truncated: false });
+        const failing: DockerRunner = async () => ({
+            code: 1,
+            stdout: "",
+            stderr: "services.app.ports must be a list",
+            timedOut: false,
+            truncated: false,
+        });
         const stack = await current();
-        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), asProvider(failing), MAX))
-            .rejects.toThrow(StackValidationError);
+        await expect(
+            saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), asProvider(failing), MAX),
+        ).rejects.toThrow(StackValidationError);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
     });
 
     test("does not write when Docker is unavailable", async () => {
         const unavailable: DockerRunner = async () => ({ code: -1, stdout: "", stderr: "", timedOut: false, truncated: false });
         const stack = await current();
-        await expect(saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), asProvider(unavailable), MAX))
-            .rejects.toThrow(StackValidationError);
+        await expect(
+            saveEditableStack(root, "demo", req(stack, { composeSource: "services: {}\n" }), asProvider(unavailable), MAX),
+        ).rejects.toThrow(StackValidationError);
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
     });
 
@@ -365,21 +441,30 @@ describe("saveEditableStack", () => {
     });
 
     // Regression: saves used to hand edited files to the panel's user (root in the image).
-    test.skipIf(process.platform !== "linux" || foreignOwner === null)("keeps the owner of saved files and gives a new .env the Compose file's owner", async () => {
-        const owner = foreignOwner!;
-        await rm(join(root, "demo", ".env"));
-        await chown(join(root, "demo", "compose.yaml"), owner.uid, owner.gid);
-        const stack = await current();
-        await saveEditableStack(root, "demo", req(stack, {
-            composeSource: "services:\n  app:\n    image: x\n",
-            envSource: "TOKEN=abcdefgh\n",
-        }), asProvider(okRunner), MAX);
-        for (const file of ["compose.yaml", ".env"]) {
-            const info = await stat(join(root, "demo", file));
-            expect({ uid: info.uid, gid: info.gid }).toEqual(owner);
-        }
-        expect((await stat(join(root, "demo", ".env"))).mode & 0o777).toBe(0o600);
-    });
+    test.skipIf(process.platform !== "linux" || foreignOwner === null)(
+        "keeps the owner of saved files and gives a new .env the Compose file's owner",
+        async () => {
+            const owner = foreignOwner!;
+            await rm(join(root, "demo", ".env"));
+            await chown(join(root, "demo", "compose.yaml"), owner.uid, owner.gid);
+            const stack = await current();
+            await saveEditableStack(
+                root,
+                "demo",
+                req(stack, {
+                    composeSource: "services:\n  app:\n    image: x\n",
+                    envSource: "TOKEN=abcdefgh\n",
+                }),
+                asProvider(okRunner),
+                MAX,
+            );
+            for (const file of ["compose.yaml", ".env"]) {
+                const info = await stat(join(root, "demo", file));
+                expect({ uid: info.uid, gid: info.gid }).toEqual(owner);
+            }
+            expect((await stat(join(root, "demo", ".env"))).mode & 0o777).toBe(0o600);
+        },
+    );
 
     test.skipIf(process.platform === "win32")("refuses a symlinked .env", async () => {
         const outside = await mkdtemp(join(tmpdir(), "compose-panel-outside-"));
@@ -415,7 +500,13 @@ describe("secret redaction edge cases", () => {
     });
 
     test("never shows a diagnostic the runner truncated", async () => {
-        const capped: DockerRunner = async () => ({ code: 1, stdout: "", stderr: "error: synthetic-sec", timedOut: false, truncated: true });
+        const capped: DockerRunner = async () => ({
+            code: 1,
+            stdout: "",
+            stderr: "error: synthetic-sec",
+            timedOut: false,
+            truncated: true,
+        });
         const result = await validateDraft(asProvider(capped), join(root, "demo"), COMPOSE, undefined, ["synthetic-secret-value"]);
         expect(result.ok).toBe(false);
         expect(result.message).not.toContain("synthetic");
@@ -424,9 +515,13 @@ describe("secret redaction edge cases", () => {
 
     test("a save stopped before commit writes nothing", async () => {
         const request = req(await current(), { composeSource: "services:\n  app:\n    image: nginx:1.27\n" });
-        await expect(saveEditableStack(root, "demo", request, asProvider(okRunner), MAX, {
-            beforeCommit: () => { throw new Error("session ended"); },
-        })).rejects.toThrow("session ended");
+        await expect(
+            saveEditableStack(root, "demo", request, asProvider(okRunner), MAX, {
+                beforeCommit: () => {
+                    throw new Error("session ended");
+                },
+            }),
+        ).rejects.toThrow("session ended");
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toBe(COMPOSE);
         expect(existsSync(join(root, ".compose-panel"))).toBe(false);
     });

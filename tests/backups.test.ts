@@ -42,7 +42,11 @@ describe("listBackups", () => {
         await plant("compose.yaml", 1, "abc");
         await plant(".env", 3);
         await plant("compose.yaml", 2);
-        expect((await listBackups(root, "demo")).map(entry => [entry.label, entry.size])).toEqual([[".env", 1], ["compose.yaml", 1], ["compose.yaml", 3]]);
+        expect((await listBackups(root, "demo")).map((entry) => [entry.label, entry.size])).toEqual([
+            [".env", 1],
+            ["compose.yaml", 1],
+            ["compose.yaml", 3],
+        ]);
     });
 
     test("is empty when the stack never had a backup", async () => {
@@ -54,7 +58,7 @@ describe("listBackups", () => {
         await writeFile(join(dir, "notes.txt"), "kept by hand");
         await writeFile(join(dir, "compose.yaml.bak"), "copy");
         await mkdir(join(dir, backupName("compose.yaml", 2)));
-        expect((await listBackups(root, "demo")).map(entry => entry.filename)).toEqual([backupName(".env", 1)]);
+        expect((await listBackups(root, "demo")).map((entry) => entry.filename)).toEqual([backupName(".env", 1)]);
     });
 
     test("rejects an invalid stack name", async () => {
@@ -94,10 +98,9 @@ describe("pruneBackups", () => {
         for (let second = 1; second <= 4; second++) await plant("compose.yaml", second);
         for (let second = 1; second <= 3; second++) await plant(".env", second);
         expect(await pruneBackups(root, "demo", 2)).toBe(3);
-        expect((await readdir(dir)).sort()).toEqual([
-            backupName(".env", 2), backupName(".env", 3),
-            backupName("compose.yaml", 3), backupName("compose.yaml", 4),
-        ].sort());
+        expect((await readdir(dir)).sort()).toEqual(
+            [backupName(".env", 2), backupName(".env", 3), backupName("compose.yaml", 3), backupName("compose.yaml", 4)].sort(),
+        );
     });
 
     test("deletes every backup with keep 0 and leaves other files alone", async () => {

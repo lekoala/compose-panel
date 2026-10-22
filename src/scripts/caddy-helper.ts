@@ -15,7 +15,9 @@ const MAX_REQUEST_BYTES = 8 * 1024;
 function fail(message: string, code: number): never {
     try {
         writeSync(1, `${JSON.stringify({ ok: false, error: message, code: "unknown" })}\n`);
-    } catch { /* the panel already treats a missing answer as unknown */ }
+    } catch {
+        /* the panel already treats a missing answer as unknown */
+    }
     process.exit(code);
 }
 
@@ -29,7 +31,10 @@ try {
 
 // Overall deadline for one request, including every Caddy subprocess and the
 // rollback reload (derived from the per-command timeout, see helperDeadlineMs).
-setTimeout(() => fail("The helper did not answer in time. Check Caddy on the host: the outcome is unknown.", 3), helperDeadlineMs(env!)).unref?.();
+setTimeout(
+    () => fail("The helper did not answer in time. Check Caddy on the host: the outcome is unknown.", 3),
+    helperDeadlineMs(env!),
+).unref?.();
 
 async function readLine(capped: number): Promise<string | null> {
     const stream = Bun.stdin.stream();

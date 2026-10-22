@@ -1,6 +1,16 @@
 import type { ImageDetails } from "./compose-state.ts";
 
-export const STACK_LABELS = ["stack.version", "stack.revision", "stack.source", "stack.environment", "stack.branch", "stack.build", "stack.build.url", "stack.url", "stack.managed-by"] as const;
+export const STACK_LABELS = [
+    "stack.version",
+    "stack.revision",
+    "stack.source",
+    "stack.environment",
+    "stack.branch",
+    "stack.build",
+    "stack.build.url",
+    "stack.url",
+    "stack.managed-by",
+] as const;
 export type DeclaredMetadata = Record<string, Record<string, string>>;
 
 export interface DeployedImage {
@@ -25,7 +35,9 @@ export function metadataUrl(value: unknown): string | null {
     try {
         const url = new URL(text);
         return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
-    } catch { return null; }
+    } catch {
+        return null;
+    }
 }
 
 /** Explicit projection only; never retain arbitrary config fields or labels. */
@@ -52,14 +64,20 @@ export function projectMetadata(value: unknown): DeclaredMetadata | null {
  * that declares one agrees. Informational only: never a trust or permission signal.
  */
 export function managedBy(declared: DeclaredMetadata | null | undefined): string | null {
-    const values = new Set(Object.values(declared ?? {}).map(labels => labels["stack.managed-by"]).filter((value): value is string => Boolean(value)));
+    const values = new Set(
+        Object.values(declared ?? {})
+            .map((labels) => labels["stack.managed-by"])
+            .filter((value): value is string => Boolean(value)),
+    );
     return values.size === 1 ? [...values][0]! : null;
 }
 
 export function deployedImage(service: string, container: string, detail: ImageDetails): DeployedImage {
     return {
-        service, container, imageId: detail.id,
-        digests: detail.repoDigests.filter(digest => /^[^\s@]+@sha256:[a-f0-9]{64}$/.test(digest)),
+        service,
+        container,
+        imageId: detail.id,
+        digests: detail.repoDigests.filter((digest) => /^[^\s@]+@sha256:[a-f0-9]{64}$/.test(digest)),
         version: metadataText(detail.labels["org.opencontainers.image.version"]),
         revision: metadataText(detail.labels["org.opencontainers.image.revision"]),
         source: metadataUrl(detail.labels["org.opencontainers.image.source"]),

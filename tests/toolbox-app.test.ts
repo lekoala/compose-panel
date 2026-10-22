@@ -41,7 +41,12 @@ afterAll(async () => {
 });
 
 const ok: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
-const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
+const caps: ComposeCapabilities = {
+    engine: "fake",
+    available: true,
+    operations: { ls: true, ps: true, config: true, logs: true },
+    configHashes: false,
+};
 
 function manifest(scripts: Record<string, string>, actions: Record<string, unknown>): string {
     return JSON.stringify({ scripts, extra: { "compose-panel": { version: 1, actions } } });
@@ -66,7 +71,10 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
         engine: "fake",
         capabilities: () => caps,
         detect: async () => caps,
-        listProjects: async () => ({ ...ok, stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]) }),
+        listProjects: async () => ({
+            ...ok,
+            stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]),
+        }),
         projectName: async () => "demo-proj",
         projectServices: async () => ok,
         projectImages: async () => ok,
@@ -77,7 +85,11 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
         validateConfig: async () => ok,
         listServices: async () => [],
         runningContainerIds: async () => {
-            if (onResolve) { const fn = onResolve; onResolve = null; await fn(); }
+            if (onResolve) {
+                const fn = onResolve;
+                onResolve = null;
+                await fn();
+            }
             return running;
         },
         readLogs: async () => ok,
@@ -105,7 +117,11 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
     const actionRunner: ActionRunner = {
         engine: "fake",
         readFile: async () => ({ kind: "ok", content: manifestRaw }),
-        exec: async target => { execCalls.push(target.argv); target.onOutput?.("done\n"); return ok; },
+        exec: async (target) => {
+            execCalls.push(target.argv);
+            target.onOutput?.("done\n");
+            return ok;
+        },
     };
 
     const config: AppConfig = {
@@ -121,7 +137,14 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
         sessionTtlMs: 3_600_000,
         sessionIdleMs: 3_600_000,
         loginRateLimit: { windowMs: 60_000, maxAttempts: 5, backoffMaxMs: 1 },
-        audit: { enabled: options.audit === true, dir: null, rotation: "day", retainFiles: 31, maxReadLines: 2000, maxFileBytes: 10 * 1024 * 1024 },
+        audit: {
+            enabled: options.audit === true,
+            dir: null,
+            rotation: "day",
+            retainFiles: 31,
+            maxReadLines: 2000,
+            maxFileBytes: 10 * 1024 * 1024,
+        },
         maxBodyBytes: 8192,
         maxEditBytes: 1024 * 1024,
         backupRetain: 10,
@@ -150,7 +173,19 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
     };
     const runner: DockerRunner = async () => ok;
     const app = createApp({ config, stacksRoot: root, runner, provider, inspector, actionRunner });
-    return { app, execCalls, setRunning: ids => { running = ids; }, setManifest: raw => { manifestRaw = raw; }, armOnResolve: fn => { onResolve = fn; } };
+    return {
+        app,
+        execCalls,
+        setRunning: (ids) => {
+            running = ids;
+        },
+        setManifest: (raw) => {
+            manifestRaw = raw;
+        },
+        armOnResolve: (fn) => {
+            onResolve = fn;
+        },
+    };
 }
 
 function setCookies(response: Response): string[] {
@@ -169,15 +204,22 @@ async function login(app: App): Promise<string> {
     const page = await app.fetch(new Request(`${ORIGIN}/login`));
     const csrfCookie = cookieValue(setCookies(page), "cp_csrf")!;
     const csrf = /name="csrf" value="([^"]+)"/.exec(await page.text())![1]!;
-    const response = await app.fetch(new Request(`${ORIGIN}/login`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: `cp_csrf=${csrfCookie}` },
-        body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
-    }));
+    const response = await app.fetch(
+        new Request(`${ORIGIN}/login`, {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: `cp_csrf=${csrfCookie}` },
+            body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
+        }),
+    );
     return cookieValue(setCookies(response), "cp_session")!;
 }
 
-async function post(app: App, session: string, body: Record<string, string>, init: { origin?: string | null; csrf?: string } = {}): Promise<Response> {
+async function post(
+    app: App,
+    session: string,
+    body: Record<string, string>,
+    init: { origin?: string | null; csrf?: string } = {},
+): Promise<Response> {
     const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded", cookie: `cp_session=${session}` };
     if (init.origin !== null) headers["origin"] = init.origin ?? ORIGIN;
     return app.fetch(new Request(`${ORIGIN}/stacks/demo/actions`, { method: "POST", headers, body: new URLSearchParams(body).toString() }));
@@ -188,7 +230,7 @@ function revisionFrom(html: string): string {
 }
 
 async function settle(app: App): Promise<void> {
-    for (let i = 0; i < 200 && app.operations.activeCount() > 0; i += 1) await new Promise(resolve => setTimeout(resolve, 1));
+    for (let i = 0; i < 200 && app.operations.activeCount() > 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 1));
 }
 
 describe("application toolbox routes", () => {
@@ -233,7 +275,12 @@ describe("application toolbox routes", () => {
         const { app, execCalls } = await harness();
         const session = await login(app);
         const csrf = await sessionCsrf(app, session);
-        const response = await post(app, session, { source: "backend", action: "rm:all", revision: await pageRevision(app, session), csrf });
+        const response = await post(app, session, {
+            source: "backend",
+            action: "rm:all",
+            revision: await pageRevision(app, session),
+            csrf,
+        });
         expect(response.status).toBe(409);
         await settle(app);
         expect(execCalls).toHaveLength(0);
@@ -335,13 +382,15 @@ async function auditLogLine(needle: string = ID): Promise<string> {
     const dir = join(root, ".compose-panel", "audit");
     for (let i = 0; i < 400; i += 1) {
         try {
-            const files = (await readdir(dir)).filter(name => name.endsWith(".log")).sort();
+            const files = (await readdir(dir)).filter((name) => name.endsWith(".log")).sort();
             if (files.length > 0) {
                 const text = await readFile(join(dir, files[files.length - 1]!), "utf8");
                 if (text.includes('"event":"toolbox"') && text.includes(needle)) return text;
             }
-        } catch { /* the audit file is not created yet */ }
-        await new Promise(resolve => setTimeout(resolve, 5));
+        } catch {
+            /* the audit file is not created yet */
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
     }
     throw new Error("The audit line was not written in time.");
 }

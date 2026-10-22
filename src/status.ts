@@ -16,10 +16,13 @@ import { loadImageUpdates, type ServiceUpdate } from "./updates.ts";
 import { loadRecreatePending } from "./recreate-pending.ts";
 import type { DeclaredMetadata, DeployedImage } from "./deployment.ts";
 
-export const DOCKER_UNAVAILABLE = "Docker is not reachable, so statuses are shown as unknown. Check that the Docker daemon is running and its socket is available to the panel.";
+export const DOCKER_UNAVAILABLE =
+    "Docker is not reachable, so statuses are shown as unknown. Check that the Docker daemon is running and its socket is available to the panel.";
 export const DOCKER_SLOW = "Docker did not respond in time, so statuses are shown as unknown. Reload the page to try again.";
-export const DOCKER_TRUNCATED = "Docker returned more output than the panel reads, so this list may be incomplete. It is shown as unknown instead of partial. Reload the page to try again.";
-const SEVERAL_PROJECTS = "Several Docker Compose projects point to this folder, so the panel cannot tell which one is this stack. Its status is unknown and actions are refused until only one remains.";
+export const DOCKER_TRUNCATED =
+    "Docker returned more output than the panel reads, so this list may be incomplete. It is shown as unknown instead of partial. Reload the page to try again.";
+const SEVERAL_PROJECTS =
+    "Several Docker Compose projects point to this folder, so the panel cannot tell which one is this stack. Its status is unknown and actions are refused until only one remains.";
 const MAX_ENV_BYTES = 1024 * 1024;
 
 export interface StackStatus {
@@ -78,7 +81,7 @@ export async function loadStackStates(root: string, provider: ComposeProvider, d
         if (code === "ENOENT" || code === "ENOTDIR") throw new StackError("The stacks folder is missing or cannot be read.", 503);
         throw error;
     }
-    const { projects, note } = discovery ?? await loadProjects(provider);
+    const { projects, note } = discovery ?? (await loadProjects(provider));
     const result: StackStatus[] = [];
 
     for (const stack of stacks) {
@@ -132,7 +135,12 @@ export interface ProjectContext {
  * old nullable lookup, ambiguous and unavailable discovery are distinct from
  * "no project yet", so callers can refuse to act instead of running blind.
  */
-export async function resolveProjectContext(root: string, name: string, provider: ComposeProvider, verifyCreation = false): Promise<ProjectContext> {
+export async function resolveProjectContext(
+    root: string,
+    name: string,
+    provider: ComposeProvider,
+    verifyCreation = false,
+): Promise<ProjectContext> {
     const location = await locateComposeFile(root, name);
     const base = { composeFile: location.path, filename: location.filename, cwd: dirname(location.path) };
     // Apply the editor's `.env` safety rules here too: mutation, follow and
@@ -163,8 +171,9 @@ export async function resolveProjectContext(root: string, name: string, provider
             // Refresh after config resolution; another CLI may have created a
             // project while the effective name was being evaluated.
             const refreshed = await provider.listProjects();
-            if (refreshed.code !== 0 || refreshed.timedOut || refreshed.truncated) return { kind: "unavailable", project: null, ...base, envFile };
-            if (parseComposeLs(refreshed.stdout).some(entry => entry.name === project)) {
+            if (refreshed.code !== 0 || refreshed.timedOut || refreshed.truncated)
+                return { kind: "unavailable", project: null, ...base, envFile };
+            if (parseComposeLs(refreshed.stdout).some((entry) => entry.name === project)) {
                 return { kind: "ambiguous", project: null, ...base, envFile };
             }
             return { kind: "absent", project, ...base, envFile };
@@ -190,7 +199,13 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
         envFile = (await readFileSafe(join(cwd, ENV_FILENAME), MAX_ENV_BYTES))?.path;
     } catch {
         // None of the config-consuming reads may fall back to an unsafe .env.
-        return { project: match.project?.name ?? null, state: match.project ? summarizeProjectStatus(match.project.status) : "not-created", note: "The stack environment file cannot be read safely.", services: [], declared: null };
+        return {
+            project: match.project?.name ?? null,
+            state: match.project ? summarizeProjectStatus(match.project.status) : "not-created",
+            note: "The stack environment file cannot be read safely.",
+            services: [],
+            declared: null,
+        };
     }
     // Config errors do not change the state reported by Docker services.
     const declaredTask = (async (): Promise<DeclaredMetadata | null> => {

@@ -48,12 +48,17 @@ async function readCapped(
     if (!stream) return;
     const reader = stream.getReader();
     const decoder = new TextDecoder();
-    const cancel = () => { void reader.cancel().catch(() => {}); };
+    const cancel = () => {
+        void reader.cancel().catch(() => {});
+    };
     cleanup?.addEventListener("abort", cancel, { once: true });
     const notify = (text: string) => {
         if (!cleanup?.aborted && onChunk && text) {
-            try { onChunk(text); }
-            catch { /* a broken observer must not fail the command */ }
+            try {
+                onChunk(text);
+            } catch {
+                /* a broken observer must not fail the command */
+            }
         }
     };
     try {
@@ -85,7 +90,11 @@ async function readCapped(
         notify(decoder.decode());
     } finally {
         cleanup?.removeEventListener("abort", cancel);
-        try { reader.releaseLock(); } catch { /* already released */ }
+        try {
+            reader.releaseLock();
+        } catch {
+            /* already released */
+        }
     }
 }
 
@@ -146,12 +155,19 @@ export async function runCommand(file: string, args: string[], options: RunOptio
     let escalate: ReturnType<typeof setTimeout> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
     let expire!: () => void;
-    const expired = new Promise<void>(resolve => { expire = () => { deadlineExpired = true; resolve(); }; });
+    const expired = new Promise<void>((resolve) => {
+        expire = () => {
+            deadlineExpired = true;
+            resolve();
+        };
+    });
     const kill = (signal: "SIGTERM" | "SIGKILL") => {
         try {
             if (process.platform === "linux") process.kill(-proc.pid, signal);
             else proc.kill(signal);
-        } catch { /* already exited or unavailable */ }
+        } catch {
+            /* already exited or unavailable */
+        }
     };
     const terminate = (timeout = true) => {
         if (terminating) return;
@@ -168,18 +184,26 @@ export async function runCommand(file: string, args: string[], options: RunOptio
     const completed = Promise.all([
         readCapped(proc.stdout, maxBytes, options.binaryStdout ? undefined : options.onChunk, out, cleanup.signal, onLimit),
         readCapped(proc.stderr, maxBytes, options.onChunk, err, cleanup.signal, onLimit),
-        proc.exited.then(code => { exitCode = code; }),
-    ]).then(() => {}, async () => {
-        // A broken pipe must not abandon a still-running privileged child.
-        terminate();
-        await expired;
-    });
+        proc.exited.then((code) => {
+            exitCode = code;
+        }),
+    ]).then(
+        () => {},
+        async () => {
+            // A broken pipe must not abandon a still-running privileged child.
+            terminate();
+            await expired;
+        },
+    );
 
     try {
         await Promise.race([completed, expired]);
         const decode = (capture: Capture) => new TextDecoder().decode(Buffer.concat(capture.chunks), { stream: capture.truncated });
         return {
-            code: exitCode ?? -1, stdout: options.binaryStdout ? "" : decode(out), stderr: decode(err), timedOut,
+            code: exitCode ?? -1,
+            stdout: options.binaryStdout ? "" : decode(out),
+            stderr: decode(err),
+            timedOut,
             ...(options.binaryStdout ? { stdoutBytes: Buffer.concat(out.chunks) } : {}),
             truncated: out.truncated || err.truncated,
             terminationUnconfirmed: exitCode === null || deadlineExpired,
@@ -193,13 +217,14 @@ export async function runCommand(file: string, args: string[], options: RunOptio
     }
 }
 
-export function createDockerRunner(options: { dockerPath?: string; timeoutMs?: number; maxBytes?: number; env?: Record<string, string> } = {}): DockerRunner {
+export function createDockerRunner(
+    options: { dockerPath?: string; timeoutMs?: number; maxBytes?: number; env?: Record<string, string> } = {},
+): DockerRunner {
     const dockerPath = options.dockerPath ?? "docker";
     const timeoutMs = options.timeoutMs ?? 5000;
     const maxBytes = options.maxBytes ?? 1024 * 1024;
     const env = options.env;
-    return (args, overrides = {}) =>
-        runCommand(dockerPath, args, { timeoutMs, maxBytes, env, ...overrides });
+    return (args, overrides = {}) => runCommand(dockerPath, args, { timeoutMs, maxBytes, env, ...overrides });
 }
 
 export const SPAWN_FAILURE = SPAWN_FAILURE_CODE;

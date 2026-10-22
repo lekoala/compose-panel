@@ -112,8 +112,9 @@ describe("normalizeDatabaseExplorerUrl", () => {
 
 describe("buildExplorerUrl", () => {
     test("builds the LibreDB deep link", () => {
-        expect(buildExplorerUrl("https://db.example.com", { connection: "seed:shop-staging" }))
-            .toBe("https://db.example.com/?connection=seed%3Ashop-staging");
+        expect(buildExplorerUrl("https://db.example.com", { connection: "seed:shop-staging" })).toBe(
+            "https://db.example.com/?connection=seed%3Ashop-staging",
+        );
     });
 
     test("builds a multi-parameter Adminer link", () => {

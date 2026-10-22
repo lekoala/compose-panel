@@ -12,7 +12,7 @@ import { asRecord, readComposeExtension, type ParseResult } from "./compose-exte
  * no Docker, no filesystem.
  */
 export const TOOLBOX_RUNNERS = ["composer", "npm", "bun"] as const;
-export type ToolboxRunner = typeof TOOLBOX_RUNNERS[number];
+export type ToolboxRunner = (typeof TOOLBOX_RUNNERS)[number];
 
 export const TOOLBOX_SCHEMA_VERSION = 1;
 
@@ -79,9 +79,12 @@ export function buildRunnerArgv(runner: ToolboxRunner, name: string): string[] {
     switch (runner) {
         // `--no-interaction` is a Composer global option (before the command),
         // so the action never waits on a prompt such as "Continue as root?".
-        case "composer": return ["composer", "--no-interaction", "run-script", name];
-        case "npm": return ["npm", "run", name];
-        case "bun": return ["bun", "run", name];
+        case "composer":
+            return ["composer", "--no-interaction", "run-script", name];
+        case "npm":
+            return ["npm", "run", name];
+        case "bun":
+            return ["bun", "run", name];
     }
 }
 
@@ -174,9 +177,7 @@ export function parseManifest(raw: string, runner: ToolboxRunner): ParseResult<M
     const root = asRecord(document);
     if (!root) return { ok: false, error: `The ${manifestFileFor(runner)} is not a JSON object.` };
 
-    const section = runner === "composer"
-        ? asRecord(asRecord(root["extra"])?.["compose-panel"])
-        : asRecord(root["compose-panel"]);
+    const section = runner === "composer" ? asRecord(asRecord(root["extra"])?.["compose-panel"]) : asRecord(root["compose-panel"]);
     if (!section) return { ok: false, error: `No compose-panel actions are declared in this ${manifestFileFor(runner)}.` };
     if (section["version"] !== TOOLBOX_SCHEMA_VERSION) {
         return { ok: false, error: `Unsupported compose-panel schema version: expected ${TOOLBOX_SCHEMA_VERSION}.` };
@@ -282,7 +283,7 @@ function ownValue(source: Record<string, unknown>, key: string): unknown {
 function isUsableScript(runner: ToolboxRunner, value: unknown): boolean {
     if (runner === "composer") {
         if (typeof value === "string") return value.trim() !== "";
-        return Array.isArray(value) && value.length > 0 && value.every(part => typeof part === "string");
+        return Array.isArray(value) && value.length > 0 && value.every((part) => typeof part === "string");
     }
     return typeof value === "string" && value.trim() !== "";
 }
@@ -305,15 +306,19 @@ function computeRevision(
         container: execution.containerId,
         image: execution.imageId,
         source: { id: source.id, service: source.service, runner: source.runner, workdir: source.workdir, user: source.user },
-        actions: [...actions].sort((a, b) => a.name.localeCompare(b.name)).map(action => ({
-            name: action.name,
-            label: action.label,
-            group: action.group,
-            confirmation: action.confirmation,
-            timeoutMs: action.timeoutMs,
-        })),
+        actions: [...actions]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((action) => ({
+                name: action.name,
+                label: action.label,
+                group: action.group,
+                confirmation: action.confirmation,
+                timeoutMs: action.timeoutMs,
+            })),
         // The whole script map, order-stable: a referenced definition counts too.
-        scripts: Object.keys(scripts).sort().map(key => [key, ownValue(scripts, key)]),
+        scripts: Object.keys(scripts)
+            .sort()
+            .map((key) => [key, ownValue(scripts, key)]),
     };
     const hasher = new Bun.CryptoHasher("sha256");
     hasher.update(JSON.stringify(material));

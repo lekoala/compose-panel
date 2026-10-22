@@ -12,7 +12,17 @@ import type { ComposeCapabilities, ComposeProvider, ComposeTarget } from "../src
 import type { ContainerInspector } from "../src/containers.ts";
 import { resolveRoot } from "../src/stacks.ts";
 import type { SelfUpdater } from "../src/self-update.ts";
-import { IMAGE_REF, MOUNTINFO, NEW_DIGEST, NEW_IMAGE, fakeDocker, fakeReleases, fakeSelfUpdater, releaseJson, type FakeReleases } from "./helpers/self-update.ts";
+import {
+    IMAGE_REF,
+    MOUNTINFO,
+    NEW_DIGEST,
+    NEW_IMAGE,
+    fakeDocker,
+    fakeReleases,
+    fakeSelfUpdater,
+    releaseJson,
+    type FakeReleases,
+} from "./helpers/self-update.ts";
 
 const PASSWORD = "correct horse battery staple";
 const ORIGIN = "http://localhost";
@@ -30,7 +40,15 @@ afterAll(async () => {
     await rm(root, { recursive: true, force: true });
 });
 
-function makeApp(overrides: Partial<AppConfig> = {}, runner?: DockerRunner, provider?: ComposeProvider, audit?: AuditLog, stacksRoot: string = root, inspector?: ContainerInspector, selfUpdater?: SelfUpdater): App {
+function makeApp(
+    overrides: Partial<AppConfig> = {},
+    runner?: DockerRunner,
+    provider?: ComposeProvider,
+    audit?: AuditLog,
+    stacksRoot: string = root,
+    inspector?: ContainerInspector,
+    selfUpdater?: SelfUpdater,
+): App {
     const config: AppConfig = {
         stacksDir: stacksRoot,
         port: 5081,
@@ -84,13 +102,21 @@ interface FollowCall {
 /** Provider with a controllable `logs --follow` for SSE tests. No subprocess. */
 function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[] } {
     const calls: FollowCall[] = [];
-    const caps: ComposeCapabilities = { engine: "fake", available: true, operations: { ls: true, ps: true, config: true, logs: true }, configHashes: false };
+    const caps: ComposeCapabilities = {
+        engine: "fake",
+        available: true,
+        operations: { ls: true, ps: true, config: true, logs: true },
+        configHashes: false,
+    };
     const empty: CommandResult = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
     const provider: ComposeProvider = {
         engine: "fake",
         capabilities: () => caps,
         detect: async () => caps,
-        listProjects: async () => ({ ...empty, stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]) }),
+        listProjects: async () => ({
+            ...empty,
+            stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]),
+        }),
         projectName: async () => "demo-proj",
         projectServices: async () => empty,
         projectImages: async () => empty,
@@ -110,10 +136,11 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         down: async () => empty,
         serviceImage: async () => null,
         recreateService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
-        followLogs: (followTarget, onChunk, signal) => new Promise(resolve => {
-            calls.push({ target: followTarget, onChunk, signal });
-            signal.addEventListener("abort", () => resolve({ code: 137, timedOut: false }), { once: true });
-        }),
+        followLogs: (followTarget, onChunk, signal) =>
+            new Promise((resolve) => {
+                calls.push({ target: followTarget, onChunk, signal });
+                signal.addEventListener("abort", () => resolve({ code: 137, timedOut: false }), { once: true });
+            }),
     };
     return { provider, calls };
 }
@@ -160,12 +187,22 @@ async function loginCsrf(app: App): Promise<{ cookie: string; csrf: string }> {
     return loginCsrfAt(app, ORIGIN);
 }
 
-function postLoginAt(app: App, base: string, cookie: string, csrf: string, user: string, password: string, origin: string): Promise<Response> {
-    return app.fetch(new Request(`${base}/login`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded", origin, cookie: `cp_csrf=${cookie}` },
-        body: new URLSearchParams({ csrf, user, password }).toString(),
-    }));
+function postLoginAt(
+    app: App,
+    base: string,
+    cookie: string,
+    csrf: string,
+    user: string,
+    password: string,
+    origin: string,
+): Promise<Response> {
+    return app.fetch(
+        new Request(`${base}/login`, {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded", origin, cookie: `cp_csrf=${cookie}` },
+            body: new URLSearchParams({ csrf, user, password }).toString(),
+        }),
+    );
 }
 
 function postLogin(app: App, cookie: string, csrf: string, user: string, password: string, origin: string = ORIGIN): Promise<Response> {
@@ -179,17 +216,42 @@ async function login(app: App): Promise<string> {
 }
 
 describe("controlled stack creation", () => {
-    async function fixture(work: (app: App, dir: string, calls: string[][]) => Promise<void>, overrides: Partial<AppConfig> = {}, custom?: (args: string[]) => Promise<CommandResult>) {
+    async function fixture(
+        work: (app: App, dir: string, calls: string[][]) => Promise<void>,
+        overrides: Partial<AppConfig> = {},
+        custom?: (args: string[]) => Promise<CommandResult>,
+    ) {
         const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "cp-create-route-")));
         const calls: string[][] = [];
-        const runner: DockerRunner = async args => {
+        const runner: DockerRunner = async (args) => {
             calls.push(args);
             if (custom) return custom(args);
-            return { code: 0, stdout: args.includes("ls") || args.includes("images") || args.includes("ps") ? "[]" : args.includes("--quiet") ? "" : '{"name":"fresh-project","services":{}}', stderr: "", timedOut: false, truncated: false };
+            return {
+                code: 0,
+                stdout:
+                    args.includes("ls") || args.includes("images") || args.includes("ps")
+                        ? "[]"
+                        : args.includes("--quiet")
+                          ? ""
+                          : '{"name":"fresh-project","services":{}}',
+                stderr: "",
+                timedOut: false,
+                truncated: false,
+            };
         };
-        const app = makeApp({ audit: { enabled: false, dir: null, rotation: "day", retainFiles: 1, maxReadLines: 10, maxFileBytes: 10000 }, ...overrides }, runner, undefined, undefined, dir);
-        try { await work(app, dir, calls); }
-        finally { await app.beginShutdown(100); await rm(dir, { recursive: true, force: true }); }
+        const app = makeApp(
+            { audit: { enabled: false, dir: null, rotation: "day", retainFiles: 1, maxReadLines: 10, maxFileBytes: 10000 }, ...overrides },
+            runner,
+            undefined,
+            undefined,
+            dir,
+        );
+        try {
+            await work(app, dir, calls);
+        } finally {
+            await app.beginShutdown(100);
+            await rm(dir, { recursive: true, force: true });
+        }
     }
     const compose = "# keep this\nservices:\n  app:\n    image: busybox\n";
     async function form(app: App, session: string) {
@@ -201,115 +263,165 @@ describe("controlled stack creation", () => {
         expect(html).toContain('action="/new-stack"');
         return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
     }
-    const post = (app: App, session: string, fields: Record<string, string>, origin = ORIGIN) => authed(app, "/new-stack", session, {
-        method: "POST", headers: { origin, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields).toString(),
-    });
+    const post = (app: App, session: string, fields: Record<string, string>, origin = ORIGIN) =>
+        authed(app, "/new-stack", session, {
+            method: "POST",
+            headers: { origin, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(fields).toString(),
+        });
 
-    test("requires authentication, CSRF and same origin before any creation or Docker call", async () => fixture(async (app, dir, calls) => {
-        expect((await app.fetch(new Request(`${ORIGIN}/new-stack`))).status).toBe(302);
-        expect((await app.fetch(new Request(`${ORIGIN}/new-stack`, { method: "POST" }))).status).toBe(401);
-        const session = await login(app);
-        const csrf = await form(app, session);
-        for (const [token, origin] of [["wrong", ORIGIN], [csrf, "https://evil.example"]]) {
-            expect((await post(app, session, { csrf: token!, name: "fresh", compose }, origin)).status).toBe(403);
-        }
-        expect(calls).toEqual([]);
-        expect(await readdir(dir)).toEqual([]);
-    }));
+    test("requires authentication, CSRF and same origin before any creation or Docker call", async () =>
+        fixture(async (app, dir, calls) => {
+            expect((await app.fetch(new Request(`${ORIGIN}/new-stack`))).status).toBe(302);
+            expect((await app.fetch(new Request(`${ORIGIN}/new-stack`, { method: "POST" }))).status).toBe(401);
+            const session = await login(app);
+            const csrf = await form(app, session);
+            for (const [token, origin] of [
+                ["wrong", ORIGIN],
+                [csrf, "https://evil.example"],
+            ]) {
+                expect((await post(app, session, { csrf: token!, name: "fresh", compose }, origin)).status).toBe(403);
+            }
+            expect(calls).toEqual([]);
+            expect(await readdir(dir)).toEqual([]);
+        }));
 
-    test("creates raw files and redirects without running a Docker mutation", async () => fixture(async (app, dir, calls) => {
-        const session = await login(app);
-        const csrf = await form(app, session);
-        const env = "TOKEN='private-value'\n";
-        const response = await post(app, session, { csrf, name: "fresh", compose, env });
-        expect(response.status).toBe(303);
-        expect(response.headers.get("location")).toBe("/stacks/fresh?created=1");
-        expect(await readFile(join(dir, "fresh/compose.yaml"), "utf8")).toBe(compose);
-        expect(await readFile(join(dir, "fresh/.env"), "utf8")).toBe(env);
-        expect(calls.every(args => args.includes("config") || args.includes("ls"))).toBe(true);
-        expect(calls.some(args => args.includes("up") || args.includes("pull"))).toBe(false);
-    }));
+    test("creates raw files and redirects without running a Docker mutation", async () =>
+        fixture(async (app, dir, calls) => {
+            const session = await login(app);
+            const csrf = await form(app, session);
+            const env = "TOKEN='private-value'\n";
+            const response = await post(app, session, { csrf, name: "fresh", compose, env });
+            expect(response.status).toBe(303);
+            expect(response.headers.get("location")).toBe("/stacks/fresh?created=1");
+            expect(await readFile(join(dir, "fresh/compose.yaml"), "utf8")).toBe(compose);
+            expect(await readFile(join(dir, "fresh/.env"), "utf8")).toBe(env);
+            expect(calls.every((args) => args.includes("config") || args.includes("ls"))).toBe(true);
+            expect(calls.some((args) => args.includes("up") || args.includes("pull"))).toBe(false);
+        }));
 
-    test("keeps escaped drafts on validation failure without exposing provider errors", async () => fixture(async (app, dir) => {
-        const session = await login(app);
-        const csrf = await form(app, session);
-        const response = await post(app, session, { csrf, name: "fresh", compose: `${compose}# </textarea><script>bad</script>`, env: "SECRET=private-value" });
-        expect(response.status).toBe(400);
-        const html = await response.text();
-        expect(html).toContain("&lt;/textarea&gt;&lt;script&gt;bad&lt;/script&gt;");
-        expect(html).not.toContain("<script>bad</script>");
-        expect(html).toContain("fixture-invalid-yaml");
-        expect(html).not.toContain("<script>diagnostic</script>");
-        expect(html).toContain("&lt;script&gt;diagnostic&lt;/script&gt;");
-        expect(html.match(/private-value/g)).toHaveLength(1); // Only in the retained draft.
-        // The supplied secret stays only in its authenticated draft textarea.
-        expect(html).toContain('data-sensitive');
-        expect(await readdir(dir)).toEqual([]);
-    }, {}, async () => ({ code: 1, stdout: "", stderr: "fixture-invalid-yaml: private-value <script>diagnostic</script>", timedOut: false, truncated: false })));
+    test("keeps escaped drafts on validation failure without exposing provider errors", async () =>
+        fixture(
+            async (app, dir) => {
+                const session = await login(app);
+                const csrf = await form(app, session);
+                const response = await post(app, session, {
+                    csrf,
+                    name: "fresh",
+                    compose: `${compose}# </textarea><script>bad</script>`,
+                    env: "SECRET=private-value",
+                });
+                expect(response.status).toBe(400);
+                const html = await response.text();
+                expect(html).toContain("&lt;/textarea&gt;&lt;script&gt;bad&lt;/script&gt;");
+                expect(html).not.toContain("<script>bad</script>");
+                expect(html).toContain("fixture-invalid-yaml");
+                expect(html).not.toContain("<script>diagnostic</script>");
+                expect(html).toContain("&lt;script&gt;diagnostic&lt;/script&gt;");
+                expect(html.match(/private-value/g)).toHaveLength(1); // Only in the retained draft.
+                // The supplied secret stays only in its authenticated draft textarea.
+                expect(html).toContain("data-sensitive");
+                expect(await readdir(dir)).toEqual([]);
+            },
+            {},
+            async () => ({
+                code: 1,
+                stdout: "",
+                stderr: "fixture-invalid-yaml: private-value <script>diagnostic</script>",
+                timedOut: false,
+                truncated: false,
+            }),
+        ));
 
     test("incomplete cleanup logs only the stack and stage while keeping the redacted cause visible", async () => {
         const logged: unknown[][] = [];
         const original = console.error;
-        console.error = (...args: unknown[]) => { logged.push(args); };
+        console.error = (...args: unknown[]) => {
+            logged.push(args);
+        };
         try {
-            await fixture(async (app, dir) => {
-                const session = await login(app);
-                const csrf = await form(app, session);
-                const response = await post(app, session, { csrf, name: "fresh", compose, env: "SECRET=private-value" });
-                expect(response.status).toBe(500);
-                const html = await response.text();
-                expect(html).toContain("fixture-validation-cause");
-                expect(html.match(/private-value/g)).toHaveLength(1);
-                expect(await readFile(join(dir, "fresh/foreign"), "utf8")).toBe("untouched");
-            }, {}, async args => {
-                const file = args[args.indexOf("-f") + 1]!;
-                await writeFile(join(file, "..", "foreign"), "untouched");
-                return { code: 1, stdout: "", stderr: "fixture-validation-cause private-value", timedOut: false, truncated: false };
-            });
-        } finally { console.error = original; }
+            await fixture(
+                async (app, dir) => {
+                    const session = await login(app);
+                    const csrf = await form(app, session);
+                    const response = await post(app, session, { csrf, name: "fresh", compose, env: "SECRET=private-value" });
+                    expect(response.status).toBe(500);
+                    const html = await response.text();
+                    expect(html).toContain("fixture-validation-cause");
+                    expect(html.match(/private-value/g)).toHaveLength(1);
+                    expect(await readFile(join(dir, "fresh/foreign"), "utf8")).toBe("untouched");
+                },
+                {},
+                async (args) => {
+                    const file = args[args.indexOf("-f") + 1]!;
+                    await writeFile(join(file, "..", "foreign"), "untouched");
+                    return { code: 1, stdout: "", stderr: "fixture-validation-cause private-value", timedOut: false, truncated: false };
+                },
+            );
+        } finally {
+            console.error = original;
+        }
         expect(JSON.stringify(logged)).not.toContain("private-value");
         expect(JSON.stringify(logged)).not.toContain("fixture-validation-cause");
         expect(logged).toEqual([["Stack creation cleanup incomplete", { stack: "fresh", stage: "validation" }]]);
     });
 
-    test("invalid names and oversized bodies never reach Docker", async () => fixture(async (app, dir, calls) => {
-        const session = await login(app);
-        const csrf = await form(app, session);
-        expect((await post(app, session, { csrf, name: "../bad", compose })).status).toBe(400);
-        expect((await post(app, session, { csrf, name: "fresh", compose: "x".repeat(300) })).status).toBe(413);
-        expect(calls).toEqual([]);
-        expect(await readdir(dir)).toEqual([]);
-    }, { maxEditBytes: 200 }));
+    test("invalid names and oversized bodies never reach Docker", async () =>
+        fixture(
+            async (app, dir, calls) => {
+                const session = await login(app);
+                const csrf = await form(app, session);
+                expect((await post(app, session, { csrf, name: "../bad", compose })).status).toBe(400);
+                expect((await post(app, session, { csrf, name: "fresh", compose: "x".repeat(300) })).status).toBe(413);
+                expect(calls).toEqual([]);
+                expect(await readdir(dir)).toEqual([]);
+            },
+            { maxEditBytes: 200 },
+        ));
 
-    test("shutdown refuses creation", async () => fixture(async (app, dir, calls) => {
-        const session = await login(app);
-        const csrf = await form(app, session);
-        await app.beginShutdown(0);
-        expect((await post(app, session, { csrf, name: "fresh", compose })).status).toBe(409);
-        expect(calls).toEqual([]);
-        expect(await readdir(dir)).toEqual([]);
-    }));
+    test("shutdown refuses creation", async () =>
+        fixture(async (app, dir, calls) => {
+            const session = await login(app);
+            const csrf = await form(app, session);
+            await app.beginShutdown(0);
+            expect((await post(app, session, { csrf, name: "fresh", compose })).status).toBe(409);
+            expect(calls).toEqual([]);
+            expect(await readdir(dir)).toEqual([]);
+        }));
 
-    test("revoked authorization during validation removes the unpublished stack", async () => fixture(async (app, dir) => {
-        const session = await login(app);
-        const csrf = await form(app, session);
-        const original = createComposeProvider({ runner: async args => ({ code: 0, stdout: args.includes("ls") ? "[]" : '{"name":"fresh-project"}', stderr: "", timedOut: false, truncated: false }) });
-        // A separate app with the same filesystem exercises the production
-        // session check after an awaited validation call.
-        let current!: App;
-        let currentSession = "";
-        let token = "";
-        original.validateConfig = async () => {
-            await authed(current, "/logout", currentSession, { method: "POST", headers: { origin: ORIGIN }, body: new URLSearchParams({ csrf: token }).toString() });
-            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
-        };
-        current = makeApp({}, undefined, original, undefined, dir);
-        currentSession = await login(current);
-        token = await form(current, currentSession);
-        expect((await post(current, currentSession, { csrf: token, name: "fresh", compose })).status).toBe(401);
-        expect((await readdir(dir)).includes("fresh")).toBe(false);
-        await current.beginShutdown(100);
-    }));
+    test("revoked authorization during validation removes the unpublished stack", async () =>
+        fixture(async (app, dir) => {
+            const session = await login(app);
+            const csrf = await form(app, session);
+            const original = createComposeProvider({
+                runner: async (args) => ({
+                    code: 0,
+                    stdout: args.includes("ls") ? "[]" : '{"name":"fresh-project"}',
+                    stderr: "",
+                    timedOut: false,
+                    truncated: false,
+                }),
+            });
+            // A separate app with the same filesystem exercises the production
+            // session check after an awaited validation call.
+            let current!: App;
+            let currentSession = "";
+            let token = "";
+            original.validateConfig = async () => {
+                await authed(current, "/logout", currentSession, {
+                    method: "POST",
+                    headers: { origin: ORIGIN },
+                    body: new URLSearchParams({ csrf: token }).toString(),
+                });
+                return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+            };
+            current = makeApp({}, undefined, original, undefined, dir);
+            currentSession = await login(current);
+            token = await form(current, currentSession);
+            expect((await post(current, currentSession, { csrf: token, name: "fresh", compose })).status).toBe(401);
+            expect((await readdir(dir)).includes("fresh")).toBe(false);
+            await current.beginShutdown(100);
+        }));
 });
 
 function authed(app: App, path: string, session: string, init: RequestInit = {}): Promise<Response> {
@@ -402,7 +514,7 @@ describe("access paths", () => {
         const response = await postLoginAt(app, PROXY, cookie, csrf, "admin", PASSWORD, PROXY);
         expect(response.status).toBe(303);
         expect(response.headers.get("location")).toBe("/");
-        expect(setCookies(response).find(v => v.startsWith("cp_session="))).toContain("Secure");
+        expect(setCookies(response).find((v) => v.startsWith("cp_session="))).toContain("Secure");
     });
 
     test("a proxy Host with a loopback Origin is refused", async () => {
@@ -425,7 +537,7 @@ describe("access paths", () => {
         const app = makeApp({ proxyOrigins: [PROXY], allowLoopback: true });
         const { cookie, csrf } = await loginCsrf(app);
         const response = await postLogin(app, cookie, csrf, "admin", PASSWORD);
-        const session = setCookies(response).find(v => v.startsWith("cp_session="));
+        const session = setCookies(response).find((v) => v.startsWith("cp_session="));
         expect(session).toBeTruthy();
         expect(session).not.toContain("Secure");
     });
@@ -437,7 +549,7 @@ describe("access paths", () => {
             const response = await postLoginAt(app, base, cookie, csrf, "admin", PASSWORD, base);
             expect(response.status).toBe(303);
             expect(response.headers.get("location")).toBe("/");
-            expect(setCookies(response).find(v => v.startsWith("cp_session="))).toContain("Secure");
+            expect(setCookies(response).find((v) => v.startsWith("cp_session="))).toContain("Secure");
         }
         const { cookie, csrf } = await loginCsrfAt(app, PROXY);
         const crossed = await postLoginAt(app, PROXY, cookie, csrf, "admin", PASSWORD, OTHER);
@@ -449,11 +561,13 @@ describe("access paths", () => {
         // to the loopback listener (e.g. a stale tab behind the tunnel) must fail.
         const app = makeApp({ proxyOrigins: [PROXY], allowLoopback: true });
         const { cookie, csrf } = await loginCsrf(app);
-        const response = await app.fetch(new Request(`${ORIGIN}/login`, {
-            method: "POST",
-            headers: { "content-type": FORM, origin: PROXY, cookie: `cp_csrf=${cookie}` },
-            body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
-        }));
+        const response = await app.fetch(
+            new Request(`${ORIGIN}/login`, {
+                method: "POST",
+                headers: { "content-type": FORM, origin: PROXY, cookie: `cp_csrf=${cookie}` },
+                body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
+            }),
+        );
         expect(response.headers.get("location")).toBe("/login?e=blocked");
     });
 });
@@ -484,7 +598,7 @@ describe("auth gate", () => {
         // form posts, which the strict Origin check then refuses (sign-in blocked).
         expect(response.headers.get("referrer-policy")).toBe("same-origin");
         expect(response.headers.get("content-security-policy")).toContain("img-src 'self'");
-        expect(setCookies(response).some(cookie => cookie.startsWith("cp_csrf="))).toBe(true);
+        expect(setCookies(response).some((cookie) => cookie.startsWith("cp_csrf="))).toBe(true);
         const html = await response.text();
         expect(html).toContain('name="csrf"');
         expect(html).toContain('id="favicon-svg"');
@@ -538,7 +652,8 @@ describe("external database explorer link", () => {
         await writeFile(join(dir(), "compose.yaml"), compose);
     }
 
-    const valid = "services:\n  db:\n    image: postgres:16\nx-compose-panel:\n  database:\n    label: LibreDB\n    query:\n      connection: seed:shop-staging\n";
+    const valid =
+        "services:\n  db:\n    image: postgres:16\nx-compose-panel:\n  database:\n    label: LibreDB\n    query:\n      connection: seed:shop-staging\n";
 
     test("shows the explorer link when the stack declares an extension and a URL is configured", async () => {
         await writeStack(valid);
@@ -605,7 +720,13 @@ describe("caddy domains preview", () => {
         const { provider } = controllableProvider();
         const withService: ComposeProvider = {
             ...provider,
-            projectServices: async () => ({ code: 0, stdout: JSON.stringify([{ Service: "web", State: "running" }]), stderr: "", timedOut: false, truncated: false }),
+            projectServices: async () => ({
+                code: 0,
+                stdout: JSON.stringify([{ Service: "web", State: "running" }]),
+                stderr: "",
+                timedOut: false,
+                truncated: false,
+            }),
         };
         const app = makeApp({ caddyEnabled: true }, undefined, withService);
         const session = await login(app);
@@ -655,14 +776,26 @@ describe("caddy domain attach and detach", () => {
         const app = makeApp({ caddyEnabled: true });
         const session = await login(app);
         const csrf = await csrfOf(app, session);
-        expect((await postDomains(app, session, csrf, "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" })).status).toBe(404);
+        expect(
+            (
+                await postDomains(app, session, csrf, "/stacks/demo/domains/attach", {
+                    domain: "app.example.com",
+                    service: "web",
+                    port: "8080",
+                })
+            ).status,
+        ).toBe(404);
     });
 
     test("refuses invalid attach and detach input without touching Docker", async () => {
         const app = makeApp({ caddyEnabled: true, caddySocketPath: "/nonexistent-dir/helper.sock" });
         const session = await login(app);
         const csrf = await csrfOf(app, session);
-        const attach = await postDomains(app, session, csrf, "/stacks/demo/domains/attach", { domain: "not_a_domain", service: "web", port: "8080" });
+        const attach = await postDomains(app, session, csrf, "/stacks/demo/domains/attach", {
+            domain: "not_a_domain",
+            service: "web",
+            port: "8080",
+        });
         expect(attach.status).toBe(400);
         const detach = await postDomains(app, session, csrf, "/stacks/demo/domains/detach", { domain: "not_a_domain" });
         expect(detach.status).toBe(400);
@@ -671,7 +804,11 @@ describe("caddy domain attach and detach", () => {
     test("refuses attach with a wrong CSRF token", async () => {
         const app = makeApp({ caddyEnabled: true, caddySocketPath: "/nonexistent-dir/helper.sock" });
         const session = await login(app);
-        const response = await postDomains(app, session, "wrong", "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
+        const response = await postDomains(app, session, "wrong", "/stacks/demo/domains/attach", {
+            domain: "app.example.com",
+            service: "web",
+            port: "8080",
+        });
         expect(response.status).not.toBe(303);
     });
 
@@ -680,7 +817,11 @@ describe("caddy domain attach and detach", () => {
         provider.stackMetadata = async () => ({ web: { "stack.managed-by": "external-deployer" } });
         const app = makeApp({ caddyEnabled: true, caddySocketPath: "/nonexistent-dir/helper.sock" }, undefined, provider);
         const session = await login(app);
-        const response = await postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
+        const response = await postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/attach", {
+            domain: "app.example.com",
+            service: "web",
+            port: "8080",
+        });
         expect(response.status).toBe(409);
         expect(await response.text()).toContain("managed externally");
     });
@@ -694,13 +835,18 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
     let helperCounter = 0;
 
     async function startFakeHelper(managedDir: string): Promise<{ socketPath: string; close: () => void }> {
-        const socketPath = join(await mkdtemp(join(tmpdir(), "compose-panel-caddy-flow-")), `helper-${process.pid}-${helperCounter++}.sock`);
+        const socketPath = join(
+            await mkdtemp(join(tmpdir(), "compose-panel-caddy-flow-")),
+            `helper-${process.pid}-${helperCounter++}.sock`,
+        );
         await rm(socketPath, { force: true });
         const pending = new Map<object, number[]>();
         const server = Bun.listen({
             unix: socketPath,
             socket: {
-                open(socket) { pending.set(socket, []); },
+                open(socket) {
+                    pending.set(socket, []);
+                },
                 data(socket, data) {
                     const seen = pending.get(socket) ?? [];
                     for (const byte of data) seen.push(byte);
@@ -710,8 +856,17 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
                     pending.delete(socket);
                     void answer(socket, text.slice(0, text.indexOf("\n")));
                 },
-                close(socket) { pending.delete(socket); },
-                error(socket) { try { socket.end(); } catch { /* already gone */ } pending.delete(socket); },
+                close(socket) {
+                    pending.delete(socket);
+                },
+                error(socket) {
+                    try {
+                        socket.end();
+                    } catch {
+                        /* already gone */
+                    }
+                    pending.delete(socket);
+                },
             },
         });
         async function answer(socket: { write: (data: string) => void; end: () => void }, line: string): Promise<void> {
@@ -727,7 +882,12 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
                     }
                     response = { ok: true, action: "status", sites, unparseable: [], importConfigured: true };
                 } else if (request.action === "attach" && request.domain && request.stack && request.service && request.port) {
-                    const file = buildSiteFile({ domain: request.domain, stack: request.stack, service: request.service, port: request.port });
+                    const file = buildSiteFile({
+                        domain: request.domain,
+                        stack: request.stack,
+                        service: request.service,
+                        port: request.port,
+                    });
                     await writeFile(join(managedDir, `${request.domain}.caddy`), file);
                     response = { ok: true, action: "attach", unchanged: false };
                 } else if (request.action === "detach" && request.domain) {
@@ -742,7 +902,9 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
             try {
                 socket.write(`${JSON.stringify(response)}\n`);
                 socket.end();
-            } catch { /* the client may have gone */ }
+            } catch {
+                /* the client may have gone */
+            }
         }
         return { socketPath, close: () => server.stop() };
     }
@@ -751,26 +913,40 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
 
     function lsLine(): string {
         const fields = [
-            containerId, "demo-web-1", "nginx:alpine", "running", "Up 2 hours", "",
-            "2026-10-01 10:00:00", "2 hours", "127.0.0.1:8080->80/tcp",
-            "demo-proj", "web", join(root, "demo", "compose.yaml"), "",
+            containerId,
+            "demo-web-1",
+            "nginx:alpine",
+            "running",
+            "Up 2 hours",
+            "",
+            "2026-10-01 10:00:00",
+            "2 hours",
+            "127.0.0.1:8080->80/tcp",
+            "demo-proj",
+            "web",
+            join(root, "demo", "compose.yaml"),
+            "",
         ];
-        return fields.map(field => JSON.stringify(field)).join("\t");
+        return fields.map((field) => JSON.stringify(field)).join("\t");
     }
 
-    function fakeInspector(bindings: Record<string, Array<{ HostIp: string; HostPort: string }>> = { "80/tcp": [{ HostIp: "127.0.0.1", HostPort: "8080" }]}): ContainerInspector {
+    function fakeInspector(
+        bindings: Record<string, Array<{ HostIp: string; HostPort: string }>> = { "80/tcp": [{ HostIp: "127.0.0.1", HostPort: "8080" }] },
+    ): ContainerInspector {
         const ok = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
-        const inspect = JSON.stringify([{
-            Id: containerId,
-            Name: "/demo-web-1",
-            Config: { Image: "nginx:alpine" },
-            Image: "sha256:0",
-            Created: "2026-10-01T10:00:00Z",
-            State: { Status: "running", Running: true, ExitCode: 0 },
-            HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
-            NetworkSettings: { Ports: bindings },
-            Mounts: [],
-        }]);
+        const inspect = JSON.stringify([
+            {
+                Id: containerId,
+                Name: "/demo-web-1",
+                Config: { Image: "nginx:alpine" },
+                Image: "sha256:0",
+                Created: "2026-10-01T10:00:00Z",
+                State: { Status: "running", Running: true, ExitCode: 0 },
+                HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
+                NetworkSettings: { Ports: bindings },
+                Mounts: [],
+            },
+        ]);
         return {
             engine: "fake",
             list: async () => ({ ...ok, stdout: lsLine() }),
@@ -802,17 +978,35 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
         const helper = await startFakeHelper(managedDir);
         try {
             const { provider } = controllableProvider();
-            provider.projectServices = async () => ({ code: 0, stdout: JSON.stringify([{ Service: "web", State: "running" }]), stderr: "", timedOut: false, truncated: false });
+            provider.projectServices = async () => ({
+                code: 0,
+                stdout: JSON.stringify([{ Service: "web", State: "running" }]),
+                stderr: "",
+                timedOut: false,
+                truncated: false,
+            });
             provider.listServices = async () => ["web"];
-            const app = makeApp({ caddyEnabled: true, caddySocketPath: helper.socketPath }, undefined, provider, undefined, root, fakeInspector());
+            const app = makeApp(
+                { caddyEnabled: true, caddySocketPath: helper.socketPath },
+                undefined,
+                provider,
+                undefined,
+                root,
+                fakeInspector(),
+            );
             const session = await login(app);
             const csrf = await csrfOf(app, session);
 
-            const attached = await postDomains(app, session, csrf, "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
+            const attached = await postDomains(app, session, csrf, "/stacks/demo/domains/attach", {
+                domain: "app.example.com",
+                service: "web",
+                port: "8080",
+            });
             expect(attached.status).toBe(303);
             expect(attached.headers.get("location")).toBe("/stacks/demo?attached=1");
-            expect(await readFile(join(managedDir, "app.example.com.caddy"), "utf8"))
-                .toBe(buildSiteFile({ domain: "app.example.com", stack: "demo", service: "web", port: 8080 }));
+            expect(await readFile(join(managedDir, "app.example.com.caddy"), "utf8")).toBe(
+                buildSiteFile({ domain: "app.example.com", stack: "demo", service: "web", port: 8080 }),
+            );
 
             const page = await (await authed(app, "/stacks/demo", session)).text();
             expect(page).toContain('href="https://app.example.com"');
@@ -822,7 +1016,10 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
             expect(confirm.status).toBe(200);
             expect(await confirm.text()).toContain("Confirm detach");
 
-            const detached = await postDomains(app, session, csrf, "/stacks/demo/domains/detach", { domain: "app.example.com", confirm: "1" });
+            const detached = await postDomains(app, session, csrf, "/stacks/demo/domains/detach", {
+                domain: "app.example.com",
+                confirm: "1",
+            });
             expect(detached.status).toBe(303);
             expect(detached.headers.get("location")).toBe("/stacks/demo?detached=1");
             expect(await readdir(managedDir)).toEqual([]);
@@ -836,7 +1033,13 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
 
     async function providerWithService(): Promise<ComposeProvider> {
         const { provider } = controllableProvider();
-        provider.projectServices = async () => ({ code: 0, stdout: JSON.stringify([{ Service: "web", State: "running" }]), stderr: "", timedOut: false, truncated: false });
+        provider.projectServices = async () => ({
+            code: 0,
+            stdout: JSON.stringify([{ Service: "web", State: "running" }]),
+            stderr: "",
+            timedOut: false,
+            truncated: false,
+        });
         provider.listServices = async () => ["web"];
         return provider;
     }
@@ -853,7 +1056,14 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
                 "3000/tcp": [{ HostIp: "127.0.0.1", HostPort: "3080" }],
                 "5432/tcp": [{ HostIp: "0.0.0.0", HostPort: "5433" }],
             };
-            const app = makeApp({ caddyEnabled: true, caddySocketPath: "/nonexistent-dir/helper.sock" }, undefined, await providerWithService(), undefined, root, fakeInspector(bindings));
+            const app = makeApp(
+                { caddyEnabled: true, caddySocketPath: "/nonexistent-dir/helper.sock" },
+                undefined,
+                await providerWithService(),
+                undefined,
+                root,
+                fakeInspector(bindings),
+            );
             const session = await login(app);
             const html = await (await authed(app, "/stacks/demo", session)).text();
             const card = /<section class="card domains">[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
@@ -877,9 +1087,20 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
             const managedDir = await mkdtemp(join(tmpdir(), "compose-panel-caddy-sites-"));
             const helper = await startFakeHelper(managedDir);
             try {
-                const app = makeApp({ caddyEnabled: true, caddySocketPath: helper.socketPath }, undefined, await providerWithService(), undefined, root, fakeInspector(bindings));
+                const app = makeApp(
+                    { caddyEnabled: true, caddySocketPath: helper.socketPath },
+                    undefined,
+                    await providerWithService(),
+                    undefined,
+                    root,
+                    fakeInspector(bindings),
+                );
                 const session = await login(app);
-                const response = await postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
+                const response = await postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/attach", {
+                    domain: "app.example.com",
+                    service: "web",
+                    port: "8080",
+                });
                 expect(response.status).toBe(409);
                 expect(await response.text()).toContain("127.0.0.1 (TCP)");
                 expect(await readdir(managedDir)).toEqual([]);
@@ -896,13 +1117,26 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
         const managedDir = await mkdtemp(join(tmpdir(), "compose-panel-caddy-sites-"));
         const helper = await startFakeHelper(managedDir);
         try {
-            await writeFile(join(managedDir, "app.example.com.caddy"), buildSiteFile({ domain: "app.example.com", stack: "demo", service: "web", port: 8080 }));
+            await writeFile(
+                join(managedDir, "app.example.com.caddy"),
+                buildSiteFile({ domain: "app.example.com", stack: "demo", service: "web", port: 8080 }),
+            );
             // Pre-check refusal: the owner is already known.
             const owned = await providerWithService();
             owned.stackMetadata = async () => ({ web: { "stack.managed-by": "external-deployer" } });
-            const refused = makeApp({ caddyEnabled: true, caddySocketPath: helper.socketPath }, undefined, owned, undefined, root, fakeInspector());
+            const refused = makeApp(
+                { caddyEnabled: true, caddySocketPath: helper.socketPath },
+                undefined,
+                owned,
+                undefined,
+                root,
+                fakeInspector(),
+            );
             const refusedSession = await login(refused);
-            const early = await postDomains(refused, refusedSession, await csrfOf(refused, refusedSession), "/stacks/demo/domains/detach", { domain: "app.example.com", confirm: "1" });
+            const early = await postDomains(refused, refusedSession, await csrfOf(refused, refusedSession), "/stacks/demo/domains/detach", {
+                domain: "app.example.com",
+                confirm: "1",
+            });
             expect(early.status).toBe(409);
             expect(await early.text()).toContain("managed externally");
             // In-lock refusal: the confirmation is offered while the stack has
@@ -912,7 +1146,14 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
             const racing = await providerWithService();
             const unowned: Record<string, Record<string, string>> = {};
             racing.stackMetadata = async () => (ownerDeclared ? { web: { "stack.managed-by": "external-deployer" } } : unowned);
-            const app = makeApp({ caddyEnabled: true, caddySocketPath: helper.socketPath }, undefined, racing, undefined, root, fakeInspector());
+            const app = makeApp(
+                { caddyEnabled: true, caddySocketPath: helper.socketPath },
+                undefined,
+                racing,
+                undefined,
+                root,
+                fakeInspector(),
+            );
             const session = await login(app);
             const csrf = await csrfOf(app, session);
             const confirmation = await postDomains(app, session, csrf, "/stacks/demo/domains/detach", { domain: "app.example.com" });
@@ -943,17 +1184,36 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
                         try {
                             socket.write(`${JSON.stringify({ ok: true, action: "attach", unchanged: false })}\n`);
                             socket.end();
-                        } catch { /* the client may have gone */ }
+                        } catch {
+                            /* the client may have gone */
+                        }
                     }, 1500);
                 },
                 close() {},
-                error(socket) { try { socket.end(); } catch { /* already gone */ } },
+                error(socket) {
+                    try {
+                        socket.end();
+                    } catch {
+                        /* already gone */
+                    }
+                },
             },
         });
         try {
-            const app = makeApp({ caddyEnabled: true, caddySocketPath: socketPath }, undefined, await providerWithService(), undefined, root, fakeInspector());
+            const app = makeApp(
+                { caddyEnabled: true, caddySocketPath: socketPath },
+                undefined,
+                await providerWithService(),
+                undefined,
+                root,
+                fakeInspector(),
+            );
             const session = await login(app);
-            const pending = postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/attach", { domain: "app.example.com", service: "web", port: "8080" });
+            const pending = postDomains(app, session, await csrfOf(app, session), "/stacks/demo/domains/attach", {
+                domain: "app.example.com",
+                service: "web",
+                port: "8080",
+            });
             await Bun.sleep(400);
             const started = Date.now();
             await app.beginShutdown(5000);
@@ -1058,9 +1318,15 @@ describe("navigation sidebar", () => {
     test("the stack list comes from the stacks folder alone, never Docker", async () => {
         const dead: ComposeProvider = {
             engine: "fake",
-            capabilities: () => { throw new Error("must not be called"); },
-            detect: async () => { throw new Error("must not be called"); },
-            listProjects: async () => { throw new Error("Docker is down"); },
+            capabilities: () => {
+                throw new Error("must not be called");
+            },
+            detect: async () => {
+                throw new Error("must not be called");
+            },
+            listProjects: async () => {
+                throw new Error("Docker is down");
+            },
         } as unknown as ComposeProvider;
         const app = makeApp({}, undefined, dead);
         const session = await login(app);
@@ -1083,27 +1349,31 @@ describe("login hardening", () => {
 
     test("rejects a POST without the CSRF cookie", async () => {
         const app = makeApp();
-        const response = await app.fetch(new Request(`${ORIGIN}/login`, {
-            method: "POST",
-            headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN },
-            body: new URLSearchParams({ csrf: "x", user: "admin", password: PASSWORD }).toString(),
-        }));
+        const response = await app.fetch(
+            new Request(`${ORIGIN}/login`, {
+                method: "POST",
+                headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN },
+                body: new URLSearchParams({ csrf: "x", user: "admin", password: PASSWORD }).toString(),
+            }),
+        );
         expect(response.status).toBe(403);
     });
 
     test("refuses a sandboxed/embedded context by default (Origin: null)", async () => {
         const app = makeApp();
         const { cookie, csrf } = await loginCsrf(app);
-        const response = await app.fetch(new Request(`${ORIGIN}/login`, {
-            method: "POST",
-            headers: {
-                "content-type": "application/x-www-form-urlencoded",
-                origin: "null",
-                "sec-fetch-site": "same-origin",
-                cookie: `cp_csrf=${cookie}`,
-            },
-            body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
-        }));
+        const response = await app.fetch(
+            new Request(`${ORIGIN}/login`, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/x-www-form-urlencoded",
+                    origin: "null",
+                    "sec-fetch-site": "same-origin",
+                    cookie: `cp_csrf=${cookie}`,
+                },
+                body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
+            }),
+        );
         // A sandboxed frame must not drive the panel even though the request
         // reaches the loopback host; refused as a redirect, not a bare 403.
         expect(response.status).toBe(303);
@@ -1113,16 +1383,18 @@ describe("login hardening", () => {
     test("opt-in COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN permits a same-origin opaque context", async () => {
         const app = makeApp({ allowOpaqueOrigin: true });
         const { cookie, csrf } = await loginCsrf(app);
-        const response = await app.fetch(new Request(`${ORIGIN}/login`, {
-            method: "POST",
-            headers: {
-                "content-type": "application/x-www-form-urlencoded",
-                origin: "null",
-                "sec-fetch-site": "same-origin",
-                cookie: `cp_csrf=${cookie}`,
-            },
-            body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
-        }));
+        const response = await app.fetch(
+            new Request(`${ORIGIN}/login`, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/x-www-form-urlencoded",
+                    origin: "null",
+                    "sec-fetch-site": "same-origin",
+                    cookie: `cp_csrf=${cookie}`,
+                },
+                body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
+            }),
+        );
         expect(response.status).toBe(303);
         expect(response.headers.get("location")).toBe("/");
         expect(cookieValue(setCookies(response), "cp_session")).toBeTruthy();
@@ -1131,16 +1403,18 @@ describe("login hardening", () => {
     test("the opt-in still refuses a cross-site opaque context", async () => {
         const app = makeApp({ allowOpaqueOrigin: true });
         const { cookie, csrf } = await loginCsrf(app);
-        const response = await app.fetch(new Request(`${ORIGIN}/login`, {
-            method: "POST",
-            headers: {
-                "content-type": "application/x-www-form-urlencoded",
-                origin: "null",
-                "sec-fetch-site": "cross-site",
-                cookie: `cp_csrf=${cookie}`,
-            },
-            body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
-        }));
+        const response = await app.fetch(
+            new Request(`${ORIGIN}/login`, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/x-www-form-urlencoded",
+                    origin: "null",
+                    "sec-fetch-site": "cross-site",
+                    cookie: `cp_csrf=${cookie}`,
+                },
+                body: new URLSearchParams({ csrf, user: "admin", password: PASSWORD }).toString(),
+            }),
+        );
         expect(response.status).toBe(303);
         expect(response.headers.get("location")).toBe("/login?e=blocked");
     });
@@ -1182,12 +1456,10 @@ describe("login hardening", () => {
     test("a concurrent failure burst does not lock out the real admin", async () => {
         const app = makeApp();
         const { cookie, csrf } = await loginCsrf(app);
-        const responses = await Promise.all(
-            Array.from({ length: 12 }, () => postLogin(app, cookie, csrf, "admin", "wrong")),
-        );
+        const responses = await Promise.all(Array.from({ length: 12 }, () => postLogin(app, cookie, csrf, "admin", "wrong")));
         // Failures are delayed, not refused by count; only the global in-flight
         // cap may answer 429, and only transiently.
-        expect(responses.every(response => response.status === 401 || response.status === 429)).toBe(true);
+        expect(responses.every((response) => response.status === 401 || response.status === 429)).toBe(true);
         const good = await loginCsrf(app);
         const accepted = await postLogin(app, good.cookie, good.csrf, "admin", PASSWORD);
         expect(accepted.status).toBe(303);
@@ -1197,7 +1469,7 @@ describe("login hardening", () => {
         const app = makeApp({ cookieSecure: true });
         const { cookie, csrf } = await loginCsrf(app);
         const response = await postLogin(app, cookie, csrf, "admin", PASSWORD);
-        const session = setCookies(response).find(value => value.startsWith("cp_session="));
+        const session = setCookies(response).find((value) => value.startsWith("cp_session="));
         expect(session).toContain("HttpOnly");
         expect(session).toContain("SameSite=Lax");
         expect(session).toContain("Secure");
@@ -1264,7 +1536,7 @@ describe("activity log", () => {
             expect((await postLogin(app, cookie, csrf, "Hunter2-secret", "wrong")).status).toBe(401);
             const again = await loginCsrf(app);
             expect((await postLogin(app, again.cookie, again.csrf, "admin", "wrong")).status).toBe(401);
-            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
             expect(raw).not.toContain("Hunter2-secret");
             expect(raw).toContain('"username":"unknown user"');
             expect(raw).toContain('"username":"admin account"');
@@ -1281,13 +1553,20 @@ describe("activity log", () => {
             const app = makeApp({ proxyOrigins: [PROXY] }, undefined, undefined, audit);
             const { cookie, csrf } = await loginCsrfAt(app, PROXY);
             // The first entry is client-controlled; only the last one comes from our proxy.
-            const response = await app.fetch(new Request(`${PROXY}/login`, {
-                method: "POST",
-                headers: { "content-type": "application/x-www-form-urlencoded", origin: PROXY, cookie: `cp_csrf=${cookie}`, "x-forwarded-for": "203.0.113.66, 198.51.100.7" },
-                body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
-            }));
+            const response = await app.fetch(
+                new Request(`${PROXY}/login`, {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/x-www-form-urlencoded",
+                        origin: PROXY,
+                        cookie: `cp_csrf=${cookie}`,
+                        "x-forwarded-for": "203.0.113.66, 198.51.100.7",
+                    },
+                    body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
+                }),
+            );
             expect(response.status).toBe(401);
-            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
             expect(raw).toContain('"actor":"198.51.100.7"');
             expect(raw).not.toContain("203.0.113.66");
         } finally {
@@ -1304,19 +1583,21 @@ describe("activity log", () => {
             const audit = new AuditLog({ dir });
             const app = makeApp({ proxyOrigins: [PROXY] }, undefined, undefined, audit);
             const { cookie, csrf } = await loginCsrfAt(app, PROXY);
-            const response = await app.fetch(new Request(`${PROXY}/login`, {
-                method: "POST",
-                headers: {
-                    "content-type": "application/x-www-form-urlencoded",
-                    origin: PROXY,
-                    cookie: `cp_csrf=${cookie}`,
-                    "x-forwarded-for": "198.51.100.7",
-                    "cf-connecting-ip": "9.9.9.9",
-                },
-                body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
-            }));
+            const response = await app.fetch(
+                new Request(`${PROXY}/login`, {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/x-www-form-urlencoded",
+                        origin: PROXY,
+                        cookie: `cp_csrf=${cookie}`,
+                        "x-forwarded-for": "198.51.100.7",
+                        "cf-connecting-ip": "9.9.9.9",
+                    },
+                    body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
+                }),
+            );
             expect(response.status).toBe(401);
-            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
             expect(raw).toContain('"actor":"198.51.100.7"');
             expect(raw).not.toContain("9.9.9.9");
         } finally {
@@ -1331,13 +1612,20 @@ describe("activity log", () => {
             const audit = new AuditLog({ dir });
             const app = makeApp({ proxyOrigins: [PROXY], allowLoopback: true }, undefined, undefined, audit);
             const { cookie, csrf } = await loginCsrf(app);
-            const response = await app.fetch(new Request(`${ORIGIN}/login`, {
-                method: "POST",
-                headers: { "content-type": "application/x-www-form-urlencoded", origin: ORIGIN, cookie: `cp_csrf=${cookie}`, "x-forwarded-for": "6.6.6.6" },
-                body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
-            }));
+            const response = await app.fetch(
+                new Request(`${ORIGIN}/login`, {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/x-www-form-urlencoded",
+                        origin: ORIGIN,
+                        cookie: `cp_csrf=${cookie}`,
+                        "x-forwarded-for": "6.6.6.6",
+                    },
+                    body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
+                }),
+            );
             expect(response.status).toBe(401);
-            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
             expect(raw).toContain('"actor":"direct"');
             expect(raw).not.toContain("6.6.6.6");
         } finally {
@@ -1357,19 +1645,21 @@ describe("activity log", () => {
             const audit = new AuditLog({ dir });
             const app = makeApp({ proxyOrigins: [PROXY], allowLoopback: true }, undefined, undefined, audit);
             const { cookie, csrf } = await loginCsrfAt(app, PROXY);
-            const response = await app.fetch(new Request(`http://127.0.0.1:5081/login`, {
-                method: "POST",
-                headers: {
-                    "content-type": "application/x-www-form-urlencoded",
-                    host: "panel.example",
-                    origin: PROXY,
-                    cookie: `cp_csrf=${cookie}`,
-                    "x-forwarded-for": "9.9.9.9",
-                },
-                body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
-            }));
+            const response = await app.fetch(
+                new Request(`http://127.0.0.1:5081/login`, {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/x-www-form-urlencoded",
+                        host: "panel.example",
+                        origin: PROXY,
+                        cookie: `cp_csrf=${cookie}`,
+                        "x-forwarded-for": "9.9.9.9",
+                    },
+                    body: new URLSearchParams({ csrf, user: "admin", password: "wrong" }).toString(),
+                }),
+            );
             expect(response.status).toBe(401);
-            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
             expect(raw).toContain('"actor":"9.9.9.9"');
         } finally {
             await rm(dir, { recursive: true, force: true });
@@ -1380,9 +1670,10 @@ describe("activity log", () => {
         const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-op-"));
         try {
             const audit = new AuditLog({ dir });
-            const runner: DockerRunner = async args => {
+            const runner: DockerRunner = async (args) => {
                 if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
-                if (args.includes("config")) return { code: 0, stdout: '{"name":"demo-proj"}', stderr: "", timedOut: false, truncated: false };
+                if (args.includes("config"))
+                    return { code: 0, stdout: '{"name":"demo-proj"}', stderr: "", timedOut: false, truncated: false };
                 if (args.includes("up")) return { code: 1, stdout: "", stderr: "boom", timedOut: false, truncated: false };
                 return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
             };
@@ -1395,9 +1686,9 @@ describe("activity log", () => {
                 headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
                 body: new URLSearchParams({ csrf, action: "up" }).toString(),
             });
-            for (let i = 0; i < 200 && app.operations.activeCount() > 0; i += 1) await new Promise(resolve => setTimeout(resolve, 1));
-            await new Promise(resolve => setTimeout(resolve, 20));
-            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            for (let i = 0; i < 200 && app.operations.activeCount() > 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
             expect(raw).toContain('"event":"operation","result":"started"');
             expect(raw).toContain('"event":"operation","result":"failed","stack":"demo","action":"up","detail":"exit code 1"');
         } finally {
@@ -1436,7 +1727,7 @@ describe("docker status rendering", () => {
     }
 
     function fakeRunner(lsStatus: string, ps?: string): DockerRunner {
-        return async args => {
+        return async (args) => {
             if (args[0] === "compose" && args[1] === "ls") {
                 return {
                     code: 0,
@@ -1468,10 +1759,16 @@ describe("docker status rendering", () => {
     });
 
     test("lists services on the detail page and ignores the init exit 0", async () => {
-        const app = makeApp({}, fakeRunner("running(2)", JSON.stringify([
-            { Service: "init", State: "exited", ExitCode: 0 },
-            { Service: "app", State: "running" },
-        ])));
+        const app = makeApp(
+            {},
+            fakeRunner(
+                "running(2)",
+                JSON.stringify([
+                    { Service: "init", State: "exited", ExitCode: 0 },
+                    { Service: "app", State: "running" },
+                ]),
+            ),
+        );
         const session = await login(app);
         const html = await (await authed(app, "/stacks/demo", session)).text();
         expect(html).toContain("<td>init</td>");
@@ -1610,7 +1907,14 @@ describe("stack backups", () => {
         return authed(app, "/stacks/demo/edit", session, {
             method: "POST",
             headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({ csrf: field("csrf"), composeHash: field("composeHash"), envHash: field("envHash"), envExists: field("envExists"), compose, env: "" }).toString(),
+            body: new URLSearchParams({
+                csrf: field("csrf"),
+                composeHash: field("composeHash"),
+                envHash: field("envHash"),
+                envExists: field("envExists"),
+                compose,
+                env: "",
+            }).toString(),
         });
     }
 
@@ -1631,11 +1935,12 @@ describe("stack backups", () => {
     test("a save deletes backups beyond the retention count", async () => {
         const app = makeApp({ backupRetain: 2 }, okRunner);
         const session = await login(app);
-        for (const tag of ["1", "2", "3"]) expect((await save(app, session, `services:\n  app:\n    image: nginx:${tag}\n`)).status).toBe(303);
+        for (const tag of ["1", "2", "3"])
+            expect((await save(app, session, `services:\n  app:\n    image: nginx:${tag}\n`)).status).toBe(303);
         const left = await readdir(backupDir());
         expect(left).toHaveLength(2);
         // The oldest backup held the original file; the two newest are kept.
-        const contents = await Promise.all(left.map(name => readFile(join(backupDir(), name), "utf8")));
+        const contents = await Promise.all(left.map((name) => readFile(join(backupDir(), name), "utf8")));
         expect(contents.sort()).toEqual(["services:\n  app:\n    image: nginx:1\n", "services:\n  app:\n    image: nginx:2\n"]);
     });
 
@@ -1650,7 +1955,7 @@ describe("stack backups", () => {
             expect(response.status).toBe(303);
             expect(response.headers.get("location")).toBe("/stacks/demo/edit?purged=1");
             expect(await readdir(backupDir())).toEqual(["notes.txt"]);
-            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
             expect(raw).toContain('"event":"backup-purge"');
         } finally {
             await rm(dir, { recursive: true, force: true });
@@ -1686,9 +1991,13 @@ describe("stack backups", () => {
 
     test("refuses a purge while a save holds the stack lock", async () => {
         let entered!: () => void;
-        const inside = new Promise<void>(resolve => { entered = resolve; });
+        const inside = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
         let release!: () => void;
-        const gate = new Promise<void>(resolve => { release = resolve; });
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
         const gated: DockerRunner = async () => {
             entered();
             await gate;
@@ -1724,7 +2033,7 @@ describe("operations routes", () => {
     });
 
     function dispatch(onUp: () => Promise<CommandResult>): DockerRunner {
-        return async args => {
+        return async (args) => {
             if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
             if (args.includes("up")) return onUp();
             if (args.includes("config")) return { code: 0, stdout: '{"name":"demo-proj"}', stderr: "", timedOut: false, truncated: false };
@@ -1754,10 +2063,24 @@ describe("operations routes", () => {
     }
 
     function deployedRunner(calls: string[][]): DockerRunner {
-        return async args => {
+        return async (args) => {
             calls.push(args);
-            if (args.includes("ls")) return { code: 0, stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]), stderr: "", timedOut: false, truncated: false };
-            if (args.includes("ps")) return { code: 0, stdout: JSON.stringify([{ Service: "web", State: "running", Health: "", ExitCode: 0 }]), stderr: "", timedOut: false, truncated: false };
+            if (args.includes("ls"))
+                return {
+                    code: 0,
+                    stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]),
+                    stderr: "",
+                    timedOut: false,
+                    truncated: false,
+                };
+            if (args.includes("ps"))
+                return {
+                    code: 0,
+                    stdout: JSON.stringify([{ Service: "web", State: "running", Health: "", ExitCode: 0 }]),
+                    stderr: "",
+                    timedOut: false,
+                    truncated: false,
+                };
             if (args[0] === "compose" && args.includes("config") && args.includes("--services")) {
                 return { code: 0, stdout: "web\ndb\n", stderr: "", timedOut: false, truncated: false };
             }
@@ -1767,12 +2090,15 @@ describe("operations routes", () => {
 
     async function waitIdle(app: App): Promise<void> {
         for (let i = 0; i < 200 && app.operations.activeCount() > 0; i += 1) {
-            await new Promise(resolve => setTimeout(resolve, 1));
+            await new Promise((resolve) => setTimeout(resolve, 1));
         }
     }
 
     test("locks actions that need a deployment on an undeployed stack", async () => {
-        const app = makeApp({}, dispatch(async () => okResult));
+        const app = makeApp(
+            {},
+            dispatch(async () => okResult),
+        );
         const session = await login(app);
         const html = await (await authed(app, "/stacks/demo", session)).text();
         expect(html).toMatch(/value="down"><button type="submit" class="btn btn-danger" disabled/);
@@ -1792,7 +2118,7 @@ describe("operations routes", () => {
 
     test("Pull runs on an undeployed stack without creating anything", async () => {
         const calls: string[][] = [];
-        const runner: DockerRunner = async args => {
+        const runner: DockerRunner = async (args) => {
             calls.push(args);
             if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
             if (args.includes("config")) return { code: 0, stdout: '{"name":"demo-proj"}', stderr: "", timedOut: false, truncated: false };
@@ -1803,24 +2129,49 @@ describe("operations routes", () => {
         const csrf = await csrfOf(app, session);
         expect((await postOperation(app, session, csrf, "pull")).status).toBe(303);
         await waitIdle(app);
-        const pull = calls.find(args => args.includes("pull"))!;
+        const pull = calls.find((args) => args.includes("pull"))!;
         expect(pull).toEqual(expect.arrayContaining(["-p", "demo-proj", "pull"]));
-        expect(calls.some(args => args.includes("up"))).toBe(false);
+        expect(calls.some((args) => args.includes("up"))).toBe(false);
     });
 
     test("shows which services have an update ready, from → to, with a link", async () => {
         const oldId = `sha256:${"a".repeat(64)}`;
         const newId = `sha256:${"b".repeat(64)}`;
-        const runner: DockerRunner = async args => {
+        const runner: DockerRunner = async (args) => {
             const reply = (stdout: string) => ({ code: 0, stdout, stderr: "", timedOut: false, truncated: false });
-            if (args.includes("ls")) return reply(JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]));
-            if (args.includes("ps")) return reply(JSON.stringify({ Service: "app", Name: "demo-proj-app-1", Image: "nginx:alpine", State: "running", Health: "", ExitCode: 0 }));
+            if (args.includes("ls"))
+                return reply(
+                    JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]),
+                );
+            if (args.includes("ps"))
+                return reply(
+                    JSON.stringify({
+                        Service: "app",
+                        Name: "demo-proj-app-1",
+                        Image: "nginx:alpine",
+                        State: "running",
+                        Health: "",
+                        ExitCode: 0,
+                    }),
+                );
             if (args.includes("images")) return reply(JSON.stringify([{ ContainerName: "demo-proj-app-1", ID: oldId }]));
             if (args[0] === "image" && args[1] === "inspect") {
-                return reply(JSON.stringify([
-                    { Id: newId, RepoTags: ["nginx:alpine"], Created: "2026-10-05T00:00:00Z", Config: { Labels: { "org.opencontainers.image.version": "1.27.2" } } },
-                    { Id: oldId, RepoTags: [], Created: "2026-09-01T00:00:00Z", Config: { Labels: { "org.opencontainers.image.version": "1.27.1" } } },
-                ]));
+                return reply(
+                    JSON.stringify([
+                        {
+                            Id: newId,
+                            RepoTags: ["nginx:alpine"],
+                            Created: "2026-10-05T00:00:00Z",
+                            Config: { Labels: { "org.opencontainers.image.version": "1.27.2" } },
+                        },
+                        {
+                            Id: oldId,
+                            RepoTags: [],
+                            Created: "2026-09-01T00:00:00Z",
+                            Config: { Labels: { "org.opencontainers.image.version": "1.27.1" } },
+                        },
+                    ]),
+                );
             }
             return reply("");
         };
@@ -1834,9 +2185,23 @@ describe("operations routes", () => {
     });
 
     test("puts Down behind an explicit confirmation on a deployed stack", async () => {
-        const deployed: DockerRunner = async args => {
-            if (args.includes("ls")) return { code: 0, stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]), stderr: "", timedOut: false, truncated: false };
-            if (args.includes("ps")) return { code: 0, stdout: JSON.stringify({ Service: "app", State: "running", Health: "", ExitCode: 0 }), stderr: "", timedOut: false, truncated: false };
+        const deployed: DockerRunner = async (args) => {
+            if (args.includes("ls"))
+                return {
+                    code: 0,
+                    stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]),
+                    stderr: "",
+                    timedOut: false,
+                    truncated: false,
+                };
+            if (args.includes("ps"))
+                return {
+                    code: 0,
+                    stdout: JSON.stringify({ Service: "app", State: "running", Health: "", ExitCode: 0 }),
+                    stderr: "",
+                    timedOut: false,
+                    truncated: false,
+                };
             return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
         };
         const app = makeApp({}, deployed);
@@ -1850,32 +2215,46 @@ describe("operations routes", () => {
     });
 
     test("explains an expired session instead of a bare 401", async () => {
-        const app = makeApp({}, dispatch(async () => okResult));
-        const response = await app.fetch(new Request(`${ORIGIN}/stacks/demo/operations`, {
-            method: "POST",
-            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({ action: "up" }).toString(),
-        }));
+        const app = makeApp(
+            {},
+            dispatch(async () => okResult),
+        );
+        const response = await app.fetch(
+            new Request(`${ORIGIN}/stacks/demo/operations`, {
+                method: "POST",
+                headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({ action: "up" }).toString(),
+            }),
+        );
         expect(response.status).toBe(401);
         expect(response.headers.get("content-type")).toContain("text/html");
         expect(await response.text()).toContain("nothing was done");
     });
 
     test("rejects an operation without a valid CSRF token", async () => {
-        const app = makeApp({}, dispatch(async () => okResult));
+        const app = makeApp(
+            {},
+            dispatch(async () => okResult),
+        );
         const session = await login(app);
         expect((await postOperation(app, session, "wrong", "up")).status).toBe(403);
     });
 
     test("rejects an action outside the allow-list", async () => {
-        const app = makeApp({}, dispatch(async () => okResult));
+        const app = makeApp(
+            {},
+            dispatch(async () => okResult),
+        );
         const session = await login(app);
         const csrf = await csrfOf(app, session);
         expect((await postOperation(app, session, csrf, "exec")).status).toBe(400);
     });
 
     test("starts an operation and reports success on reload", async () => {
-        const app = makeApp({}, dispatch(async () => okResult));
+        const app = makeApp(
+            {},
+            dispatch(async () => okResult),
+        );
         const session = await login(app);
         const csrf = await csrfOf(app, session);
         const response = await postOperation(app, session, csrf, "up");
@@ -1889,8 +2268,13 @@ describe("operations routes", () => {
 
     test("rejects a concurrent operation on the same stack", async () => {
         let release!: (result: CommandResult) => void;
-        const gate = new Promise<CommandResult>(resolve => { release = resolve; });
-        const app = makeApp({}, dispatch(() => gate));
+        const gate = new Promise<CommandResult>((resolve) => {
+            release = resolve;
+        });
+        const app = makeApp(
+            {},
+            dispatch(() => gate),
+        );
         const session = await login(app);
         const csrf = await csrfOf(app, session);
 
@@ -1903,10 +2287,24 @@ describe("operations routes", () => {
 
     test("Start runs compose start on a stopped stack and never creates one", async () => {
         const calls: string[][] = [];
-        const runner: DockerRunner = async args => {
+        const runner: DockerRunner = async (args) => {
             calls.push(args);
-            if (args.includes("ls")) return { code: 0, stdout: JSON.stringify([{ Name: "demo-proj", Status: "exited(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]), stderr: "", timedOut: false, truncated: false };
-            if (args.includes("ps")) return { code: 0, stdout: JSON.stringify([{ Service: "app", State: "exited", Health: "", ExitCode: 0 }]), stderr: "", timedOut: false, truncated: false };
+            if (args.includes("ls"))
+                return {
+                    code: 0,
+                    stdout: JSON.stringify([{ Name: "demo-proj", Status: "exited(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]),
+                    stderr: "",
+                    timedOut: false,
+                    truncated: false,
+                };
+            if (args.includes("ps"))
+                return {
+                    code: 0,
+                    stdout: JSON.stringify([{ Service: "app", State: "exited", Health: "", ExitCode: 0 }]),
+                    stderr: "",
+                    timedOut: false,
+                    truncated: false,
+                };
             return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
         };
         const app = makeApp({}, runner);
@@ -1915,12 +2313,15 @@ describe("operations routes", () => {
         expect(await (await authed(app, "/stacks/demo", session)).text()).toMatch(/value="start"><button[^>]*data-op-button/);
         expect((await postOperation(app, session, csrf, "start")).status).toBe(303);
         await waitIdle(app);
-        expect(calls.find(args => args.includes("start"))).toEqual(expect.arrayContaining(["start"]));
-        expect(calls.some(args => args.includes("up"))).toBe(false);
+        expect(calls.find((args) => args.includes("start"))).toEqual(expect.arrayContaining(["start"]));
+        expect(calls.some((args) => args.includes("up"))).toBe(false);
     });
 
     test("Start is refused on a stack that was never deployed", async () => {
-        const app = makeApp({}, dispatch(async () => okResult));
+        const app = makeApp(
+            {},
+            dispatch(async () => okResult),
+        );
         const session = await login(app);
         expect((await postOperation(app, session, await csrfOf(app, session), "start")).status).toBe(409);
     });
@@ -1937,12 +2338,10 @@ describe("operations routes", () => {
             expect(page).toContain('name="service" value="web"');
             expect((await postScopedOperation(app, session, csrf, "restart", "web")).status).toBe(303);
             await waitIdle(app);
-            expect(calls.find(args => args.includes("restart"))).toEqual(
-                expect.arrayContaining(["restart", "--no-deps", "--", "web"]),
-            );
+            expect(calls.find((args) => args.includes("restart"))).toEqual(expect.arrayContaining(["restart", "--no-deps", "--", "web"]));
             expect(app.operations.forStack("demo")?.service).toBe("web");
-            await new Promise(resolve => setTimeout(resolve, 20));
-            const raw = (await Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), "utf8")))).join("");
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
             expect(raw).toContain('"event":"operation","result":"started"');
             expect(raw).toContain('"action":"restart","service":"web"');
         } finally {
@@ -1952,7 +2351,7 @@ describe("operations routes", () => {
 
     test("scoped Up needs a deployed stack and never creates one", async () => {
         const calls: string[][] = [];
-        const runner: DockerRunner = async args => {
+        const runner: DockerRunner = async (args) => {
             calls.push(args);
             if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
             if (args.includes("config")) return { code: 0, stdout: '{"name":"demo-proj"}', stderr: "", timedOut: false, truncated: false };
@@ -1961,7 +2360,7 @@ describe("operations routes", () => {
         const app = makeApp({}, runner);
         const session = await login(app);
         expect((await postScopedOperation(app, session, await csrfOf(app, session), "up", "web")).status).toBe(409);
-        expect(calls.some(args => args.includes("up"))).toBe(false);
+        expect(calls.some((args) => args.includes("up"))).toBe(false);
     });
 
     test("a service field on other actions is refused, never ignored", async () => {
@@ -1974,7 +2373,7 @@ describe("operations routes", () => {
         }
         expect((await postScopedOperation(app, session, csrf, "restart", "--privileged")).status).toBe(400);
         expect((await postScopedOperation(app, session, csrf, "restart", "missing")).status).toBe(409);
-        expect(calls.some(args => ["down", "pull", "start", "restart", "up"].some(verb => args.includes(verb)))).toBe(false);
+        expect(calls.some((args) => ["down", "pull", "start", "restart", "up"].some((verb) => args.includes(verb)))).toBe(false);
     });
 });
 
@@ -2017,7 +2416,7 @@ describe("event streams", () => {
     });
 
     test("streams a snapshot of the finished operation", async () => {
-        const runner: DockerRunner = async args => {
+        const runner: DockerRunner = async (args) => {
             if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
             if (args.includes("up")) return okResult;
             if (args.includes("config")) return { ...okResult, stdout: '{"name":"demo-proj"}' };
@@ -2033,7 +2432,7 @@ describe("event streams", () => {
             body: new URLSearchParams({ csrf, action: "up" }).toString(),
         });
         for (let i = 0; i < 200 && appWithRunner.operations.activeCount() > 0; i += 1) {
-            await new Promise(resolve => setTimeout(resolve, 1));
+            await new Promise((resolve) => setTimeout(resolve, 1));
         }
         const stream = await authed(appWithRunner, "/stacks/demo/operations/events", session);
         expect(stream.status).toBe(200);
@@ -2053,8 +2452,10 @@ describe("event streams", () => {
 
     test("streams live output and a done event without cancelling on disconnect", async () => {
         let release!: (result: CommandResult) => void;
-        const gate = new Promise<CommandResult>(resolve => { release = resolve; });
-        const runner: DockerRunner = async args => {
+        const gate = new Promise<CommandResult>((resolve) => {
+            release = resolve;
+        });
+        const runner: DockerRunner = async (args) => {
             if (args.includes("ls")) return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
             if (args.includes("up")) return gate;
             if (args.includes("config")) return { ...okResult, stdout: '{"name":"demo-proj"}' };
@@ -2063,11 +2464,15 @@ describe("event streams", () => {
         const app = makeApp({}, runner);
         const session = await login(app);
         const csrf = await csrfOf(app, session);
-        expect((await authed(app, "/stacks/demo/operations", session, {
-            method: "POST",
-            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({ csrf, action: "up" }).toString(),
-        })).status).toBe(303);
+        expect(
+            (
+                await authed(app, "/stacks/demo/operations", session, {
+                    method: "POST",
+                    headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+                    body: new URLSearchParams({ csrf, action: "up" }).toString(),
+                })
+            ).status,
+        ).toBe(303);
 
         const stream = await authed(app, "/stacks/demo/operations/events", session);
         expect(stream.status).toBe(200);
@@ -2084,7 +2489,7 @@ describe("event streams", () => {
         }
         // Disconnecting the reader did not cancel the operation: it succeeded.
         for (let i = 0; i < 200 && app.operations.activeCount() > 0; i += 1) {
-            await new Promise(resolve => setTimeout(resolve, 1));
+            await new Promise((resolve) => setTimeout(resolve, 1));
         }
         expect(app.operations.forStack("demo")!.status).toBe("succeeded");
     });
@@ -2098,7 +2503,7 @@ describe("event streams", () => {
         expect((await authed(app, "/stacks/demo/logs/events", session)).status).toBe(503);
         await first.body!.cancel();
         for (let i = 0; i < 200 && app.sseSubscriptions() > 0; i += 1) {
-            await new Promise(resolve => setTimeout(resolve, 1));
+            await new Promise((resolve) => setTimeout(resolve, 1));
         }
         expect(app.sseSubscriptions()).toBe(0);
     });
@@ -2123,7 +2528,7 @@ describe("event streams", () => {
             await reader.cancel();
         }
         // The last reader left, so the follow subprocess is aborted.
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
         expect(calls[0]!.signal.aborted).toBe(true);
         expect(app.logs.isActive("demo")).toBe(false);
     });
@@ -2147,8 +2552,8 @@ describe("event streams", () => {
         expect(out.status).toBe(303);
 
         const finished = await Promise.race([
-            reader.read().then(result => (result.done ? "closed" : "data")),
-            new Promise<string>(resolve => setTimeout(() => resolve("timeout"), 1000)),
+            reader.read().then((result) => (result.done ? "closed" : "data")),
+            new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 1000)),
         ]);
         expect(finished).toBe("closed");
         expect(app.logs.isActive("demo")).toBe(false);
@@ -2156,7 +2561,9 @@ describe("event streams", () => {
 
     test("refuses a stream when the session is revoked during discovery", async () => {
         let release!: (result: CommandResult) => void;
-        const gate = new Promise<CommandResult>(resolve => { release = resolve; });
+        const gate = new Promise<CommandResult>((resolve) => {
+            release = resolve;
+        });
         let gated = false;
         const base = controllableProvider().provider;
         const provider: ComposeProvider = { ...base, listProjects: () => (gated ? gate : base.listProjects()) };
@@ -2167,7 +2574,7 @@ describe("event streams", () => {
         // Start discovery (now gated), then revoke the session before it resolves.
         gated = true;
         const pending = authed(app, "/stacks/demo/logs/events", session);
-        await new Promise(resolve => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 0));
         const out = await authed(app, "/logout", session, {
             method: "POST",
             headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
@@ -2175,7 +2582,13 @@ describe("event streams", () => {
         });
         expect(out.status).toBe(303);
 
-        release({ code: 0, stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]), stderr: "", timedOut: false, truncated: false });
+        release({
+            code: 0,
+            stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]),
+            stderr: "",
+            timedOut: false,
+            truncated: false,
+        });
         const response = await pending;
         expect(response.status).toBe(401);
         await response.body?.cancel();
@@ -2198,20 +2611,30 @@ describe("event streams", () => {
     });
 });
 
-describe("verified project context", () => {    const okResult: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
-    const lsOf = (projects: unknown): CommandResult => ({ code: 0, stdout: JSON.stringify(projects), stderr: "", timedOut: false, truncated: false });
+describe("verified project context", () => {
+    const okResult: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+    const lsOf = (projects: unknown): CommandResult => ({
+        code: 0,
+        stdout: JSON.stringify(projects),
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+    });
 
-    interface Spy { mutations: string[][]; validates: string[][]; }
+    interface Spy {
+        mutations: string[][];
+        validates: string[][];
+    }
 
     function spyRunner(lsResult: CommandResult, spy: Spy): DockerRunner {
-        return async args => {
+        return async (args) => {
             if (args[1] === "ls") return lsResult;
             if (args.includes("config")) {
                 if (args.includes("json")) return { ...okResult, stdout: '{"name":"demo-proj"}' };
                 spy.validates.push(args);
                 return okResult;
             }
-            if (["pull", "up", "stop", "restart", "down"].some(action => args.includes(action))) {
+            if (["pull", "up", "stop", "restart", "down"].some((action) => args.includes(action))) {
                 spy.mutations.push(args);
                 return okResult;
             }
@@ -2375,8 +2798,9 @@ describe("verified project context", () => {    const okResult: CommandResult = 
     test("refuses creation if name resolution fails without exposing config secrets", async () => {
         const spy: Spy = { mutations: [], validates: [] };
         const runner = spyRunner(lsOf([]), spy);
-        const app = makeApp({}, (args, options) => args.includes("config")
-            ? Promise.resolve({ ...okResult, code: 1, stderr: "private-secret" }) : runner(args, options));
+        const app = makeApp({}, (args, options) =>
+            args.includes("config") ? Promise.resolve({ ...okResult, code: 1, stderr: "private-secret" }) : runner(args, options),
+        );
         const session = await login(app);
         const response = await postOperation(app, session, await csrfOf(app, session), "up");
         expect(response.status).toBe(503);
@@ -2398,7 +2822,13 @@ describe("verified project context", () => {    const okResult: CommandResult = 
 
     test("serves a bounded log snapshot over an authenticated GET without following", async () => {
         const { provider, calls } = controllableProvider();
-        provider.readLogs = async () => ({ code: 0, stdout: "2026-10-10T10:00:00Z app-1  | hello\n", stderr: "", timedOut: false, truncated: false });
+        provider.readLogs = async () => ({
+            code: 0,
+            stdout: "2026-10-10T10:00:00Z app-1  | hello\n",
+            stderr: "",
+            timedOut: false,
+            truncated: false,
+        });
         const app = makeApp({}, undefined, provider);
         const session = await login(app);
         const response = await authed(app, "/stacks/demo/logs", session);
@@ -2431,7 +2861,10 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         const { provider } = controllableProvider();
         provider.listProjects = async () => lsOf([]);
         let reads = 0;
-        provider.readLogs = async () => { reads += 1; return { code: 0, stdout: "x", stderr: "", timedOut: false, truncated: false }; };
+        provider.readLogs = async () => {
+            reads += 1;
+            return { code: 0, stdout: "x", stderr: "", timedOut: false, truncated: false };
+        };
         const app = makeApp({}, undefined, provider);
         const session = await login(app);
         const response = await authed(app, "/stacks/demo/logs", session);
@@ -2444,7 +2877,7 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         const { provider } = controllableProvider();
         provider.listServices = async () => ["web", "db"];
         let seen: { service?: string; tailLines?: number } | undefined;
-        provider.readLogs = async target => {
+        provider.readLogs = async (target) => {
             seen = { service: target.service, tailLines: (target as { tailLines?: number }).tailLines };
             return { code: 0, stdout: "web line\n", stderr: "", timedOut: false, truncated: false };
         };
@@ -2460,7 +2893,7 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         const { provider } = controllableProvider();
         provider.listServices = async () => ["web"];
         let tail: number | undefined;
-        provider.readLogs = async target => {
+        provider.readLogs = async (target) => {
             tail = (target as { tailLines?: number }).tailLines;
             return { code: 0, stdout: "x\n", stderr: "", timedOut: false, truncated: false };
         };
@@ -2478,8 +2911,14 @@ describe("verified project context", () => {    const okResult: CommandResult = 
         let reads = 0;
         let discoveries = 0;
         const base = provider.listServices;
-        provider.listServices = async target => { discoveries += 1; return base(target); };
-        provider.readLogs = async () => { reads += 1; return { code: 0, stdout: "x", stderr: "", timedOut: false, truncated: false }; };
+        provider.listServices = async (target) => {
+            discoveries += 1;
+            return base(target);
+        };
+        provider.readLogs = async () => {
+            reads += 1;
+            return { code: 0, stdout: "x", stderr: "", timedOut: false, truncated: false };
+        };
         const app = makeApp({}, undefined, provider);
         const session = await login(app);
         expect((await authed(app, "/stacks/demo/logs?service=db", session)).status).toBe(409);
@@ -2492,10 +2931,11 @@ describe("verified project context", () => {    const okResult: CommandResult = 
 
     test("refuses the log snapshot for an unknown or ambiguous stack", async () => {
         const { provider } = controllableProvider();
-        provider.listProjects = async () => lsOf([
-            projectEntry("demo-proj", join(root, "demo", "compose.yaml")),
-            projectEntry("other", join(root, "demo", "compose.yaml")),
-        ]);
+        provider.listProjects = async () =>
+            lsOf([
+                projectEntry("demo-proj", join(root, "demo", "compose.yaml")),
+                projectEntry("other", join(root, "demo", "compose.yaml")),
+            ]);
         const app = makeApp({}, undefined, provider);
         const session = await login(app);
         const unknown = await authed(app, "/stacks/nope/logs", session);
@@ -2508,11 +2948,24 @@ describe("verified project context", () => {    const okResult: CommandResult = 
 
     test("answers HEAD on data endpoints with headers only, no body", async () => {
         const { provider } = controllableProvider();
-        provider.readLogs = async () => ({ code: 0, stdout: "2026-10-10T10:00:00Z app-1  | hello\n", stderr: "", timedOut: false, truncated: false });
-        const app = makeApp({}, undefined, provider, undefined, root, detailedInspector({
-            list: containerFixture(),
-            logs: { code: 0, stdout: "hello\n", stderr: "", timedOut: false, truncated: false },
-        }));
+        provider.readLogs = async () => ({
+            code: 0,
+            stdout: "2026-10-10T10:00:00Z app-1  | hello\n",
+            stderr: "",
+            timedOut: false,
+            truncated: false,
+        });
+        const app = makeApp(
+            {},
+            undefined,
+            provider,
+            undefined,
+            root,
+            detailedInspector({
+                list: containerFixture(),
+                logs: { code: 0, stdout: "hello\n", stderr: "", timedOut: false, truncated: false },
+            }),
+        );
         const session = await login(app);
         for (const [path, contentType] of [
             ["/stacks/demo/logs", "text/plain"],
@@ -2575,17 +3028,31 @@ describe("shutdown policy", () => {
         const { provider } = controllableProvider();
         let entered!: () => void;
         let finish!: () => void;
-        const started = new Promise<void>(resolve => { entered = resolve; });
-        const gate = new Promise<void>(resolve => { finish = resolve; });
-        provider.validateConfig = async () => { entered(); await gate; return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }; };
+        const started = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        const gate = new Promise<void>((resolve) => {
+            finish = resolve;
+        });
+        provider.validateConfig = async () => {
+            entered();
+            await gate;
+            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
         const app = makeApp({}, undefined, provider);
         const session = await login(app);
         const html = await (await authed(app, "/stacks/demo/edit", session)).text();
         const values: Record<string, string> = {};
-        for (const name of ["csrf", "composeHash", "envHash", "envExists"]) values[name] = new RegExp(`name="${name}" value="([^"]+)"`).exec(html)![1]!;
+        for (const name of ["csrf", "composeHash", "envHash", "envExists"])
+            values[name] = new RegExp(`name="${name}" value="([^"]+)"`).exec(html)![1]!;
         const saved = authed(app, "/stacks/demo/edit", session, {
-            method: "POST", headers: { origin: ORIGIN },
-            body: new URLSearchParams({ ...values, compose: "services:\n  app:\n    image: nginx:alpine\n# drained\n", env: "" }).toString(),
+            method: "POST",
+            headers: { origin: ORIGIN },
+            body: new URLSearchParams({
+                ...values,
+                compose: "services:\n  app:\n    image: nginx:alpine\n# drained\n",
+                env: "",
+            }).toString(),
         });
         await started;
         return { app, finish, saved };
@@ -2594,11 +3061,15 @@ describe("shutdown policy", () => {
     test("drains a save accepted before shutdown until it finishes", async () => {
         const { app, finish, saved } = await pendingSave();
         let drained = false;
-        const shutdown = app.beginShutdown(1000).then(() => { drained = true; });
+        const shutdown = app.beginShutdown(1000).then(() => {
+            drained = true;
+        });
         try {
-            await new Promise(resolve => setTimeout(resolve, 20));
+            await new Promise((resolve) => setTimeout(resolve, 20));
             expect(drained).toBe(false);
-        } finally { finish(); }
+        } finally {
+            finish();
+        }
         expect((await saved).status).toBe(303);
         await shutdown;
         expect(await readFile(join(root, "demo", "compose.yaml"), "utf8")).toContain("# drained");
@@ -2610,7 +3081,9 @@ describe("shutdown policy", () => {
         try {
             await app.beginShutdown(30);
             expect(Date.now() - started).toBeLessThan(1000);
-        } finally { finish(); }
+        } finally {
+            finish();
+        }
         await saved;
     });
 
@@ -2671,9 +3144,17 @@ describe("session revocation during a pending mutation", () => {
     }
 
     /** A request whose body arrives only when `finish` is called. */
-    function pendingPost(app: App, path: string, session: string): { response: Promise<Response>; finish: (fields: Record<string, string>) => void } {
+    function pendingPost(
+        app: App,
+        path: string,
+        session: string,
+    ): { response: Promise<Response>; finish: (fields: Record<string, string>) => void } {
         let controller!: ReadableStreamDefaultController<Uint8Array>;
-        const body = new ReadableStream<Uint8Array>({ start(c) { controller = c; } });
+        const body = new ReadableStream<Uint8Array>({
+            start(c) {
+                controller = c;
+            },
+        });
         const response = authed(app, path, session, {
             method: "POST",
             headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
@@ -2681,7 +3162,7 @@ describe("session revocation during a pending mutation", () => {
         });
         return {
             response,
-            finish: fields => {
+            finish: (fields) => {
                 controller.enqueue(new TextEncoder().encode(new URLSearchParams(fields).toString()));
                 controller.close();
             },
@@ -2696,15 +3177,24 @@ describe("session revocation during a pending mutation", () => {
         const mutations: string[] = [];
         let armed = false;
         let release!: () => void;
-        const gate = new Promise<void>(resolve => { release = resolve; });
-        const runner: DockerRunner = async args => {
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const runner: DockerRunner = async (args) => {
             if (armed && gated(args)) await gate;
             if (args.includes("ls")) return { ...ok, stdout: "[]" };
             if (args.includes("config") && !args.includes("--quiet")) return { ...ok, stdout: '{"name":"demo"}' };
-            if (["up", "stop", "restart", "down", "pull"].some(action => args.includes(action))) mutations.push(args.join(" "));
+            if (["up", "stop", "restart", "down", "pull"].some((action) => args.includes(action))) mutations.push(args.join(" "));
             return ok;
         };
-        return { runner, mutations, arm: () => { armed = true; }, release: () => release() };
+        return {
+            runner,
+            mutations,
+            arm: () => {
+                armed = true;
+            },
+            release: () => release(),
+        };
     }
 
     test("a body that arrives after logout runs nothing", async () => {
@@ -2736,7 +3226,7 @@ describe("session revocation during a pending mutation", () => {
     });
 
     test("a logout during project discovery runs nothing", async () => {
-        const gated = gatedRunner(args => args.includes("ls"));
+        const gated = gatedRunner((args) => args.includes("ls"));
         const app = makeApp({}, gated.runner);
         const session = await login(app);
         const csrf = await csrfOf(app, session);
@@ -2755,7 +3245,7 @@ describe("session revocation during a pending mutation", () => {
     });
 
     test("a logout during save validation writes nothing", async () => {
-        const gated = gatedRunner(args => args.includes("--quiet"));
+        const gated = gatedRunner((args) => args.includes("--quiet"));
         const app = makeApp({}, gated.runner);
         const session = await login(app);
         const html = await (await authed(app, "/stacks/demo/edit", session)).text();
@@ -2821,18 +3311,33 @@ type ContainerFields = {
 
 function containerLine(fields: ContainerFields): string {
     return [
-        JSON.stringify(fields.id), JSON.stringify(fields.name), JSON.stringify(fields.image),
-        JSON.stringify(fields.state), JSON.stringify(fields.status), JSON.stringify(fields.health),
-        JSON.stringify("2026-10-05 08:31:11 +0200 CEST"), JSON.stringify("5 days ago"),
-        JSON.stringify("0.0.0.0:8080->80/tcp"), JSON.stringify(fields.project ?? ""),
-        JSON.stringify(fields.service ?? ""), JSON.stringify(fields.configFiles ?? ""),
+        JSON.stringify(fields.id),
+        JSON.stringify(fields.name),
+        JSON.stringify(fields.image),
+        JSON.stringify(fields.state),
+        JSON.stringify(fields.status),
+        JSON.stringify(fields.health),
+        JSON.stringify("2026-10-05 08:31:11 +0200 CEST"),
+        JSON.stringify("5 days ago"),
+        JSON.stringify("0.0.0.0:8080->80/tcp"),
+        JSON.stringify(fields.project ?? ""),
+        JSON.stringify(fields.service ?? ""),
+        JSON.stringify(fields.configFiles ?? ""),
         JSON.stringify(fields.workingDir ?? ""),
     ].join("\t");
 }
 
 function fakeInspector(stdout: string, result: Partial<CommandResult> = {}): ContainerInspector {
     const value: CommandResult = { code: 0, stdout, stderr: "", timedOut: false, truncated: false, ...result };
-    return { engine: "docker", list: async () => value, inspect: async () => value, logs: async () => value, info: async () => value, stats: async () => value, diskUsage: async () => value };
+    return {
+        engine: "docker",
+        list: async () => value,
+        inspect: async () => value,
+        logs: async () => value,
+        info: async () => value,
+        stats: async () => value,
+        diskUsage: async () => value,
+    };
 }
 
 function detailedInspector(outputs: { list: string; inspect?: CommandResult; logs?: CommandResult }): ContainerInspector {
@@ -2849,17 +3354,26 @@ function detailedInspector(outputs: { list: string; inspect?: CommandResult; log
 }
 
 function inspectJson(id: string, name: string): string {
-    return JSON.stringify([{
-        Id: id,
-        Name: `/${name}`,
-        Created: "2026-10-05T08:31:11Z",
-        Image: `sha256:${"a".repeat(64)}`,
-        Config: { Image: "nginx:1.27", Env: ["SECRET=hidden"] },
-        State: { Status: "running", Running: true, ExitCode: 0, StartedAt: "2026-10-05T08:31:12Z", FinishedAt: "0001-01-01T00:00:00Z", Health: { Status: "healthy" } },
-        HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
-        NetworkSettings: { Ports: { "80/tcp": [{ HostIp: "0.0.0.0", HostPort: "8080" }] } },
-        Mounts: [{ Type: "bind", Source: "/host/data", Destination: "/data", Mode: "ro", RW: false }],
-    }]);
+    return JSON.stringify([
+        {
+            Id: id,
+            Name: `/${name}`,
+            Created: "2026-10-05T08:31:11Z",
+            Image: `sha256:${"a".repeat(64)}`,
+            Config: { Image: "nginx:1.27", Env: ["SECRET=hidden"] },
+            State: {
+                Status: "running",
+                Running: true,
+                ExitCode: 0,
+                StartedAt: "2026-10-05T08:31:12Z",
+                FinishedAt: "0001-01-01T00:00:00Z",
+                Health: { Status: "healthy" },
+            },
+            HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
+            NetworkSettings: { Ports: { "80/tcp": [{ HostIp: "0.0.0.0", HostPort: "8080" }] } },
+            Mounts: [{ Type: "bind", Source: "/host/data", Destination: "/data", Mode: "ro", RW: false }],
+        },
+    ]);
 }
 
 /**
@@ -2869,11 +3383,66 @@ function inspectJson(id: string, name: string): string {
 function containerFixture(): string {
     const managedFile = join(root, "demo", "compose.yaml");
     return [
-        containerLine({ id: "aaaaaaaaaaaa", name: "demo-app-1", image: "nginx:1.27", state: "running", status: "Up 2 hours (healthy)", health: "healthy", project: "demo", service: "app", configFiles: managedFile, workingDir: join(root, "demo") }),
-        containerLine({ id: "bbbbbbbbbbbb", name: "watchtower", image: "containrrr/watchtower", state: "running", status: "Up 3 days", health: "none", project: "watchtower", service: "watchtower", configFiles: null, workingDir: null }),
-        containerLine({ id: "cccccccccccc", name: "legacy", image: "redis:7", state: "running", status: "Up 5 minutes", health: "none", project: null, service: null, configFiles: null, workingDir: null }),
-        containerLine({ id: "dddddddddddd", name: "edge", image: "traefik:v3", state: "restarting", status: "Restarting (1) 4 seconds ago", health: "starting", project: "edge", service: "proxy", configFiles: null, workingDir: null }),
-        containerLine({ id: "eeeeeeeeeeee", name: "old-job", image: "alpine:3", state: "exited", status: "Exited (0) 2 days ago", health: "none", project: "ci", service: "job", configFiles: null, workingDir: null }),
+        containerLine({
+            id: "aaaaaaaaaaaa",
+            name: "demo-app-1",
+            image: "nginx:1.27",
+            state: "running",
+            status: "Up 2 hours (healthy)",
+            health: "healthy",
+            project: "demo",
+            service: "app",
+            configFiles: managedFile,
+            workingDir: join(root, "demo"),
+        }),
+        containerLine({
+            id: "bbbbbbbbbbbb",
+            name: "watchtower",
+            image: "containrrr/watchtower",
+            state: "running",
+            status: "Up 3 days",
+            health: "none",
+            project: "watchtower",
+            service: "watchtower",
+            configFiles: null,
+            workingDir: null,
+        }),
+        containerLine({
+            id: "cccccccccccc",
+            name: "legacy",
+            image: "redis:7",
+            state: "running",
+            status: "Up 5 minutes",
+            health: "none",
+            project: null,
+            service: null,
+            configFiles: null,
+            workingDir: null,
+        }),
+        containerLine({
+            id: "dddddddddddd",
+            name: "edge",
+            image: "traefik:v3",
+            state: "restarting",
+            status: "Restarting (1) 4 seconds ago",
+            health: "starting",
+            project: "edge",
+            service: "proxy",
+            configFiles: null,
+            workingDir: null,
+        }),
+        containerLine({
+            id: "eeeeeeeeeeee",
+            name: "old-job",
+            image: "alpine:3",
+            state: "exited",
+            status: "Exited (0) 2 days ago",
+            health: "none",
+            project: "ci",
+            service: "job",
+            configFiles: null,
+            workingDir: null,
+        }),
     ].join("\n");
 }
 
@@ -2928,7 +3497,10 @@ describe("home other-containers section", () => {
         const empty: CommandResult = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
         const provider = {
             engine: "fake",
-            listProjects: async () => { listCalls += 1; return empty; },
+            listProjects: async () => {
+                listCalls += 1;
+                return empty;
+            },
         } as unknown as ComposeProvider;
         const app = makeApp({}, undefined, provider, undefined, root, fakeInspector(containerFixture()));
         const session = await login(app);
@@ -2959,10 +3531,17 @@ describe("home other-containers section", () => {
 
 describe("container detail and logs", () => {
     test("renders a read-only detail page with ports and mounts", async () => {
-        const app = makeApp({}, undefined, undefined, undefined, root, detailedInspector({
-            list: containerFixture(),
-            inspect: { code: 0, stdout: inspectJson("bbbbbbbbbbbb", "watchtower"), stderr: "", timedOut: false, truncated: false },
-        }));
+        const app = makeApp(
+            {},
+            undefined,
+            undefined,
+            undefined,
+            root,
+            detailedInspector({
+                list: containerFixture(),
+                inspect: { code: 0, stdout: inspectJson("bbbbbbbbbbbb", "watchtower"), stderr: "", timedOut: false, truncated: false },
+            }),
+        );
         const session = await login(app);
         const html = await (await authed(app, "/containers/bbbbbbbbbbbb", session)).text();
         expect(html).toContain("watchtower");
@@ -2976,10 +3555,17 @@ describe("container detail and logs", () => {
     });
 
     test("a managed container links back to its stack", async () => {
-        const app = makeApp({}, undefined, undefined, undefined, root, detailedInspector({
-            list: containerFixture(),
-            inspect: { code: 0, stdout: inspectJson("aaaaaaaaaaaa", "demo-app-1"), stderr: "", timedOut: false, truncated: false },
-        }));
+        const app = makeApp(
+            {},
+            undefined,
+            undefined,
+            undefined,
+            root,
+            detailedInspector({
+                list: containerFixture(),
+                inspect: { code: 0, stdout: inspectJson("aaaaaaaaaaaa", "demo-app-1"), stderr: "", timedOut: false, truncated: false },
+            }),
+        );
         const session = await login(app);
         const html = await (await authed(app, "/containers/aaaaaaaaaaaa", session)).text();
         expect(html).toContain("/stacks/demo");
@@ -3003,10 +3589,17 @@ describe("container detail and logs", () => {
     });
 
     test("serves a bounded log snapshot with ANSI stripped", async () => {
-        const app = makeApp({}, undefined, undefined, undefined, root, detailedInspector({
-            list: containerFixture(),
-            logs: { code: 0, stdout: "\u001b[31mhello logs\u001b[0m\n", stderr: "secret-stderr", timedOut: false, truncated: false },
-        }));
+        const app = makeApp(
+            {},
+            undefined,
+            undefined,
+            undefined,
+            root,
+            detailedInspector({
+                list: containerFixture(),
+                logs: { code: 0, stdout: "\u001b[31mhello logs\u001b[0m\n", stderr: "secret-stderr", timedOut: false, truncated: false },
+            }),
+        );
         const session = await login(app);
         const response = await authed(app, "/containers/bbbbbbbbbbbb/logs?tail=500", session);
         expect(response.status).toBe(200);
@@ -3031,7 +3624,10 @@ describe("container detail and logs", () => {
             engine: "docker",
             list: async () => ({ ...base, stdout: containerFixture() }),
             inspect: async () => base,
-            logs: async target => { seen.push(target.tailLines); return { ...base }; },
+            logs: async (target) => {
+                seen.push(target.tailLines);
+                return { ...base };
+            },
             info: async () => base,
             stats: async () => base,
             diskUsage: async () => base,
@@ -3059,11 +3655,19 @@ function serverProvider(): ComposeProvider {
     const empty: CommandResult = { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
     return {
         engine: "fake",
-        listProjects: async () => ({ ...empty, stdout: JSON.stringify([{ Name: "demo", Status: "running(5)", ConfigFiles: join(root, "demo", "compose.yaml") }]) }),
+        listProjects: async () => ({
+            ...empty,
+            stdout: JSON.stringify([{ Name: "demo", Status: "running(5)", ConfigFiles: join(root, "demo", "compose.yaml") }]),
+        }),
     } as unknown as ComposeProvider;
 }
 
-function serverInspector(outputs: { list?: string; info?: CommandResult; stats?: CommandResult; diskUsage?: CommandResult }): ContainerInspector {
+function serverInspector(outputs: {
+    list?: string;
+    info?: CommandResult;
+    stats?: CommandResult;
+    diskUsage?: CommandResult;
+}): ContainerInspector {
     const base: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
     return {
         engine: "docker",
@@ -3079,27 +3683,49 @@ function serverInspector(outputs: { list?: string; info?: CommandResult; stats?:
 const SERVER_INFO: CommandResult = {
     code: 0,
     stdout: JSON.stringify({
-        OperatingSystem: "Ubuntu 22.04.5 LTS", OSType: "linux", Architecture: "x86_64",
-        KernelVersion: "5.15.0-107-generic", ServerVersion: "27.3.1", NCPU: 4,
-        MemTotal: 16 * 1024 ** 3, Containers: 5, ContainersRunning: 3, Images: 9, Driver: "overlay2",
-        RegistryConfig: { secret: "leak" }, HttpProxy: "http://internal",
+        OperatingSystem: "Ubuntu 22.04.5 LTS",
+        OSType: "linux",
+        Architecture: "x86_64",
+        KernelVersion: "5.15.0-107-generic",
+        ServerVersion: "27.3.1",
+        NCPU: 4,
+        MemTotal: 16 * 1024 ** 3,
+        Containers: 5,
+        ContainersRunning: 3,
+        Images: 9,
+        Driver: "overlay2",
+        RegistryConfig: { secret: "leak" },
+        HttpProxy: "http://internal",
     }),
-    stderr: "", timedOut: false, truncated: false,
+    stderr: "",
+    timedOut: false,
+    truncated: false,
 };
 
 const SERVER_STATS: CommandResult = {
     code: 0,
     stdout: JSON.stringify({
-        Container: "demo-app-1", Name: "demo-app-1", ID: "aaaaaaaaaaaa", CPUPerc: "12.50%",
-        MemUsage: "100MiB / 1GiB", MemPerc: "9.77%", NetIO: "1MB / 2MB", BlockIO: "0B / 0B", PIDs: "5",
+        Container: "demo-app-1",
+        Name: "demo-app-1",
+        ID: "aaaaaaaaaaaa",
+        CPUPerc: "12.50%",
+        MemUsage: "100MiB / 1GiB",
+        MemPerc: "9.77%",
+        NetIO: "1MB / 2MB",
+        BlockIO: "0B / 0B",
+        PIDs: "5",
     }),
-    stderr: "", timedOut: false, truncated: false,
+    stderr: "",
+    timedOut: false,
+    truncated: false,
 };
 
 const SERVER_DF: CommandResult = {
     code: 0,
     stdout: JSON.stringify({ Type: "Images", TotalCount: "9", Active: "4", Size: "8.2GB", Reclaimable: "3.1GB (37%)" }),
-    stderr: "", timedOut: false, truncated: false,
+    stderr: "",
+    timedOut: false,
+    truncated: false,
 };
 
 describe("server page", () => {
@@ -3111,9 +3737,18 @@ describe("server page", () => {
     });
 
     test("renders engine facts and container usage without leaking raw info", async () => {
-        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({
-            list: containerFixture(), info: SERVER_INFO, stats: SERVER_STATS,
-        }));
+        const app = makeApp(
+            {},
+            undefined,
+            serverProvider(),
+            undefined,
+            root,
+            serverInspector({
+                list: containerFixture(),
+                info: SERVER_INFO,
+                stats: SERVER_STATS,
+            }),
+        );
         const session = await login(app);
         const response = await authed(app, "/server", session);
         expect(response.status).toBe(200);
@@ -3128,21 +3763,40 @@ describe("server page", () => {
     test("names containers from the container list, in the page and in Live, even when stats only give an ID", async () => {
         const idOnly: CommandResult = {
             ...SERVER_STATS,
-            stdout: JSON.stringify({ Container: "aaaaaaaaaaaa", ID: "aaaaaaaaaaaa", CPUPerc: "12.50%", MemUsage: "100MiB / 1GiB", MemPerc: "9.77%", NetIO: "1MB / 2MB", BlockIO: "0B / 0B", PIDs: "5" }),
+            stdout: JSON.stringify({
+                Container: "aaaaaaaaaaaa",
+                ID: "aaaaaaaaaaaa",
+                CPUPerc: "12.50%",
+                MemUsage: "100MiB / 1GiB",
+                MemPerc: "9.77%",
+                NetIO: "1MB / 2MB",
+                BlockIO: "0B / 0B",
+                PIDs: "5",
+            }),
         };
-        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({ list: containerFixture(), info: SERVER_INFO, stats: idOnly }));
+        const app = makeApp(
+            {},
+            undefined,
+            serverProvider(),
+            undefined,
+            root,
+            serverInspector({ list: containerFixture(), info: SERVER_INFO, stats: idOnly }),
+        );
         const session = await login(app);
         const html = await (await authed(app, "/server", session)).text();
         expect(html).toContain(">demo-app-1</a>");
         expect(html).not.toContain(">aaaaaaaaaaaa</a>");
-        const payload = await (await authed(app, "/server/stats", session)).json() as { stats: { name: string }[] };
+        const payload = (await (await authed(app, "/server/stats", session)).json()) as { stats: { name: string }[] };
         expect(payload.stats[0]!.name).toBe("demo-app-1");
     });
 
     test("reads disk usage only on demand and caches it", async () => {
         let calls = 0;
         const inspector = serverInspector({ list: containerFixture(), diskUsage: undefined });
-        inspector.diskUsage = async () => { calls += 1; return SERVER_DF; };
+        inspector.diskUsage = async () => {
+            calls += 1;
+            return SERVER_DF;
+        };
         const app = makeApp({}, undefined, serverProvider(), undefined, root, inspector);
         const session = await login(app);
 
@@ -3161,9 +3815,18 @@ describe("server page", () => {
 
     test("still renders with a note when Docker diagnostics fail", async () => {
         const failure: CommandResult = { code: 1, stdout: "", stderr: "boom", timedOut: false, truncated: false };
-        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({
-            list: containerFixture(), info: failure, stats: failure,
-        }));
+        const app = makeApp(
+            {},
+            undefined,
+            serverProvider(),
+            undefined,
+            root,
+            serverInspector({
+                list: containerFixture(),
+                info: failure,
+                stats: failure,
+            }),
+        );
         const session = await login(app);
         const response = await authed(app, "/server", session);
         expect(response.status).toBe(200);
@@ -3193,8 +3856,14 @@ describe("server stats endpoint", () => {
         let diskCalls = 0;
         let infoCalls = 0;
         const inspector = serverInspector({ list: containerFixture(), stats: SERVER_STATS });
-        inspector.diskUsage = async () => { diskCalls += 1; return SERVER_DF; };
-        inspector.info = async () => { infoCalls += 1; return SERVER_INFO; };
+        inspector.diskUsage = async () => {
+            diskCalls += 1;
+            return SERVER_DF;
+        };
+        inspector.info = async () => {
+            infoCalls += 1;
+            return SERVER_INFO;
+        };
         const app = makeApp({}, undefined, serverProvider(), undefined, root, inspector);
         const session = await login(app);
 
@@ -3203,7 +3872,7 @@ describe("server stats endpoint", () => {
         expect(response.headers.get("content-type")).toContain("application/json");
         expect(response.headers.get("cache-control")).toBe("no-store");
 
-        const payload = await response.json() as ServerStatsPayload;
+        const payload = (await response.json()) as ServerStatsPayload;
         expect(payload.runningContainers).toBeGreaterThan(0);
         expect(payload.stats).toHaveLength(1);
         expect(payload.stats![0]!.stack).toBe("demo");
@@ -3215,12 +3884,19 @@ describe("server stats endpoint", () => {
 
     test("reports an unavailable section as null with a note, keeping the list-derived fields", async () => {
         const failure: CommandResult = { code: 1, stdout: "", stderr: "boom", timedOut: false, truncated: false };
-        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({ list: containerFixture(), stats: failure }));
+        const app = makeApp(
+            {},
+            undefined,
+            serverProvider(),
+            undefined,
+            root,
+            serverInspector({ list: containerFixture(), stats: failure }),
+        );
         const session = await login(app);
 
         const response = await authed(app, "/server/stats", session);
         expect(response.status).toBe(200);
-        const payload = await response.json() as ServerStatsPayload;
+        const payload = (await response.json()) as ServerStatsPayload;
         expect(payload.stats).toBeNull();
         expect(payload.stacks).toBeNull();
         expect(payload.runningContainers).toBeGreaterThan(0);
@@ -3257,13 +3933,21 @@ describe("self-update (ADR 0018)", () => {
         expect(html).toContain(`href="/about" aria-current="page"`);
         expect(html).not.toContain(`action="/about/update"`);
         expect(html).not.toContain(`action="/about/check"`);
-        expect(docker.calls.every(args => args[3] === "compose-panel-updater")).toBe(true);
+        expect(docker.calls.every((args) => args[3] === "compose-panel-updater")).toBe(true);
     });
 
     test("check pulls the panel tag, then update starts the updater and pauses mutations", async () => {
         const docker = fakeDocker();
         const releases = fakeReleases();
-        const app = makeApp({}, undefined, controllableProvider().provider, undefined, root, undefined, fakeSelfUpdater(docker, MOUNTINFO, releases));
+        const app = makeApp(
+            {},
+            undefined,
+            controllableProvider().provider,
+            undefined,
+            root,
+            undefined,
+            fakeSelfUpdater(docker, MOUNTINFO, releases),
+        );
         const session = await login(app);
         expect(await (await authed(app, "/about", session)).text()).not.toContain(`action="/about/update"`);
 
@@ -3279,10 +3963,13 @@ describe("self-update (ADR 0018)", () => {
 
         const started = await post(app, session, "/about/update", { csrf: await csrfOf(app, session), target: NEW_IMAGE });
         expect(started.status).toBe(303);
-        const run = docker.calls.find(args => args[0] === "container" && args[1] === "run");
+        const run = docker.calls.find((args) => args[0] === "container" && args[1] === "run");
         expect(run).toBeDefined();
         expect(run).toContain(NEW_IMAGE);
-        expect(run!.slice(run!.indexOf("--expected-digest"), run!.indexOf("--expected-digest") + 2)).toEqual(["--expected-digest", NEW_DIGEST]);
+        expect(run!.slice(run!.indexOf("--expected-digest"), run!.indexOf("--expected-digest") + 2)).toEqual([
+            "--expected-digest",
+            NEW_DIGEST,
+        ]);
         // Install re-reads the release instead of trusting the check.
         expect(releases.calls).toEqual(["0.3.0", "0.3.0"]);
 
@@ -3312,12 +3999,18 @@ describe("self-update (ADR 0018)", () => {
         expect((await post(app, session, "/about/update", { csrf, target: NEW_IMAGE }, "http://evil.example")).status).toBe(403);
         expect((await post(app, session, "/about/check", { csrf: "wrong" })).status).toBe(403);
         expect((await authed(app, "/about/update", session)).status).toBe(405);
-        expect(docker.calls.some(args => args[1] === "run" || args[1] === "pull")).toBe(false);
+        expect(docker.calls.some((args) => args[1] === "run" || args[1] === "pull")).toBe(false);
     });
 
     const notInstallable: [string, () => FakeReleases][] = [
-        ["a release still in its waiting period", () => fakeReleases({ kind: "found", release: releaseJson({ published_at: "2026-10-11T12:00:00Z" }) })],
-        ["a release whose digest does not match", () => fakeReleases({ kind: "found", release: releaseJson({ body: `compose-panel-image-digest: sha256:${"8".repeat(64)}` }) })],
+        [
+            "a release still in its waiting period",
+            () => fakeReleases({ kind: "found", release: releaseJson({ published_at: "2026-10-11T12:00:00Z" }) }),
+        ],
+        [
+            "a release whose digest does not match",
+            () => fakeReleases({ kind: "found", release: releaseJson({ body: `compose-panel-image-digest: sha256:${"8".repeat(64)}` }) }),
+        ],
         ["a prerelease", () => fakeReleases({ kind: "found", release: releaseJson({ prerelease: true }) })],
         ["GitHub being unreachable", () => fakeReleases({ kind: "unavailable" })],
     ];
@@ -3330,7 +4023,7 @@ describe("self-update (ADR 0018)", () => {
             expect(await (await authed(app, "/about", session)).text()).not.toContain(`action="/about/update"`);
             const refused = await post(app, session, "/about/update", { csrf: await csrfOf(app, session), target: NEW_IMAGE });
             expect(refused.status).toBe(409);
-            expect(docker.calls.some(args => args[1] === "run")).toBe(false);
+            expect(docker.calls.some((args) => args[1] === "run")).toBe(false);
         });
     }
 
@@ -3355,11 +4048,13 @@ describe("self-update (ADR 0018)", () => {
         const releases = fakeReleases();
         const source = releases.source;
         let held = false;
-        releases.source = async version => {
+        releases.source = async (version) => {
             // The check answers at once; the install's fresh re-check is held.
             if (releases.calls.length >= 1 && !held) {
                 held = true;
-                await new Promise<void>(resolve => { answer = resolve; });
+                await new Promise<void>((resolve) => {
+                    answer = resolve;
+                });
             }
             return source(version);
         };
@@ -3373,7 +4068,7 @@ describe("self-update (ADR 0018)", () => {
         answer();
         expect((await install).status).toBe(503);
         await shutdown;
-        expect(docker.calls.some(args => args[1] === "run")).toBe(false);
+        expect(docker.calls.some((args) => args[1] === "run")).toBe(false);
     });
 
     test("update is refused while a stack keeps a lock after an unconfirmed termination", async () => {
@@ -3386,7 +4081,11 @@ describe("self-update (ADR 0018)", () => {
         };
         const app = makeApp({}, undefined, unconfirmed, undefined, root, undefined, fakeSelfUpdater(docker));
         const session = await login(app);
-        app.operations.start({ stack: "demo", action: "up", target: { composeFile: join(root, "demo", "compose.yaml"), cwd: join(root, "demo") } });
+        app.operations.start({
+            stack: "demo",
+            action: "up",
+            target: { composeFile: join(root, "demo", "compose.yaml"), cwd: join(root, "demo") },
+        });
         while (app.operations.isRunning("demo")) await Bun.sleep(1);
         // The task ended, but the lock is kept on purpose: the stack refuses a new action.
         expect(app.operations.activeCount()).toBe(0);
@@ -3396,7 +4095,7 @@ describe("self-update (ADR 0018)", () => {
         await post(app, session, "/about/check", { csrf });
         const response = await post(app, session, "/about/update", { csrf, target: NEW_IMAGE });
         expect(response.status).toBe(409);
-        expect(docker.calls.some(args => args[1] === "run")).toBe(false);
+        expect(docker.calls.some((args) => args[1] === "run")).toBe(false);
     });
 
     test("update waits for running stack actions", async () => {
@@ -3404,10 +4103,14 @@ describe("self-update (ADR 0018)", () => {
         docker.pulled = true;
         const app = makeApp({}, undefined, hangingProvider(), undefined, root, undefined, fakeSelfUpdater(docker));
         const session = await login(app);
-        app.operations.start({ stack: "demo", action: "up", target: { composeFile: join(root, "demo", "compose.yaml"), cwd: join(root, "demo") } });
+        app.operations.start({
+            stack: "demo",
+            action: "up",
+            target: { composeFile: join(root, "demo", "compose.yaml"), cwd: join(root, "demo") },
+        });
         const response = await post(app, session, "/about/update", { csrf: await csrfOf(app, session), target: NEW_IMAGE });
         expect(response.status).toBe(409);
-        expect(docker.calls.some(args => args[1] === "run")).toBe(false);
+        expect(docker.calls.some((args) => args[1] === "run")).toBe(false);
     });
 
     test("a failed update shows the escaped updater output", async () => {

@@ -77,9 +77,12 @@ export function parseComposeLs(stdout: string): ComposeProject[] {
         const record = row as Record<string, unknown>;
         const name = record.Name;
         if (typeof name !== "string" || !name) throw new ComposeStateError("Unexpected compose ls output.");
-        const configFiles = typeof record.ConfigFiles === "string" && record.ConfigFiles
-            ? record.ConfigFiles.split(",").map(value => value.trim()).filter(Boolean)
-            : [];
+        const configFiles =
+            typeof record.ConfigFiles === "string" && record.ConfigFiles
+                ? record.ConfigFiles.split(",")
+                      .map((value) => value.trim())
+                      .filter(Boolean)
+                : [];
         projects.push({
             name,
             status: typeof record.Status === "string" ? record.Status : "",
@@ -94,9 +97,8 @@ export function parseComposePs(stdout: string): ComposeService[] {
     for (const row of parseJsonRows(stdout)) {
         if (!row || typeof row !== "object") throw new ComposeStateError("Unexpected compose ps output.");
         const record = row as Record<string, unknown>;
-        const name = typeof record.Service === "string" && record.Service
-            ? record.Service
-            : typeof record.Name === "string" ? record.Name : "";
+        const name =
+            typeof record.Service === "string" && record.Service ? record.Service : typeof record.Name === "string" ? record.Name : "";
         if (!name) throw new ComposeStateError("Unexpected compose ps output.");
         services.push({
             name,
@@ -132,7 +134,7 @@ export function parseImageInspect(stdout: string): ImageDetails[] {
         if (!row || typeof row !== "object") continue;
         const record = row as Record<string, unknown>;
         if (typeof record.Id !== "string" || !record.Id) continue;
-        const config = record.Config && typeof record.Config === "object" ? record.Config as Record<string, unknown> : {};
+        const config = record.Config && typeof record.Config === "object" ? (record.Config as Record<string, unknown>) : {};
         const labels: Record<string, string> = {};
         if (config.Labels && typeof config.Labels === "object") {
             for (const [key, value] of Object.entries(config.Labels as Record<string, unknown>)) {
@@ -169,7 +171,7 @@ export function parseContainerImages(stdout: string): Map<string, RecoveredImage
         if (!row || typeof row !== "object") continue;
         const record = row as Record<string, unknown>;
         if (typeof record.Name !== "string" || typeof record.Image !== "string" || !record.Image) continue;
-        const config = record.Config && typeof record.Config === "object" ? record.Config as Record<string, unknown> : {};
+        const config = record.Config && typeof record.Config === "object" ? (record.Config as Record<string, unknown>) : {};
         const labels: Record<string, string> = {};
         if (config.Labels && typeof config.Labels === "object") {
             for (const [key, value] of Object.entries(config.Labels as Record<string, unknown>)) {
@@ -210,20 +212,21 @@ export function parseContainerConfigStates(stdout: string): Map<string, Containe
         if (!row || typeof row !== "object") continue;
         const record = row as Record<string, unknown>;
         if (typeof record.Name !== "string" || !record.Name) continue;
-        const config = record.Config && typeof record.Config === "object" ? record.Config as Record<string, unknown> : {};
-        const labels = config.Labels && typeof config.Labels === "object" ? config.Labels as Record<string, unknown> : {};
-        const host = record.HostConfig && typeof record.HostConfig === "object" ? record.HostConfig as Record<string, unknown> : {};
+        const config = record.Config && typeof record.Config === "object" ? (record.Config as Record<string, unknown>) : {};
+        const labels = config.Labels && typeof config.Labels === "object" ? (config.Labels as Record<string, unknown>) : {};
+        const host = record.HostConfig && typeof record.HostConfig === "object" ? (record.HostConfig as Record<string, unknown>) : {};
         const service = labels["com.docker.compose.service"];
         const hash = labels["com.docker.compose.config-hash"];
         const modes = [host.NetworkMode, host.IpcMode, host.PidMode];
         const volumesFrom = host.VolumesFrom;
-        const wellFormed = modes.every(mode => typeof mode === "string")
-            && (volumesFrom === null || (Array.isArray(volumesFrom) && volumesFrom.every(entry => typeof entry === "string")));
+        const wellFormed =
+            modes.every((mode) => typeof mode === "string") &&
+            (volumesFrom === null || (Array.isArray(volumesFrom) && volumesFrom.every((entry) => typeof entry === "string")));
         byContainer.set(record.Name.replace(/^\//, ""), {
             service: typeof service === "string" && service ? service : null,
             configHash: typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash) ? hash : null,
             sharesContainer: wellFormed
-                ? modes.some(mode => (mode as string).startsWith("container:")) || (Array.isArray(volumesFrom) && volumesFrom.length > 0)
+                ? modes.some((mode) => (mode as string).startsWith("container:")) || (Array.isArray(volumesFrom) && volumesFrom.length > 0)
                 : null,
         });
     }
@@ -232,10 +235,10 @@ export function parseContainerConfigStates(stdout: string): Map<string, Containe
 
 export function summarizeServices(services: ComposeService[]): StackState {
     if (services.length === 0) return "not-created";
-    const states = services.map(service => service.state.toLowerCase());
+    const states = services.map((service) => service.state.toLowerCase());
     // A one-shot init service that exited 0 must not hide a running application.
-    if (states.some(state => state === "running" || state === "restarting" || state === "paused")) return "running";
-    if (states.every(state => state === "exited" || state === "created" || state === "dead" || state === "removing")) return "stopped";
+    if (states.some((state) => state === "running" || state === "restarting" || state === "paused")) return "running";
+    if (states.every((state) => state === "exited" || state === "created" || state === "dead" || state === "removing")) return "stopped";
     return "unknown";
 }
 
@@ -263,7 +266,7 @@ export interface ProjectMatch {
  */
 export function findProjectForStack(projects: ComposeProject[], stackFile: string): ProjectMatch {
     const target = normalizePath(stackFile);
-    const matches = projects.filter(project => project.configFiles.some(file => normalizePath(file) === target));
+    const matches = projects.filter((project) => project.configFiles.some((file) => normalizePath(file) === target));
     if (matches.length === 0) return { project: null, ambiguous: false };
     if (matches.length > 1) return { project: null, ambiguous: true };
     const project = matches[0]!;

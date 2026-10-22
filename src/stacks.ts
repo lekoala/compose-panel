@@ -3,12 +3,12 @@ import type { Stats } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 
-export const COMPOSE_FILES = [
-    "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml",
-] as const;
+export const COMPOSE_FILES = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"] as const;
 const OVERRIDE_FILES = [
-    "compose.override.yaml", "compose.override.yml",
-    "docker-compose.override.yaml", "docker-compose.override.yml",
+    "compose.override.yaml",
+    "compose.override.yml",
+    "docker-compose.override.yaml",
+    "docker-compose.override.yml",
 ] as const;
 const MAX_COMPOSE_BYTES = 1024 * 1024;
 export const ENV_FILENAME = ".env";
@@ -38,9 +38,13 @@ async function stackDir(root: string, name: string): Promise<string> {
     validateStackName(name);
     const candidate = join(root, name);
     let info: Stats;
-    try { info = await lstat(candidate); }
-    catch { throw new StackError("There is no stack with this name.", 404); }
-    if (!info.isDirectory() || info.isSymbolicLink()) throw new StackError("This stack cannot be managed: it is a symbolic link or not a folder.", 404);
+    try {
+        info = await lstat(candidate);
+    } catch {
+        throw new StackError("There is no stack with this name.", 404);
+    }
+    if (!info.isDirectory() || info.isSymbolicLink())
+        throw new StackError("This stack cannot be managed: it is a symbolic link or not a folder.", 404);
     const canonical = await realpath(candidate);
     const delta = relative(root, canonical);
     if (!delta || delta === ".." || delta.startsWith(`..${sep}`) || isAbsolute(delta) || delta.includes(sep)) {
@@ -60,21 +64,30 @@ export async function locateComposeFile(root: string, name: string): Promise<{ p
     for (const filename of [...COMPOSE_FILES, ...OVERRIDE_FILES]) {
         const candidate = join(dir, filename);
         let info: Stats;
-        try { info = await lstat(candidate); }
-        catch (error) {
+        try {
+            info = await lstat(candidate);
+        } catch (error) {
             if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
             throw error;
         }
-        if (info.isSymbolicLink()) throw new StackError("The Compose file is a symbolic link. For safety, the panel only manages regular files.");
+        if (info.isSymbolicLink())
+            throw new StackError("The Compose file is a symbolic link. For safety, the panel only manages regular files.");
         if (info.isFile()) {
             if ((OVERRIDE_FILES as readonly string[]).includes(filename)) {
-                throw new StackError("This stack has a Compose override file. The panel does not support override files yet: manage this stack with the docker compose CLI.");
+                throw new StackError(
+                    "This stack has a Compose override file. The panel does not support override files yet: manage this stack with the docker compose CLI.",
+                );
             }
             found.push(filename);
         }
     }
-    if (found.length === 0) throw new StackError("This folder has no Compose file (compose.yaml, compose.yml, docker-compose.yaml or docker-compose.yml).", 404);
-    if (found.length !== 1) throw new StackError("This folder has more than one Compose file. Keep only one so the panel knows which to use.");
+    if (found.length === 0)
+        throw new StackError(
+            "This folder has no Compose file (compose.yaml, compose.yml, docker-compose.yaml or docker-compose.yml).",
+            404,
+        );
+    if (found.length !== 1)
+        throw new StackError("This folder has more than one Compose file. Keep only one so the panel knows which to use.");
     return { path: join(dir, found[0]!), filename: found[0]! };
 }
 

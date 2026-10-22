@@ -3,7 +3,9 @@ import { startHttpServer } from "../src/http-server.ts";
 
 test("uncaught request errors return a private production response", async () => {
     const log = spyOn(console, "error").mockImplementation(() => {});
-    const server = startHttpServer(0, async () => { throw new Error("fixture-password-/private/source.ts"); });
+    const server = startHttpServer(0, async () => {
+        throw new Error("fixture-password-/private/source.ts");
+    });
     try {
         expect(server.hostname).toBe("127.0.0.1");
         expect(server.development).toBe(false);

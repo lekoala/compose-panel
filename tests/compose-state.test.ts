@@ -11,10 +11,12 @@ import {
 
 describe("parseComposeLs", () => {
     test("parses a JSON array", () => {
-        const projects = parseComposeLs(JSON.stringify([
-            { Name: "demo", Status: "running(1)", ConfigFiles: "/opt/stacks/demo/compose.yaml" },
-            { Name: "old", Status: "exited(2)", ConfigFiles: "/opt/stacks/old/compose.yaml" },
-        ]));
+        const projects = parseComposeLs(
+            JSON.stringify([
+                { Name: "demo", Status: "running(1)", ConfigFiles: "/opt/stacks/demo/compose.yaml" },
+                { Name: "old", Status: "exited(2)", ConfigFiles: "/opt/stacks/old/compose.yaml" },
+            ]),
+        );
         expect(projects).toEqual([
             { name: "demo", status: "running(1)", configFiles: ["/opt/stacks/demo/compose.yaml"] },
             { name: "old", status: "exited(2)", configFiles: ["/opt/stacks/old/compose.yaml"] },
@@ -33,10 +35,12 @@ describe("parseComposeLs", () => {
 
 describe("parseComposePs", () => {
     test("parses a JSON array", () => {
-        const services = parseComposePs(JSON.stringify([
-            { Service: "app", State: "running", Health: "healthy", ExitCode: 0 },
-            { Service: "init", State: "exited", ExitCode: 0 },
-        ]));
+        const services = parseComposePs(
+            JSON.stringify([
+                { Service: "app", State: "running", Health: "healthy", ExitCode: 0 },
+                { Service: "init", State: "exited", ExitCode: 0 },
+            ]),
+        );
         expect(services).toEqual([
             { name: "app", state: "running", health: "healthy", exitCode: 0, container: null, image: null },
             { name: "init", state: "exited", health: null, exitCode: 0, container: null, image: null },
@@ -48,7 +52,7 @@ describe("parseComposePs", () => {
             JSON.stringify({ Name: "demo-app-1", State: "running" }),
             JSON.stringify({ Name: "demo-db-1", State: "exited" }),
         ].join("\n");
-        expect(parseComposePs(stdout).map(service => service.name)).toEqual(["demo-app-1", "demo-db-1"]);
+        expect(parseComposePs(stdout).map((service) => service.name)).toEqual(["demo-app-1", "demo-db-1"]);
     });
 
     test("rejects malformed output", () => expect(() => parseComposePs("not json at all")).toThrow(ComposeStateError));
@@ -57,19 +61,27 @@ describe("parseComposePs", () => {
 describe("summarizeServices", () => {
     test("no services means not created", () => expect(summarizeServices([])).toBe("not-created"));
     test("a running app wins over an init job exited 0", () => {
-        expect(summarizeServices([
-            { name: "init", state: "exited", health: null, exitCode: 0, container: null, image: null },
-            { name: "app", state: "running", health: null, exitCode: null, container: null, image: null },
-        ])).toBe("running");
+        expect(
+            summarizeServices([
+                { name: "init", state: "exited", health: null, exitCode: 0, container: null, image: null },
+                { name: "app", state: "running", health: null, exitCode: null, container: null, image: null },
+            ]),
+        ).toBe("running");
     });
     test("all exited is stopped", () => {
-        expect(summarizeServices([{ name: "app", state: "exited", health: null, exitCode: 0, container: null, image: null }])).toBe("stopped");
+        expect(summarizeServices([{ name: "app", state: "exited", health: null, exitCode: 0, container: null, image: null }])).toBe(
+            "stopped",
+        );
     });
     test("created only is stopped", () => {
-        expect(summarizeServices([{ name: "app", state: "created", health: null, exitCode: null, container: null, image: null }])).toBe("stopped");
+        expect(summarizeServices([{ name: "app", state: "created", health: null, exitCode: null, container: null, image: null }])).toBe(
+            "stopped",
+        );
     });
     test("an unrecognized state is unknown", () => {
-        expect(summarizeServices([{ name: "app", state: "dead-ish", health: null, exitCode: null, container: null, image: null }])).toBe("unknown");
+        expect(summarizeServices([{ name: "app", state: "dead-ish", health: null, exitCode: null, container: null, image: null }])).toBe(
+            "unknown",
+        );
     });
 });
 
@@ -101,7 +113,10 @@ describe("findProjectForStack", () => {
     test("normalizes Windows separators", () => {
         const match = findProjectForStack(projects, "C:\\opt\\stacks\\demo\\compose.yaml");
         expect(match.project).toBeNull();
-        const win = findProjectForStack([{ name: "w", status: "", configFiles: ["C:\\stacks\\w\\compose.yaml"] }], "C:/stacks/w/compose.yaml");
+        const win = findProjectForStack(
+            [{ name: "w", status: "", configFiles: ["C:\\stacks\\w\\compose.yaml"] }],
+            "C:/stacks/w/compose.yaml",
+        );
         expect(win.project?.name).toBe("w");
     });
 

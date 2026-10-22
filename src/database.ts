@@ -80,7 +80,10 @@ export function parseDatabaseExplorer(composeSource: string): ParseResult<Databa
             }
             const scalar = asScalar(value);
             if (scalar === null) {
-                return { ok: false, error: `Database query parameter "${key}" must be a quoted string or a boolean (quote numeric values).` };
+                return {
+                    ok: false,
+                    error: `Database query parameter "${key}" must be a quoted string or a boolean (quote numeric values).`,
+                };
             }
             if (!isUsableText(scalar, MAX_VALUE)) {
                 return { ok: false, error: `Database query parameter "${key}" must be text of 1-${MAX_VALUE} characters.` };
@@ -114,10 +117,14 @@ export function normalizeDatabaseExplorerUrl(raw: string, devMode: boolean): str
         throw new Error("COMPOSE_PANEL_DATABASE_EXPLORER_URL must not contain credentials (user:pass@).");
     }
     if (url.pathname !== "/" || url.search !== "" || url.hash !== "") {
-        throw new Error("COMPOSE_PANEL_DATABASE_EXPLORER_URL must not contain a path, query or fragment: V1 targets an explorer served at the root of its domain.");
+        throw new Error(
+            "COMPOSE_PANEL_DATABASE_EXPLORER_URL must not contain a path, query or fragment: V1 targets an explorer served at the root of its domain.",
+        );
     }
     if (!devMode && url.protocol === "http:") {
-        throw new Error("COMPOSE_PANEL_DATABASE_EXPLORER_URL must use https: plain HTTP would send the explorer session in clear. (COMPOSE_PANEL_DEV=true allows http for local testing only.)");
+        throw new Error(
+            "COMPOSE_PANEL_DATABASE_EXPLORER_URL must use https: plain HTTP would send the explorer session in clear. (COMPOSE_PANEL_DEV=true allows http for local testing only.)",
+        );
     }
     return url.origin;
 }
@@ -143,9 +150,7 @@ export function isExplorerHref(value: string): boolean {
     } catch {
         return false;
     }
-    return (url.protocol === "http:" || url.protocol === "https:")
-        && url.username === ""
-        && url.password === "";
+    return (url.protocol === "http:" || url.protocol === "https:") && url.username === "" && url.password === "";
 }
 
 /**

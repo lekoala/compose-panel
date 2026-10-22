@@ -65,8 +65,23 @@ class FakeDocument {
     private byId = new Map<string, FakeNode>();
     private listeners = new Map<string, ((event?: unknown) => void)[]>();
 
-    constructor(public readonly id: string, private readonly toolbar: FakeNode) {
-        for (const elementId of ["server-live", "server-live-status", "live-running", "live-attention", "live-attention-rows", "live-exited", "live-exited-count", "live-exited-rows", "live-stats", "live-stacks", "live-read-at"]) {
+    constructor(
+        public readonly id: string,
+        private readonly toolbar: FakeNode,
+    ) {
+        for (const elementId of [
+            "server-live",
+            "server-live-status",
+            "live-running",
+            "live-attention",
+            "live-attention-rows",
+            "live-exited",
+            "live-exited-count",
+            "live-exited-rows",
+            "live-stats",
+            "live-stacks",
+            "live-read-at",
+        ]) {
             this.byId.set(elementId, new FakeNode("div"));
         }
     }
@@ -105,7 +120,21 @@ class FakeDocument {
 const PAYLOAD = {
     readAt: Date.now(),
     runningContainers: 3,
-    stats: [{ id: "a".repeat(64), name: "web-1", cpuPercent: 55.5, memUsedBytes: 100 * 1024 ** 2, memLimitBytes: 1024 ** 3, memPercent: 9.8, netIo: "1MB / 2MB", blockIo: "0B / 0B", pids: 5, stack: "web", category: "managed" }],
+    stats: [
+        {
+            id: "a".repeat(64),
+            name: "web-1",
+            cpuPercent: 55.5,
+            memUsedBytes: 100 * 1024 ** 2,
+            memLimitBytes: 1024 ** 3,
+            memPercent: 9.8,
+            netIo: "1MB / 2MB",
+            blockIo: "0B / 0B",
+            pids: 5,
+            stack: "web",
+            category: "managed",
+        },
+    ],
     stacks: [{ stack: "web", cpuPercent: 55.5, memUsedBytes: 100 * 1024 ** 2, containers: 1 }],
     attention: [{ id: "b".repeat(64), name: "db-1", reason: "unhealthy", stack: "db" }],
     exited: [{ id: "c".repeat(64), name: "build-step-9", reason: "exited-nonzero", stack: null }],
@@ -113,7 +142,7 @@ const PAYLOAD = {
 };
 
 function wait(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 describe("server live refresh (public/app.js)", () => {
@@ -127,13 +156,11 @@ describe("server live refresh (public/app.js)", () => {
         let unauthorized = false;
         const fetchImpl = async () => {
             calls += 1;
-            return unauthorized
-                ? { status: 401, ok: false, json: async () => ({}) }
-                : { status: 200, ok: true, json: async () => PAYLOAD };
+            return unauthorized ? { status: 401, ok: false, json: async () => ({}) } : { status: 200, ok: true, json: async () => PAYLOAD };
         };
 
         const scope = globalThis as unknown as Record<string, unknown>;
-        const originals = ["document", "window", "fetch"].map(key => [key, Object.getOwnPropertyDescriptor(scope, key)] as const);
+        const originals = ["document", "window", "fetch"].map((key) => [key, Object.getOwnPropertyDescriptor(scope, key)] as const);
         try {
             scope.document = doc;
             scope.window = { addEventListener() {} };

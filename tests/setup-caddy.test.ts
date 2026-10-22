@@ -99,7 +99,10 @@ describe.skipIf(process.platform !== "linux")("setup-caddy.sh file steps", () =>
     });
 
     test("env settings already set, quoted or commented, are read like Compose does", async () => {
-        await writeFile(envFile, `# COMPOSE_PANEL_CADDY_ENABLED=false\nCOMPOSE_PANEL_CADDY_ENABLED="true"\nCOMPOSE_PANEL_CADDY_SOCKET_PATH='/run/compose-panel/caddy-helper.sock'\n`);
+        await writeFile(
+            envFile,
+            `# COMPOSE_PANEL_CADDY_ENABLED=false\nCOMPOSE_PANEL_CADDY_ENABLED="true"\nCOMPOSE_PANEL_CADDY_SOCKET_PATH='/run/compose-panel/caddy-helper.sock'\n`,
+        );
         expect((await lib("env_state", envFile, ...PAIRS)).stdout).toBe("ok");
         // Only one key set: the other is added, the existing one kept.
         await writeFile(envFile, "COMPOSE_PANEL_CADDY_ENABLED=true\n");
@@ -143,7 +146,7 @@ case "$3" in
 esac`);
         const valid = ["compose-panel", "panel", `${dir}/deploy`, `${dir}/deploy/compose.yaml`, "False", ""];
         // Bash array syntax: every value quoted, including empty ones.
-        const quote = (values: string[]) => values.map(value => `'${value}'`).join(" ");
+        const quote = (values: string[]) => values.map((value) => `'${value}'`).join(" ");
         const command = `REPO=$1; COMPOSE_FILE=$2; export PATH="$1/bin:$PATH" VALUES=$3; panel_identity_matches`;
         const check = (file: string, values: string[]) => shell(command, dir, file, quote(values));
         expect((await check(valid[3]!, valid)).code).toBe(0);
@@ -152,11 +155,17 @@ esac`);
         expect((await check(production[3]!, production)).code).toBe(0);
         expect((await check(production[3]!, valid)).code).toBe(1);
         for (const [index, value] of [
-            [0, "foreign"], [0, ""], [1, "other"], [2, "/second-checkout/deploy"],
-            [3, "/second-checkout/deploy/compose.yaml"], [3, `${valid[3]},/override.yaml`],
-            [4, "True"], [5, "/other.env"],
+            [0, "foreign"],
+            [0, ""],
+            [1, "other"],
+            [2, "/second-checkout/deploy"],
+            [3, "/second-checkout/deploy/compose.yaml"],
+            [3, `${valid[3]},/override.yaml`],
+            [4, "True"],
+            [5, "/other.env"],
         ] as const) {
-            const values = [...valid]; values[index] = value;
+            const values = [...valid];
+            values[index] = value;
             expect((await check(valid[3]!, values)).code).not.toBe(0);
         }
         await mkdir(join(dir, "deploy"));
@@ -167,8 +176,11 @@ esac`);
     test("a stalled Docker daemon fails the identity check within its bound", async () => {
         await fakeDocker("exec sleep 60");
         const started = performance.now();
-        const result = await shell(`REPO=$1; COMPOSE_FILE=$1/deploy/compose.yaml; export PATH="$1/bin:$PATH"
-if panel_identity_matches; then echo matched; else echo refused; fi`, dir);
+        const result = await shell(
+            `REPO=$1; COMPOSE_FILE=$1/deploy/compose.yaml; export PATH="$1/bin:$PATH"
+if panel_identity_matches; then echo matched; else echo refused; fi`,
+            dir,
+        );
         expect(result.stdout).toBe("refused");
         // One bounded inspection, never six, never the whole hang.
         expect(performance.now() - started).toBeLessThan(25_000);
@@ -176,19 +188,23 @@ if panel_identity_matches; then echo matched; else echo refused; fi`, dir);
 
     test("the Caddy service must use exactly the expected --config file", async () => {
         await mkdir(join(dir, "bin"));
-        await writeFile(join(dir, "bin", "systemctl"), `#!/usr/bin/env bash
+        await writeFile(
+            join(dir, "bin", "systemctl"),
+            `#!/usr/bin/env bash
 [ "$*" = "show caddy -p ExecStart --value" ] || exit 97
 printf '%s\\n' "$EXEC"; exit "\${STATUS:-0}"
-`);
+`,
+        );
         await chmod(join(dir, "bin", "systemctl"), 0o755);
         const file = "/etc/caddy/Caddyfile";
-        const check = (exec: string, status = "0") => shell(
-            `export PATH="$1/bin:$PATH" EXEC=$2 STATUS=$3; caddy_uses_config ${file}`, dir, exec, status);
+        const check = (exec: string, status = "0") =>
+            shell(`export PATH="$1/bin:$PATH" EXEC=$2 STATUS=$3; caddy_uses_config ${file}`, dir, exec, status);
         for (const exec of [
             `caddy run --environ --config ${file}`,
             `{ path=/usr/bin/caddy ; argv[]=caddy run --environ --config=${file} ; ignore_errors=no }`,
             `caddy run --config /elsewhere --config ${file}`,
-        ]) expect((await check(exec)).code).toBe(0);
+        ])
+            expect((await check(exec)).code).toBe(0);
         for (const exec of [
             "caddy run --config /elsewhere",
             `caddy run --config ${file}.custom`,
@@ -196,7 +212,8 @@ printf '%s\\n' "$EXEC"; exit "\${STATUS:-0}"
             `caddy run --config ${file} --config /elsewhere`,
             `caddy run --config=${file} --config=/elsewhere`,
             "caddy run",
-        ]) expect((await check(exec)).code).not.toBe(0);
+        ])
+            expect((await check(exec)).code).not.toBe(0);
         expect((await check(`caddy run --config ${file}`, "1")).code).not.toBe(0);
     });
 
@@ -210,7 +227,9 @@ printf '%s\\n' "$EXEC"; exit "\${STATUS:-0}"
             await writeFile(envFile, `${original}COMPOSE_PANEL_CADDY_ENABLED=true\n`);
             await writeFile(`${envFile}.bak-test`, original);
             await writeFile(join(dir, "tag"), cachedImage);
-            await writeFile(join(dir, "docker"), `#!/usr/bin/env bash
+            await writeFile(
+                join(dir, "docker"),
+                `#!/usr/bin/env bash
 set -eu
 if [ "$1 $2" = 'image inspect' ]; then cat "$FIXTURE/tag"
 elif [ "$1 $2" = 'image tag' ]; then printf '%s' "$3" > "$FIXTURE/tag"
@@ -223,9 +242,11 @@ elif [ "$1" = compose ]; then
     if [ "$FAILURE" = rollback ] || { [ "$FAILURE" = up ] && [ "$count" = 1 ]; }; then exit 7; fi
 else exit 99
 fi
-`);
+`,
+            );
             await chmod(join(dir, "docker"), 0o700);
-            const result = await shell(`
+            const result = await shell(
+                `
 export FIXTURE=$1 FAILURE=$2 PATH="$1:$PATH"
 REPO=$1; COMPOSE_FILE=$1/deploy/compose.yaml; ENV_FILE=$1/compose-panel.env
 env_backup=$ENV_FILE.bak-test
@@ -235,14 +256,33 @@ trap restore_panel_tag EXIT
 wait_healthy() {
     [ "$FAILURE" != health ] || [ "$(wc -l < "$FIXTURE/used-images")" -gt 1 ]
 }
-recreate_and_verify_panel`, dir, failure, oldImage);
+recreate_and_verify_panel`,
+                dir,
+                failure,
+                oldImage,
+            );
             expect(result.code).toBe(failure === "none" ? 0 : 1);
             expect(await readFile(join(dir, "tag"), "utf8")).toBe(cachedImage);
-            expect((await readFile(join(dir, "used-images"), "utf8")).trim().split("\n"))
-                .toEqual(Array(failure === "none" ? 1 : 2).fill(oldImage));
+            expect((await readFile(join(dir, "used-images"), "utf8")).trim().split("\n")).toEqual(
+                Array(failure === "none" ? 1 : 2).fill(oldImage),
+            );
             const args = (await readFile(join(dir, "args"), "utf8")).trim().split("\n");
-            expect(args).toEqual(["compose", "-p", "compose-panel", "--project-directory", `${dir}/deploy`,
-                "-f", `${dir}/deploy/compose.yaml`, "up", "-d", "--no-deps", "--no-build", "--pull", "never", "panel"]);
+            expect(args).toEqual([
+                "compose",
+                "-p",
+                "compose-panel",
+                "--project-directory",
+                `${dir}/deploy`,
+                "-f",
+                `${dir}/deploy/compose.yaml`,
+                "up",
+                "-d",
+                "--no-deps",
+                "--no-build",
+                "--pull",
+                "never",
+                "panel",
+            ]);
             if (failure !== "none") {
                 expect(await readFile(envFile, "utf8")).toBe(original);
                 expect(await readFile(join(dir, "settings-2"), "utf8")).toBe(original);
@@ -285,7 +325,9 @@ test.skipIf(!Bun.which("git"))("deployment secret backups are ignored by Git", a
         const init = Bun.spawn(["git", "init", "--quiet", dir], { stdout: "pipe", stderr: "pipe" });
         expect(await init.exited).toBe(0);
         const proc = Bun.spawn(["git", "check-ignore", "--no-index", "deploy/compose-panel.env.bak-20261016-120000"], {
-            cwd: dir, stdout: "pipe", stderr: "pipe",
+            cwd: dir,
+            stdout: "pipe",
+            stderr: "pipe",
         });
         expect(await proc.exited).toBe(0);
     } finally {

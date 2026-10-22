@@ -59,7 +59,7 @@ export class LogManager {
     }
 
     private liveOf(stack: string): LogStream[] {
-        return [...this.streams.values()].filter(stream => stream.stack === stack && !stream.ended);
+        return [...this.streams.values()].filter((stream) => stream.stack === stack && !stream.ended);
     }
 
     /** Refuse new subscriptions synchronously. Existing readers keep going. */
@@ -93,7 +93,10 @@ export class LogManager {
         if (stream?.ended) throw new StackError("The previous log stream is still closing. Try again in a few seconds.", 409);
         if (!stream) {
             if (this.liveOf(stack).length >= MAX_STREAMS_PER_STACK) {
-                throw new StackError("Too many log selections are followed at once for this stack. Stop one before following another.", 409);
+                throw new StackError(
+                    "Too many log selections are followed at once for this stack. Stop one before following another.",
+                    409,
+                );
             }
             stream = this.start(stack, key, target);
             this.streams.set(key, stream);
@@ -126,13 +129,20 @@ export class LogManager {
      */
     async shutdown(graceMs: number): Promise<void> {
         this.refuseNew();
-        const pending = [...this.streams.values()].map(stream => stream.done);
+        const pending = [...this.streams.values()].map((stream) => stream.done);
         for (const stream of this.streams.values()) this.stop(stream, "ended");
         if (pending.length === 0) return;
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-            await Promise.race([Promise.allSettled(pending), new Promise<void>(resolve => { timer = setTimeout(resolve, graceMs); })]);
-        } finally { clearTimeout(timer); }
+            await Promise.race([
+                Promise.allSettled(pending),
+                new Promise<void>((resolve) => {
+                    timer = setTimeout(resolve, graceMs);
+                }),
+            ]);
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     private start(stack: string, key: string, target: ComposeTarget & { tailLines?: number }): LogStream {
@@ -152,9 +162,10 @@ export class LogManager {
             settled: false,
         };
         const fullTarget = { ...target, tailLines: target.tailLines ?? this.options.tailLines };
-        stream.done = this.provider.followLogs(fullTarget, chunk => this.ingest(stream, chunk), controller.signal)
+        stream.done = this.provider
+            .followLogs(fullTarget, (chunk) => this.ingest(stream, chunk), controller.signal)
             .then(
-                result => {
+                (result) => {
                     stream.settled = !result.terminationUnconfirmed;
                     this.finish(stream, "ended");
                     if (stream.settled && this.streams.get(key) === stream) this.streams.delete(key);
@@ -181,8 +192,11 @@ export class LogManager {
             stream.buffer = combined;
         }
         for (const listener of [...stream.listeners]) {
-            try { listener(chunk); }
-            catch { /* a broken observer must not fail the stream */ }
+            try {
+                listener(chunk);
+            } catch {
+                /* a broken observer must not fail the stream */
+            }
         }
     }
 
@@ -191,8 +205,11 @@ export class LogManager {
         stream.ended = true;
         clearTimeout(stream.timer);
         for (const listener of [...stream.endListeners]) {
-            try { listener(reason); }
-            catch { /* ignore */ }
+            try {
+                listener(reason);
+            } catch {
+                /* ignore */
+            }
         }
         // Only remove our own entry: a replacement started after us keeps
         // running under the same key.
@@ -201,7 +218,11 @@ export class LogManager {
 
     private stop(stream: LogStream, reason: "ended" | "timeout"): void {
         if (stream.ended) return;
-        try { stream.controller.abort(); } catch { /* already aborted */ }
+        try {
+            stream.controller.abort();
+        } catch {
+            /* already aborted */
+        }
         this.finish(stream, reason);
     }
 }

@@ -16,10 +16,12 @@ test.skipIf(process.platform === "win32")("detail refuses an unsafe env before a
     const cwd = join(root, "demo");
     const composeFile = join(cwd, "compose.yaml");
     const calls: string[][] = [];
-    const provider = createComposeProvider({ runner: async args => {
-        calls.push(args);
-        return { ...ok, stdout: JSON.stringify([{ Name: "actual-project", Status: "running(1)", ConfigFiles: composeFile }]) };
-    } });
+    const provider = createComposeProvider({
+        runner: async (args) => {
+            calls.push(args);
+            return { ...ok, stdout: JSON.stringify([{ Name: "actual-project", Status: "running(1)", ConfigFiles: composeFile }]) };
+        },
+    });
     try {
         await mkdir(cwd);
         await writeFile(composeFile, "services: {}\n");
@@ -29,7 +31,9 @@ test.skipIf(process.platform === "win32")("detail refuses an unsafe env before a
         expect(detail.state).toBe("running");
         expect(detail.services).toEqual([]);
         expect(calls).toEqual([["compose", "ls", "--all", "--format", "json"]]);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
 });
 
 function stubProvider(result: Partial<CommandResult> & { stdout?: string }): ComposeProvider {
@@ -44,11 +48,16 @@ describe("loadStackStates without a stacks directory", () => {
         await rm(gone, { recursive: true, force: true });
         let dockerCalls = 0;
         const provider = createComposeProvider({
-            runner: async () => { dockerCalls += 1; return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false }; },
+            runner: async () => {
+                dockerCalls += 1;
+                return { code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false };
+            },
         });
         const logged: unknown[][] = [];
         const origError = console.error;
-        console.error = (...args: unknown[]) => { logged.push(args); };
+        console.error = (...args: unknown[]) => {
+            logged.push(args);
+        };
         try {
             const error = await loadStackStates(gone, provider).then(
                 () => null,
@@ -91,16 +100,26 @@ test("detail loads config and services concurrently and preserves Docker state w
     const root = await resolveRoot(await mkdtemp(join(tmpdir(), "cp-detail-parallel-")));
     const file = join(root, "demo", "compose.yaml");
     let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
+    const gate = new Promise<void>((resolve) => {
+        release = resolve;
+    });
     let configStarted!: () => void;
     let servicesStarted!: () => void;
     const bothStarted = Promise.all([
-        new Promise<void>(resolve => { configStarted = resolve; }),
-        new Promise<void>(resolve => { servicesStarted = resolve; }),
+        new Promise<void>((resolve) => {
+            configStarted = resolve;
+        }),
+        new Promise<void>((resolve) => {
+            servicesStarted = resolve;
+        }),
     ]);
     const provider = createComposeProvider({ runner: async () => ok });
     provider.listProjects = async () => ({ ...ok, stdout: JSON.stringify([{ Name: "demo", Status: "running(1)", ConfigFiles: file }]) });
-    provider.stackMetadata = async () => { configStarted(); await gate; throw new Error("private-config-output"); };
+    provider.stackMetadata = async () => {
+        configStarted();
+        await gate;
+        throw new Error("private-config-output");
+    };
     provider.projectServices = async () => {
         servicesStarted();
         await gate;
@@ -114,7 +133,9 @@ test("detail loads config and services concurrently and preserves Docker state w
         task = loadStackDetail(root, "demo", provider);
         const started = await Promise.race([
             bothStarted.then(() => true),
-            new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 1000); }),
+            new Promise<boolean>((resolve) => {
+                timer = setTimeout(() => resolve(false), 1000);
+            }),
         ]);
         expect(started).toBe(true);
         release();

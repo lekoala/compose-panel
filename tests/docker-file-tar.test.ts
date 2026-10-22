@@ -5,12 +5,16 @@ import { fileTar, tarEntry } from "./helpers/tar.ts";
 const read = (bytes: Uint8Array) => readDockerFileTar(bytes, "package.json", 1024);
 
 test("tar reads require an intact single named file and end markers", () => {
-    expect(read(fileTar("package.json", "{\"é\":\"🙂\"}"))).toEqual({ kind: "ok", content: "{\"é\":\"🙂\"}" });
+    expect(read(fileTar("package.json", '{"é":"🙂"}'))).toEqual({ kind: "ok", content: '{"é":"🙂"}' });
     const invalid = fileTar("package.json", "{}");
     invalid[20] = 1;
-    for (const bytes of [invalid, fileTar("../package.json", "{}"), fileTar("other.json", "{}"),
+    for (const bytes of [
+        invalid,
+        fileTar("../package.json", "{}"),
+        fileTar("other.json", "{}"),
         fileTar("package.json", "{}").subarray(0, 1024),
-        Buffer.concat([tarEntry("package.json", "{}"), fileTar("package.json", "{}")])]) {
+        Buffer.concat([tarEntry("package.json", "{}"), fileTar("package.json", "{}")]),
+    ]) {
         expect(read(bytes).kind).toBe("error");
     }
 });

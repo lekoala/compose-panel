@@ -1,13 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-    LoginRateLimiter,
-    SessionStore,
-    hashPassword,
-    parseCookies,
-    randomToken,
-    safeEqual,
-    verifyPassword,
-} from "../src/auth.ts";
+import { LoginRateLimiter, SessionStore, hashPassword, parseCookies, randomToken, safeEqual, verifyPassword } from "../src/auth.ts";
 
 describe("safeEqual", () => {
     test("matches identical non-empty strings", () => expect(safeEqual("abc", "abc")).toBe(true));
@@ -124,8 +116,8 @@ describe("LoginRateLimiter reservations", () => {
             delays.push(verdict.delayMs);
             limiter.settle("k", false, limiter.acquireSlot());
         }
-        expect(delays.slice(0, 5).every(delay => delay === 0)).toBe(true);
-        expect(delays.slice(5).every(delay => delay > 0)).toBe(true);
+        expect(delays.slice(0, 5).every((delay) => delay === 0)).toBe(true);
+        expect(delays.slice(5).every((delay) => delay > 0)).toBe(true);
     });
 
     test("refuses a parallel attempt from the same key so its delay cannot be bypassed", () => {
@@ -152,11 +144,16 @@ describe("LoginRateLimiter reservations", () => {
 
     test("a correct credential releases only its own reservation", () => {
         const limiter = new LoginRateLimiter(3, 60_000, 60_000, () => 0, 100);
-        limiter.tryReserve("k"); limiter.settle("k", false, false); // count 1
-        limiter.tryReserve("k"); limiter.settle("k", false, false); // count 2
-        limiter.tryReserve("k"); limiter.settle("k", true, false);  // count 1, not 0
-        limiter.tryReserve("k"); limiter.settle("k", false, false); // count 2
-        limiter.tryReserve("k"); limiter.settle("k", false, false); // count 3
+        limiter.tryReserve("k");
+        limiter.settle("k", false, false); // count 1
+        limiter.tryReserve("k");
+        limiter.settle("k", false, false); // count 2
+        limiter.tryReserve("k");
+        limiter.settle("k", true, false); // count 1, not 0
+        limiter.tryReserve("k");
+        limiter.settle("k", false, false); // count 2
+        limiter.tryReserve("k");
+        limiter.settle("k", false, false); // count 3
         // Prior failures carried over: the next attempt is delayed. A full reset
         // on success would have left it at 0 and undelayed.
         expect(limiter.tryReserve("k").delayMs).toBeGreaterThan(0);
@@ -196,13 +193,17 @@ describe("LoginRateLimiter tracked-key bound", () => {
     test("expiry keeps window order when a window restarts", () => {
         let now = 0;
         const limiter = new LoginRateLimiter(5, 100, 1000, () => now, 100, 1000);
-        limiter.tryReserve("a"); limiter.settle("a", false, false);
+        limiter.tryReserve("a");
+        limiter.settle("a", false, false);
         now = 10;
-        limiter.tryReserve("b"); limiter.settle("b", false, false);
+        limiter.tryReserve("b");
+        limiter.settle("b", false, false);
         now = 150; // a expired: its window restarts and it moves behind b
-        limiter.tryReserve("a"); limiter.settle("a", false, false);
+        limiter.tryReserve("a");
+        limiter.settle("a", false, false);
         now = 205; // b expired, a (150) still live
-        limiter.tryReserve("c"); limiter.settle("c", false, false);
+        limiter.tryReserve("c");
+        limiter.settle("c", false, false);
         expect(limiter.trackedKeys()).toBe(2);
         expect(limiter.check("a").delayMs).toBe(0);
     });
@@ -212,7 +213,8 @@ describe("LoginRateLimiter tracked-key bound", () => {
         const limiter = new LoginRateLimiter(5, 100, 1000, () => now, 100, 1000);
         limiter.tryReserve("slow"); // left active
         now = 500;
-        limiter.tryReserve("other"); limiter.settle("other", false, false);
+        limiter.tryReserve("other");
+        limiter.settle("other", false, false);
         expect(limiter.trackedKeys()).toBe(2);
         expect(limiter.tryReserve("slow").reason).toBe("parallel");
     });

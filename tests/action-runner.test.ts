@@ -9,7 +9,10 @@ const ok: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, tr
 
 function recording(result: CommandResult = ok) {
     const calls: { args: string[]; options?: RunOptions }[] = [];
-    const runner: DockerRunner = async (args, options) => { calls.push({ args, options }); return result; };
+    const runner: DockerRunner = async (args, options) => {
+        calls.push({ args, options });
+        return result;
+    };
     return { calls, actionRunner: createActionRunner({ runner }) };
 }
 
@@ -19,10 +22,20 @@ describe("DockerActionRunner.readFile", () => {
         const { actionRunner, calls } = recording({ ...ok, stdoutBytes: fileTar("composer.json", "é🙂") });
         expect(await actionRunner.readFile(ID, "/app/composer.json", options)).toEqual({ kind: "ok", content: "é🙂" });
         expect(calls[0]!.args).toEqual(["cp", "--", `${ID}:/app/composer.json`, "-"]);
-        expect(calls[0]!.options).toMatchObject({ timeoutMs: 5000, maxBytes: 1024 + DOCKER_FILE_TAR_OVERHEAD, binaryStdout: true, stopOnOutputLimit: true });
+        expect(calls[0]!.options).toMatchObject({
+            timeoutMs: 5000,
+            maxBytes: 1024 + DOCKER_FILE_TAR_OVERHEAD,
+            binaryStdout: true,
+            stopOnOutputLimit: true,
+        });
     });
 
-    for (const [label, type] of [["directory", "5"], ["symlink", "2"], ["hard link", "1"], ["FIFO", "6"]]) {
+    for (const [label, type] of [
+        ["directory", "5"],
+        ["symlink", "2"],
+        ["hard link", "1"],
+        ["FIFO", "6"],
+    ]) {
         test(`refuses a ${label}`, async () => {
             const { actionRunner } = recording({ ...ok, stdoutBytes: fileTar("composer.json", "", type) });
             expect((await actionRunner.readFile(ID, "/app/composer.json", options)).kind).toBe("not-file");
@@ -30,7 +43,10 @@ describe("DockerActionRunner.readFile", () => {
     }
 
     test("refuses a file larger than the manifest cap and a truncated transfer", async () => {
-        for (const result of [{ ...ok, stdoutBytes: fileTar("composer.json", "x".repeat(4096)) }, { ...ok, code: 137, truncated: true }]) {
+        for (const result of [
+            { ...ok, stdoutBytes: fileTar("composer.json", "x".repeat(4096)) },
+            { ...ok, code: 137, truncated: true },
+        ]) {
             expect((await recording(result).actionRunner.readFile(ID, "/app/composer.json", options)).kind).toBe("too-large");
         }
     });

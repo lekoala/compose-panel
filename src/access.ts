@@ -101,30 +101,37 @@ export function buildAccessReport(input: AccessReportInput): AccessReport {
     if (input.devMode) {
         warnings.push("COMPOSE_PANEL_DEV=true: development mode. Weak usernames are allowed; never use this in production.");
     }
-    if (input.proxyOrigins.some(origin => origin.startsWith("http:"))) {
+    if (input.proxyOrigins.some((origin) => origin.startsWith("http:"))) {
         warnings.push("A proxy origin uses plain HTTP (development only): the password and session cookie travel in clear.");
     }
     if (input.allowOpaqueOrigin) {
-        warnings.push("COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN=true: an absent or opaque Origin is accepted for same-origin requests. Local testing only.");
+        warnings.push(
+            "COMPOSE_PANEL_ALLOW_OPAQUE_ORIGIN=true: an absent or opaque Origin is accepted for same-origin requests. Local testing only.",
+        );
     }
     if (input.cookieSecure && loopbackEnabled) {
-        warnings.push("COMPOSE_PANEL_COOKIE_SECURE=true marks cookies Secure on the plain-HTTP loopback listener; sign-in through an SSH tunnel can fail in some browsers.");
+        warnings.push(
+            "COMPOSE_PANEL_COOKIE_SECURE=true marks cookies Secure on the plain-HTTP loopback listener; sign-in through an SSH tunnel can fail in some browsers.",
+        );
     }
     if (input.proxyOrigins.length > 0 && !input.allowLoopback) {
-        warnings.push("Proxy origins are configured and loopback is off: the SSH tunnel is refused. Set COMPOSE_PANEL_ALLOW_LOOPBACK=true to keep it.");
+        warnings.push(
+            "Proxy origins are configured and loopback is off: the SSH tunnel is refused. Set COMPOSE_PANEL_ALLOW_LOOPBACK=true to keep it.",
+        );
     }
 
-    const request = input.currentAccess === null
-        ? "unknown"
-        : input.currentAccess.kind === "loopback"
-            ? `loopback (127.0.0.1:${input.port})`
-            : `proxy origin ${input.currentAccess.origin}`;
+    const request =
+        input.currentAccess === null
+            ? "unknown"
+            : input.currentAccess.kind === "loopback"
+              ? `loopback (127.0.0.1:${input.port})`
+              : `proxy origin ${input.currentAccess.origin}`;
 
     return {
         request,
         findings,
         warnings,
-        verifiedCount: findings.filter(finding => finding.status === "verified").length,
-        externalCount: findings.filter(finding => finding.status !== "verified").length,
+        verifiedCount: findings.filter((finding) => finding.status === "verified").length,
+        externalCount: findings.filter((finding) => finding.status !== "verified").length,
     };
 }

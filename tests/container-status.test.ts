@@ -31,7 +31,15 @@ function fakeProvider(projects: { Name: string; Status: string; ConfigFiles: str
 
 function fakeInspector(stdout: string, result: Partial<CommandResult> = {}): ContainerInspector {
     const value: CommandResult = { ...ok, stdout, ...result };
-    return { engine: "docker", list: async () => value, inspect: async () => value, logs: async () => value, info: async () => value, stats: async () => value, diskUsage: async () => value };
+    return {
+        engine: "docker",
+        list: async () => value,
+        inspect: async () => value,
+        logs: async () => value,
+        info: async () => value,
+        stats: async () => value,
+        diskUsage: async () => value,
+    };
 }
 
 function detailedInspector(outputs: { list?: string; inspect?: CommandResult }): ContainerInspector {
@@ -50,7 +58,7 @@ function detailedInspector(outputs: { list?: string; inspect?: CommandResult }):
 type Fields = [string, string, string, string, string, string, string, string, string, string, string, string, string];
 
 function line(fields: Fields): string {
-    return fields.map(value => JSON.stringify(value)).join("\t");
+    return fields.map((value) => JSON.stringify(value)).join("\t");
 }
 
 const managedFile = (): string => join(root, "blog", "compose.yaml");
@@ -72,13 +80,41 @@ describe("loadContainers", () => {
     test("classifies managed by path, and external/standalone by labels", async () => {
         const provider = fakeProvider([{ Name: "blog", Status: "running(1)", ConfigFiles: managedFile() }]);
         const stdout = [
-            line(["aaaaaaaaaaaa", "blog-web-1", "nginx:1.27", "running", "Up 1 hour", "none", "", "", "80/tcp", "blog", "web", managedFile(), root]),
-            line(["bbbbbbbbbbbb", "watchtower", "watchtower:latest", "running", "Up 3 days", "none", "", "", "", "watchtower", "watchtower", "", ""]),
+            line([
+                "aaaaaaaaaaaa",
+                "blog-web-1",
+                "nginx:1.27",
+                "running",
+                "Up 1 hour",
+                "none",
+                "",
+                "",
+                "80/tcp",
+                "blog",
+                "web",
+                managedFile(),
+                root,
+            ]),
+            line([
+                "bbbbbbbbbbbb",
+                "watchtower",
+                "watchtower:latest",
+                "running",
+                "Up 3 days",
+                "none",
+                "",
+                "",
+                "",
+                "watchtower",
+                "watchtower",
+                "",
+                "",
+            ]),
             line(["cccccccccccc", "legacy", "redis:7", "running", "Up 5 minutes", "none", "", "", "6379/tcp", "", "", "", ""]),
         ].join("\n");
         const result = await loadContainers(root, provider, fakeInspector(stdout));
         expect(result.note).toBeNull();
-        expect(result.containers.map(container => [container.name, container.category])).toEqual([
+        expect(result.containers.map((container) => [container.name, container.category])).toEqual([
             ["blog-web-1", "managed"],
             ["watchtower", "external"],
             ["legacy", "standalone"],
@@ -95,7 +131,21 @@ describe("loadContainers", () => {
 
     test("a truncated list is never classified as complete", async () => {
         const provider = fakeProvider([{ Name: "blog", Status: "running(1)", ConfigFiles: managedFile() }]);
-        const stdout = line(["aaaaaaaaaaaa", "blog-web-1", "nginx:1.27", "running", "Up 1 hour", "none", "", "", "80/tcp", "blog", "web", managedFile(), root]);
+        const stdout = line([
+            "aaaaaaaaaaaa",
+            "blog-web-1",
+            "nginx:1.27",
+            "running",
+            "Up 1 hour",
+            "none",
+            "",
+            "",
+            "80/tcp",
+            "blog",
+            "web",
+            managedFile(),
+            root,
+        ]);
         const result = await loadContainers(root, provider, fakeInspector(stdout, { truncated: true }));
         expect(result.containers).toEqual([]);
         expect(result.note).toContain("may be incomplete");
@@ -103,7 +153,11 @@ describe("loadContainers", () => {
 
     test("a missing stacks directory still lists containers", async () => {
         const gone = join(root, "does-not-exist");
-        const result = await loadContainers(gone, fakeProvider(), fakeInspector(line(["cccccccccccc", "legacy", "redis:7", "running", "Up", "none", "", "", "", "", "", "", ""])));
+        const result = await loadContainers(
+            gone,
+            fakeProvider(),
+            fakeInspector(line(["cccccccccccc", "legacy", "redis:7", "running", "Up", "none", "", "", "", "", "", "", ""])),
+        );
         expect(result.note).toBeNull();
         expect(result.containers[0]!.category).toBe("standalone");
     });
@@ -111,19 +165,26 @@ describe("loadContainers", () => {
 
 describe("loadContainerDetail", () => {
     const list = line(["cccccccccccc", "legacy", "redis:7", "running", "Up 5 minutes", "none", "", "", "6379/tcp", "", "", "", ""]);
-    const inspect = JSON.stringify([{
-        Id: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        Name: "/legacy",
-        Image: `sha256:${"b".repeat(64)}`,
-        Config: { Image: "redis:7" },
-        State: { Status: "running", Running: true, ExitCode: 0 },
-        HostConfig: { RestartPolicy: { Name: "always" } },
-        NetworkSettings: { Ports: {} },
-        Mounts: [],
-    }]);
+    const inspect = JSON.stringify([
+        {
+            Id: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            Name: "/legacy",
+            Image: `sha256:${"b".repeat(64)}`,
+            Config: { Image: "redis:7" },
+            State: { Status: "running", Running: true, ExitCode: 0 },
+            HostConfig: { RestartPolicy: { Name: "always" } },
+            NetworkSettings: { Ports: {} },
+            Mounts: [],
+        },
+    ]);
 
     test("finds the container and reads a single inspect", async () => {
-        const outcome = await loadContainerDetail(root, "cccccccccccc", fakeProvider(), detailedInspector({ list, inspect: { ...ok, stdout: inspect } }));
+        const outcome = await loadContainerDetail(
+            root,
+            "cccccccccccc",
+            fakeProvider(),
+            detailedInspector({ list, inspect: { ...ok, stdout: inspect } }),
+        );
         expect(outcome.kind).toBe("found");
         if (outcome.kind !== "found") return;
         expect(outcome.detail.container.name).toBe("legacy");
@@ -162,7 +223,12 @@ describe("loadContainerDetail", () => {
     });
 
     test("keeps the summary when inspect fails", async () => {
-        const outcome = await loadContainerDetail(root, "cccccccccccc", fakeProvider(), detailedInspector({ list, inspect: { ...ok, code: 1 } }));
+        const outcome = await loadContainerDetail(
+            root,
+            "cccccccccccc",
+            fakeProvider(),
+            detailedInspector({ list, inspect: { ...ok, code: 1 } }),
+        );
         expect(outcome.kind).toBe("found");
         if (outcome.kind !== "found") return;
         expect(outcome.detail.details).toBeNull();

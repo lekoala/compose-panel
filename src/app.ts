@@ -1,17 +1,67 @@
-import { escapeHtml, documentHtml, editPage, healthSummaryBadge, htmlResponse, loginPage, logsPanel, messagePage, note, operationControls, operationPanel, servicesSection, stateBadge, auditPage, accessPage, aboutPage, otherContainersSection, containersPage, containerDetailPage, containerLogsPanel, serverPage, deploymentSection, createStackPage, managedByBadge, toolboxPage, databaseSection, domainsSection, type AttachedDomain, type PublishedUpstream, type NavSection, type NavigationOptions, type NoteKind, type ToolboxSourceView } from "./html.ts";
+import {
+    escapeHtml,
+    documentHtml,
+    editPage,
+    healthSummaryBadge,
+    htmlResponse,
+    loginPage,
+    logsPanel,
+    messagePage,
+    note,
+    operationControls,
+    operationPanel,
+    servicesSection,
+    stateBadge,
+    auditPage,
+    accessPage,
+    aboutPage,
+    otherContainersSection,
+    containersPage,
+    containerDetailPage,
+    containerLogsPanel,
+    serverPage,
+    deploymentSection,
+    createStackPage,
+    managedByBadge,
+    toolboxPage,
+    databaseSection,
+    domainsSection,
+    type AttachedDomain,
+    type PublishedUpstream,
+    type NavSection,
+    type NavigationOptions,
+    type NoteKind,
+    type ToolboxSourceView,
+} from "./html.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { managedBy } from "./deployment.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
 import { dirname, join, posix } from "node:path";
 import { listStacks, locateComposeFile, readStackCompose, StackError, validateStackName } from "./stacks.ts";
-import { loadProjects, loadStackDetail, loadStackStates, resolveProjectContext, type ProjectContext, type StackDetailStatus } from "./status.ts";
+import {
+    loadProjects,
+    loadStackDetail,
+    loadStackStates,
+    resolveProjectContext,
+    type ProjectContext,
+    type StackDetailStatus,
+} from "./status.ts";
 import { loadContainerDetail, loadContainers } from "./container-status.ts";
 import { parseContainerFilter, type ContainerFilter } from "./container-state.ts";
 import { createContainerInspector, isContainerId, sanitizeTailLines, type ContainerInspector } from "./containers.ts";
 import { createActionRunner, type ActionRunner } from "./action-runner.ts";
 import { buildCatalog, buildRunnerArgv, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
 import { buildExplorerUrl, parseDatabaseExplorer } from "./database.ts";
-import { buildSiteFile, isValidDomain, isValidServiceName, isValidStackName, isValidUpstreamPort, matchesGeneratedUpstream, normalizeDomain, splitHostBinding } from "./caddy.ts";
+import {
+    buildSiteFile,
+    isValidDomain,
+    isValidServiceName,
+    isValidStackName,
+    isValidUpstreamPort,
+    matchesGeneratedUpstream,
+    normalizeDomain,
+    splitHostBinding,
+} from "./caddy.ts";
 import { CaddyHelperError, callCaddyHelper } from "./caddy-client.ts";
 import { parseContainerInspect, parseContainerLs, type ContainerPort } from "./container-state.ts";
 import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
@@ -234,7 +284,8 @@ const ERROR_TITLES: Record<number, string> = {
     503: "Temporarily unavailable",
 };
 
-const ORIGIN_BLOCKED_MESSAGE = "Sign-in was blocked because the request did not come from this panel's own page. Open the panel address directly in a browser tab: embedding the panel in another page or app is not allowed.";
+const ORIGIN_BLOCKED_MESSAGE =
+    "Sign-in was blocked because the request did not come from this panel's own page. Open the panel address directly in a browser tab: embedding the panel in another page or app is not allowed.";
 
 /** Strict same-origin check for state-changing requests. Fails closed. */
 function isAllowedOrigin(request: Request, config: AppConfig): boolean {
@@ -246,8 +297,11 @@ function isAllowedOrigin(request: Request, config: AppConfig): boolean {
     if (!candidate) {
         const referer = request.headers.get("referer");
         if (referer) {
-            try { candidate = new URL(referer).origin; }
-            catch { candidate = null; }
+            try {
+                candidate = new URL(referer).origin;
+            } catch {
+                candidate = null;
+            }
         }
     }
     if (candidate === expected) return true;
@@ -285,7 +339,11 @@ function clientKey(request: Request, config: AppConfig): string {
         // come from the client and can be forged, which would let an attacker
         // dodge the throttle or put someone else's address in the audit log.
         const forwarded = request.headers.get("x-forwarded-for");
-        const last = forwarded?.split(",").map(part => part.trim()).filter(Boolean).pop();
+        const last = forwarded
+            ?.split(",")
+            .map((part) => part.trim())
+            .filter(Boolean)
+            .pop();
         if (last) return last;
     }
     return "direct";
@@ -293,44 +351,50 @@ function clientKey(request: Request, config: AppConfig): string {
 
 export function createApp(options: AppOptions): App {
     const { config, stacksRoot, locks = new StackLocks() } = options;
-    const provider = options.provider
-        ?? createComposeProvider({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
-    const inspector = options.inspector
-        ?? createContainerInspector({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
-    const actionRunner = options.actionRunner
-        ?? createActionRunner({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
-    const audit = options.audit ?? new AuditLog({
-        dir: config.audit.dir ?? join(stacksRoot, ".compose-panel", "audit"),
-        // The default layout is checked from the stacks root down, so a
-        // symlinked .compose-panel cannot redirect the log.
-        root: config.audit.dir ? undefined : stacksRoot,
-        enabled: config.audit.enabled,
-        rotation: config.audit.rotation,
-        retainFiles: config.audit.retainFiles,
-        maxReadLines: config.audit.maxReadLines,
-        maxFileBytes: config.audit.maxFileBytes,
-    });
+    const provider =
+        options.provider ?? createComposeProvider({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
+    const inspector =
+        options.inspector ?? createContainerInspector({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
+    const actionRunner =
+        options.actionRunner ?? createActionRunner({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
+    const audit =
+        options.audit ??
+        new AuditLog({
+            dir: config.audit.dir ?? join(stacksRoot, ".compose-panel", "audit"),
+            // The default layout is checked from the stacks root down, so a
+            // symlinked .compose-panel cannot redirect the log.
+            root: config.audit.dir ? undefined : stacksRoot,
+            enabled: config.audit.enabled,
+            rotation: config.audit.rotation,
+            retainFiles: config.audit.retainFiles,
+            maxReadLines: config.audit.maxReadLines,
+            maxFileBytes: config.audit.maxFileBytes,
+        });
     const operations = new OperationManager(locks, provider, {
         timeoutMs: config.operationTimeoutMs,
         maxBytes: config.dockerMaxBytes,
         // The outcome is recorded when the action ends, even if nobody watches it.
-        onFinish: operation => void audit.record({
-            event: operation.source ? "toolbox" : "operation",
-            result: operation.status,
-            stack: operation.stack,
-            action: operation.action,
-            service: operation.service,
-            // Identity of what actually ran, for an app action; never the output
-            // (log lines may carry secrets). Exit code and timeout stay explicit.
-            detail: [
-                operation.source ? `source ${operation.source}` : "",
-                operation.containerId ? `container ${operation.containerId}` : "",
-                operation.imageId ? `image ${operation.imageId}` : "",
-                operation.revision ? `revision ${operation.revision}` : "",
-                operation.exitCode !== null ? `exit code ${operation.exitCode}` : "",
-                operation.timedOut ? "timed out" : "",
-            ].filter(Boolean).join(", ") || undefined,
-        }),
+        onFinish: (operation) =>
+            void audit.record({
+                event: operation.source ? "toolbox" : "operation",
+                result: operation.status,
+                stack: operation.stack,
+                action: operation.action,
+                service: operation.service,
+                // Identity of what actually ran, for an app action; never the output
+                // (log lines may carry secrets). Exit code and timeout stay explicit.
+                detail:
+                    [
+                        operation.source ? `source ${operation.source}` : "",
+                        operation.containerId ? `container ${operation.containerId}` : "",
+                        operation.imageId ? `image ${operation.imageId}` : "",
+                        operation.revision ? `revision ${operation.revision}` : "",
+                        operation.exitCode !== null ? `exit code ${operation.exitCode}` : "",
+                        operation.timedOut ? "timed out" : "",
+                    ]
+                        .filter(Boolean)
+                        .join(", ") || undefined,
+            }),
     });
     const logs = new LogManager(provider, {
         tailLines: config.logTailLines,
@@ -339,12 +403,14 @@ export function createApp(options: AppOptions): App {
     });
     // `docker system df` is expensive, so it is read on demand and cached (ADR 0015).
     const diskCache = createDiskUsageCache();
-    const selfUpdater = options.selfUpdater ?? new SelfUpdater({
-        runner: options.runner ?? unavailableRunner,
-        provider,
-        pullTimeoutMs: config.operationTimeoutMs,
-        maxBytes: config.dockerMaxBytes,
-    });
+    const selfUpdater =
+        options.selfUpdater ??
+        new SelfUpdater({
+            runner: options.runner ?? unavailableRunner,
+            provider,
+            pullTimeoutMs: config.operationTimeoutMs,
+            maxBytes: config.dockerMaxBytes,
+        });
     // Set from the moment an update is accepted until its updater ends (or
     // this process is replaced): no action, save or purge may start meanwhile.
     let selfUpdatePending = false;
@@ -376,7 +442,11 @@ export function createApp(options: AppOptions): App {
         if (!set) return;
         sessionStreams.delete(id);
         for (const close of [...set]) {
-            try { close(); } catch { /* a broken stream must not block logout */ }
+            try {
+                close();
+            } catch {
+                /* a broken stream must not block logout */
+            }
         }
     }
     const limiter = new LoginRateLimiter(
@@ -386,7 +456,7 @@ export function createApp(options: AppOptions): App {
     );
 
     function sleep(ms: number): Promise<void> {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     /** Best-effort activity record. `record` never throws, so awaiting is safe. */
@@ -402,9 +472,11 @@ export function createApp(options: AppOptions): App {
     // Shared page options: sign-out form and how the panel is reached.
     const loopbackEnabled = config.proxyOrigins.length === 0 || config.allowLoopback;
     const access = [
-        ...config.proxyOrigins.map(origin => `${new URL(origin).host} (proxy)`),
+        ...config.proxyOrigins.map((origin) => `${new URL(origin).host} (proxy)`),
         loopbackEnabled ? `127.0.0.1:${config.port} (loopback)` : "",
-    ].filter(Boolean).join(", ");
+    ]
+        .filter(Boolean)
+        .join(", ");
     function pageChrome(csrf: string | undefined): { logoutCsrf?: string; access: string; timezone?: string } {
         return { logoutCsrf: csrf, access, timezone: config.timeZone || undefined };
     }
@@ -417,18 +489,23 @@ export function createApp(options: AppOptions): App {
     async function sidebarNav(section: NavSection, stack?: string): Promise<NavigationOptions> {
         let stacks: string[] = [];
         try {
-            stacks = (await listStacks(stacksRoot)).map(entry => entry.name);
-        } catch { /* navigation stays usable without the stack list */ }
+            stacks = (await listStacks(stacksRoot)).map((entry) => entry.name);
+        } catch {
+            /* navigation stays usable without the stack list */
+        }
         return { stacks, section, stack };
     }
 
     function sessionEnded(): Response {
-        return htmlResponse(messagePage(
-            "Signed out",
-            "Your session has ended (signed out, timed out, or the panel restarted), so nothing was done. Sign in again, then retry.",
-            { href: "/login", label: "Sign in" },
-            { bare: true },
-        ), 401);
+        return htmlResponse(
+            messagePage(
+                "Signed out",
+                "Your session has ended (signed out, timed out, or the panel restarted), so nothing was done. Sign in again, then retry.",
+                { href: "/login", label: "Sign in" },
+                { bare: true },
+            ),
+            401,
+        );
     }
 
     async function readForm(request: Request, maxBytes = config.maxBodyBytes): Promise<URLSearchParams | null> {
@@ -440,32 +517,38 @@ export function createApp(options: AppOptions): App {
     function routeError(error: unknown, csrf?: string, stack?: string): Response {
         const status = error instanceof StackError ? error.status : 500;
         if (!(error instanceof StackError)) console.error("Internal error", error);
-        const message = error instanceof StackError
-            ? error.message
-            : "An unexpected error occurred. Details were written to the server log.";
-        const back = stack !== undefined && status !== 404
-            ? { href: `/stacks/${encodeURIComponent(stack)}`, label: `← Back to ${stack}` }
-            : { href: "/", label: "← Back to all stacks" };
+        const message =
+            error instanceof StackError ? error.message : "An unexpected error occurred. Details were written to the server log.";
+        const back =
+            stack !== undefined && status !== 404
+                ? { href: `/stacks/${encodeURIComponent(stack)}`, label: `← Back to ${stack}` }
+                : { href: "/", label: "← Back to all stacks" };
         return htmlResponse(messagePage(ERROR_TITLES[status] ?? "Something went wrong", message, back, { ...pageChrome(csrf) }), status);
     }
 
     /** A form post the panel refused before doing anything (stale page, foreign origin). */
     function staleForm(csrf: string, back = "/"): Response {
-        return htmlResponse(messagePage(
-            "Nothing was done",
-            "This page is out of date, for example because you signed in again in another tab. Go back, reload the page and try again.",
-            { href: back, label: "← Go back" },
-            { ...pageChrome(csrf) },
-        ), 403);
+        return htmlResponse(
+            messagePage(
+                "Nothing was done",
+                "This page is out of date, for example because you signed in again in another tab. Go back, reload the page and try again.",
+                { href: back, label: "← Go back" },
+                { ...pageChrome(csrf) },
+            ),
+            403,
+        );
     }
 
     function tooLarge(csrf: string, back: string): Response {
-        return htmlResponse(messagePage(
-            "Nothing was saved",
-            `The submitted content is larger than the ${Math.floor(config.maxEditBytes / 1024)} KiB limit.`,
-            { href: back, label: "← Go back" },
-            { ...pageChrome(csrf) },
-        ), 413);
+        return htmlResponse(
+            messagePage(
+                "Nothing was saved",
+                `The submitted content is larger than the ${Math.floor(config.maxEditBytes / 1024)} KiB limit.`,
+                { href: back, label: "← Go back" },
+                { ...pageChrome(csrf) },
+            ),
+            413,
+        );
     }
 
     function loginFailure(request: Request, message: string | null, status: number, retryAfterSec?: number): Response {
@@ -496,7 +579,12 @@ export function createApp(options: AppOptions): App {
             const received = request.headers.get("origin") ?? (request.headers.get("referer") ? "referer only" : "none");
             const access = accessOf(request, config);
             const expected = (access ? expectedOrigin(request, access) : null) ?? "unknown";
-            await recordLoginNoise({ event: "login", result: "refused", actor: clientKey(request, config), detail: `origin blocked: received ${received}, expected ${expected}` });
+            await recordLoginNoise({
+                event: "login",
+                result: "refused",
+                actor: clientKey(request, config),
+                detail: `origin blocked: received ${received}, expected ${expected}`,
+            });
             return redirect("/login?e=blocked", 303);
         }
         const form = await readForm(request);
@@ -520,11 +608,21 @@ export function createApp(options: AppOptions): App {
         const verdict = limiter.tryReserve(key);
         if (!verdict.allowed && verdict.reason === "capacity") {
             await recordLoginNoise({ event: "login", result: "refused", actor: key, detail: "too many sources tracked" });
-            return loginFailure(request, "The panel is busy with sign-in attempts from many addresses. Try again later.", 429, verdict.retryAfterSec);
+            return loginFailure(
+                request,
+                "The panel is busy with sign-in attempts from many addresses. Try again later.",
+                429,
+                verdict.retryAfterSec,
+            );
         }
         if (!verdict.allowed) {
             await recordLoginNoise({ event: "login", result: "refused", actor: key, detail: "parallel attempt" });
-            return loginFailure(request, "Another sign-in attempt from your address is still being checked. Try again in a moment.", 429, verdict.retryAfterSec);
+            return loginFailure(
+                request,
+                "Another sign-in attempt from your address is still being checked. Try again in a moment.",
+                429,
+                verdict.retryAfterSec,
+            );
         }
 
         const user = form.get("user") ?? "";
@@ -577,42 +675,66 @@ export function createApp(options: AppOptions): App {
         const intro = `<p class="lead">Stacks in <code>${escapeHtml(stacksRoot)}</code></p>`;
         let content: string;
         if (stacks.length === 0) {
-            content = `<section class="card empty"><h2>No stacks found</h2>`
-                + `<p><a href="/new-stack">Create a stack</a>, or add a folder in <code>${escapeHtml(stacksRoot)}</code> with a <code>compose.yaml</code> and reload this page.</p>`
-                + `<p class="muted">Folder names may use lowercase letters, digits, <code>-</code> and <code>_</code>.</p>`
-                + `<p class="muted">The panel never takes ownership of your stacks: the Compose files stay where they are, and every stack can still be managed with the <code>docker compose</code> CLI.</p></section>`;
+            content =
+                `<section class="card empty"><h2>No stacks found</h2>` +
+                `<p><a href="/new-stack">Create a stack</a>, or add a folder in <code>${escapeHtml(stacksRoot)}</code> with a <code>compose.yaml</code> and reload this page.</p>` +
+                `<p class="muted">Folder names may use lowercase letters, digits, <code>-</code> and <code>_</code>.</p>` +
+                `<p class="muted">The panel never takes ownership of your stacks: the Compose files stay where they are, and every stack can still be managed with the <code>docker compose</code> CLI.</p></section>`;
         } else {
             const counts = new Map<string, number>();
             for (const stack of stacks) counts.set(stack.state, (counts.get(stack.state) ?? 0) + 1);
             // One tile per state present, in a fixed order; colors match the badges.
-            const tiles = ([["running", "Running"], ["stopped", "Stopped"], ["not-created", "Not deployed"], ["unknown", "Unknown"]] as const)
+            const tiles = (
+                [
+                    ["running", "Running"],
+                    ["stopped", "Stopped"],
+                    ["not-created", "Not deployed"],
+                    ["unknown", "Unknown"],
+                ] as const
+            )
                 .filter(([state]) => counts.has(state))
-                .map(([state, label]) => `<div class="stat stat-${state}"><span class="stat-value">${counts.get(state)}</span><span class="stat-label">${label}</span></div>`)
+                .map(
+                    ([state, label]) =>
+                        `<div class="stat stat-${state}"><span class="stat-value">${counts.get(state)}</span><span class="stat-label">${label}</span></div>`,
+                )
                 .join("");
-            const rows = stacks.map(stack => {
-                const href = `/stacks/${encodeURIComponent(stack.name)}`;
-                // The Docker-wide note is shown once above the table, not on every row.
-                const rowNote = stack.note && stack.note !== dockerNote ? `<div class="hint">${escapeHtml(stack.note)}</div>` : "";
-                return `<tr><td><a href="${href}" class="stack-name">${escapeHtml(stack.name)}</a>${rowNote}</td>`
-                    + `<td>${stateBadge(stack.state)}</td>`
-                    + `<td class="col-optional">${stack.project ? escapeHtml(stack.project) : `<span class="muted">—</span>`}</td>`
-                    + `<td class="col-optional"><code>${escapeHtml(stack.composeFile)}</code></td></tr>`;
-            }).join("");
-            content = `<div class="stats" aria-label="Stacks by status">${tiles}</div>`
-                + `<div class="table-wrap"><table class="table"><thead><tr><th>Stack</th><th>Status</th><th class="col-optional">Compose project</th><th class="col-optional">File</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+            const rows = stacks
+                .map((stack) => {
+                    const href = `/stacks/${encodeURIComponent(stack.name)}`;
+                    // The Docker-wide note is shown once above the table, not on every row.
+                    const rowNote = stack.note && stack.note !== dockerNote ? `<div class="hint">${escapeHtml(stack.note)}</div>` : "";
+                    return (
+                        `<tr><td><a href="${href}" class="stack-name">${escapeHtml(stack.name)}</a>${rowNote}</td>` +
+                        `<td>${stateBadge(stack.state)}</td>` +
+                        `<td class="col-optional">${stack.project ? escapeHtml(stack.project) : `<span class="muted">—</span>`}</td>` +
+                        `<td class="col-optional"><code>${escapeHtml(stack.composeFile)}</code></td></tr>`
+                    );
+                })
+                .join("");
+            content =
+                `<div class="stats" aria-label="Stacks by status">${tiles}</div>` +
+                `<div class="table-wrap"><table class="table"><thead><tr><th>Stack</th><th>Status</th><th class="col-optional">Compose project</th><th class="col-optional">File</th></tr></thead><tbody>${rows}</tbody></table></div>`;
         }
         const warning = dockerNote ? note("warn", dockerNote) : "";
-        const { containers, note: containerNote } = await loadContainers(stacksRoot, provider, inspector, config.hostStacksPathAliases, discovery);
-        return htmlResponse(documentHtml(
-            "Stacks",
-            `<div class="page-head"><h1>Stacks</h1><a href="/new-stack" class="btn btn-primary">New stack</a></div>${intro}${warning}${content}${otherContainersSection(containers, "running", containerNote)}`,
-            { ...pageChrome(csrf), nav: { stacks: stacks.map(stack => stack.name), section: "stacks" } },
-        ));
+        const { containers, note: containerNote } = await loadContainers(
+            stacksRoot,
+            provider,
+            inspector,
+            config.hostStacksPathAliases,
+            discovery,
+        );
+        return htmlResponse(
+            documentHtml(
+                "Stacks",
+                `<div class="page-head"><h1>Stacks</h1><a href="/new-stack" class="btn btn-primary">New stack</a></div>${intro}${warning}${content}${otherContainersSection(containers, "running", containerNote)}`,
+                { ...pageChrome(csrf), nav: { stacks: stacks.map((stack) => stack.name), section: "stacks" } },
+            ),
+        );
     }
 
     async function renderAudit(csrf: string, requested: string | null): Promise<Response> {
         const periods = await audit.listPeriods();
-        const selected = requested !== null && periods.includes(requested) ? requested : periods[0] ?? null;
+        const selected = requested !== null && periods.includes(requested) ? requested : (periods[0] ?? null);
         let entries: Awaited<ReturnType<typeof audit.readPeriod>> = [];
         if (selected) {
             try {
@@ -622,7 +744,9 @@ export function createApp(options: AppOptions): App {
                 throw error;
             }
         }
-        return htmlResponse(auditPage({ csrf, access, timezone: config.timeZone || undefined, periods, selected, entries, nav: await sidebarNav("audit") }));
+        return htmlResponse(
+            auditPage({ csrf, access, timezone: config.timeZone || undefined, periods, selected, entries, nav: await sidebarNav("audit") }),
+        );
     }
 
     async function renderAccess(csrf: string, request: Request): Promise<Response> {
@@ -651,9 +775,14 @@ export function createApp(options: AppOptions): App {
         // cache within its TTL so a repeated click does not hit the daemon.
         const wantsDisk = new URL(request.url).searchParams.get("disk") === "1";
         const disk = wantsDisk
-            ? await diskCache.read(inspector, Date.now(), config.diskUsageTtlMs, { timeoutMs: config.insightsTimeoutMs, maxBytes: config.dockerMaxBytes })
+            ? await diskCache.read(inspector, Date.now(), config.diskUsageTtlMs, {
+                  timeoutMs: config.insightsTimeoutMs,
+                  maxBytes: config.dockerMaxBytes,
+              })
             : null;
-        return htmlResponse(serverPage({ csrf, access, timezone: config.timeZone || undefined, insights, disk, nav: await sidebarNav("server") }));
+        return htmlResponse(
+            serverPage({ csrf, access, timezone: config.timeZone || undefined, insights, disk, nav: await sidebarNav("server") }),
+        );
     }
 
     /**
@@ -672,20 +801,23 @@ export function createApp(options: AppOptions): App {
         const payload = {
             readAt: insights.readAt,
             runningContainers: insights.runningContainers,
-            stats: insights.stats === null ? null : insights.stats.map(stat => ({
-                id: stat.id,
-                // Same name as the first render, so Live never brings IDs back.
-                name: statDisplayName(stat),
-                cpuPercent: stat.cpuPercent,
-                memUsedBytes: stat.memUsedBytes,
-                memLimitBytes: stat.memLimitBytes,
-                memPercent: stat.memPercent,
-                netIo: stat.netIo,
-                blockIo: stat.blockIo,
-                pids: stat.pids,
-                stack: stat.container?.stack ?? null,
-                category: stat.container?.category ?? null,
-            })),
+            stats:
+                insights.stats === null
+                    ? null
+                    : insights.stats.map((stat) => ({
+                          id: stat.id,
+                          // Same name as the first render, so Live never brings IDs back.
+                          name: statDisplayName(stat),
+                          cpuPercent: stat.cpuPercent,
+                          memUsedBytes: stat.memUsedBytes,
+                          memLimitBytes: stat.memLimitBytes,
+                          memPercent: stat.memPercent,
+                          netIo: stat.netIo,
+                          blockIo: stat.blockIo,
+                          pids: stat.pids,
+                          stack: stat.container?.stack ?? null,
+                          category: stat.container?.category ?? null,
+                      })),
             stacks: insights.stacks,
             attention: insights.attention,
             exited: insights.exited,
@@ -698,15 +830,17 @@ export function createApp(options: AppOptions): App {
 
     async function renderContainers(csrf: string, filter: ContainerFilter): Promise<Response> {
         const { containers, note: containerNote } = await loadContainers(stacksRoot, provider, inspector, config.hostStacksPathAliases);
-        return htmlResponse(containersPage({
-            csrf,
-            access,
-            timezone: config.timeZone || undefined,
-            filter,
-            containers,
-            note: containerNote,
-            nav: await sidebarNav("containers"),
-        }));
+        return htmlResponse(
+            containersPage({
+                csrf,
+                access,
+                timezone: config.timeZone || undefined,
+                filter,
+                containers,
+                note: containerNote,
+                nav: await sidebarNav("containers"),
+            }),
+        );
     }
 
     async function renderContainerDetail(rawId: string, csrf: string): Promise<Response> {
@@ -715,18 +849,21 @@ export function createApp(options: AppOptions): App {
         // An unreadable list is not a missing container: Docker may be down
         // while the container still exists, so answer 503, never 404.
         if (outcome.kind === "unavailable") throw new StackError(outcome.note, 503);
-        if (outcome.kind === "not-found") throw new StackError("No container with this reference was found. It may have been removed.", 404);
+        if (outcome.kind === "not-found")
+            throw new StackError("No container with this reference was found. It may have been removed.", 404);
         const detail = outcome.detail;
-        return htmlResponse(containerDetailPage({
-            csrf,
-            access,
-            timezone: config.timeZone || undefined,
-            container: detail.container,
-            details: detail.details,
-            note: detail.note,
-            logTailLines: config.logTailLines,
-            nav: await sidebarNav("containers"),
-        }));
+        return htmlResponse(
+            containerDetailPage({
+                csrf,
+                access,
+                timezone: config.timeZone || undefined,
+                container: detail.container,
+                details: detail.details,
+                note: detail.note,
+                logTailLines: config.logTailLines,
+                nav: await sidebarNav("containers"),
+            }),
+        );
     }
 
     /**
@@ -801,8 +938,8 @@ export function createApp(options: AppOptions): App {
                     statusError = "The domain list could not be read. Nothing was changed.";
                 } else {
                     attached = response.sites
-                        .filter(site => site.stack === stackName)
-                        .map(site => ({ domain: site.domain, service: site.service, port: site.port }));
+                        .filter((site) => site.stack === stackName)
+                        .map((site) => ({ domain: site.domain, service: site.service, port: site.port }));
                     if (response.unparseable.length > 0) {
                         statusError = "Some managed files could not be read. Inspect them on the host.";
                     }
@@ -849,7 +986,7 @@ export function createApp(options: AppOptions): App {
         }
         const seen = new Set<string>();
         return upstreams
-            .filter(entry => {
+            .filter((entry) => {
                 const key = `${entry.service} ${entry.container} ${entry.host}`;
                 if (seen.has(key)) return false;
                 seen.add(key);
@@ -879,7 +1016,14 @@ export function createApp(options: AppOptions): App {
         return { file: buildSiteFile({ domain: normalizeDomain(domain)!, stack: stackName, service, port }), error: null };
     }
 
-    async function renderStackDetail(name: string, csrf: string, notice?: { kind: NoteKind; text: string }, statusCode = 200, query: URLSearchParams | null = null, extras: { confirmDetach?: string | null } = {}): Promise<Response> {
+    async function renderStackDetail(
+        name: string,
+        csrf: string,
+        notice?: { kind: NoteKind; text: string },
+        statusCode = 200,
+        query: URLSearchParams | null = null,
+        extras: { confirmDetach?: string | null } = {},
+    ): Promise<Response> {
         const stack = await readStackCompose(stacksRoot, name);
         let status: StackDetailStatus;
         try {
@@ -891,65 +1035,110 @@ export function createApp(options: AppOptions): App {
         const href = `/stacks/${encodeURIComponent(stack.name)}`;
         const operation = operations.forStack(stack.name);
         const owner = managedBy(status.declared);
-        const project = status.project
-            ? `<span>Compose project <code>${escapeHtml(status.project)}</code></span>`
-            : "";
-        return htmlResponse(documentHtml(
-            stack.name,
-            `<p class="crumbs"><a href="/">← All stacks</a></p>`
-            + `<div class="page-head"><h1>${escapeHtml(stack.name)}</h1><span class="row-actions"><a href="${href}/actions" class="btn">App actions</a><a href="${href}/edit" class="btn">Edit files</a></span></div>`
-            + `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}${healthSummaryBadge(status.services)}${managedByBadge(owner)}</p>`
-            + (notice ? note(notice.kind, notice.text) : "")
-            + (status.note ? note("warn", status.note) : "")
-            + operationControls(stack.name, csrf, { busy: operation?.status === "running", state: status.state, updatesReady: Object.keys(status.updates ?? {}), recreatePending: status.recreatePending, managedBy: owner })
-            + operationPanel(operation, stack.name)
-            + servicesSection(status.services, status.state, status.updates, { name: stack.name, csrf, busy: operation?.status === "running" }, status.recreatePending)
-            + databaseExplorerSection(stack.source)
-            + await domainsCard(stack.name, status.project, csrf, status.services.map(service => service.name), owner, query, extras.confirmDetach ?? null)
-            + deploymentSection(status.deployed, status.declared, status.state !== "not-created")
-            + logsPanel(stack.name, config.logTailLines, config.timeZone, status.services.map(service => service.name))
-            + `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
-            { ...pageChrome(csrf), scripts: ["/app.js"], nav: await sidebarNav("stacks", stack.name) },
-        ), statusCode);
+        const project = status.project ? `<span>Compose project <code>${escapeHtml(status.project)}</code></span>` : "";
+        return htmlResponse(
+            documentHtml(
+                stack.name,
+                `<p class="crumbs"><a href="/">← All stacks</a></p>` +
+                    `<div class="page-head"><h1>${escapeHtml(stack.name)}</h1><span class="row-actions"><a href="${href}/actions" class="btn">App actions</a><a href="${href}/edit" class="btn">Edit files</a></span></div>` +
+                    `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}${healthSummaryBadge(status.services)}${managedByBadge(owner)}</p>` +
+                    (notice ? note(notice.kind, notice.text) : "") +
+                    (status.note ? note("warn", status.note) : "") +
+                    operationControls(stack.name, csrf, {
+                        busy: operation?.status === "running",
+                        state: status.state,
+                        updatesReady: Object.keys(status.updates ?? {}),
+                        recreatePending: status.recreatePending,
+                        managedBy: owner,
+                    }) +
+                    operationPanel(operation, stack.name) +
+                    servicesSection(
+                        status.services,
+                        status.state,
+                        status.updates,
+                        { name: stack.name, csrf, busy: operation?.status === "running" },
+                        status.recreatePending,
+                    ) +
+                    databaseExplorerSection(stack.source) +
+                    (await domainsCard(
+                        stack.name,
+                        status.project,
+                        csrf,
+                        status.services.map((service) => service.name),
+                        owner,
+                        query,
+                        extras.confirmDetach ?? null,
+                    )) +
+                    deploymentSection(status.deployed, status.declared, status.state !== "not-created") +
+                    logsPanel(
+                        stack.name,
+                        config.logTailLines,
+                        config.timeZone,
+                        status.services.map((service) => service.name),
+                    ) +
+                    `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
+                { ...pageChrome(csrf), scripts: ["/app.js"], nav: await sidebarNav("stacks", stack.name) },
+            ),
+            statusCode,
+        );
     }
 
     function decodeName(raw: string): string {
-        try { return decodeURIComponent(raw); }
-        catch { throw new StackError("This stack name is not valid."); }
+        try {
+            return decodeURIComponent(raw);
+        } catch {
+            throw new StackError("This stack name is not valid.");
+        }
     }
 
     function safeName(raw: string): string | undefined {
-        try { return decodeURIComponent(raw); }
-        catch { return undefined; }
+        try {
+            return decodeURIComponent(raw);
+        } catch {
+            return undefined;
+        }
     }
 
     async function renderEdit(
         name: string,
         csrf: string,
-        options: { error?: { title: string; message: string }; notice?: { kind: NoteKind; text: string }; draft?: SaveDraft; keepDraft?: boolean; status?: number } = {},
+        options: {
+            error?: { title: string; message: string };
+            notice?: { kind: NoteKind; text: string };
+            draft?: SaveDraft;
+            keepDraft?: boolean;
+            status?: number;
+        } = {},
     ): Promise<Response> {
         const stack = await readEditableStack(stacksRoot, name, config.maxEditBytes);
         const draft = options.keepDraft === true ? options.draft : undefined;
         // A broken backup folder must not lock the user out of the editor.
         const backups = await listBackups(stacksRoot, name).catch(() => null);
-        return htmlResponse(editPage({
-            name,
-            csrf,
-            access,
-            timezone: config.timeZone || undefined,
-            composeFilename: stack.composeFilename,
-            // A kept draft keeps the versions it was based on, so a change made
-            // on disk meanwhile is still detected as a conflict on the next save.
-            composeSource: draft ? draft.composeSource : stack.composeSource,
-            composeHash: draft ? draft.baseComposeHash : stack.composeHash,
-            envSource: draft ? draft.envSource : stack.envSource,
-            envHash: draft ? draft.baseEnvHash : stack.envHash,
-            envExists: draft ? draft.baseEnvExists : stack.envExists,
-            error: options.error ?? null,
-            notice: options.notice,
-            backups: backups && { count: backups.length, bytes: backups.reduce((total, entry) => total + entry.size, 0), retain: config.backupRetain },
-            nav: await sidebarNav("stacks", name),
-        }), options.status ?? 200);
+        return htmlResponse(
+            editPage({
+                name,
+                csrf,
+                access,
+                timezone: config.timeZone || undefined,
+                composeFilename: stack.composeFilename,
+                // A kept draft keeps the versions it was based on, so a change made
+                // on disk meanwhile is still detected as a conflict on the next save.
+                composeSource: draft ? draft.composeSource : stack.composeSource,
+                composeHash: draft ? draft.baseComposeHash : stack.composeHash,
+                envSource: draft ? draft.envSource : stack.envSource,
+                envHash: draft ? draft.baseEnvHash : stack.envHash,
+                envExists: draft ? draft.baseEnvExists : stack.envExists,
+                error: options.error ?? null,
+                notice: options.notice,
+                backups: backups && {
+                    count: backups.length,
+                    bytes: backups.reduce((total, entry) => total + entry.size, 0),
+                    retain: config.backupRetain,
+                },
+                nav: await sidebarNav("stacks", name),
+            }),
+            options.status ?? 200,
+        );
     }
 
     /** Best effort: a save that succeeded stays a success even if pruning fails. */
@@ -980,17 +1169,38 @@ export function createApp(options: AppOptions): App {
             });
             saves.add(task);
             let removed: number;
-            try { removed = await task; }
-            finally { saves.delete(task); }
-            await recordAudit({ event: "backup-purge", result: "success", actor: clientKey(request, config), stack: name, detail: `${removed} removed` });
+            try {
+                removed = await task;
+            } finally {
+                saves.delete(task);
+            }
+            await recordAudit({
+                event: "backup-purge",
+                result: "success",
+                actor: clientKey(request, config),
+                stack: name,
+                detail: `${removed} removed`,
+            });
             return redirect(`${back}?purged=1`, 303);
         } catch (error) {
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
-                await recordAudit({ event: "backup-purge", result: "refused", actor: clientKey(request, config), stack: name, detail: error.message });
+                await recordAudit({
+                    event: "backup-purge",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    detail: error.message,
+                });
                 return renderEdit(name, csrf, { error: { title: "Backups not deleted.", message: error.message }, status: 409 });
             }
             if (error instanceof FileSafetyError) {
-                await recordAudit({ event: "backup-purge", result: "failure", actor: clientKey(request, config), stack: name, detail: error.message });
+                await recordAudit({
+                    event: "backup-purge",
+                    result: "failure",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    detail: error.message,
+                });
                 return renderEdit(name, csrf, { error: { title: "Backups not deleted.", message: error.message }, status: 500 });
             }
             throw error;
@@ -998,11 +1208,19 @@ export function createApp(options: AppOptions): App {
     }
 
     async function renderCreate(csrf: string, draft?: CreateStackRequest, error?: string, status = 200): Promise<Response> {
-        return htmlResponse(createStackPage({
-            ...pageChrome(csrf), csrf, root: stacksRoot, name: draft?.name,
-            composeSource: draft?.composeSource, envSource: draft?.envSource, error,
-            nav: await sidebarNav("stacks"),
-        }), status);
+        return htmlResponse(
+            createStackPage({
+                ...pageChrome(csrf),
+                csrf,
+                root: stacksRoot,
+                name: draft?.name,
+                composeSource: draft?.composeSource,
+                envSource: draft?.envSource,
+                error,
+                nav: await sidebarNav("stacks"),
+            }),
+            status,
+        );
     }
 
     async function handleCreate(request: Request, session: Session): Promise<Response> {
@@ -1027,20 +1245,41 @@ export function createApp(options: AppOptions): App {
                 await createStack(stacksRoot, draft, provider, config.maxEditBytes, { beforeCommit: checkAuthorization });
             });
             saves.add(task);
-            try { await task; }
-            finally { saves.delete(task); }
+            try {
+                await task;
+            } finally {
+                saves.delete(task);
+            }
             await recordAudit({ event: "create", result: "success", actor: clientKey(request, config), stack: draft.name });
             return redirect(`/stacks/${encodeURIComponent(draft.name)}?created=1`, 303);
         } catch (error) {
             if (error instanceof SessionEndedError) {
-                await recordAudit({ event: "create", result: "refused", actor: clientKey(request, config), stack: validName ? draft.name : undefined });
+                await recordAudit({
+                    event: "create",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: validName ? draft.name : undefined,
+                });
                 return sessionEnded();
             }
-            const status = error instanceof StackError ? error.status : error instanceof StackBusyError || error instanceof OperationsDisabledError ? 409 : 500;
-            const message = error instanceof StackError || error instanceof StackBusyError || error instanceof OperationsDisabledError
-                ? error.message : "The stack could not be created. Check directory permissions and Docker availability.";
-            if (error instanceof StackCreationPartialError) console.error("Stack creation cleanup incomplete", { stack: draft.name, stage: error.stage });
-            await recordAudit({ event: "create", result: error instanceof StackCreationPartialError ? "partial" : "refused", actor: clientKey(request, config), stack: validName ? draft.name : undefined });
+            const status =
+                error instanceof StackError
+                    ? error.status
+                    : error instanceof StackBusyError || error instanceof OperationsDisabledError
+                      ? 409
+                      : 500;
+            const message =
+                error instanceof StackError || error instanceof StackBusyError || error instanceof OperationsDisabledError
+                    ? error.message
+                    : "The stack could not be created. Check directory permissions and Docker availability.";
+            if (error instanceof StackCreationPartialError)
+                console.error("Stack creation cleanup incomplete", { stack: draft.name, stage: error.stage });
+            await recordAudit({
+                event: "create",
+                result: error instanceof StackCreationPartialError ? "partial" : "refused",
+                actor: clientKey(request, config),
+                stack: validName ? draft.name : undefined,
+            });
             return renderCreate(csrf, draft, message, status);
         }
     }
@@ -1069,7 +1308,9 @@ export function createApp(options: AppOptions): App {
                 if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
                 const saved = await saveEditableStack(stacksRoot, name, saveRequest, provider, config.maxEditBytes, {
                     // Validation awaits a subprocess: re-check right before writing.
-                    beforeCommit: () => { if (!sessions.isActive(session.id)) throw new SessionEndedError(); },
+                    beforeCommit: () => {
+                        if (!sessions.isActive(session.id)) throw new SessionEndedError();
+                    },
                 });
                 // Still under the stack lock, so no other save adds a backup meanwhile.
                 if (saved.changed) await pruneAfterSave(name);
@@ -1077,39 +1318,88 @@ export function createApp(options: AppOptions): App {
             });
             saves.add(task);
             let result: Awaited<typeof task>;
-            try { result = await task; }
-            finally { saves.delete(task); }
-            await recordAudit({ event: "save", result: result.changed ? "success" : "no-change", actor: clientKey(request, config), stack: name });
+            try {
+                result = await task;
+            } finally {
+                saves.delete(task);
+            }
+            await recordAudit({
+                event: "save",
+                result: result.changed ? "success" : "no-change",
+                actor: clientKey(request, config),
+                stack: name,
+            });
             return redirect(`/stacks/${encodeURIComponent(name)}?saved=${result.changed ? "1" : "0"}`, 303);
         } catch (error) {
             if (error instanceof StackValidationError) {
-                await recordAudit({ event: "save", result: "failure", actor: clientKey(request, config), stack: name, detail: "validation failed" });
-                return renderEdit(name, csrf, { error: { title: "Not saved: the Compose check failed.", message: error.message }, draft: saveRequest, keepDraft: true, status: 400 });
+                await recordAudit({
+                    event: "save",
+                    result: "failure",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    detail: "validation failed",
+                });
+                return renderEdit(name, csrf, {
+                    error: { title: "Not saved: the Compose check failed.", message: error.message },
+                    draft: saveRequest,
+                    keepDraft: true,
+                    status: 400,
+                });
             }
             if (error instanceof StackConflictError) {
                 await recordAudit({ event: "save", result: "conflict", actor: clientKey(request, config), stack: name });
                 return renderEdit(name, csrf, {
-                    error: { title: "Not saved.", message: `${error.message} The editor now shows the current files: apply your changes again, then save.` },
+                    error: {
+                        title: "Not saved.",
+                        message: `${error.message} The editor now shows the current files: apply your changes again, then save.`,
+                    },
                     keepDraft: false,
                     status: 409,
                 });
             }
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
                 // Keep the draft: nothing was written, the user can retry.
-                await recordAudit({ event: "save", result: "refused", actor: clientKey(request, config), stack: name, detail: error.message });
-                return renderEdit(name, csrf, { error: { title: "Not saved.", message: error.message }, draft: saveRequest, keepDraft: true, status: 409 });
+                await recordAudit({
+                    event: "save",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    detail: error.message,
+                });
+                return renderEdit(name, csrf, {
+                    error: { title: "Not saved.", message: error.message },
+                    draft: saveRequest,
+                    keepDraft: true,
+                    status: 409,
+                });
             }
             if (error instanceof SessionEndedError) {
-                await recordAudit({ event: "save", result: "refused", actor: clientKey(request, config), stack: name, detail: "session ended" });
+                await recordAudit({
+                    event: "save",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    detail: "session ended",
+                });
                 return sessionEnded();
             }
             if (error instanceof StackPartialError) {
                 await recordAudit({ event: "save", result: "partial", actor: clientKey(request, config), stack: name });
-                return renderEdit(name, csrf, { error: { title: "Save incomplete.", message: error.message }, draft: saveRequest, keepDraft: true, status: 500 });
+                return renderEdit(name, csrf, {
+                    error: { title: "Save incomplete.", message: error.message },
+                    draft: saveRequest,
+                    keepDraft: true,
+                    status: 500,
+                });
             }
             if (error instanceof FileSafetyError) {
                 await recordAudit({ event: "save", result: "failure", actor: clientKey(request, config), stack: name });
-                return renderEdit(name, csrf, { error: { title: "Not saved.", message: error.message }, draft: saveRequest, keepDraft: true, status: 500 });
+                return renderEdit(name, csrf, {
+                    error: { title: "Not saved.", message: error.message },
+                    draft: saveRequest,
+                    keepDraft: true,
+                    status: 500,
+                });
             }
             throw error;
         }
@@ -1126,13 +1416,19 @@ export function createApp(options: AppOptions): App {
         if (!sessions.isActive(session.id)) return sessionEnded();
 
         const action = form.get("action") ?? "";
-        if (!isOperationAction(action)) return renderStackDetail(name, csrf, { kind: "error", text: "Unknown action. Nothing was run." }, 400);
+        if (!isOperationAction(action))
+            return renderStackDetail(name, csrf, { kind: "error", text: "Unknown action. Nothing was run." }, 400);
 
         // Scoped operations (ADR 0021): only `up` and `restart` accept a
         // service. Anywhere else the field is refused, never ignored.
         const serviceParam = (form.get("service") ?? "").trim();
         if (serviceParam !== "" && action !== "up" && action !== "restart") {
-            return renderStackDetail(name, csrf, { kind: "error", text: "This action does not apply to a single service. Nothing was run." }, 400);
+            return renderStackDetail(
+                name,
+                csrf,
+                { kind: "error", text: "This action does not apply to a single service. Nothing was run." },
+                400,
+            );
         }
         if (serviceParam !== "" && !isComposeServiceName(serviceParam)) {
             return renderStackDetail(name, csrf, { kind: "error", text: "This service selection is not valid. Nothing was run." }, 400);
@@ -1151,18 +1447,30 @@ export function createApp(options: AppOptions): App {
             throw new StackError(ENV_NOT_REGULAR, 409);
         }
         if (context.kind === "ambiguous") {
-            throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack: several projects match, or the project name is already used by another stack. It will not guess, so nothing was run.", 409);
+            throw new StackError(
+                "The panel cannot tell which Docker Compose project belongs to this stack: several projects match, or the project name is already used by another stack. It will not guess, so nothing was run.",
+                409,
+            );
         }
         if (context.kind === "unavailable") {
-            throw new StackError("Docker did not respond, so the panel could not check which project this stack belongs to. Nothing was run.", 503);
+            throw new StackError(
+                "Docker did not respond, so the panel could not check which project this stack belongs to. Nothing was run.",
+                503,
+            );
         }
         if (context.kind === "absent" && !creates) {
-            throw new StackError("This stack is not deployed yet, so there is nothing to stop, restart or remove. Use Up or Pull + up to create it.", 409);
+            throw new StackError(
+                "This stack is not deployed yet, so there is nothing to stop, restart or remove. Use Up or Pull + up to create it.",
+                409,
+            );
         }
         // Scoped `up` never creates: it applies the Compose file to one
         // service of a deployed stack.
         if (service !== null && action === "up" && context.kind === "absent") {
-            throw new StackError("This stack is not deployed yet, so there is no service to update. Use Up without a service to create it.", 409);
+            throw new StackError(
+                "This stack is not deployed yet, so there is no service to update. Use Up without a service to create it.",
+                409,
+            );
         }
         let resolvedService: string | null = null;
         if (service !== null) {
@@ -1173,7 +1481,10 @@ export function createApp(options: AppOptions): App {
                 envFile: context.envFile ?? undefined,
             });
             if (names === null) {
-                throw new StackError("Docker did not respond, so the panel could not check which services this stack defines. Nothing was run.", 503);
+                throw new StackError(
+                    "Docker did not respond, so the panel could not check which services this stack defines. Nothing was run.",
+                    503,
+                );
             }
             if (!names.includes(service)) {
                 throw new StackError("This stack defines no such service. Nothing was run.", 409);
@@ -1182,7 +1493,14 @@ export function createApp(options: AppOptions): App {
         }
         // Project and service discovery await Docker: re-check before starting anything.
         if (!sessions.isActive(session.id)) {
-            await recordAudit({ event: "operation", result: "refused", actor: clientKey(request, config), stack: name, action, detail: "session ended" });
+            await recordAudit({
+                event: "operation",
+                result: "refused",
+                actor: clientKey(request, config),
+                stack: name,
+                action,
+                detail: "session ended",
+            });
             return sessionEnded();
         }
         try {
@@ -1190,13 +1508,33 @@ export function createApp(options: AppOptions): App {
             operations.start({
                 stack: name,
                 action,
-                target: { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined, service: resolvedService ?? undefined },
+                target: {
+                    project: context.project ?? undefined,
+                    composeFile: context.composeFile,
+                    cwd: context.cwd,
+                    envFile: context.envFile ?? undefined,
+                    service: resolvedService ?? undefined,
+                },
             });
-            await recordAudit({ event: "operation", result: "started", actor: clientKey(request, config), stack: name, action, service: resolvedService ?? undefined });
+            await recordAudit({
+                event: "operation",
+                result: "started",
+                actor: clientKey(request, config),
+                stack: name,
+                action,
+                service: resolvedService ?? undefined,
+            });
             return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
         } catch (error) {
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
-                await recordAudit({ event: "operation", result: "refused", actor: clientKey(request, config), stack: name, action, detail: error.message });
+                await recordAudit({
+                    event: "operation",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    action,
+                    detail: error.message,
+                });
                 return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
             }
             throw error;
@@ -1219,7 +1557,10 @@ export function createApp(options: AppOptions): App {
             throw new StackError("Docker gave an unexpected answer, so the upstream port could not be checked. Nothing was changed.", 503);
         }
         if (read.running === 0) {
-            throw new StackError("This service has no running container, so there is no upstream port to check. Start the stack first.", 409);
+            throw new StackError(
+                "This service has no running container, so there is no upstream port to check. Start the stack first.",
+                409,
+            );
         }
         if (read.ports.some(({ binding }) => matchesGeneratedUpstream(binding.container, binding.host, port))) return;
         if (read.inspected === 0) {
@@ -1243,7 +1584,13 @@ export function createApp(options: AppOptions): App {
             return { kind: "bad-answer" };
         }
         const candidates = summaries
-            .filter(entry => entry.project === project && entry.service !== null && (service === null || entry.service === service) && entry.state.toLowerCase() === "running")
+            .filter(
+                (entry) =>
+                    entry.project === project &&
+                    entry.service !== null &&
+                    (service === null || entry.service === service) &&
+                    entry.state.toLowerCase() === "running",
+            )
             .slice(0, 16);
         let inspected = 0;
         const ports: { service: string; binding: ContainerPort }[] = [];
@@ -1276,10 +1623,14 @@ export function createApp(options: AppOptions): App {
     /** Map a helper refusal code to an honest HTTP status. */
     function helperRefusalStatus(code: string): number {
         switch (code) {
-            case "invalid": return 400;
-            case "conflict": return 409;
-            case "unavailable": return 503;
-            default: return 500;
+            case "invalid":
+                return 400;
+            case "conflict":
+                return 409;
+            case "unavailable":
+                return 503;
+            default:
+                return 500;
         }
     }
 
@@ -1366,7 +1717,10 @@ export function createApp(options: AppOptions): App {
                 const innerContext = await resolveProjectContext(stacksRoot, name, provider, false);
                 if (innerContext.kind === "invalid") throw new StackError(ENV_NOT_REGULAR, 409);
                 if (innerContext.kind === "ambiguous") {
-                    throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack. It will not guess, so nothing was attached.", 409);
+                    throw new StackError(
+                        "The panel cannot tell which Docker Compose project belongs to this stack. It will not guess, so nothing was attached.",
+                        409,
+                    );
                 }
                 if (innerContext.kind === "unavailable") {
                     throw new StackError("Docker did not respond, so the panel could not check this stack. Nothing was attached.", 503);
@@ -1380,39 +1734,100 @@ export function createApp(options: AppOptions): App {
                     cwd: innerContext.cwd,
                     envFile: innerContext.envFile ?? undefined,
                 });
-                if (innerNames === null) throw new StackError("Docker did not respond, so the service could not be checked. Nothing was attached.", 503);
+                if (innerNames === null)
+                    throw new StackError("Docker did not respond, so the service could not be checked. Nothing was attached.", 503);
                 if (!innerNames.includes(serviceParam)) {
                     throw new StackError("This service is not part of this stack. Nothing was attached.", 409);
                 }
                 await requireLoopbackPort(innerContext.project ?? name, serviceParam, port);
-                return callCaddyHelper(config.caddySocketPath!, { action: "attach", domain, stack: name, service: serviceParam, port }, { timeoutMs: caddyMutationTimeoutMs() });
+                return callCaddyHelper(
+                    config.caddySocketPath!,
+                    { action: "attach", domain, stack: name, service: serviceParam, port },
+                    { timeoutMs: caddyMutationTimeoutMs() },
+                );
             });
             saves.add(task);
             let outcome: Awaited<typeof task>;
-            try { outcome = await task; }
-            finally { saves.delete(task); }
+            try {
+                outcome = await task;
+            } finally {
+                saves.delete(task);
+            }
             if (!outcome.ok) {
-                const result = outcome.code === "invalid" || outcome.code === "conflict" ? "refused" : outcome.code === "unknown" ? "unknown" : "failure";
-                await recordAudit({ event: "caddy", result, actor, stack: name, action: "attach", service: serviceParam, detail: `${normalizeDomain(domain)}: ${outcome.code}` });
+                const result =
+                    outcome.code === "invalid" || outcome.code === "conflict"
+                        ? "refused"
+                        : outcome.code === "unknown"
+                          ? "unknown"
+                          : "failure";
+                await recordAudit({
+                    event: "caddy",
+                    result,
+                    actor,
+                    stack: name,
+                    action: "attach",
+                    service: serviceParam,
+                    detail: `${normalizeDomain(domain)}: ${outcome.code}`,
+                });
                 return fail(helperRefusalText(outcome, "Nothing was attached."), helperRefusalStatus(outcome.code));
             }
-            await recordAudit({ event: "caddy", result: "success", actor, stack: name, action: "attach", service: serviceParam, detail: normalizeDomain(domain) ?? domain });
+            await recordAudit({
+                event: "caddy",
+                result: "success",
+                actor,
+                stack: name,
+                action: "attach",
+                service: serviceParam,
+                detail: normalizeDomain(domain) ?? domain,
+            });
             return redirect(`${back}?attached=1`, 303);
         } catch (error) {
             if (error instanceof CaddyHelperError) {
-                await recordAudit({ event: "caddy", result: "unknown", actor, stack: name, action: "attach", service: serviceParam, detail: "helper unreachable" });
+                await recordAudit({
+                    event: "caddy",
+                    result: "unknown",
+                    actor,
+                    stack: name,
+                    action: "attach",
+                    service: serviceParam,
+                    detail: "helper unreachable",
+                });
                 return fail("The Caddy helper did not answer. Check the helper socket on the host: the outcome is unknown.", 503);
             }
             if (error instanceof StackError) {
-                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam, detail: error.message });
+                await recordAudit({
+                    event: "caddy",
+                    result: "refused",
+                    actor,
+                    stack: name,
+                    action: "attach",
+                    service: serviceParam,
+                    detail: error.message,
+                });
                 return fail(`${error.message}`, error.status);
             }
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
-                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam, detail: error.message });
+                await recordAudit({
+                    event: "caddy",
+                    result: "refused",
+                    actor,
+                    stack: name,
+                    action: "attach",
+                    service: serviceParam,
+                    detail: error.message,
+                });
                 return fail(`${error.message} Nothing was attached.`, 409);
             }
             if (error instanceof SessionEndedError) {
-                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "attach", service: serviceParam, detail: "session ended" });
+                await recordAudit({
+                    event: "caddy",
+                    result: "refused",
+                    actor,
+                    stack: name,
+                    action: "attach",
+                    service: serviceParam,
+                    detail: "session ended",
+                });
                 return sessionEnded();
             }
             throw error;
@@ -1450,21 +1865,59 @@ export function createApp(options: AppOptions): App {
             try {
                 const response = await callCaddyHelper(config.caddySocketPath, { action: "status" }, { timeoutMs: config.dockerTimeoutMs });
                 if (response.ok && response.action === "status") {
-                    attached = response.sites.filter(site => site.stack === name);
+                    attached = response.sites.filter((site) => site.stack === name);
                 }
             } catch {
-                await recordAudit({ event: "caddy", result: "failure", actor, stack: name, action: "detach", detail: `${domain}: helper unreachable` });
-                return renderStackDetail(name, csrf, { kind: "error", text: "The Caddy helper did not answer. Check the helper socket on the host. Nothing was detached." }, 503);
+                await recordAudit({
+                    event: "caddy",
+                    result: "failure",
+                    actor,
+                    stack: name,
+                    action: "detach",
+                    detail: `${domain}: helper unreachable`,
+                });
+                return renderStackDetail(
+                    name,
+                    csrf,
+                    { kind: "error", text: "The Caddy helper did not answer. Check the helper socket on the host. Nothing was detached." },
+                    503,
+                );
             }
-            if (!attached.some(entry => entry.domain === domain)) {
-                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: `${domain}: not attached` });
-                return renderStackDetail(name, csrf, { kind: "error", text: "This domain is not attached to this stack. Nothing was detached." }, 409);
+            if (!attached.some((entry) => entry.domain === domain)) {
+                await recordAudit({
+                    event: "caddy",
+                    result: "refused",
+                    actor,
+                    stack: name,
+                    action: "detach",
+                    detail: `${domain}: not attached`,
+                });
+                return renderStackDetail(
+                    name,
+                    csrf,
+                    { kind: "error", text: "This domain is not attached to this stack. Nothing was detached." },
+                    409,
+                );
             }
             if (await readStackOwner(name)) {
-                await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: `${domain}: managed externally` });
-                return renderStackDetail(name, csrf, { kind: "error", text: "Routing for this stack is managed externally. Nothing was detached." }, 409);
+                await recordAudit({
+                    event: "caddy",
+                    result: "refused",
+                    actor,
+                    stack: name,
+                    action: "detach",
+                    detail: `${domain}: managed externally`,
+                });
+                return renderStackDetail(
+                    name,
+                    csrf,
+                    { kind: "error", text: "Routing for this stack is managed externally. Nothing was detached." },
+                    409,
+                );
             }
-            return renderStackDetail(name, csrf, { kind: "warn", text: `Detach ${domain}? Caddy will reload without it.` }, 200, null, { confirmDetach: domain });
+            return renderStackDetail(name, csrf, { kind: "warn", text: `Detach ${domain}? Caddy will reload without it.` }, 200, null, {
+                confirmDetach: domain,
+            });
         }
         try {
             // Joins the shared shutdown drain like saves and attaches.
@@ -1478,16 +1931,33 @@ export function createApp(options: AppOptions): App {
                 if (await readStackOwner(name)) {
                     throw new StackError("Routing for this stack is managed externally. Nothing was detached.", 409);
                 }
-                return callCaddyHelper(config.caddySocketPath!, { action: "detach", domain, stack: name }, { timeoutMs: caddyMutationTimeoutMs() });
+                return callCaddyHelper(
+                    config.caddySocketPath!,
+                    { action: "detach", domain, stack: name },
+                    { timeoutMs: caddyMutationTimeoutMs() },
+                );
             });
             saves.add(task);
             let outcome: Awaited<typeof task>;
-            try { outcome = await task; }
-            finally { saves.delete(task); }
+            try {
+                outcome = await task;
+            } finally {
+                saves.delete(task);
+            }
             if (!outcome.ok) {
-                const result = outcome.code === "invalid" || outcome.code === "conflict" ? "refused" : outcome.code === "unknown" ? "unknown" : "failure";
+                const result =
+                    outcome.code === "invalid" || outcome.code === "conflict"
+                        ? "refused"
+                        : outcome.code === "unknown"
+                          ? "unknown"
+                          : "failure";
                 await recordAudit({ event: "caddy", result, actor, stack: name, action: "detach", detail: `${domain}: ${outcome.code}` });
-                return renderStackDetail(name, csrf, { kind: "error", text: helperRefusalText(outcome, "Nothing was detached.") }, helperRefusalStatus(outcome.code));
+                return renderStackDetail(
+                    name,
+                    csrf,
+                    { kind: "error", text: helperRefusalText(outcome, "Nothing was detached.") },
+                    helperRefusalStatus(outcome.code),
+                );
             }
             await recordAudit({ event: "caddy", result: "success", actor, stack: name, action: "detach", detail: domain });
             return redirect(`${back}?detached=1`, 303);
@@ -1497,8 +1967,23 @@ export function createApp(options: AppOptions): App {
                 return renderStackDetail(name, csrf, { kind: "error", text: error.message }, error.status);
             }
             if (error instanceof CaddyHelperError) {
-                await recordAudit({ event: "caddy", result: "unknown", actor, stack: name, action: "detach", detail: `${domain}: helper unreachable` });
-                return renderStackDetail(name, csrf, { kind: "error", text: "The Caddy helper did not answer. Check the helper socket on the host: the outcome is unknown." }, 503);
+                await recordAudit({
+                    event: "caddy",
+                    result: "unknown",
+                    actor,
+                    stack: name,
+                    action: "detach",
+                    detail: `${domain}: helper unreachable`,
+                });
+                return renderStackDetail(
+                    name,
+                    csrf,
+                    {
+                        kind: "error",
+                        text: "The Caddy helper did not answer. Check the helper socket on the host: the outcome is unknown.",
+                    },
+                    503,
+                );
             }
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
                 await recordAudit({ event: "caddy", result: "refused", actor, stack: name, action: "detach", detail: error.message });
@@ -1518,17 +2003,20 @@ export function createApp(options: AppOptions): App {
     ): Promise<Response> {
         const status = await selfUpdater.status();
         const output = status.lastRun.kind === "run" ? await selfUpdater.output() : null;
-        return htmlResponse(aboutPage({
-            csrf,
-            access,
-            timezone: config.timeZone || undefined,
-            status,
-            output: output === null ? null : stripAnsi(output),
-            pending: selfUpdatePending,
-            notice: options.notice,
-            error: options.error,
-            nav: await sidebarNav("about"),
-        }), options.status ?? 200);
+        return htmlResponse(
+            aboutPage({
+                csrf,
+                access,
+                timezone: config.timeZone || undefined,
+                status,
+                output: output === null ? null : stripAnsi(output),
+                pending: selfUpdatePending,
+                notice: options.notice,
+                error: options.error,
+                nav: await sidebarNav("about"),
+            }),
+            options.status ?? 200,
+        );
     }
 
     /** Refusal shared by both self-update forms, or null when the panel is idle. */
@@ -1571,15 +2059,38 @@ export function createApp(options: AppOptions): App {
             }
             const pulled = await selfUpdater.pull(support.identity);
             if (pulled.code !== 0 || pulled.timedOut) {
-                const reason = pulled.timedOut ? "the download did not finish in time" : (pulled.stderr.split("\n").map(line => line.trim()).find(Boolean) ?? "").slice(0, 300);
-                await recordAudit({ event: "self-update-check", result: "failure", actor, detail: pulled.timedOut ? "timed out" : `exit code ${pulled.code}` });
-                return renderAbout(csrf, { error: { title: "Check failed.", message: `Docker could not download ${support.identity.imageRef}${reason ? `: ${reason}` : "."}` }, status: 502 });
+                const reason = pulled.timedOut
+                    ? "the download did not finish in time"
+                    : (
+                          pulled.stderr
+                              .split("\n")
+                              .map((line) => line.trim())
+                              .find(Boolean) ?? ""
+                      ).slice(0, 300);
+                await recordAudit({
+                    event: "self-update-check",
+                    result: "failure",
+                    actor,
+                    detail: pulled.timedOut ? "timed out" : `exit code ${pulled.code}`,
+                });
+                return renderAbout(csrf, {
+                    error: {
+                        title: "Check failed.",
+                        message: `Docker could not download ${support.identity.imageRef}${reason ? `: ${reason}` : "."}`,
+                    },
+                    status: 502,
+                });
             }
             // A newer image is downloaded: ask its release whether it may be
             // installed (ADR 0018). The verdict is shown on the About page.
             const status = await selfUpdater.status();
             const verdict = status.available ? await selfUpdater.verifyRelease(status.available) : null;
-            await recordAudit({ event: "self-update-check", result: "success", actor, detail: verdict ? `release ${verdict.kind}` : "nothing newer" });
+            await recordAudit({
+                event: "self-update-check",
+                result: "success",
+                actor,
+                detail: verdict ? `release ${verdict.kind}` : "nothing newer",
+            });
             return redirect("/about?checked=1", 303);
         } finally {
             selfUpdateChecking = false;
@@ -1609,7 +2120,9 @@ export function createApp(options: AppOptions): App {
         // A stack lock can outlive its operation when the process exit was not
         // confirmed: restarting the panel would drop that guard, so refuse.
         if (locks.hasActive()) {
-            return refuse("A stack is still locked by an action whose end Docker did not confirm. Check the stack on the host, then restart the panel from the host if needed.");
+            return refuse(
+                "A stack is still locked by an action whose end Docker did not confirm. Check the stack on the host, then restart the panel from the host if needed.",
+            );
         }
         // Synchronously, before any await: from here on no action, save or
         // purge can start until the updater ends or the panel is replaced.
@@ -1619,12 +2132,16 @@ export function createApp(options: AppOptions): App {
             const status = await selfUpdater.status();
             if (status.support.kind !== "ready") return await refuse(status.support.reason);
             if (!status.available) return await refuse("No newer image is ready. Check for updates first.");
-            if (status.available.imageId !== target) return await refuse("The image changed since this page was loaded. Review the update again.");
+            if (status.available.imageId !== target)
+                return await refuse("The image changed since this page was loaded. Review the update again.");
             // Fresh release check, never the cached one: the 72-hour period and
             // the digest are enforced here, with no bypass (ADR 0018).
             const verdict = await selfUpdater.verifyRelease(status.available);
             if (verdict.kind === "refused") return await refuse(verdict.reason);
-            if (verdict.kind === "waiting") return await refuse(`Release ${verdict.version} becomes installable on ${new Date(verdict.installableAt).toISOString().slice(0, 16).replace("T", " ")} UTC.`);
+            if (verdict.kind === "waiting")
+                return await refuse(
+                    `Release ${verdict.version} becomes installable on ${new Date(verdict.installableAt).toISOString().slice(0, 16).replace("T", " ")} UTC.`,
+                );
             // Status awaited Docker and GitHub: re-check right before the
             // mutation. Once the updater runs it is not cancelled, like an
             // accepted stack action.
@@ -1644,12 +2161,18 @@ export function createApp(options: AppOptions): App {
             // Docker confirms it ended or never started, even if the start
             // command itself failed or timed out.
             started = true;
-            void selfUpdater.settle().finally(() => { selfUpdatePending = false; });
+            void selfUpdater.settle().finally(() => {
+                selfUpdatePending = false;
+            });
             const detail = `${status.support.identity.imageRef} ${verdict.version}`;
             if (launched === "unconfirmed") {
                 await recordAudit({ event: "self-update", result: "unknown", actor, detail: `${detail}, start not confirmed` });
                 return renderAbout(csrf, {
-                    error: { title: "Update outcome unknown.", message: "Docker did not confirm whether the updater started. Actions stay paused until Docker shows it ended or never started. Check docker ps on the host if this lasts." },
+                    error: {
+                        title: "Update outcome unknown.",
+                        message:
+                            "Docker did not confirm whether the updater started. Actions stay paused until Docker shows it ended or never started. Check docker ps on the host if this lasts.",
+                    },
                     status: 503,
                 });
             }
@@ -1694,7 +2217,11 @@ export function createApp(options: AppOptions): App {
      * the timeout bounds stream lifetime; a full buffer drops slow readers so
      * one stuck client cannot grow server memory without bound.
      */
-    function sseResponse(request: Request, wire: (send: (frame: string) => void, close: () => void) => () => void, guard?: { id: string; isAlive: () => boolean }): Response {
+    function sseResponse(
+        request: Request,
+        wire: (send: (frame: string) => void, close: () => void) => () => void,
+        guard?: { id: string; isAlive: () => boolean },
+    ): Response {
         if (activeSse >= config.sseMaxSubscribers) return plain("Too many subscriptions", 503);
         activeSse += 1;
         let released = false;
@@ -1707,67 +2234,78 @@ export function createApp(options: AppOptions): App {
         let doClose = () => {};
         let startError: unknown = null;
         let startFailed = false;
-        const stream = new ReadableStream<Uint8Array>({
-            start(controller) {
-                const encoder = new TextEncoder();
-                let closed = false;
-                const close = () => {
-                    if (closed) return;
-                    closed = true;
-                    if (guard) unregisterStream(guard.id, close);
-                    try { cleanup(); } catch { /* ignore */ }
-                    clearInterval(heartbeat);
-                    clearTimeout(timeout);
-                    release();
-                    try { controller.close(); } catch { /* already closed */ }
-                };
-                doClose = close;
-                const send = (frame: string) => {
-                    if (closed) return;
-                    // Backpressure: drop a reader that stopped consuming instead of
-                    // buffering large log volumes for it indefinitely.
-                    if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+        const stream = new ReadableStream<Uint8Array>(
+            {
+                start(controller) {
+                    const encoder = new TextEncoder();
+                    let closed = false;
+                    const close = () => {
+                        if (closed) return;
+                        closed = true;
+                        if (guard) unregisterStream(guard.id, close);
+                        try {
+                            cleanup();
+                        } catch {
+                            /* ignore */
+                        }
+                        clearInterval(heartbeat);
+                        clearTimeout(timeout);
+                        release();
+                        try {
+                            controller.close();
+                        } catch {
+                            /* already closed */
+                        }
+                    };
+                    doClose = close;
+                    const send = (frame: string) => {
+                        if (closed) return;
+                        // Backpressure: drop a reader that stopped consuming instead of
+                        // buffering large log volumes for it indefinitely.
+                        if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+                            close();
+                            return;
+                        }
+                        try {
+                            controller.enqueue(encoder.encode(frame));
+                        } catch {
+                            close();
+                        }
+                    };
+                    const heartbeat = setInterval(() => {
+                        // Expiry check must not itself refresh idle activity, so a
+                        // stream cannot keep a session alive past its limits.
+                        if (guard && !guard.isAlive()) {
+                            close();
+                            return;
+                        }
+                        send(formatSseHeartbeat());
+                    }, config.sseHeartbeatMs);
+                    const timeout = setTimeout(close, config.sseTimeoutMs);
+                    const onAbort = () => close();
+                    if (request.signal.aborted) {
                         close();
                         return;
                     }
+                    request.signal.addEventListener("abort", onAbort, { once: true });
                     try {
-                        controller.enqueue(encoder.encode(frame));
-                    } catch {
+                        if (guard) registerStream(guard.id, close);
+                        cleanup = wire(send, close);
+                    } catch (error) {
+                        // A synchronous subscription refusal (e.g. server shutting
+                        // down) must surface as an error status, not an empty 200
+                        // stream. start() runs synchronously, so rethrow below.
+                        startFailed = true;
+                        startError = error;
                         close();
                     }
-                };
-                const heartbeat = setInterval(() => {
-                    // Expiry check must not itself refresh idle activity, so a
-                    // stream cannot keep a session alive past its limits.
-                    if (guard && !guard.isAlive()) {
-                        close();
-                        return;
-                    }
-                    send(formatSseHeartbeat());
-                }, config.sseHeartbeatMs);
-                const timeout = setTimeout(close, config.sseTimeoutMs);
-                const onAbort = () => close();
-                if (request.signal.aborted) {
-                    close();
-                    return;
-                }
-                request.signal.addEventListener("abort", onAbort, { once: true });
-                try {
-                    if (guard) registerStream(guard.id, close);
-                    cleanup = wire(send, close);
-                } catch (error) {
-                    // A synchronous subscription refusal (e.g. server shutting
-                    // down) must surface as an error status, not an empty 200
-                    // stream. start() runs synchronously, so rethrow below.
-                    startFailed = true;
-                    startError = error;
-                    close();
-                }
+                },
+                cancel() {
+                    doClose();
+                },
             },
-            cancel() {
-                doClose();
-            },
-        }, { highWaterMark: 64 });
+            { highWaterMark: 64 },
+        );
         if (startFailed) throw startError;
         return new Response(stream, { headers: sseHeaders() });
     }
@@ -1780,31 +2318,35 @@ export function createApp(options: AppOptions): App {
         // let the stream register and keep receiving data.
         if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
         const guard = { id: sessionId, isAlive: () => sessions.isActive(sessionId) };
-        return sseResponse(request, (send, close) => {
-            let sentOutput = "";
-            let sentTerminal = false;
-            const sub = operations.subscribe(name, operation => {
-                const full = operation.output;
-                if (full.length >= sentOutput.length && full.startsWith(sentOutput)) {
-                    const delta = full.slice(sentOutput.length);
-                    sentOutput = full;
-                    if (delta) send(formatSseEvent("output", JSON.stringify({ text: delta })));
-                } else {
-                    sentOutput = full;
-                    send(formatSseEvent("snapshot", operationSnapshot(operation)));
-                    return;
-                }
-                if (operation.status !== "running" && !sentTerminal) {
-                    sentTerminal = true;
-                    send(formatSseEvent("done", operationDone(operation)));
-                    close();
-                }
-            });
-            sentOutput = sub.snapshot?.output ?? "";
-            if (sub.snapshot) send(formatSseEvent("snapshot", operationSnapshot(sub.snapshot)));
-            else send(formatSseEvent("snapshot", JSON.stringify({ status: "none" })));
-            return sub.unsubscribe;
-        }, guard);
+        return sseResponse(
+            request,
+            (send, close) => {
+                let sentOutput = "";
+                let sentTerminal = false;
+                const sub = operations.subscribe(name, (operation) => {
+                    const full = operation.output;
+                    if (full.length >= sentOutput.length && full.startsWith(sentOutput)) {
+                        const delta = full.slice(sentOutput.length);
+                        sentOutput = full;
+                        if (delta) send(formatSseEvent("output", JSON.stringify({ text: delta })));
+                    } else {
+                        sentOutput = full;
+                        send(formatSseEvent("snapshot", operationSnapshot(operation)));
+                        return;
+                    }
+                    if (operation.status !== "running" && !sentTerminal) {
+                        sentTerminal = true;
+                        send(formatSseEvent("done", operationDone(operation)));
+                        close();
+                    }
+                });
+                sentOutput = sub.snapshot?.output ?? "";
+                if (sub.snapshot) send(formatSseEvent("snapshot", operationSnapshot(sub.snapshot)));
+                else send(formatSseEvent("snapshot", JSON.stringify({ status: "none" })));
+                return sub.unsubscribe;
+            },
+            guard,
+        );
     }
 
     async function handleLogsEvents(name: string, request: Request, sessionId: string): Promise<Response> {
@@ -1827,36 +2369,61 @@ export function createApp(options: AppOptions): App {
         if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
         const guard = { id: sessionId, isAlive: () => sessions.isActive(sessionId) };
         if (context.kind === "absent") {
-            return sseResponse(request, (send, close) => {
-                send(formatSseEvent("replay", JSON.stringify({ text: "", truncated: false })));
-                send(formatSseEvent("end", "This stack is not deployed yet, so there are no logs."));
-                close();
-                return () => {};
-            }, guard);
+            return sseResponse(
+                request,
+                (send, close) => {
+                    send(formatSseEvent("replay", JSON.stringify({ text: "", truncated: false })));
+                    send(formatSseEvent("end", "This stack is not deployed yet, so there are no logs."));
+                    close();
+                    return () => {};
+                },
+                guard,
+            );
         }
         const selection = await resolveLogSelection(
-            { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
+            {
+                project: context.project ?? undefined,
+                composeFile: context.composeFile,
+                cwd: context.cwd,
+                envFile: context.envFile ?? undefined,
+            },
             query.get("service"),
             query.get("tail"),
         );
         // The selection awaits Docker too: re-check before subscribing.
         if (!sessions.isActive(sessionId)) return plain("Unauthorized", 401);
-        const target = { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined, service: selection.service ?? undefined, tailLines: selection.tailLines };
-        return sseResponse(request, (send, close) => {
-            const sub = logs.subscribe(
-                name,
-                target,
-                chunk => send(formatSseEvent("chunk", JSON.stringify({ text: chunk }))),
-                reason => {
-                    send(formatSseEvent("end", reason === "timeout"
-                        ? `Stopped following after ${Math.round(config.logTimeoutMs / 60000)} minutes (time limit). Click Follow logs to continue.`
-                        : "The log stream ended, usually because the containers stopped."));
-                    close();
-                },
-            );
-            send(formatSseEvent("replay", JSON.stringify({ text: sub.replay.text, truncated: sub.replay.truncated })));
-            return sub.unsubscribe;
-        }, guard);
+        const target = {
+            project: context.project ?? undefined,
+            composeFile: context.composeFile,
+            cwd: context.cwd,
+            envFile: context.envFile ?? undefined,
+            service: selection.service ?? undefined,
+            tailLines: selection.tailLines,
+        };
+        return sseResponse(
+            request,
+            (send, close) => {
+                const sub = logs.subscribe(
+                    name,
+                    target,
+                    (chunk) => send(formatSseEvent("chunk", JSON.stringify({ text: chunk }))),
+                    (reason) => {
+                        send(
+                            formatSseEvent(
+                                "end",
+                                reason === "timeout"
+                                    ? `Stopped following after ${Math.round(config.logTimeoutMs / 60000)} minutes (time limit). Click Follow logs to continue.`
+                                    : "The log stream ended, usually because the containers stopped.",
+                            ),
+                        );
+                        close();
+                    },
+                );
+                send(formatSseEvent("replay", JSON.stringify({ text: sub.replay.text, truncated: sub.replay.truncated })));
+                return sub.unsubscribe;
+            },
+            guard,
+        );
     }
 
     /**
@@ -1918,7 +2485,12 @@ export function createApp(options: AppOptions): App {
         let selection: Awaited<ReturnType<typeof resolveLogSelection>>;
         try {
             selection = await resolveLogSelection(
-                { project: context.project ?? undefined, composeFile: context.composeFile, cwd: context.cwd, envFile: context.envFile ?? undefined },
+                {
+                    project: context.project ?? undefined,
+                    composeFile: context.composeFile,
+                    cwd: context.cwd,
+                    envFile: context.envFile ?? undefined,
+                },
                 query.get("service"),
                 query.get("tail"),
             );
@@ -1945,7 +2517,8 @@ export function createApp(options: AppOptions): App {
             return plain("Docker could not read these logs. Reload the page to try again.", 502);
         }
         if (result.timedOut) return plain("Docker did not respond in time. Reload the page to try again.", 504);
-        if (result.code !== 0) return plain("Docker could not read these logs. The stack or its containers may have changed; reload the page.", 502);
+        if (result.code !== 0)
+            return plain("Docker could not read these logs. The stack or its containers may have changed; reload the page.", 502);
         const text = stripAnsi(result.stdout).replace(/\s+$/, "");
         if (!text) return plain("No recent logs for this stack.", 200);
         return plain(result.truncated ? `${text}\n\n[Output shortened: only the most recent part is kept.]` : text, 200);
@@ -1961,15 +2534,19 @@ export function createApp(options: AppOptions): App {
     /** Minimal, fixed projection of one container: image ID and working dir. */
     async function containerRuntime(id: string): Promise<ToolboxRuntime | null> {
         let result: Awaited<ReturnType<ContainerInspector["inspect"]>>;
-        try { result = await inspector.inspect(id); }
-        catch { return null; }
+        try {
+            result = await inspector.inspect(id);
+        } catch {
+            return null;
+        }
         if (result.code !== 0 || result.timedOut || result.truncated) return null;
         try {
             const rows = JSON.parse(result.stdout) as unknown;
-            const row = Array.isArray(rows) ? rows[0] as Record<string, unknown> : null;
+            const row = Array.isArray(rows) ? (rows[0] as Record<string, unknown>) : null;
             const imageId = row && typeof row["Image"] === "string" ? row["Image"] : null;
             if (!imageId) return null;
-            const config = row && typeof row["Config"] === "object" && row["Config"] !== null ? row["Config"] as Record<string, unknown> : null;
+            const config =
+                row && typeof row["Config"] === "object" && row["Config"] !== null ? (row["Config"] as Record<string, unknown>) : null;
             const configured = config ? config["WorkingDir"] : undefined;
             const workdir = typeof configured === "string" && configured !== "" ? configured : null;
             return { imageId, workdir };
@@ -2000,14 +2577,23 @@ export function createApp(options: AppOptions): App {
         if (context.kind === "ambiguous") return off("Several Docker Compose projects match this stack, so the panel will not choose one.");
         if (context.kind === "unavailable") return off(TOOLBOX_OFFLINE);
         if (context.kind === "absent") return off("This stack is not deployed yet, so there is no container to run actions in.");
-        const ids = await provider.runningContainerIds({ project: context.project!, composeFile: context.composeFile, cwd: context.cwd, service: source.service, envFile: context.envFile ?? undefined });
+        const ids = await provider.runningContainerIds({
+            project: context.project!,
+            composeFile: context.composeFile,
+            cwd: context.cwd,
+            service: source.service,
+            envFile: context.envFile ?? undefined,
+        });
         if (ids === null) return off(TOOLBOX_OFFLINE);
         if (ids.length === 0) return off(`Service "${source.service}" is not running, so its actions are unavailable.`);
         if (ids.length > 1) return off(`Service "${source.service}" has several running containers; the toolbox needs exactly one.`);
         const id = ids[0]!;
         const runtime = await containerRuntime(id);
         if (!runtime) return off("The panel could not read this container's details from Docker.");
-        const file = await actionRunner.readFile(id, toolboxManifestPath(source, runtime), { timeoutMs: config.dockerTimeoutMs, maxBytes: config.toolboxMaxManifestBytes });
+        const file = await actionRunner.readFile(id, toolboxManifestPath(source, runtime), {
+            timeoutMs: config.dockerTimeoutMs,
+            maxBytes: config.toolboxMaxManifestBytes,
+        });
         if (file.kind !== "ok") return off(toolboxFileFailure(file.kind, source.manifestFile));
         const catalog = buildCatalog(source, file.content, { containerId: id, imageId: runtime.imageId }, toolboxLimits());
         if (!catalog.ok) return off(catalog.error);
@@ -2023,20 +2609,21 @@ export function createApp(options: AppOptions): App {
         const parsed = parseToolboxSources(stack.source);
         if (!parsed.ok) throw new StackError(`${parsed.error} Fix the x-compose-panel section of ${stack.filename}.`, 400);
         const context = await resolveProjectContext(stacksRoot, name, provider);
-        const sources: ToolboxSourceView[] = await Promise.all(
-            parsed.value.map(source => discoverToolboxSource(source, context)),
+        const sources: ToolboxSourceView[] = await Promise.all(parsed.value.map((source) => discoverToolboxSource(source, context)));
+        return htmlResponse(
+            toolboxPage({
+                csrf,
+                access,
+                timezone: config.timeZone || undefined,
+                stack: name,
+                sources,
+                operation: operations.forStack(name),
+                notice: options.notice,
+                error: options.error,
+                nav: await sidebarNav("stacks", name),
+            }),
+            options.status ?? 200,
         );
-        return htmlResponse(toolboxPage({
-            csrf,
-            access,
-            timezone: config.timeZone || undefined,
-            stack: name,
-            sources,
-            operation: operations.forStack(name),
-            notice: options.notice,
-            error: options.error,
-            nav: await sidebarNav("stacks", name),
-        }), options.status ?? 200);
     }
 
     type ToolboxPrepare =
@@ -2048,21 +2635,40 @@ export function createApp(options: AppOptions): App {
      * revision. Called once for a friendly pre-check and again inside the
      * operation, under the per-stack lock (ADR 0026).
      */
-    async function prepareToolboxAction(source: ToolboxSource, context: ProjectContext, actionName: string, expectedRevision: string): Promise<ToolboxPrepare> {
-        if (context.kind !== "resolved") return { kind: "refused", message: "This stack is not deployed with a single Compose project, so no action can run." };
-        const ids = await provider.runningContainerIds({ project: context.project!, composeFile: context.composeFile, cwd: context.cwd, service: source.service, envFile: context.envFile ?? undefined });
+    async function prepareToolboxAction(
+        source: ToolboxSource,
+        context: ProjectContext,
+        actionName: string,
+        expectedRevision: string,
+    ): Promise<ToolboxPrepare> {
+        if (context.kind !== "resolved")
+            return { kind: "refused", message: "This stack is not deployed with a single Compose project, so no action can run." };
+        const ids = await provider.runningContainerIds({
+            project: context.project!,
+            composeFile: context.composeFile,
+            cwd: context.cwd,
+            service: source.service,
+            envFile: context.envFile ?? undefined,
+        });
         if (ids === null) return { kind: "refused", message: TOOLBOX_OFFLINE };
         if (ids.length === 0) return { kind: "refused", message: `Service "${source.service}" is not running.` };
-        if (ids.length > 1) return { kind: "refused", message: `Service "${source.service}" has several running containers; the toolbox needs exactly one.` };
+        if (ids.length > 1)
+            return {
+                kind: "refused",
+                message: `Service "${source.service}" has several running containers; the toolbox needs exactly one.`,
+            };
         const id = ids[0]!;
         const runtime = await containerRuntime(id);
         if (!runtime) return { kind: "refused", message: "The panel could not read this container's details from Docker." };
         const manifestWorkdir = source.workdir ?? runtime.workdir ?? "/";
-        const file = await actionRunner.readFile(id, posix.join(manifestWorkdir, source.manifestFile), { timeoutMs: config.dockerTimeoutMs, maxBytes: config.toolboxMaxManifestBytes });
+        const file = await actionRunner.readFile(id, posix.join(manifestWorkdir, source.manifestFile), {
+            timeoutMs: config.dockerTimeoutMs,
+            maxBytes: config.toolboxMaxManifestBytes,
+        });
         if (file.kind !== "ok") return { kind: "refused", message: toolboxFileFailure(file.kind, source.manifestFile) };
         const catalog = buildCatalog(source, file.content, { containerId: id, imageId: runtime.imageId }, toolboxLimits());
         if (!catalog.ok) return { kind: "refused", message: catalog.error };
-        const found = catalog.value.actions.find(action => action.name === actionName);
+        const found = catalog.value.actions.find((action) => action.name === actionName);
         if (!found) return { kind: "refused", message: `This source does not declare the action "${actionName}".` };
         if (catalog.value.revision !== expectedRevision) {
             return { kind: "refused", message: "The action definition changed since this page was loaded. Reload the page and try again." };
@@ -2076,13 +2682,22 @@ export function createApp(options: AppOptions): App {
      * the awaited Docker calls cannot make the action run with a stale source
      * (ADR 0026). The project reserved by the caller is rechecked too.
      */
-    async function revalidateToolboxAction(name: string, sourceId: string, actionName: string, expectedRevision: string, expectedProject: string | undefined): Promise<ToolboxPrepare> {
+    async function revalidateToolboxAction(
+        name: string,
+        sourceId: string,
+        actionName: string,
+        expectedRevision: string,
+        expectedProject: string | undefined,
+    ): Promise<ToolboxPrepare> {
         let stack: Awaited<ReturnType<typeof readStackCompose>>;
-        try { stack = await readStackCompose(stacksRoot, name); }
-        catch { return { kind: "refused", message: "This stack could no longer be read." }; }
+        try {
+            stack = await readStackCompose(stacksRoot, name);
+        } catch {
+            return { kind: "refused", message: "This stack could no longer be read." };
+        }
         const parsed = parseToolboxSources(stack.source);
         if (!parsed.ok) return { kind: "refused", message: parsed.error };
-        const source = parsed.value.find(entry => entry.id === sourceId);
+        const source = parsed.value.find((entry) => entry.id === sourceId);
         if (!source) return { kind: "refused", message: "This action's source is no longer declared by this stack." };
         const context = await resolveProjectContext(stacksRoot, name, provider);
         if (context.kind !== "resolved") return { kind: "refused", message: "This stack's Compose project can no longer be resolved." };
@@ -2108,31 +2723,50 @@ export function createApp(options: AppOptions): App {
         const stack = await readStackCompose(stacksRoot, name);
         const parsed = parseToolboxSources(stack.source);
         if (!parsed.ok) throw new StackError(parsed.error, 400);
-        const source = parsed.value.find(entry => entry.id === sourceId) ?? null;
+        const source = parsed.value.find((entry) => entry.id === sourceId) ?? null;
         if (!source) throw new StackError("This action's source is not declared by this stack. Nothing was run.", 404);
         if (!isActionName(actionName)) throw new StackError("This action name is not valid. Nothing was run.", 400);
         // The revision is always sent by the rendered page; a request without a
         // valid one cannot have come from a current page, so it is refused.
         if (!/^[0-9a-f]{64}$/.test(revision)) {
-            return renderToolbox(name, csrf, { error: { title: "Nothing was run.", message: "This page is out of date. Reload the page and try again. Nothing was run." }, status: 409 });
+            return renderToolbox(name, csrf, {
+                error: { title: "Nothing was run.", message: "This page is out of date. Reload the page and try again. Nothing was run." },
+                status: 409,
+            });
         }
 
         const context = await resolveProjectContext(stacksRoot, name, provider);
         if (context.kind === "invalid") throw new StackError(ENV_NOT_REGULAR, 409);
-        if (context.kind === "ambiguous") throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack. Nothing was run.", 409);
-        if (context.kind === "unavailable") throw new StackError("Docker did not respond, so the panel could not check this stack. Nothing was run.", 503);
+        if (context.kind === "ambiguous")
+            throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack. Nothing was run.", 409);
+        if (context.kind === "unavailable")
+            throw new StackError("Docker did not respond, so the panel could not check this stack. Nothing was run.", 503);
         if (context.kind === "absent") throw new StackError("This stack is not deployed yet, so there is nothing to run actions in.", 409);
 
         // A friendly pre-check without the lock; the authoritative revalidation
         // runs again inside the operation, under the per-stack lock.
         const prepared = await prepareToolboxAction(source, context, actionName, revision);
         if (prepared.kind === "refused") {
-            await recordAudit({ event: "toolbox", result: "refused", actor: clientKey(request, config), stack: name, action: actionName, detail: prepared.message });
+            await recordAudit({
+                event: "toolbox",
+                result: "refused",
+                actor: clientKey(request, config),
+                stack: name,
+                action: actionName,
+                detail: prepared.message,
+            });
             return renderToolbox(name, csrf, { error: { title: "Nothing was run.", message: prepared.message }, status: 409 });
         }
 
         if (!sessions.isActive(session.id)) {
-            await recordAudit({ event: "toolbox", result: "refused", actor: clientKey(request, config), stack: name, action: actionName, detail: "session ended" });
+            await recordAudit({
+                event: "toolbox",
+                result: "refused",
+                actor: clientKey(request, config),
+                stack: name,
+                action: actionName,
+                detail: "session ended",
+            });
             return sessionEnded();
         }
         try {
@@ -2161,12 +2795,29 @@ export function createApp(options: AppOptions): App {
                     });
                 },
             });
-            await recordAudit({ event: "toolbox", result: "started", actor: clientKey(request, config), stack: name, action: actionName, detail: `source ${source.id}` });
+            await recordAudit({
+                event: "toolbox",
+                result: "started",
+                actor: clientKey(request, config),
+                stack: name,
+                action: actionName,
+                detail: `source ${source.id}`,
+            });
             return redirect(back, 303);
         } catch (error) {
             if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
-                await recordAudit({ event: "toolbox", result: "refused", actor: clientKey(request, config), stack: name, action: actionName, detail: error.message });
-                return renderToolbox(name, csrf, { error: { title: "Nothing was run.", message: `${error.message} Nothing was run.` }, status: 409 });
+                await recordAudit({
+                    event: "toolbox",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    action: actionName,
+                    detail: error.message,
+                });
+                return renderToolbox(name, csrf, {
+                    error: { title: "Nothing was run.", message: `${error.message} Nothing was run.` },
+                    status: 409,
+                });
             }
             throw error;
         }
@@ -2264,37 +2915,55 @@ export function createApp(options: AppOptions): App {
         }
         const editMatch = /^\/stacks\/([^/]+)\/edit$/.exec(url.pathname);
         if (editMatch && method === "POST") {
-            try { return await handleSave(request, decodeName(editMatch[1]!), session); }
-            catch (error) { return routeError(error, session.csrf, safeName(editMatch[1]!)); }
+            try {
+                return await handleSave(request, decodeName(editMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(editMatch[1]!));
+            }
         }
         const backupsMatch = /^\/stacks\/([^/]+)\/backups\/purge$/.exec(url.pathname);
         if (backupsMatch) {
             if (method !== "POST") return methodNotAllowed("POST");
-            try { return await handleBackupPurge(request, decodeName(backupsMatch[1]!), session); }
-            catch (error) { return routeError(error, session.csrf, safeName(backupsMatch[1]!)); }
+            try {
+                return await handleBackupPurge(request, decodeName(backupsMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(backupsMatch[1]!));
+            }
         }
         const operationsMatch = /^\/stacks\/([^/]+)\/operations$/.exec(url.pathname);
         if (operationsMatch) {
             if (method !== "POST") return methodNotAllowed("POST");
-            try { return await handleOperation(request, decodeName(operationsMatch[1]!), session); }
-            catch (error) { return routeError(error, session.csrf, safeName(operationsMatch[1]!)); }
+            try {
+                return await handleOperation(request, decodeName(operationsMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(operationsMatch[1]!));
+            }
         }
         const toolboxMatch = /^\/stacks\/([^/]+)\/actions$/.exec(url.pathname);
         if (toolboxMatch && method === "POST") {
-            try { return await handleToolboxAction(request, decodeName(toolboxMatch[1]!), session); }
-            catch (error) { return routeError(error, session.csrf, safeName(toolboxMatch[1]!)); }
+            try {
+                return await handleToolboxAction(request, decodeName(toolboxMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(toolboxMatch[1]!));
+            }
         }
         const caddyAttachMatch = /^\/stacks\/([^/]+)\/domains\/attach$/.exec(url.pathname);
         if (caddyAttachMatch) {
             if (method !== "POST") return methodNotAllowed("POST");
-            try { return await handleCaddyAttach(request, decodeName(caddyAttachMatch[1]!), session); }
-            catch (error) { return routeError(error, session.csrf, safeName(caddyAttachMatch[1]!)); }
+            try {
+                return await handleCaddyAttach(request, decodeName(caddyAttachMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(caddyAttachMatch[1]!));
+            }
         }
         const caddyDetachMatch = /^\/stacks\/([^/]+)\/domains\/detach$/.exec(url.pathname);
         if (caddyDetachMatch) {
             if (method !== "POST") return methodNotAllowed("POST");
-            try { return await handleCaddyDetach(request, decodeName(caddyDetachMatch[1]!), session); }
-            catch (error) { return routeError(error, session.csrf, safeName(caddyDetachMatch[1]!)); }
+            try {
+                return await handleCaddyDetach(request, decodeName(caddyDetachMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(caddyDetachMatch[1]!));
+            }
         }
         if (url.pathname === "/about/check" || url.pathname === "/about/update") {
             if (method !== "POST") return methodNotAllowed("POST");
@@ -2302,7 +2971,9 @@ export function createApp(options: AppOptions): App {
                 return url.pathname === "/about/check"
                     ? await handleSelfUpdateCheck(request, session)
                     : await handleSelfUpdateStart(request, session);
-            } catch (error) { return routeError(error, session.csrf); }
+            } catch (error) {
+                return routeError(error, session.csrf);
+            }
         }
         if (method !== "GET" && method !== "HEAD") return methodNotAllowed("GET");
 
@@ -2310,7 +2981,10 @@ export function createApp(options: AppOptions): App {
             if (url.pathname === "/") return await renderStackList(session.csrf);
             if (url.pathname === "/about") {
                 // Fixed message only: the query flag is never reflected.
-                const notice = url.searchParams.get("checked") === "1" ? { kind: "success" as const, text: "Checked: the latest image of this tag is downloaded." } : undefined;
+                const notice =
+                    url.searchParams.get("checked") === "1"
+                        ? { kind: "success" as const, text: "Checked: the latest image of this tag is downloaded." }
+                        : undefined;
                 return await renderAbout(session.csrf, { notice });
             }
             if (url.pathname === "/server/stats") {
@@ -2320,7 +2994,8 @@ export function createApp(options: AppOptions): App {
             if (url.pathname === "/server") return await renderServer(session.csrf, request);
             if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
             if (url.pathname === "/access") return await renderAccess(session.csrf, request);
-            if (url.pathname === "/containers") return await renderContainers(session.csrf, parseContainerFilter(url.searchParams.get("state")));
+            if (url.pathname === "/containers")
+                return await renderContainers(session.csrf, parseContainerFilter(url.searchParams.get("state")));
             const containerLogsMatch = /^\/containers\/([^/]+)\/logs$/.exec(url.pathname);
             if (containerLogsMatch) {
                 const response = await handleContainerLogs(decodeName(containerLogsMatch[1]!), url.searchParams.get("tail"));
@@ -2343,18 +3018,35 @@ export function createApp(options: AppOptions): App {
             if (detailMatch) {
                 // Fixed messages only: the query flag is never reflected.
                 const saved = url.searchParams.get("saved");
-                const notice = url.searchParams.get("created") === "1"
-                    ? { kind: "success" as const, text: "Stack created. No containers were started. Use Up when you are ready to deploy." }
-                    : saved === "1"
-                    ? { kind: "success" as const, text: "Saved. The running containers are unchanged: use Up to apply the new configuration." }
-                    : saved === "0" ? { kind: "info" as const, text: "No changes to save: the files on disk already match." }
-                    : url.searchParams.get("attached") === "1"
-                    ? { kind: "success" as const, text: "Domain attached. Caddy reloaded with the new site." }
-                    : url.searchParams.get("detached") === "1"
-                    ? { kind: "success" as const, text: "Domain detached. Caddy reloaded without it." } : undefined;
+                const notice =
+                    url.searchParams.get("created") === "1"
+                        ? {
+                              kind: "success" as const,
+                              text: "Stack created. No containers were started. Use Up when you are ready to deploy.",
+                          }
+                        : saved === "1"
+                          ? {
+                                kind: "success" as const,
+                                text: "Saved. The running containers are unchanged: use Up to apply the new configuration.",
+                            }
+                          : saved === "0"
+                            ? { kind: "info" as const, text: "No changes to save: the files on disk already match." }
+                            : url.searchParams.get("attached") === "1"
+                              ? { kind: "success" as const, text: "Domain attached. Caddy reloaded with the new site." }
+                              : url.searchParams.get("detached") === "1"
+                                ? { kind: "success" as const, text: "Domain detached. Caddy reloaded without it." }
+                                : undefined;
                 return await renderStackDetail(decodeName(detailMatch[1]!), session.csrf, notice, 200, url.searchParams);
             }
-            return htmlResponse(messagePage("Not found", "This page does not exist.", { href: "/", label: "← Back to all stacks" }, pageChrome(session.csrf)), 404);
+            return htmlResponse(
+                messagePage(
+                    "Not found",
+                    "This page does not exist.",
+                    { href: "/", label: "← Back to all stacks" },
+                    pageChrome(session.csrf),
+                ),
+                404,
+            );
         } catch (error) {
             return routeError(error, session.csrf);
         }
@@ -2377,9 +3069,13 @@ export function createApp(options: AppOptions): App {
             try {
                 await Promise.race([
                     Promise.allSettled([logs.shutdown(graceMs), operations.shutdown(graceMs), ...saves]),
-                    new Promise<void>(resolve => { timer = setTimeout(resolve, graceMs); }),
+                    new Promise<void>((resolve) => {
+                        timer = setTimeout(resolve, graceMs);
+                    }),
                 ]);
-            } finally { clearTimeout(timer); }
+            } finally {
+                clearTimeout(timer);
+            }
         },
     };
 }

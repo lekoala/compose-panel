@@ -26,7 +26,9 @@ test("the registry CLI preserves retries and records replacement digests", async
         const history = JSON.parse(await readFile(path, "utf8"));
         expect(history.releases.map((entry: { digest: string }) => entry.digest)).toEqual([first, second]);
         expect(history.releases[0]).toEqual(JSON.parse(initial).releases[0]);
-    } finally { await rm(dir, { recursive: true, force: true }); }
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
 });
 
 test.skipIf(process.platform !== "linux")("all CI and publication shell steps have valid bash syntax", async () => {

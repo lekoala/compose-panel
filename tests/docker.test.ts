@@ -29,7 +29,9 @@ test("caps captured output", async () => {
 });
 
 test("binary capture preserves arbitrary bytes without a text copy", async () => {
-    const result = await runCommand(process.execPath, ["-e", "process.stdout.write(Buffer.from([0,255,128,13,10]))"], { binaryStdout: true });
+    const result = await runCommand(process.execPath, ["-e", "process.stdout.write(Buffer.from([0,255,128,13,10]))"], {
+        binaryStdout: true,
+    });
     expect(result.code).toBe(0);
     expect(result.stdout).toBe("");
     expect(result.stdoutBytes).toEqual(Buffer.from([0, 255, 128, 13, 10]));
@@ -44,11 +46,11 @@ test("delivers pipe chunks before the process exits", async () => {
     const seen: string[] = [];
     const pending = runCommand(process.execPath, ["-e", "process.stdout.write('early\\n'); setTimeout(() => {}, 500)"], {
         timeoutMs: 5000,
-        onChunk: chunk => seen.push(chunk),
+        onChunk: (chunk) => seen.push(chunk),
     });
     const deadline = Date.now() + 4000;
     while (seen.length === 0 && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
     }
     expect(seen.join("")).toContain("early");
     const result = await pending;
@@ -64,7 +66,7 @@ test("drains chatty output past the cap instead of wedging the child", async () 
         {
             maxBytes: 100,
             timeoutMs: 15000,
-            onChunk: chunk => live.push(chunk),
+            onChunk: (chunk) => live.push(chunk),
         },
     );
     // Megabytes flowed through a 100-byte cap: the child exited on its own.
@@ -82,7 +84,14 @@ test("does not throw when the executable is missing", async () => {
 
 test("preserves UTF-8 split between separate pipe writes", async () => {
     const seen: string[] = [];
-    const result = await runCommand(process.execPath, ["-e", "const b = Buffer.from('é🙂'); process.stdout.write(b.subarray(0, 1)); setTimeout(() => process.stdout.write(b.subarray(1, 4)), 30); setTimeout(() => process.stdout.write(b.subarray(4)), 60)"], { onChunk: text => seen.push(text) });
+    const result = await runCommand(
+        process.execPath,
+        [
+            "-e",
+            "const b = Buffer.from('é🙂'); process.stdout.write(b.subarray(0, 1)); setTimeout(() => process.stdout.write(b.subarray(1, 4)), 30); setTimeout(() => process.stdout.write(b.subarray(4)), 60)",
+        ],
+        { onChunk: (text) => seen.push(text) },
+    );
     expect(seen.join("")).toBe("é🙂");
     expect(result.stdout).toBe("é🙂");
 });
@@ -90,7 +99,8 @@ test("preserves UTF-8 split between separate pipe writes", async () => {
 test("aborts a running child and confirms its exit within the kill deadline", async () => {
     const controller = new AbortController();
     const result = await runCommand(process.execPath, ["-e", "process.stdout.write('ready'); setInterval(() => {}, 1000)"], {
-        timeoutMs: 5000, signal: controller.signal,
+        timeoutMs: 5000,
+        signal: controller.signal,
         onChunk: () => controller.abort(),
     });
     expect(result.timedOut).toBe(true);

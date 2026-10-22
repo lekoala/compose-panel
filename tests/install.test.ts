@@ -11,11 +11,11 @@ const LOCK = fileURLToPath(new URL("../deploy/caddy/with-caddy-lock.sh", import.
 async function shell(command: string, args: string[] = [], input = "", env: Record<string, string> = {}) {
     const proc = Bun.spawn(["bash", "-c", `source "$0"; ${command}`, SCRIPT, ...args], {
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", COMPOSE_PANEL_INSTALL_LIB: "1", ...env },
-        stdin: new Blob([input]), stdout: "pipe", stderr: "pipe",
+        stdin: new Blob([input]),
+        stdout: "pipe",
+        stderr: "pipe",
     });
-    const [stdout, stderr, code] = await Promise.all([
-        new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
-    ]);
+    const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     return { stdout, stderr, code };
 }
 
@@ -24,7 +24,9 @@ describe.skipIf(process.platform === "win32")("Ubuntu installer isolated fixture
     beforeEach(async () => {
         dir = await realpath(await mkdtemp(join(tmpdir(), "cp-install-")));
     });
-    afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+    afterEach(async () => {
+        await rm(dir, { recursive: true, force: true });
+    });
 
     test("only the requested Ubuntu LTS releases and architectures are accepted", async () => {
         for (const release of ["24.04", "26.04"]) {
@@ -32,8 +34,12 @@ describe.skipIf(process.platform === "win32")("Ubuntu installer isolated fixture
                 expect((await shell('supported_host "$@"', ["ubuntu", release, arch])).code).toBe(0);
             }
         }
-        for (const args of [["debian", "24.04", "amd64"], ["ubuntu", "22.04", "amd64"],
-            ["ubuntu", "26.10", "amd64"], ["ubuntu", "24.04", "armhf"]]) {
+        for (const args of [
+            ["debian", "24.04", "amd64"],
+            ["ubuntu", "22.04", "amd64"],
+            ["ubuntu", "26.10", "amd64"],
+            ["ubuntu", "24.04", "armhf"],
+        ]) {
             expect((await shell('supported_host "$@"', args)).code).not.toBe(0);
         }
     });
@@ -44,8 +50,18 @@ describe.skipIf(process.platform === "win32")("Ubuntu installer isolated fixture
             expect((await shell('valid_user "$1"', [value])).code).not.toBe(0);
         }
         expect((await shell('valid_domain "$1"', ["panel.example.org"])).code).toBe(0);
-        for (const value of ["https://panel.example.org", "127.0.0.1", "host.local", "a..org",
-            "a.org.", "*.example.org", "a.org {\nrespond secret\n}", "-a.org", "a-.org", "a.org:443"]) {
+        for (const value of [
+            "https://panel.example.org",
+            "127.0.0.1",
+            "host.local",
+            "a..org",
+            "a.org.",
+            "*.example.org",
+            "a.org {\nrespond secret\n}",
+            "-a.org",
+            "a-.org",
+            "a.org:443",
+        ]) {
             expect((await shell('valid_domain "$1"', [value])).code).not.toBe(0);
         }
     });
@@ -64,14 +80,17 @@ describe.skipIf(process.platform === "win32")("Ubuntu installer isolated fixture
         const proxy = `$2a$14$${"x".repeat(53)}`;
         const file = join(dir, "compose-panel.env");
         for (const domain of ["", "panel.example.org"]) {
-            const result = await shell(`
+            const result = await shell(
+                `
 admin_user=operator42; admin_hash=$2; domain=$3; proxy_hash=$4
 render_env > "$1"
 COMPOSE_PANEL_SETUP_LIB=1 source "$5"
 [ "$(env_value "$1" COMPOSE_PANEL_ADMIN_PASSWORD_HASH)" = "$2" ]
 [ "$(env_value "$1" COMPOSE_PANEL_INSTALLER_PROXY_HASH)" = "$4" ]
 cmp -s "$1" <(render_env)
-`, [file, hash, domain, domain ? proxy : "", SETUP]);
+`,
+                [file, hash, domain, domain ? proxy : "", SETUP],
+            );
             expect(result.code).toBe(0);
             const content = await readFile(file, "utf8");
             expect(content).toContain(`COMPOSE_PANEL_ADMIN_PASSWORD_HASH='${hash}'`);
@@ -82,7 +101,7 @@ cmp -s "$1" <(render_env)
     });
 
     test("Caddy keeps application imports and protects every panel route", async () => {
-        const result = await shell('domain=panel.example.org; admin_user=operator42; proxy_hash=$1; render_caddy', ["$2a$hash"]);
+        const result = await shell("domain=panel.example.org; admin_user=operator42; proxy_hash=$1; render_caddy", ["$2a$hash"]);
         expect(result.code).toBe(0);
         expect(result.stdout).toContain("import /etc/caddy/compose-panel.d/*.caddy");
         expect(result.stdout).toContain("basic_auth {\n        operator42 $2a$hash");
@@ -122,29 +141,45 @@ cmp -s "$1" <(render_env)
     // No command can connect to a daemon, and all files stay in this fixture.
     test("password hashing sends exact stdin without secrets in argv or environment", async () => {
         const executable = join(dir, "docker");
-        await writeFile(executable, `#!/usr/bin/env bash
+        await writeFile(
+            executable,
+            `#!/usr/bin/env bash
 set -eu
 printf '%s\\n' "$@" > "$FIXTURE/args"
 env > "$FIXTURE/env"
 cat > "$FIXTURE/input"
 printf '$argon2id$fixture\\n'
-`);
+`,
+        );
         await chmod(executable, 0o700);
         // macOS has no timeout(1); this one only drops its own options.
         await writeFile(join(dir, "timeout"), '#!/usr/bin/env bash\nwhile [ "${1#--}" != "$1" ]; do shift; done; shift; exec "$@"\n');
         await chmod(join(dir, "timeout"), 0o700);
         const password = "secret '$()\\\t never-an-argument";
-        const result = await shell(`
+        const result = await shell(
+            `
 export FIXTURE=$1 PATH="$1:$PATH"
 IMAGE=ghcr.io/lekoala/compose-panel:latest
 hash_admin_password
-`, [dir], password);
+`,
+            [dir],
+            password,
+        );
         expect(result.code).toBe(0);
         expect(await readFile(join(dir, "input"), "utf8")).toBe(password);
         const args = await readFile(join(dir, "args"), "utf8");
         expect(args).not.toContain(password);
         expect(await readFile(join(dir, "env"), "utf8")).not.toContain(password);
-        expect(args.split("\n").slice(0, 8)).toEqual(["run", "--rm", "-i", "--network", "none", "--entrypoint", "bun", "ghcr.io/lekoala/compose-panel:latest"]);
+        expect(args.split("\n").slice(0, 8)).toEqual([
+            "run",
+            "--rm",
+            "-i",
+            "--network",
+            "none",
+            "--entrypoint",
+            "bun",
+            "ghcr.io/lekoala/compose-panel:latest",
+        ]);
         expect(result.stderr).not.toContain(password);
     });
 });
@@ -153,16 +188,16 @@ hash_admin_password
 // with fake timeout/runuser/systemd-run/systemctl/dpkg-query executables.
 // Every path is inside the fixture; nothing touches the host Caddy or systemd.
 const FAKES: Record<string, string> = {
-    "timeout": 'while [ "${1#--}" != "$1" ]; do shift; done; shift; exec "$@"',
-    "runuser": '[ "$FAIL" != validate ]',
+    timeout: 'while [ "${1#--}" != "$1" ]; do shift; done; shift; exec "$@"',
+    runuser: '[ "$FAIL" != validate ]',
     "systemd-run": '[ "$FAIL" != validate ] && [ "$FAIL" != sandbox ]',
-    "systemctl": `n=$(( $(cat "$FIXTURE/calls" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIXTURE/calls"
+    systemctl: `n=$(( $(cat "$FIXTURE/calls" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FIXTURE/calls"
 [ "$FAIL" != rollback ] && { [ "$FAIL" != reload ] || [ "$n" -gt 1 ]; }`,
     "dpkg-query": `case "$*" in
     *Status*) printf 'install ok installed' ;;
     *Conffiles*) printf ' %s %s%s\\n' "$CADDYFILE" "$SUM" "\${OBSOLETE:+ obsolete}" ;;
 esac`,
-    "chown": 'printf \'%s\\n\' "$*" >> "$FIXTURE/chown"',
+    chown: 'printf \'%s\\n\' "$*" >> "$FIXTURE/chown"',
 };
 const DOCTOR = fileURLToPath(new URL("../scripts/doctor.sh", import.meta.url));
 
@@ -180,22 +215,34 @@ describe.skipIf(process.platform !== "linux")("Ubuntu installer Caddy steps", ()
         }
         await writeFile(caddyfile, "original\n");
     });
-    afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+    afterEach(async () => {
+        await rm(dir, { recursive: true, force: true });
+    });
 
     function run(command: string, env: Record<string, string> = {}) {
-        return shell(`
+        return shell(
+            `
 export FIXTURE=$1 PATH="$1/bin:$PATH" CADDYFILE=$1/Caddyfile
 COMPOSE_PANEL_SETUP_LIB=1 source "$2"
 COMPOSE_PANEL_CADDY_LOCK_LIB=1 CADDY_MANAGED_DIR="$1/managed" source "$3"
 CADDYFILE=$1/Caddyfile MANAGED_DIR=$1/managed
 export FAIL=\${FAIL:-} SUM=\${SUM:-} OBSOLETE=\${OBSOLETE:-}
-${command}`, [dir, SETUP, LOCK], "", env);
+${command}`,
+            [dir, SETUP, LOCK],
+            "",
+            env,
+        );
     }
 
-    for (const [failure, code] of [["none", 0], ["validate", 1], ["sandbox", 1], ["reload", 1], ["rollback", 2]] as const) {
+    for (const [failure, code] of [
+        ["none", 0],
+        ["validate", 1],
+        ["sandbox", 1],
+        ["reload", 1],
+        ["rollback", 2],
+    ] as const) {
         test(`replacement with ${failure} failure keeps a readable original or candidate`, async () => {
-            const result = await run('domain=""; write_caddy_candidate "$1/candidate"; replace_caddy "$1/candidate"',
-                { FAIL: failure });
+            const result = await run('domain=""; write_caddy_candidate "$1/candidate"; replace_caddy "$1/candidate"', { FAIL: failure });
             expect(result.code).toBe(code);
             const content = await readFile(caddyfile, "utf8");
             if (failure === "none") expect(content).toContain("import /etc/caddy/compose-panel.d/*.caddy");
@@ -214,12 +261,15 @@ ${command}`, [dir, SETUP, LOCK], "", env);
     });
 
     test("the Basic Auth password reaches Caddy as one stdin line, never in argv or environment", async () => {
-        await writeFile(join(dir, "bin", "caddy"), `#!/usr/bin/env bash
+        await writeFile(
+            join(dir, "bin", "caddy"),
+            `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$FIXTURE/args"
 env > "$FIXTURE/env"
 cat > "$FIXTURE/input"
 printf '$2a$14$fixture\\n'
-`);
+`,
+        );
         await chmod(join(dir, "bin", "caddy"), 0o755);
         const password = "proxy '$()\\\t secret";
         // Read from a fixture file: the password must not be a process argument here either.
@@ -248,14 +298,18 @@ printf '$2a$14$fixture\\n'
 
     test("errors from either APT repository search refuse adoption", async () => {
         await mkdir(join(dir, "apt", "sources.list.d"), { recursive: true });
-        await writeFile(join(dir, "bin", "grep"), `#!/usr/bin/env bash
+        await writeFile(
+            join(dir, "bin", "grep"),
+            `#!/usr/bin/env bash
 if [ "$1" = "$ERROR_OPTION" ]; then exit 2; fi
 exec /usr/bin/grep "$@"
-`);
+`,
+        );
         await chmod(join(dir, "bin", "grep"), 0o755);
         for (const option of ["-RlE", "-qvxF"]) {
-            expect((await run('apt_repo_resumable "$1/apt" docker "$1/apt/sources.list.d/docker.sources"',
-                { ERROR_OPTION: option })).code).not.toBe(0);
+            expect(
+                (await run('apt_repo_resumable "$1/apt" docker "$1/apt/sources.list.d/docker.sources"', { ERROR_OPTION: option })).code,
+            ).not.toBe(0);
         }
     });
 
@@ -283,7 +337,8 @@ configure_update_timers`;
         // No apt/sources.list on purpose: a missing input must not hide a match.
         const lists = join(dir, "apt", "sources.list.d");
         await mkdir(lists, { recursive: true });
-        const check = 'apt_repo_resumable "$1/apt" "download\\.docker\\.com" "$1/apt/keyrings/docker.asc" "$1/apt/sources.list.d/docker.sources"';
+        const check =
+            'apt_repo_resumable "$1/apt" "download\\.docker\\.com" "$1/apt/keyrings/docker.asc" "$1/apt/sources.list.d/docker.sources"';
         expect((await run(check)).code).toBe(0);
         await writeFile(join(lists, "docker.sources"), "URIs: https://download.docker.com/linux/ubuntu\n");
         expect((await run(check)).code).toBe(0);
@@ -318,13 +373,13 @@ configure_update_timers`;
         const ok = await run("HELPER_BIN=$1/helper; backup_helper");
         expect(ok.code).toBe(0);
         expect(await readFile(ok.stdout.trim(), "utf8")).toBe("working binary");
-        await writeFile(join(dir, "bin", "cp"), "#!/usr/bin/env bash\n: > \"${@: -1}\"\nexit 1\n");
+        await writeFile(join(dir, "bin", "cp"), '#!/usr/bin/env bash\n: > "${@: -1}"\nexit 1\n');
         await chmod(join(dir, "bin", "cp"), 0o755);
         await rm(ok.stdout.trim());
         const failed = await run("HELPER_BIN=$1/helper; backup_helper");
         expect(failed.code).not.toBe(0);
         expect(failed.stdout).toBe("");
-        expect((await Array.fromAsync(new Bun.Glob("helper.bak-*").scan(dir)))).toEqual([]);
+        expect(await Array.fromAsync(new Bun.Glob("helper.bak-*").scan(dir))).toEqual([]);
         expect(await readFile(helper, "utf8")).toBe("working binary");
     });
 
@@ -362,7 +417,8 @@ configure_update_timers`;
         const runWrapper = async (command: string[]) => {
             const proc = Bun.spawn(["bash", LOCK, ...command], {
                 env: { PATH: process.env.PATH, CADDY_MANAGED_DIR: join(dir, "managed"), CADDY_LOCK_WAIT_SECONDS: "0" },
-                stdout: "pipe", stderr: "pipe",
+                stdout: "pipe",
+                stderr: "pipe",
             });
             return proc.exited;
         };
@@ -378,8 +434,14 @@ configure_update_timers`;
     test("a checkout writable by other users is refused before anything is sourced", async () => {
         const repo = join(dir, "repo");
         for (const sub of ["scripts", "deploy/caddy"]) await mkdir(join(repo, sub), { recursive: true });
-        const files = ["scripts/install.sh", "scripts/setup-caddy.sh", "deploy/caddy/with-caddy-lock.sh",
-            "deploy/caddy/caddy-helper.socket", "deploy/caddy/caddy-helper@.service", "deploy/compose.prod.yaml"];
+        const files = [
+            "scripts/install.sh",
+            "scripts/setup-caddy.sh",
+            "deploy/caddy/with-caddy-lock.sh",
+            "deploy/caddy/caddy-helper.socket",
+            "deploy/caddy/caddy-helper@.service",
+            "deploy/compose.prod.yaml",
+        ];
         for (const file of files) {
             await writeFile(join(repo, file), "fixture\n");
             await chmod(join(repo, file), 0o644);
@@ -404,32 +466,46 @@ configure_update_timers`;
     });
 
     for (const [proxyHash, status, failures, unverified] of [
-        ["", "200", "0", "0"], ["$2a$14$fixture", "200", "1", "0"],
-        ["$2a$14$fixture", "401", "0", "0"], ["$2a$14$fixture", "000", "0", "1"],
+        ["", "200", "0", "0"],
+        ["$2a$14$fixture", "200", "1", "0"],
+        ["$2a$14$fixture", "401", "0", "0"],
+        ["$2a$14$fixture", "000", "0", "1"],
     ] as const) {
         test(`doctor checks HTTPS ${status} with ${proxyHash ? "installer" : "manual"} authentication`, async () => {
             await writeFile(join(dir, "bin", "curl"), `#!/usr/bin/env bash\nprintf ${status}\n`);
             await chmod(join(dir, "bin", "curl"), 0o755);
-            await writeFile(join(dir, "panel.env"),
-                `COMPOSE_PANEL_PROXY_ORIGINS=https://panel.example.org\nCOMPOSE_PANEL_INSTALLER_PROXY_HASH='${proxyHash}'\n`);
-            const result = await run(`COMPOSE_PANEL_DOCTOR_LIB=1 source "$DOCTOR"
+            await writeFile(
+                join(dir, "panel.env"),
+                `COMPOSE_PANEL_PROXY_ORIGINS=https://panel.example.org\nCOMPOSE_PANEL_INSTALLER_PROXY_HASH='${proxyHash}'\n`,
+            );
+            const result = await run(
+                `COMPOSE_PANEL_DOCTOR_LIB=1 source "$DOCTOR"
 ENV_FILE=$1/panel.env doctor_failures=0 doctor_unverified=0
 doctor_https >/dev/null
-printf '%s %s' "$doctor_failures" "$doctor_unverified"`, { DOCTOR });
+printf '%s %s' "$doctor_failures" "$doctor_unverified"`,
+                { DOCTOR },
+            );
             expect(result.code).toBe(0);
             expect(result.stdout).toBe(`${failures} ${unverified}`);
         });
     }
 
     test("doctor uses the container port and refuses inspection errors or invalid ports even inside a guard", async () => {
-        await writeFile(join(dir, "bin", "docker"), `#!/usr/bin/env bash
+        await writeFile(
+            join(dir, "bin", "docker"),
+            `#!/usr/bin/env bash
 printf '%s\\n' "$INSPECT_ENV"
 exit "$INSPECT_EXIT"
-`);
+`,
+        );
         await chmod(join(dir, "bin", "docker"), 0o755);
         const check = `COMPOSE_PANEL_DOCTOR_LIB=1 source "$DOCTOR"
 if port="$(doctor_port)"; then printf '%s' "$port"; else exit 1; fi`;
-        for (const [env, port] of [["", "5081"], ["PORT=8080", "8080"], ["PORT=65535", "65535"]] as const) {
+        for (const [env, port] of [
+            ["", "5081"],
+            ["PORT=8080", "8080"],
+            ["PORT=65535", "65535"],
+        ] as const) {
             const result = await run(check, { DOCTOR, INSPECT_ENV: env, INSPECT_EXIT: "0" });
             expect(result.code).toBe(0);
             expect(result.stdout).toBe(port);
@@ -443,12 +519,15 @@ if port="$(doctor_port)"; then printf '%s' "$port"; else exit 1; fi`;
     test("doctor detects public installer hashes in the Caddyfile and backups without changing files", async () => {
         await writeFile(join(dir, "panel.env"), "COMPOSE_PANEL_INSTALLER_PROXY_HASH='$2a$14$fixture'\n");
         // Simulate root/caddy metadata; CI also runs as an unprivileged user.
-        await writeFile(join(dir, "bin", "stat"), `#!/usr/bin/env bash
+        await writeFile(
+            join(dir, "bin", "stat"),
+            `#!/usr/bin/env bash
 case "\${@: -1}" in
     "$FIXTURE/Caddyfile") printf '%s\\n' "$CADDY_METADATA" ;;
     *) printf '%s\\n' "$BACKUP_METADATA" ;;
 esac
-`);
+`,
+        );
         await chmod(join(dir, "bin", "stat"), 0o755);
         const check = `COMPOSE_PANEL_DOCTOR_LIB=1 source "$DOCTOR"
 ENV_FILE=$1/panel.env
@@ -485,10 +564,13 @@ doctor_caddy_permissions`;
 
     for (const running of [true, false]) {
         test(`a rerun ${running ? "leaves a running" : "starts a stopped"} panel without recreating it`, async () => {
-            await writeFile(join(dir, "bin", "docker"), `#!/usr/bin/env bash
+            await writeFile(
+                join(dir, "bin", "docker"),
+                `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$FIXTURE/docker-calls"
 [ "$1" != inspect ] || printf '%s\\n' "$RUNNING"
-`);
+`,
+            );
             await chmod(join(dir, "bin", "docker"), 0o755);
             const result = await run("start_existing_panel", { RUNNING: String(running) });
             expect(result.code).toBe(0);
@@ -497,17 +579,25 @@ printf '%s\\n' "$*" >> "$FIXTURE/docker-calls"
         });
     }
 
-    for (const [label, output, status] of [["failed", "", "1"], ["timed-out", "", "124"], ["unexpected", "maybe", "0"], ["empty", "", "0"]] as const) {
+    for (const [label, output, status] of [
+        ["failed", "", "1"],
+        ["timed-out", "", "124"],
+        ["unexpected", "maybe", "0"],
+        ["empty", "", "0"],
+    ] as const) {
         test(`a ${label} running-state inspection never starts the panel`, async () => {
-            await writeFile(join(dir, "bin", "docker"), `#!/usr/bin/env bash
+            await writeFile(
+                join(dir, "bin", "docker"),
+                `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$FIXTURE/docker-calls"
 [ "$1" != inspect ] || { printf '%s' "$OUTPUT"; exit "$STATUS"; }
-`);
+`,
+            );
             await chmod(join(dir, "bin", "docker"), 0o755);
             const result = await run("start_existing_panel", { OUTPUT: output, STATUS: status });
             expect(result.code).not.toBe(0);
             const calls = (await readFile(join(dir, "docker-calls"), "utf8")).trim().split("\n");
-            expect(calls.every(call => call.startsWith("inspect "))).toBe(true);
+            expect(calls.every((call) => call.startsWith("inspect "))).toBe(true);
         });
     }
 

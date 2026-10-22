@@ -15,14 +15,24 @@ const ID = "df48a7b63a0a611b2a1b7050ac56f05338b4eaf24ee1ef83c456fa56beecc10d";
 
 /** One `docker container ls` line: fields tab-separated, each JSON-encoded. */
 function line(values: (string | null)[]): string {
-    return values.map(value => JSON.stringify(value ?? "")).join("\t");
+    return values.map((value) => JSON.stringify(value ?? "")).join("\t");
 }
 
 function row(overrides: Partial<Record<number, string | null>> = {}): string {
     const fields: (string | null)[] = [
-        ID, "demo-app-1", "nginx:1.27", "running", "Up 2 hours (healthy)", "healthy",
-        "2026-10-05 08:31:11 +0200 CEST", "5 days ago", "0.0.0.0:8080->80/tcp",
-        "demo", "app", "/app/stacks/demo/compose.yaml", "/app/stacks/demo",
+        ID,
+        "demo-app-1",
+        "nginx:1.27",
+        "running",
+        "Up 2 hours (healthy)",
+        "healthy",
+        "2026-10-05 08:31:11 +0200 CEST",
+        "5 days ago",
+        "0.0.0.0:8080->80/tcp",
+        "demo",
+        "app",
+        "/app/stacks/demo/compose.yaml",
+        "/app/stacks/demo",
     ];
     for (const [index, value] of Object.entries(overrides)) {
         if (value !== undefined) fields[Number(index)] = value;
@@ -104,29 +114,37 @@ describe("parseContainerLs", () => {
 
 describe("parseContainerInspect", () => {
     const imageId = `sha256:${"a".repeat(64)}`;
-    const inspect = JSON.stringify([{
-        Id: ID,
-        Name: "/demo-app-1",
-        Created: "2026-10-05T08:31:11.123456789Z",
-        Image: imageId,
-        Config: { Image: "nginx:1.27", Env: ["SECRET_TOKEN=super-secret"], Labels: { "com.docker.compose.project": "demo" } },
-        State: {
-            Status: "running", Running: true, Paused: false, Restarting: false, ExitCode: 0,
-            StartedAt: "2026-10-05T08:31:12Z", FinishedAt: "0001-01-01T00:00:00Z", Health: { Status: "healthy" },
-        },
-        HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
-        NetworkSettings: {
-            Ports: {
-                "80/tcp": [{ HostIp: "0.0.0.0", HostPort: "8080" }],
-                "443/tcp": null,
-                "9000/tcp": [{ HostIp: "127.0.0.1", HostPort: "9000" }],
+    const inspect = JSON.stringify([
+        {
+            Id: ID,
+            Name: "/demo-app-1",
+            Created: "2026-10-05T08:31:11.123456789Z",
+            Image: imageId,
+            Config: { Image: "nginx:1.27", Env: ["SECRET_TOKEN=super-secret"], Labels: { "com.docker.compose.project": "demo" } },
+            State: {
+                Status: "running",
+                Running: true,
+                Paused: false,
+                Restarting: false,
+                ExitCode: 0,
+                StartedAt: "2026-10-05T08:31:12Z",
+                FinishedAt: "0001-01-01T00:00:00Z",
+                Health: { Status: "healthy" },
             },
+            HostConfig: { RestartPolicy: { Name: "unless-stopped" } },
+            NetworkSettings: {
+                Ports: {
+                    "80/tcp": [{ HostIp: "0.0.0.0", HostPort: "8080" }],
+                    "443/tcp": null,
+                    "9000/tcp": [{ HostIp: "127.0.0.1", HostPort: "9000" }],
+                },
+            },
+            Mounts: [
+                { Type: "bind", Source: "/host/data", Destination: "/data", Mode: "ro", RW: false },
+                { Type: "volume", Source: "demo_data", Destination: "/var/lib", Mode: "", RW: true },
+            ],
         },
-        Mounts: [
-            { Type: "bind", Source: "/host/data", Destination: "/data", Mode: "ro", RW: false },
-            { Type: "volume", Source: "demo_data", Destination: "/var/lib", Mode: "", RW: true },
-        ],
-    }]);
+    ]);
 
     test("projects only the whitelisted fields", () => {
         const details = parseContainerInspect(inspect);
@@ -153,13 +171,16 @@ describe("parseContainerInspect", () => {
     });
 
     test("brackets IPv6 host bindings", () => {
-        const ipv6 = JSON.stringify([{
-            Id: ID, Name: "/v6", Config: { Image: "nginx" }, State: { Status: "running" },
-            NetworkSettings: { Ports: { "80/tcp": [{ HostIp: "::", HostPort: "80" }] } },
-        }]);
-        expect(parseContainerInspect(ipv6).ports).toEqual([
-            { container: "80/tcp", host: "[::]:80", publicInterface: true },
+        const ipv6 = JSON.stringify([
+            {
+                Id: ID,
+                Name: "/v6",
+                Config: { Image: "nginx" },
+                State: { Status: "running" },
+                NetworkSettings: { Ports: { "80/tcp": [{ HostIp: "::", HostPort: "80" }] } },
+            },
         ]);
+        expect(parseContainerInspect(ipv6).ports).toEqual([{ container: "80/tcp", host: "[::]:80", publicInterface: true }]);
     });
 
     test("projects mounts with a read-only flag", () => {
@@ -207,10 +228,7 @@ describe("classifyContainers", () => {
     });
 
     test("external when the project matches but the path is unknown (migration mismatch)", () => {
-        const [container] = classifyContainers(
-            [summary({ configFiles: ["/opt/stacks/blog/compose.yaml"], project: "blog" })],
-            stacks,
-        );
+        const [container] = classifyContainers([summary({ configFiles: ["/opt/stacks/blog/compose.yaml"], project: "blog" })], stacks);
         expect(container!.category).toBe("external");
     });
 

@@ -12,11 +12,7 @@ export class ActionRunnerError extends Error {
     }
 }
 
-export type ActionFileResult =
-    | { kind: "ok"; content: string }
-    | { kind: "too-large" }
-    | { kind: "not-file" }
-    | { kind: "error" };
+export type ActionFileResult = { kind: "ok"; content: string } | { kind: "too-large" } | { kind: "not-file" } | { kind: "error" };
 
 export interface ActionExecTarget {
     id: string;
@@ -54,10 +50,12 @@ class DockerActionRunner implements ActionRunner {
     async readFile(id: string, path: string, options: { timeoutMs: number; maxBytes: number }): Promise<ActionFileResult> {
         if (!isContainerId(id) || !isSafeContainerPath(path)) return { kind: "error" };
         try {
-            const copied = await this.runner(
-                ["cp", "--", `${id}:${path}`, "-"],
-                { timeoutMs: options.timeoutMs, maxBytes: options.maxBytes + DOCKER_FILE_TAR_OVERHEAD, binaryStdout: true, stopOnOutputLimit: true },
-            );
+            const copied = await this.runner(["cp", "--", `${id}:${path}`, "-"], {
+                timeoutMs: options.timeoutMs,
+                maxBytes: options.maxBytes + DOCKER_FILE_TAR_OVERHEAD,
+                binaryStdout: true,
+                stopOnOutputLimit: true,
+            });
             if (copied.truncated) return { kind: "too-large" };
             if (copied.code !== 0 || copied.timedOut || copied.terminationUnconfirmed || !copied.stdoutBytes) return { kind: "error" };
             return readDockerFileTar(copied.stdoutBytes, posix.basename(path), options.maxBytes);
@@ -69,7 +67,12 @@ class DockerActionRunner implements ActionRunner {
     exec(target: ActionExecTarget): Promise<CommandResult> {
         if (!isContainerId(target.id)) throw new ActionRunnerError();
         const argv = target.argv;
-        if (!Array.isArray(argv) || argv.length === 0 || argv.length > 16 || !argv.every(part => typeof part === "string" && part.length > 0)) {
+        if (
+            !Array.isArray(argv) ||
+            argv.length === 0 ||
+            argv.length > 16 ||
+            !argv.every((part) => typeof part === "string" && part.length > 0)
+        ) {
             throw new ActionRunnerError("Invalid action command.");
         }
         const args = ["exec"];

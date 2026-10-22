@@ -7,7 +7,16 @@ import { hashPassword } from "../src/auth.ts";
 import { createComposeProvider } from "../src/compose-provider.ts";
 import { createDockerRunner } from "../src/docker.ts";
 import { loadStackDetail } from "../src/status.ts";
-import { ROLLBACK_TAG, UPDATER_EXIT, UPDATER_NAME, parseSelfInspect, parseUpdaterInspect, rollbackCommands, updaterCommand, updaterRunArgs } from "../src/self-update.ts";
+import {
+    ROLLBACK_TAG,
+    UPDATER_EXIT,
+    UPDATER_NAME,
+    parseSelfInspect,
+    parseUpdaterInspect,
+    rollbackCommands,
+    updaterCommand,
+    updaterRunArgs,
+} from "../src/self-update.ts";
 import { parseUpdaterArgs, runSelfUpdate, updaterEnvironment } from "../src/self-update-run.ts";
 
 // Opt-in lifecycle check against a REAL but DISPOSABLE Docker Engine: project
@@ -27,11 +36,25 @@ const PASSWORD = "temporary-lab-password";
 const USER = "cplaboperator";
 const GRACE_MS = 15_000;
 const DELAY_S = 6;
-const PROJECTS = ["cp-qa-shared", "cp-qa-unique", "cp-qa-delayed", "cp-qa-self", "cp-qa-scoped", "cp-qa-pull", "cp-qa-panel", "cp-qa-metadata", "cp-qa-recreate"];
+const PROJECTS = [
+    "cp-qa-shared",
+    "cp-qa-unique",
+    "cp-qa-delayed",
+    "cp-qa-self",
+    "cp-qa-scoped",
+    "cp-qa-pull",
+    "cp-qa-panel",
+    "cp-qa-metadata",
+    "cp-qa-recreate",
+];
 // A PID 1 that exits on SIGTERM, so `down` does not wait for the kill timeout.
 const SERVICE = (name: string) => `  ${name}:\n    image: ${IMAGE}\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]\n`;
 
-interface Run { code: number; stdout: string; stderr: string }
+interface Run {
+    code: number;
+    stdout: string;
+    stderr: string;
+}
 
 async function docker(args: string[], timeoutMs = 60_000): Promise<Run> {
     const proc = Bun.spawn(["docker", ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: timeoutMs });
@@ -55,8 +78,11 @@ async function assertLabDaemon(): Promise<void> {
     if (!host.startsWith("unix://")) throw new Error("DOCKER_HOST must point to the lab Unix socket (unix://...).");
     const socket = host.slice("unix://".length);
     let real: string;
-    try { real = realpathSync(socket); }
-    catch { throw new Error(`Lab socket ${socket} does not exist.`); }
+    try {
+        real = realpathSync(socket);
+    } catch {
+        throw new Error(`Lab socket ${socket} does not exist.`);
+    }
     if (["/var/run/docker.sock", "/run/docker.sock"].includes(real) || real.startsWith("/run/user/")) {
         throw new Error(`DOCKER_HOST resolves to a default daemon socket (${real}); refusing.`);
     }
@@ -86,13 +112,36 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs: numbe
 
 /** Names of the services that have a container in a project, sorted. */
 async function projectServices(project: string): Promise<string[]> {
-    const out = await dockerOk(["ps", "-a", "--filter", `label=com.docker.compose.project=${project}`, "--format", '{{.Label "com.docker.compose.service"}}']);
-    return out.split("\n").map(line => line.trim()).filter(Boolean).sort();
+    const out = await dockerOk([
+        "ps",
+        "-a",
+        "--filter",
+        `label=com.docker.compose.project=${project}`,
+        "--format",
+        '{{.Label "com.docker.compose.service"}}',
+    ]);
+    return out
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .sort();
 }
 
 async function runningServices(project: string): Promise<string[]> {
-    const out = await dockerOk(["ps", "--filter", `label=com.docker.compose.project=${project}`, "--filter", "status=running", "--format", '{{.Label "com.docker.compose.service"}}']);
-    return out.split("\n").map(line => line.trim()).filter(Boolean).sort();
+    const out = await dockerOk([
+        "ps",
+        "--filter",
+        `label=com.docker.compose.project=${project}`,
+        "--filter",
+        "status=running",
+        "--format",
+        '{{.Label "com.docker.compose.service"}}',
+    ]);
+    return out
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .sort();
 }
 
 /** The real panel process (`bun src/server.ts`) with captured output. */
@@ -100,7 +149,10 @@ class Panel {
     readonly origin: string;
     output = "";
     private cookies = new Map<string, string>();
-    constructor(readonly proc: Bun.Subprocess<"ignore", "pipe", "pipe">, port: number) {
+    constructor(
+        readonly proc: Bun.Subprocess<"ignore", "pipe", "pipe">,
+        port: number,
+    ) {
         this.origin = `http://127.0.0.1:${port}`;
         for (const stream of [proc.stdout, proc.stderr]) void this.collect(stream);
     }
@@ -235,15 +287,18 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         const realDocker = Bun.which("docker");
         if (!realDocker) throw new Error("docker CLI not found in PATH.");
         const wrapper = join(lab, "docker-slow");
-        await writeFile(wrapper, [
-            "#!/bin/sh",
-            "# Lab fixture: delays `compose ... -p cp-qa-delayed ... up` only.",
-            'case " $* " in',
-            `  *" -p cp-qa-delayed "*" up -d "*) : > '${marker}'; sleep ${DELAY_S} ;;`,
-            "esac",
-            `exec '${realDocker}' "$@"`,
-            "",
-        ].join("\n"));
+        await writeFile(
+            wrapper,
+            [
+                "#!/bin/sh",
+                "# Lab fixture: delays `compose ... -p cp-qa-delayed ... up` only.",
+                'case " $* " in',
+                `  *" -p cp-qa-delayed "*" up -d "*) : > '${marker}'; sleep ${DELAY_S} ;;`,
+                "esac",
+                `exec '${realDocker}' "$@"`,
+                "",
+            ].join("\n"),
+        );
         await chmod(wrapper, 0o700);
 
         await dockerOk(["pull", IMAGE], 180_000);
@@ -268,11 +323,18 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             },
         });
         panel = new Panel(proc, port);
-        await waitFor(async () => {
-            if (proc.exitCode !== null) throw new Error(`The panel exited during startup:\n${panel!.output}`);
-            try { return (await fetch(`${panel!.origin}/health/live`)).ok; }
-            catch { return false; }
-        }, 20_000, "the panel to listen");
+        await waitFor(
+            async () => {
+                if (proc.exitCode !== null) throw new Error(`The panel exited during startup:\n${panel!.output}`);
+                try {
+                    return (await fetch(`${panel!.origin}/health/live`)).ok;
+                } catch {
+                    return false;
+                }
+            },
+            20_000,
+            "the panel to listen",
+        );
         await panel.login();
     }, 240_000);
 
@@ -325,9 +387,13 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
     test("pulling by tag records the multi-platform index digest in RepoDigests (ADR 0018)", async () => {
         // The release publishes the index digest; the panel compares it with
         // RepoDigests, never with the local image ID. IMAGE is multi-platform.
-        const index = JSON.parse((await dockerOk(["buildx", "imagetools", "inspect", IMAGE, "--format", "{{json .Manifest.Digest}}"], 60_000)).trim()) as string;
+        const index = JSON.parse(
+            (await dockerOk(["buildx", "imagetools", "inspect", IMAGE, "--format", "{{json .Manifest.Digest}}"], 60_000)).trim(),
+        ) as string;
         expect(index).toMatch(/^sha256:[0-9a-f]{64}$/);
-        const repoDigests = JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .RepoDigests}}", IMAGE])).trim()) as string[];
+        const repoDigests = JSON.parse(
+            (await dockerOk(["image", "inspect", "--format", "{{json .RepoDigests}}", IMAGE])).trim(),
+        ) as string[];
         expect(repoDigests).toContain(`alpine@${index}`);
     }, 90_000);
 
@@ -341,36 +407,53 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         const repo = "localhost:5000/cp-qa-self";
         const ref = `${repo}:current`;
         const digestOf = async (image: string) => {
-            const digests = JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .RepoDigests}}", image])).trim()) as string[];
-            const found = digests.find(value => value.startsWith(`${repo}@`));
+            const digests = JSON.parse(
+                (await dockerOk(["image", "inspect", "--format", "{{json .RepoDigests}}", image])).trim(),
+            ) as string[];
+            const found = digests.find((value) => value.startsWith(`${repo}@`));
             if (!found) throw new Error(`No ${repo} digest for ${image}.`);
             return found;
         };
-        const imageIdOf = async (image: string) => JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .Id}}", image])).trim()) as string;
+        const imageIdOf = async (image: string) =>
+            JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .Id}}", image])).trim()) as string;
         await dockerOk(["tag", IMAGE, ref]);
         await waitFor(async () => (await docker(["push", ref])).code === 0, 30_000, "the lab registry to accept a push");
 
         const dir = join(lab, "self");
         await mkdir(dir, { recursive: true });
         const command = `["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`;
-        await writeFile(join(dir, "compose.yaml"), [
-            "name: cp-qa-self",
-            "services:",
-            "  panel:",
-            `    image: ${ref}`,
-            `    command: ${command}`,
-            "    environment: [\"MARKER=${CP_QA_MARKER}\"]",
-            "    volumes: [\"/lab/docker.sock:/var/run/docker.sock\"]",
-            "    healthcheck: { test: [\"CMD\", \"true\"], interval: 1s, timeout: 1s, retries: 3 }",
-            "  other:",
-            `    image: ${IMAGE}`,
-            `    command: ${command}`,
-            "",
-        ].join("\n"));
+        await writeFile(
+            join(dir, "compose.yaml"),
+            [
+                "name: cp-qa-self",
+                "services:",
+                "  panel:",
+                `    image: ${ref}`,
+                `    command: ${command}`,
+                '    environment: ["MARKER=${CP_QA_MARKER}"]',
+                '    volumes: ["/lab/docker.sock:/var/run/docker.sock"]',
+                '    healthcheck: { test: ["CMD", "true"], interval: 1s, timeout: 1s, retries: 3 }',
+                "  other:",
+                `    image: ${IMAGE}`,
+                `    command: ${command}`,
+                "",
+            ].join("\n"),
+        );
         // Interpolation comes from an explicit env file, recorded by Compose.
         await writeFile(join(dir, "deploy.env"), "CP_QA_MARKER=from-env-file\n");
         await dockerOk(["compose", "--env-file", join(dir, "deploy.env"), "-f", join(dir, "compose.yaml"), "up", "-d"]);
-        const idOf = async (service: string) => (await dockerOk(["ps", "-q", "--no-trunc", "--filter", "label=com.docker.compose.project=cp-qa-self", "--filter", `label=com.docker.compose.service=${service}`])).trim();
+        const idOf = async (service: string) =>
+            (
+                await dockerOk([
+                    "ps",
+                    "-q",
+                    "--no-trunc",
+                    "--filter",
+                    "label=com.docker.compose.project=cp-qa-self",
+                    "--filter",
+                    `label=com.docker.compose.service=${service}`,
+                ])
+            ).trim();
         const oldPanel = await idOf("panel");
         const other = await idOf("other");
         const previous = await imageIdOf(ref);
@@ -391,7 +474,10 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
 
         expect(support.identity.envFiles).toEqual([join(dir, "deploy.env")]);
         // The updater image's ENV (simulated here) must not win over --env-file.
-        const runner = createDockerRunner({ timeoutMs: 60_000, env: updaterEnvironment({ ...process.env, CP_QA_MARKER: "from-image-env" }) });
+        const runner = createDockerRunner({
+            timeoutMs: 60_000,
+            env: updaterEnvironment({ ...process.env, CP_QA_MARKER: "from-image-env" }),
+        });
         const deps = {
             runner,
             provider: createComposeProvider({ runner }),
@@ -403,7 +489,8 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             pollMs: 500,
             readyTimeoutMs: 60_000,
         };
-        const argsFor = (targetImageId: string, expectedDigest: string) => parseUpdaterArgs(updaterCommand(support.identity, { targetImageId, expectedDigest }));
+        const argsFor = (targetImageId: string, expectedDigest: string) =>
+            parseUpdaterArgs(updaterCommand(support.identity, { targetImageId, expectedDigest }));
         // Refused before anything changes: a target the tag no longer points
         // to, and a digest the image does not carry.
         expect(await runSelfUpdate(argsFor(previous, digest), deps)).toBe(UPDATER_EXIT.refused);
@@ -425,8 +512,25 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(retag).toBe(`docker image tag ${ROLLBACK_TAG} ${ref}`);
         expect(up).toContain("up -d --no-deps --no-build --pull never panel");
         await dockerOk(["image", "tag", ROLLBACK_TAG, ref]);
-        await dockerOk(["compose", "-p", "cp-qa-self", "--env-file", join(dir, "deploy.env"), "-f", join(dir, "compose.yaml"), "up", "-d", "--no-deps", "--no-build", "--pull", "never", "panel"]);
-        expect(JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .Image}}", await idOf("panel")])).trim())).toBe(previous);
+        await dockerOk([
+            "compose",
+            "-p",
+            "cp-qa-self",
+            "--env-file",
+            join(dir, "deploy.env"),
+            "-f",
+            join(dir, "compose.yaml"),
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-build",
+            "--pull",
+            "never",
+            "panel",
+        ]);
+        expect(JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .Image}}", await idOf("panel")])).trim())).toBe(
+            previous,
+        );
         await docker(["rm", "-f", "cp-qa-registry"]);
     }, 240_000);
 
@@ -470,7 +574,7 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         const provider = createComposeProvider({ runner });
         const dir = join(stacks, "scoped");
         const discovered = await provider.listServices({ project: "cp-qa-scoped", composeFile: join(dir, "compose.yaml"), cwd: dir });
-        expect([...discovered ?? []].sort()).toEqual(["db", "web", "worker"]);
+        expect([...(discovered ?? [])].sort()).toEqual(["db", "web", "worker"]);
         expect((await p.action("scoped", "restart", { service: "missing" })).status).toBe(409);
         expect((await p.action("scoped", "down", { service: "web" })).status).toBe(400);
         expect(await runningServices("cp-qa-scoped")).toEqual(["web"]);
@@ -481,9 +585,15 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         await mkdir(dir);
         const composeFile = join(dir, "compose.yaml");
         await writeFile(join(dir, ".env"), "APP_VERSION=declared-version\n");
-        await writeFile(composeFile, 'name: cp-qa-metadata\nservices:\n  app:\n    image: cp-qa-metadata:local\n    labels:\n      stack.version: ${APP_VERSION}\n');
+        await writeFile(
+            composeFile,
+            "name: cp-qa-metadata\nservices:\n  app:\n    image: cp-qa-metadata:local\n    labels:\n      stack.version: ${APP_VERSION}\n",
+        );
         const build = async (version: string) => {
-            await writeFile(join(dir, "Dockerfile"), `FROM ${IMAGE}\nLABEL org.opencontainers.image.version="${version}" org.opencontainers.image.revision="commit-${version}"\nCMD ["sleep", "3600"]\n`);
+            await writeFile(
+                join(dir, "Dockerfile"),
+                `FROM ${IMAGE}\nLABEL org.opencontainers.image.version="${version}" org.opencontainers.image.revision="commit-${version}"\nCMD ["sleep", "3600"]\n`,
+            );
             await dockerOk(["build", "-t", "cp-qa-metadata:local", dir], 120_000);
         };
         await build("1");
@@ -514,32 +624,35 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         const dir = join(stacks, "recreate");
         await mkdir(dir);
         await writeFile(join(dir, "app.env"), "FROM_FILE=one\n");
-        await writeFile(join(dir, "compose.yaml"), [
-            "name: cp-qa-recreate",
-            "services:",
-            SERVICE("app").trimEnd(),
-            "    environment:",
-            "      MODE: ${MODE:-a}",
-            SERVICE("envfile").trimEnd(),
-            "    env_file: app.env",
-            SERVICE("parent").trimEnd(),
-            SERVICE("joined").trimEnd(),
-            "    network_mode: service:parent",
-            SERVICE("shared").trimEnd(),
-            "    volumes_from: [parent]",
-            SERVICE("inline").trimEnd(),
-            "    configs:",
-            "      - source: inline",
-            "        target: /inline.txt",
-            "configs:",
-            "  inline:",
-            "    content: ${INLINE:-x}",
-            "",
-        ].join("\n"));
+        await writeFile(
+            join(dir, "compose.yaml"),
+            [
+                "name: cp-qa-recreate",
+                "services:",
+                SERVICE("app").trimEnd(),
+                "    environment:",
+                "      MODE: ${MODE:-a}",
+                SERVICE("envfile").trimEnd(),
+                "    env_file: app.env",
+                SERVICE("parent").trimEnd(),
+                SERVICE("joined").trimEnd(),
+                "    network_mode: service:parent",
+                SERVICE("shared").trimEnd(),
+                "    volumes_from: [parent]",
+                SERVICE("inline").trimEnd(),
+                "    configs:",
+                "      - source: inline",
+                "        target: /inline.txt",
+                "configs:",
+                "  inline:",
+                "    content: ${INLINE:-x}",
+                "",
+            ].join("\n"),
+        );
         await dockerOk(["compose", "-f", join(dir, "compose.yaml"), "up", "-d"]);
         const provider = createComposeProvider({ runner: createDockerRunner() });
         expect((await provider.detect()).configHashes).toBe(true); // the lab Compose must be 5.5.0+
-        const pending = async () => [...(await loadStackDetail(stacks, "recreate", provider)).recreatePending ?? []].sort();
+        const pending = async () => [...((await loadStackDetail(stacks, "recreate", provider)).recreatePending ?? [])].sort();
 
         // Freshly created, including services joined to another container's
         // namespaces or volumes, whose hashes Compose resolves differently.
@@ -586,31 +699,39 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         const ref = `${repo}:latest`;
         await dockerOk(["build", "--build-arg", "VERSION=0.0.1", "-t", ref, join(import.meta.dir, "..")], 900_000);
         await waitFor(async () => (await docker(["push", ref])).code === 0, 30_000, "the lab registry to accept a push");
-        const imageIdOf = async (image: string) => JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .Id}}", image])).trim()) as string;
+        const imageIdOf = async (image: string) =>
+            JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .Id}}", image])).trim()) as string;
         const previous = await imageIdOf(ref);
 
         const dir = join(shared, "panel-deploy");
         await mkdir(dir, { recursive: true });
-        await writeFile(join(dir, "panel.env"), [
-            `COMPOSE_PANEL_ADMIN_USER=${USER}`,
-            `COMPOSE_PANEL_ADMIN_PASSWORD_HASH='${await hashPassword(PASSWORD)}'`,
-            "STACKS_DIR=/tmp",
-            "PORT=5199",
-            "",
-        ].join("\n"));
-        await writeFile(join(dir, "compose.yaml"), [
-            "name: cp-qa-panel",
-            "services:",
-            "  panel:",
-            `    image: ${ref}`,
-            "    env_file: [panel.env]",
-            "    volumes: [\"/lab/docker.sock:/var/run/docker.sock\"]",
-            "    healthcheck: { interval: 1s, start_period: 1s, timeout: 2s, retries: 30 }",
-            "",
-        ].join("\n"));
+        await writeFile(
+            join(dir, "panel.env"),
+            [
+                `COMPOSE_PANEL_ADMIN_USER=${USER}`,
+                `COMPOSE_PANEL_ADMIN_PASSWORD_HASH='${await hashPassword(PASSWORD)}'`,
+                "STACKS_DIR=/tmp",
+                "PORT=5199",
+                "",
+            ].join("\n"),
+        );
+        await writeFile(
+            join(dir, "compose.yaml"),
+            [
+                "name: cp-qa-panel",
+                "services:",
+                "  panel:",
+                `    image: ${ref}`,
+                "    env_file: [panel.env]",
+                '    volumes: ["/lab/docker.sock:/var/run/docker.sock"]',
+                "    healthcheck: { interval: 1s, start_period: 1s, timeout: 2s, retries: 30 }",
+                "",
+            ].join("\n"),
+        );
         await dockerOk(["compose", "-f", join(dir, "compose.yaml"), "up", "-d", "--wait"], 120_000);
         const panelId = (await dockerOk(["ps", "-q", "--no-trunc", "--filter", "label=com.docker.compose.project=cp-qa-panel"])).trim();
-        const healthOf = async (id: string) => JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .State.Health.Status}}", id])).trim()) as string;
+        const healthOf = async (id: string) =>
+            JSON.parse((await dockerOk(["container", "inspect", "--format", "{{json .State.Health.Status}}", id])).trim()) as string;
         expect(await healthOf(panelId)).toBe("healthy");
 
         // A newer release behind the same tag.
@@ -620,12 +741,19 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         await dockerOk(["push", ref]);
         const target = await imageIdOf(ref);
         const digests = JSON.parse((await dockerOk(["image", "inspect", "--format", "{{json .RepoDigests}}", ref])).trim()) as string[];
-        const digest = digests.find(value => value.startsWith(`${repo}@`))!;
+        const digest = digests.find((value) => value.startsWith(`${repo}@`))!;
 
         const support = parseSelfInspect(await dockerOk(["container", "inspect", panelId]), panelId);
         if (support.kind !== "ready") throw new Error(support.reason);
         expect(support.identity.workingDir).toBe(dir);
-        await dockerOk(updaterRunArgs(support.identity, { targetImageId: target, expectedDigest: digest, targetVersion: "0.0.2", previousVersion: "0.0.1" }));
+        await dockerOk(
+            updaterRunArgs(support.identity, {
+                targetImageId: target,
+                expectedDigest: digest,
+                targetVersion: "0.0.2",
+                previousVersion: "0.0.1",
+            }),
+        );
         const exit = Number((await dockerOk(["container", "wait", UPDATER_NAME], 300_000)).trim());
         if (exit !== UPDATER_EXIT.updated) throw new Error(`The updater exited ${exit}:\n${(await docker(["logs", UPDATER_NAME])).stdout}`);
 
@@ -636,7 +764,12 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(await imageIdOf(ROLLBACK_TAG)).toBe(previous);
         // The updater's labels carry the identities the next panel shows.
         const lookup = parseUpdaterInspect(await dockerOk(["container", "inspect", UPDATER_NAME]));
-        expect(lookup.kind === "run" && lookup.run).toMatchObject({ outcome: "updated", previousImage: previous, targetImage: target, targetVersion: "0.0.2" });
+        expect(lookup.kind === "run" && lookup.run).toMatchObject({
+            outcome: "updated",
+            previousImage: previous,
+            targetImage: target,
+            targetVersion: "0.0.2",
+        });
         await docker(["rm", "-f", UPDATER_NAME, "cp-qa-registry-e2e"]);
     }, 1_200_000);
 

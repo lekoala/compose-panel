@@ -8,7 +8,7 @@ function pickForeignOwner(): { uid: number; gid: number } | null {
     if (process.platform === "win32" || !process.getuid || !process.getegid || !process.getgroups) return null;
     const uid = process.getuid();
     if (uid === 0) return { uid: 65534, gid: 65534 };
-    const gid = process.getgroups().find(group => group !== process.getegid!());
+    const gid = process.getgroups().find((group) => group !== process.getegid!());
     return gid === undefined ? null : { uid, gid };
 }
 

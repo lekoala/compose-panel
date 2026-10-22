@@ -14,7 +14,7 @@ export function tarEntry(name: string, content: string, type = "0"): Buffer {
     header.write("00", 263);
     const checksum = header.reduce((sum, byte) => sum + byte, 0);
     header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148);
-    return Buffer.concat([header, body, Buffer.alloc((512 - body.length % 512) % 512)]);
+    return Buffer.concat([header, body, Buffer.alloc((512 - (body.length % 512)) % 512)]);
 }
 
 export function fileTar(name: string, content: string, type = "0"): Buffer {

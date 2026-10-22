@@ -13,8 +13,15 @@ interface FakeElement {
 
 function fakeElement(): FakeElement {
     return {
-        textContent: "", hidden: false, disabled: false, scrollTop: 0, scrollHeight: 0, events: {},
-        addEventListener(name, handler) { this.events[name] = handler; },
+        textContent: "",
+        hidden: false,
+        disabled: false,
+        scrollTop: 0,
+        scrollHeight: 0,
+        events: {},
+        addEventListener(name, handler) {
+            this.events[name] = handler;
+        },
     };
 }
 
@@ -30,21 +37,28 @@ async function loadApp(timezone: string | null = null): Promise<{
     const streams: { events: Record<string, (event: { data: string }) => void> }[] = [];
     class FakeEventSource {
         events: Record<string, (event: { data: string }) => void> = {};
-        constructor() { streams.push(this); }
-        addEventListener(name: string, handler: (event: { data: string }) => void) { this.events[name] = handler; }
+        constructor() {
+            streams.push(this);
+        }
+        addEventListener(name: string, handler: (event: { data: string }) => void) {
+            this.events[name] = handler;
+        }
         close() {}
     }
-    const operation = { getAttribute: (name: string) => name === "data-op-status" ? "running" : "/operations/events" };
+    const operation = { getAttribute: (name: string) => (name === "data-op-status" ? "running" : "/operations/events") };
     const logs = { getAttribute: () => "/logs/events" };
     let ready!: () => void;
     runInNewContext(await Bun.file(new URL("../public/app.js", import.meta.url)).text(), {
         EventSource: FakeEventSource,
         window: { matchMedia: () => ({ matches: false }), addEventListener() {} },
         document: {
-            documentElement: { getAttribute: (name: string) => name === "data-timezone" ? timezone : null },
+            documentElement: { getAttribute: (name: string) => (name === "data-timezone" ? timezone : null) },
             getElementById: (id: string) => elements.get(id) ?? null,
-            querySelector: (selector: string) => selector === "[data-op-stream]" ? operation : selector === "[data-logs-stream]" ? logs : null,
-            addEventListener: (_name: string, handler: () => void) => { ready = handler; },
+            querySelector: (selector: string) =>
+                selector === "[data-op-stream]" ? operation : selector === "[data-logs-stream]" ? logs : null,
+            addEventListener: (_name: string, handler: () => void) => {
+                ready = handler;
+            },
         },
     });
     ready();
@@ -76,7 +90,13 @@ test("the reader's own zone is used when no zone is configured", async () => {
     elements.get("logs-follow")!.events.click!();
     const stamp = "2026-10-10T12:34:56.789Z";
     const expected = new Intl.DateTimeFormat("sv-SE", {
-        year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
     }).format(new Date(stamp));
     streams[1]!.events.chunk!({ data: JSON.stringify({ text: "svc  | " + stamp + " hi\n" }) });
     expect(elements.get("logs-output")!.textContent).toBe("svc  | " + expected + " hi\n");

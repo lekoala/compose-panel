@@ -173,7 +173,7 @@ function parseRotation(env: Env): AuditRotation {
     const raw = env.COMPOSE_PANEL_AUDIT_ROTATION?.trim().toLowerCase();
     if (raw === undefined || raw === "" || raw === "day") return "day";
     if (raw === "month") return "month";
-    throw new Error("COMPOSE_PANEL_AUDIT_ROTATION must be \"day\" or \"month\".");
+    throw new Error('COMPOSE_PANEL_AUDIT_ROTATION must be "day" or "month".');
 }
 
 /**
@@ -184,14 +184,14 @@ function parseRotation(env: Env): AuditRotation {
 function refuseLegacyProxyEnv(env: Env): void {
     if (env.COMPOSE_PANEL_PUBLIC_ORIGIN) {
         throw new Error(
-            "COMPOSE_PANEL_PUBLIC_ORIGIN is no longer supported. "
-            + "Replace it with COMPOSE_PANEL_PROXY_ORIGINS=<that url> (comma-separate several). See docs/deployment.md.",
+            "COMPOSE_PANEL_PUBLIC_ORIGIN is no longer supported. " +
+                "Replace it with COMPOSE_PANEL_PROXY_ORIGINS=<that url> (comma-separate several). See docs/deployment.md.",
         );
     }
     if (env.COMPOSE_PANEL_TRUST_PROXY) {
         throw new Error(
-            "COMPOSE_PANEL_TRUST_PROXY is no longer supported. Remove it: "
-            + "X-Forwarded-* is trusted only on a request whose Host matches a COMPOSE_PANEL_PROXY_ORIGINS entry.",
+            "COMPOSE_PANEL_TRUST_PROXY is no longer supported. Remove it: " +
+                "X-Forwarded-* is trusted only on a request whose Host matches a COMPOSE_PANEL_PROXY_ORIGINS entry.",
         );
     }
 }
@@ -217,7 +217,9 @@ function parseCaddySocketPath(env: Env, caddyEnabled: boolean): string | null {
     const raw = env.COMPOSE_PANEL_CADDY_SOCKET_PATH?.trim() ?? "";
     if (raw === "") return null;
     if (!caddyEnabled) {
-        throw new Error("COMPOSE_PANEL_CADDY_SOCKET_PATH is set but COMPOSE_PANEL_CADDY_ENABLED is not true. Enable the integration or remove the socket path.");
+        throw new Error(
+            "COMPOSE_PANEL_CADDY_SOCKET_PATH is set but COMPOSE_PANEL_CADDY_ENABLED is not true. Enable the integration or remove the socket path.",
+        );
     }
     if (!posix.isAbsolute(raw)) {
         throw new Error("COMPOSE_PANEL_CADDY_SOCKET_PATH must be an absolute Unix socket path.");
@@ -236,7 +238,7 @@ function parsePathAliases(env: Env): PathAlias[] {
     const raw = env.COMPOSE_PANEL_STACKS_PATH_ALIASES?.trim();
     if (raw === undefined || raw === "") return [];
     const aliases: PathAlias[] = [];
-    for (const entry of raw.split(",").map(value => value.trim())) {
+    for (const entry of raw.split(",").map((value) => value.trim())) {
         if (entry === "") throw new Error("COMPOSE_PANEL_STACKS_PATH_ALIASES contains an empty entry. Remove the stray comma.");
         const index = entry.indexOf("=");
         const from = index > 0 ? entry.slice(0, index).trim() : "";
@@ -290,8 +292,11 @@ interface ProxySettings {
  */
 function parseProxyOrigin(entry: string, devMode: boolean): string {
     let url: URL;
-    try { url = new URL(entry); }
-    catch { throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must be an absolute http(s) URL.`); }
+    try {
+        url = new URL(entry);
+    } catch {
+        throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must be an absolute http(s) URL.`);
+    }
     if (url.protocol !== "http:" && url.protocol !== "https:") {
         throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must use http or https.`);
     }
@@ -302,7 +307,9 @@ function parseProxyOrigin(entry: string, devMode: boolean): string {
         throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must not contain a path, query or fragment.`);
     }
     if (!devMode && url.protocol === "http:") {
-        throw new Error(`COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must use https: plain HTTP would send the password and the session cookie in clear. (COMPOSE_PANEL_DEV=true allows http for local testing only.)`);
+        throw new Error(
+            `COMPOSE_PANEL_PROXY_ORIGINS entry "${entry}" must use https: plain HTTP would send the password and the session cookie in clear. (COMPOSE_PANEL_DEV=true allows http for local testing only.)`,
+        );
     }
     return url.origin;
 }
@@ -322,7 +329,7 @@ function parseProxy(env: Env, devMode: boolean): ProxySettings {
     const origins: string[] = [];
     if (raw !== undefined && raw.trim() !== "") {
         const seen = new Set<string>();
-        for (const part of raw.split(",").map(value => value.trim())) {
+        for (const part of raw.split(",").map((value) => value.trim())) {
             if (part === "") {
                 throw new Error("COMPOSE_PANEL_PROXY_ORIGINS contains an empty entry. Remove the stray comma.");
             }
@@ -355,7 +362,9 @@ export function loadConfig(env: Env = process.env): AppConfig {
     const caddyEnabled = parseBool(env, "COMPOSE_PANEL_CADDY_ENABLED", false);
     const adminUser = env.COMPOSE_PANEL_ADMIN_USER?.trim() || "admin";
     if (!devMode && WEAK_ADMIN_USERS.has(adminUser.toLowerCase())) {
-        throw new Error(`COMPOSE_PANEL_ADMIN_USER must not be a common name like "${adminUser}". Choose a unique name, or set COMPOSE_PANEL_DEV=true for local development.`);
+        throw new Error(
+            `COMPOSE_PANEL_ADMIN_USER must not be a common name like "${adminUser}". Choose a unique name, or set COMPOSE_PANEL_DEV=true for local development.`,
+        );
     }
 
     return {

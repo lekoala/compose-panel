@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, chown, mkdtemp, mkdir, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { FileSafetyError, backupFile, dirIdentity, ensureBackupDir, readFileSafe, sameDirIdentity, writeFileAtomic } from "../src/fs-safe.ts";
+import {
+    FileSafetyError,
+    backupFile,
+    dirIdentity,
+    ensureBackupDir,
+    readFileSafe,
+    sameDirIdentity,
+    writeFileAtomic,
+} from "../src/fs-safe.ts";
 import { foreignOwner } from "./helpers/ownership.ts";
 
 let root: string;
@@ -151,4 +159,3 @@ describe("writeFileAtomic", () => {
         expect(after.mode & 0o777).toBe(0o600);
     });
 });
-

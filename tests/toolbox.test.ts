@@ -20,7 +20,10 @@ const BACKEND: ToolboxSource = {
     manifestFile: "composer.json",
 };
 
-function composerManifest(actions: Record<string, unknown>, scripts: Record<string, unknown> = { "cache:clear": "php bin/console cache:clear" }): string {
+function composerManifest(
+    actions: Record<string, unknown>,
+    scripts: Record<string, unknown> = { "cache:clear": "php bin/console cache:clear" },
+): string {
     return JSON.stringify({ scripts, extra: { "compose-panel": { version: 1, actions } } });
 }
 
@@ -60,7 +63,9 @@ services:
     });
 
     test("refuses an unknown runner", () => {
-        const result = parseToolboxSources("x-compose-panel:\n  toolbox:\n    sources:\n      - id: a\n        service: app\n        runner: pnpm\n");
+        const result = parseToolboxSources(
+            "x-compose-panel:\n  toolbox:\n    sources:\n      - id: a\n        service: app\n        runner: pnpm\n",
+        );
         expect(result.ok).toBe(false);
     });
 
@@ -80,7 +85,9 @@ services:
 
     test("refuses a relative or escaping workdir", () => {
         for (const workdir of ["app", "/app/../../etc", "./app"]) {
-            const result = parseToolboxSources(`x-compose-panel:\n  toolbox:\n    sources:\n      - id: a\n        service: app\n        runner: npm\n        workdir: "${workdir}"\n`);
+            const result = parseToolboxSources(
+                `x-compose-panel:\n  toolbox:\n    sources:\n      - id: a\n        service: app\n        runner: npm\n        workdir: "${workdir}"\n`,
+            );
             expect(result.ok).toBe(false);
         }
     });
@@ -91,7 +98,9 @@ services:
     });
 
     test("refuses a cyclic structure inside a source as a controlled error", () => {
-        const result = parseToolboxSources("x-compose-panel:\n  toolbox:\n    sources:\n      - &s\n        id: *s\n        service: app\n        runner: npm\n");
+        const result = parseToolboxSources(
+            "x-compose-panel:\n  toolbox:\n    sources:\n      - &s\n        id: *s\n        service: app\n        runner: npm\n",
+        );
         expect(result.ok).toBe(false);
     });
 });
@@ -139,11 +148,15 @@ describe("buildRunnerArgv", () => {
 describe("toolbox user format", () => {
     test("accepts a name, a uid, and uid:gid", () => {
         for (const user of ["www-data", "1000", "1000:1000", "www-data:www-data", "node:node"]) {
-            const result = parseToolboxSources(`x-compose-panel:\n  toolbox:\n    sources:\n      - id: a\n        service: app\n        runner: npm\n        user: "${user}"\n`);
+            const result = parseToolboxSources(
+                `x-compose-panel:\n  toolbox:\n    sources:\n      - id: a\n        service: app\n        runner: npm\n        user: "${user}"\n`,
+            );
             expect(result.ok).toBe(true);
         }
         for (const user of ["-u", "a b", "", "1:2:3"]) {
-            const result = parseToolboxSources(`x-compose-panel:\n  toolbox:\n    sources:\n      - id: a\n        service: app\n        runner: npm\n        user: "${user}"\n`);
+            const result = parseToolboxSources(
+                `x-compose-panel:\n  toolbox:\n    sources:\n      - id: a\n        service: app\n        runner: npm\n        user: "${user}"\n`,
+            );
             expect(result.ok).toBe(false);
         }
     });
@@ -191,7 +204,10 @@ describe("buildCatalog", () => {
         }
         // Composer: a command string or an array of strings/callbacks is valid.
         expect(buildCatalog(BACKEND, composerManifest({ "cache:clear": {} }, { "cache:clear": "php x" }), execution, LIMITS).ok).toBe(true);
-        expect(buildCatalog(BACKEND, composerManifest({ "cache:clear": {} }, { "cache:clear": ["@php", "-r", "echo 1"] }), execution, LIMITS).ok).toBe(true);
+        expect(
+            buildCatalog(BACKEND, composerManifest({ "cache:clear": {} }, { "cache:clear": ["@php", "-r", "echo 1"] }), execution, LIMITS)
+                .ok,
+        ).toBe(true);
         expect(buildCatalog(BACKEND, composerManifest({ "cache:clear": {} }, { "cache:clear": null }), execution, LIMITS).ok).toBe(false);
     });
 
@@ -209,7 +225,7 @@ describe("buildCatalog", () => {
         const b = buildCatalog(BACKEND, after, execution, LIMITS);
         expect(a.ok && b.ok).toBe(true);
         if (!a.ok || !b.ok) return;
-        expect(a.value.actions.map(action => action.name)).toEqual(["maintenance"]);
+        expect(a.value.actions.map((action) => action.name)).toEqual(["maintenance"]);
         expect(a.value.revision).not.toBe(b.value.revision);
     });
 
@@ -229,7 +245,12 @@ describe("buildCatalog", () => {
     test("changes when the runner, user or workdir changes", () => {
         const raw = composerManifest({ "cache:clear": {} });
         const base = buildCatalog(BACKEND, raw, execution, LIMITS);
-        const otherRunner = buildCatalog({ ...BACKEND, runner: "npm", manifestFile: "package.json" }, npmManifest({ "cache:clear": {} }, { "cache:clear": "x" }), execution, LIMITS);
+        const otherRunner = buildCatalog(
+            { ...BACKEND, runner: "npm", manifestFile: "package.json" },
+            npmManifest({ "cache:clear": {} }, { "cache:clear": "x" }),
+            execution,
+            LIMITS,
+        );
         const otherUser = buildCatalog({ ...BACKEND, user: "root" }, raw, execution, LIMITS);
         const otherDir = buildCatalog({ ...BACKEND, workdir: "/srv" }, raw, execution, LIMITS);
         const otherContainer = buildCatalog(BACKEND, raw, { containerId: "c".repeat(64), imageId: execution.imageId }, LIMITS);
@@ -244,7 +265,10 @@ describe("buildCatalog", () => {
     test("refuses more actions than the limit", () => {
         const actions: Record<string, unknown> = {};
         const scripts: Record<string, unknown> = {};
-        for (let i = 0; i < 5; i += 1) { actions[`a${i}`] = {}; scripts[`a${i}`] = "x"; }
+        for (let i = 0; i < 5; i += 1) {
+            actions[`a${i}`] = {};
+            scripts[`a${i}`] = "x";
+        }
         expect(buildCatalog(BACKEND, composerManifest(actions, scripts), execution, { maxActions: 4, maxTimeoutMs: 1000 }).ok).toBe(false);
     });
 });

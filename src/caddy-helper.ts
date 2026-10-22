@@ -133,10 +133,11 @@ export function parseHelperEnv(env: Record<string, string | undefined>): HelperE
 
 /** Production Caddy runner: fixed binary, explicit argument arrays, no shell. */
 export function createCaddyRunner(env: HelperEnv): HelperDeps["runCaddy"] {
-    return (args: string[], options?: { maxBytes?: number }) => runCommand(env.caddyBin, args, {
-        timeoutMs: env.commandTimeoutMs,
-        maxBytes: options?.maxBytes ?? env.maxOutputBytes,
-    });
+    return (args: string[], options?: { maxBytes?: number }) =>
+        runCommand(env.caddyBin, args, {
+            timeoutMs: env.commandTimeoutMs,
+            maxBytes: options?.maxBytes ?? env.maxOutputBytes,
+        });
 }
 
 function refused(error: string, code: HelperCode): HelperResponse {
@@ -568,12 +569,19 @@ async function handleAttach(env: HelperEnv, deps: HelperDeps, raw: Record<string
             // import). A candidate is only ever published into a
             // configuration it cannot shadow or break by duplication.
             const current = await runCaddy(["adapt", "--config", env.mainConfig, "--adapter", "caddyfile"], { maxBytes: ADAPT_MAX_BYTES });
-            const declared = current.code !== 0 || current.timedOut || current.truncated ? null : adaptDeclaresDomain(current.stdout, inputs.domain);
+            const declared =
+                current.code !== 0 || current.timedOut || current.truncated ? null : adaptDeclaresDomain(current.stdout, inputs.domain);
             if (declared === null) {
-                return refused("The current Caddy configuration could not be read, so the domain cannot be proven unused. Nothing was applied.", "failed");
+                return refused(
+                    "The current Caddy configuration could not be read, so the domain cannot be proven unused. Nothing was applied.",
+                    "failed",
+                );
             }
             if (declared) {
-                return refused("This domain is already served by another part of the Caddy configuration. It will not be attached here.", "conflict");
+                return refused(
+                    "This domain is already served by another part of the Caddy configuration. It will not be attached here.",
+                    "conflict",
+                );
             }
             if (!(await publishSiteFile(path, candidate))) {
                 return refused("A file for this domain appeared meanwhile. It will not be overwritten.", "conflict");
@@ -581,16 +589,25 @@ async function handleAttach(env: HelperEnv, deps: HelperDeps, raw: Record<string
             const valid = await validateConfig(runCaddy, env.mainConfig);
             if (valid.code !== 0 || valid.timedOut) {
                 if (!(await removePublishedFile(path))) {
-                    return refused("Caddy rejected the configuration and the unpublished file could not be removed. Check Caddy on the host: the outcome is unknown.", "unknown");
+                    return refused(
+                        "Caddy rejected the configuration and the unpublished file could not be removed. Check Caddy on the host: the outcome is unknown.",
+                        "unknown",
+                    );
                 }
                 return refused("Caddy rejected the configuration. Nothing was applied.", "failed");
             }
             const adapt = await runCaddy(["adapt", "--config", env.mainConfig, "--adapter", "caddyfile"], { maxBytes: ADAPT_MAX_BYTES });
             if (adapt.code !== 0 || adapt.timedOut || adapt.truncated || !adaptContainsDomain(adapt.stdout, inputs.domain)) {
                 if (!(await removePublishedFile(path))) {
-                    return refused("The domain is missing from the Caddy configuration and the unpublished file could not be removed. Check Caddy on the host: the outcome is unknown.", "unknown");
+                    return refused(
+                        "The domain is missing from the Caddy configuration and the unpublished file could not be removed. Check Caddy on the host: the outcome is unknown.",
+                        "unknown",
+                    );
                 }
-                return refused("The domain is missing from the Caddy configuration. The import may not be effective. Nothing was applied.", "failed");
+                return refused(
+                    "The domain is missing from the Caddy configuration. The import may not be effective. Nothing was applied.",
+                    "failed",
+                );
             }
             const reloaded = await reloadConfig(runCaddy, env.mainConfig);
             if (reloaded.code === 0 && !reloaded.timedOut) return { ok: true, action: "attach", unchanged: false };
@@ -598,17 +615,27 @@ async function handleAttach(env: HelperEnv, deps: HelperDeps, raw: Record<string
             // restored state may only be claimed when the file is actually
             // gone; otherwise the next reload would still load the candidate.
             if (!(await removePublishedFile(path))) {
-                return refused("Caddy did not reload and the unpublished file could not be removed. Check Caddy on the host: the outcome is unknown.", "unknown");
+                return refused(
+                    "Caddy did not reload and the unpublished file could not be removed. Check Caddy on the host: the outcome is unknown.",
+                    "unknown",
+                );
             }
             const restored = await reloadConfig(runCaddy, env.mainConfig);
             if (restored.code === 0 && !restored.timedOut) {
                 return refused("Caddy did not reload. The previous configuration was restored.", "failed");
             }
-            return refused("Caddy did not reload and the rollback could not be confirmed. Check Caddy on the host: the outcome is unknown.", "unknown");
+            return refused(
+                "Caddy did not reload and the rollback could not be confirmed. Check Caddy on the host: the outcome is unknown.",
+                "unknown",
+            );
         });
     } catch (error) {
         if (error instanceof HelperBusyError) return refused(error.message, "conflict");
-        if (error instanceof HelperConfigError) return refused("The managed directory is not usable. Check the helper configuration on the host: nothing was changed.", "unavailable");
+        if (error instanceof HelperConfigError)
+            return refused(
+                "The managed directory is not usable. Check the helper configuration on the host: nothing was changed.",
+                "unavailable",
+            );
         throw error;
     }
 }
@@ -650,29 +677,43 @@ async function handleDetach(env: HelperEnv, deps: HelperDeps, raw: Record<string
             // succeeded: otherwise the file is still absent while the running
             // configuration still serves it.
             if (!(await restoreDetachedFile(backup, path))) {
-                return refused("Caddy did not reload and the previous configuration could not be restored. Check Caddy on the host: the outcome is unknown.", "unknown");
+                return refused(
+                    "Caddy did not reload and the previous configuration could not be restored. Check Caddy on the host: the outcome is unknown.",
+                    "unknown",
+                );
             }
             const restored = await reloadConfig(runCaddy, env.mainConfig);
             if (restored.code === 0 && !restored.timedOut) {
                 return refused("Caddy did not reload. The previous configuration was restored.", "failed");
             }
-            return refused("Caddy did not reload and the rollback could not be confirmed. Check Caddy on the host: the outcome is unknown.", "unknown");
+            return refused(
+                "Caddy did not reload and the rollback could not be confirmed. Check Caddy on the host: the outcome is unknown.",
+                "unknown",
+            );
         });
     } catch (error) {
         if (error instanceof HelperBusyError) return refused(error.message, "conflict");
-        if (error instanceof HelperConfigError) return refused("The managed directory is not usable. Check the helper configuration on the host: nothing was changed.", "unavailable");
+        if (error instanceof HelperConfigError)
+            return refused(
+                "The managed directory is not usable. Check the helper configuration on the host: nothing was changed.",
+                "unavailable",
+            );
         throw error;
     }
 }
 
 /** Dispatch one parsed request. Unknown shapes are refused, never executed. */
 export async function runHelperRequest(raw: unknown, env: HelperEnv, deps: HelperDeps): Promise<HelperResponse> {
-    const request = (typeof raw === "object" && raw !== null ? raw as Record<string, unknown> : null);
+    const request = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : null;
     if (!request || typeof request.action !== "string") return refused("Unknown helper action.", "invalid");
     switch (request.action) {
-        case "status": return handleStatus(env);
-        case "attach": return handleAttach(env, deps, request);
-        case "detach": return handleDetach(env, deps, request);
-        default: return refused("Unknown helper action.", "invalid");
+        case "status":
+            return handleStatus(env);
+        case "attach":
+            return handleAttach(env, deps, request);
+        case "detach":
+            return handleDetach(env, deps, request);
+        default:
+            return refused("Unknown helper action.", "invalid");
     }
 }

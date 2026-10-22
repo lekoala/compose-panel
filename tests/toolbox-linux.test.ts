@@ -23,7 +23,11 @@ const MANIFEST = JSON.stringify({
     "compose-panel": { version: 1, actions: { hello: { label: "Say hello" } } },
 });
 
-interface Run { code: number; stdout: string; stderr: string }
+interface Run {
+    code: number;
+    stdout: string;
+    stderr: string;
+}
 
 async function docker(args: string[], timeoutMs = 120_000): Promise<Run> {
     const proc = Bun.spawn(["docker", ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: timeoutMs });
@@ -43,8 +47,11 @@ async function assertLabDaemon(): Promise<void> {
     if (!host.startsWith("unix://")) throw new Error("DOCKER_HOST must point to the lab Unix socket (unix://...).");
     const socket = host.slice("unix://".length);
     let real: string;
-    try { real = realpathSync(socket); }
-    catch { throw new Error(`Lab socket ${socket} does not exist.`); }
+    try {
+        real = realpathSync(socket);
+    } catch {
+        throw new Error(`Lab socket ${socket} does not exist.`);
+    }
     if (["/var/run/docker.sock", "/run/docker.sock"].includes(real) || real.startsWith("/run/user/")) {
         throw new Error(`DOCKER_HOST resolves to a default daemon socket (${real}); refusing.`);
     }
@@ -91,10 +98,15 @@ describe.skipIf(!enabled)("Application toolbox on a disposable lab daemon", () =
         const file = await actionRunner.readFile(containerId, "/app/package.json", { timeoutMs: 30_000, maxBytes: 256 * 1024 });
         expect(file.kind).toBe("ok");
         if (file.kind !== "ok") return;
-        const catalog = buildCatalog(SOURCE, file.content, { containerId, imageId: "sha256:" + "0".repeat(64) }, { maxActions: 50, maxTimeoutMs: 900_000 });
+        const catalog = buildCatalog(
+            SOURCE,
+            file.content,
+            { containerId, imageId: "sha256:" + "0".repeat(64) },
+            { maxActions: 50, maxTimeoutMs: 900_000 },
+        );
         expect(catalog.ok).toBe(true);
         if (!catalog.ok) return;
-        expect(catalog.value.actions.map(action => action.name)).toEqual(["hello"]);
+        expect(catalog.value.actions.map((action) => action.name)).toEqual(["hello"]);
     }, 300_000);
 
     test("runs the declared script non-interactively and returns its output", async () => {

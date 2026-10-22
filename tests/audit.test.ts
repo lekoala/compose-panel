@@ -77,7 +77,7 @@ describe("AuditLog", () => {
             const audit = new AuditLog({ dir, maxReadLines: 3, now: () => Date.parse("2024-03-01T00:00:00.000Z") });
             for (let i = 0; i < 10; i += 1) await audit.record({ event: "s", result: "r", detail: `n${i}` });
             const entries = await audit.readPeriod("2024-03-01");
-            expect(entries.map(entry => entry.detail)).toEqual(["n7", "n8", "n9"]);
+            expect(entries.map((entry) => entry.detail)).toEqual(["n7", "n8", "n9"]);
         } finally {
             await rm(dir, { recursive: true, force: true });
         }
@@ -86,7 +86,10 @@ describe("AuditLog", () => {
     test("skips malformed lines instead of failing", async () => {
         const dir = await tempDir();
         try {
-            await writeFile(join(dir, "2024-03-01.log"), `${JSON.stringify({ ts: "2024-03-01T00:00:00.000Z", event: "ok", result: "success" })}\nnot json\n`);
+            await writeFile(
+                join(dir, "2024-03-01.log"),
+                `${JSON.stringify({ ts: "2024-03-01T00:00:00.000Z", event: "ok", result: "success" })}\nnot json\n`,
+            );
             const audit = new AuditLog({ dir });
             const entries = await audit.readPeriod("2024-03-01");
             expect(entries.length).toBe(1);
@@ -122,7 +125,7 @@ describe("AuditLog", () => {
                 throw error;
             }
             const errors: unknown[] = [];
-            const audit = new AuditLog({ dir, now: () => Date.parse("2024-03-01T00:00:00.000Z"), onError: error => errors.push(error) });
+            const audit = new AuditLog({ dir, now: () => Date.parse("2024-03-01T00:00:00.000Z"), onError: (error) => errors.push(error) });
             await audit.record({ event: "login", result: "success" });
             expect(errors.length).toBe(1);
             expect(errors[0]).toBeInstanceOf(AuditError);
@@ -175,9 +178,9 @@ describe("AuditLog", () => {
             now += 60_000;
             await audit.record({ event: "login", result: "success" });
             const entries = await audit.readPeriod("2024-03-01");
-            expect(entries.filter(entry => entry.result === "failure").length).toBe(3);
-            expect(entries.some(entry => entry.event === "save")).toBe(true);
-            const summary = entries.find(entry => entry.result === "suppressed");
+            expect(entries.filter((entry) => entry.result === "failure").length).toBe(3);
+            expect(entries.some((entry) => entry.event === "save")).toBe(true);
+            const summary = entries.find((entry) => entry.result === "suppressed");
             expect(summary?.detail).toContain("7 more");
             expect(entries.at(-1)!.result).toBe("success");
         } finally {
@@ -219,7 +222,12 @@ describe("AuditLog managed paths and retention", () => {
             await mkdir(outside);
             if (!(await linkDir(outside, join(root, ".compose-panel")))) return;
             const errors: unknown[] = [];
-            const audit = new AuditLog({ dir: join(root, ".compose-panel", "audit"), root, now: () => NOW, onError: error => errors.push(error) });
+            const audit = new AuditLog({
+                dir: join(root, ".compose-panel", "audit"),
+                root,
+                now: () => NOW,
+                onError: (error) => errors.push(error),
+            });
             await audit.record({ event: "login", result: "failure" });
             expect(errors.length).toBe(1);
             expect(errors[0]).toBeInstanceOf(AuditError);
