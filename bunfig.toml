@@ -1,0 +1,5 @@
+# `bun fmt` (Prettier-compatible, built into Bun). Settings match the existing
+# style: 4-space indentation, double quotes, semicolons, wide lines.
+[fmt]
+printWidth = 140
+tabWidth = 4

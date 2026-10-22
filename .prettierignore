@@ -1,0 +1,12 @@
+# `bun fmt` formats TS and JS only. Prose, deployment files, generated data
+# and the deliberately compact stylesheets keep their hand-written layout.
+*.md
+*.yaml
+*.yml
+*.json
+*.html
+*.toml
+*.css
+dist/
+.temp/
+.preview/

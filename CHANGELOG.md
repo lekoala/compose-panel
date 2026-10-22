@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Tooling: TS and JS code is formatted with the built-in `bun fmt`
+  (`bunfig.toml`: 4-space indentation, 140 columns; Markdown, YAML, JSON,
+  HTML and CSS are excluded in `.prettierignore`). CI and `bun run verify` run
+  `bun fmt --check`. The one-off reformat commit is listed in
+  `.git-blame-ignore-revs`.
 - Toolchain: Bun 1.4.4 (image `oven/bun:1.4.4-slim`, CI, release and Pages
   workflows, `engines.bun >=1.4.4`); `@types/bun` 1.4.3.
 

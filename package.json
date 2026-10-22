@@ -10,7 +10,7 @@
     "test": "bun test",
     "typecheck": "bun check",
     "docker:build": "docker build -t compose-panel:local .",
-    "verify": "bun test && bun check",
+    "verify": "bun test && bun check && bun fmt --check",
     "test:wsl": "wsl -- bash scripts/test-wsl.sh",
     "test:proxy:wsl": "wsl -- bash scripts/proxy-e2e/run.sh",
     "test:caddy:wsl": "wsl -- bash scripts/caddy-e2e.sh",

@@ -1,7 +1,7 @@
 # CI — pipeline
 
 The pipeline lives in `.github/workflows/ci.yml` (`ubuntu-24.04` runners, Bun 1.4.4
-pinned): `bun install --frozen-lockfile`, `bun audit`, `bun run typecheck`, `bun run test`,
+pinned): `bun install --frozen-lockfile`, `bun audit`, `bun run typecheck`, `bun fmt --check`, `bun run test`,
 then a pinned image build, a socket-less smoke test (reads and auth
 only, no Docker socket mounted) and Trivy scans that fail on CRITICAL/HIGH.
 PR builds never publish images. The workflow also runs weekly on the default

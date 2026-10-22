@@ -32,6 +32,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun audit
       - run: bun run typecheck
+      - run: bun fmt --check
       - run: bun run test
       - name: Host installer shell checks (no deployment)
         run: |

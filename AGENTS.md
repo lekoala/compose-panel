@@ -39,7 +39,7 @@ Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`,
 - Assemble HTML only from trusted markup; escape every dynamic value with `escapeHtml()`.
 
 ## Quality gates
-`bun run test` and `bun run typecheck` (`bun check` builtin, no `tsc` dependency). For Docker-related code, add an isolated Linux integration test and document manual verification before calling the PR done. No live Docker deployment in unattended CI.
+`bun run test`, `bun run typecheck` (`bun check` builtin, no `tsc` dependency) and `bun fmt --check` (builtin Prettier-compatible formatter for TS/JS, configured in `bunfig.toml` and `.prettierignore`; run `bun fmt` before committing). For Docker-related code, add an isolated Linux integration test and document manual verification before calling the PR done. No live Docker deployment in unattended CI.
 
 ## PR report template
 Summary; changed files; behavior; failure and rollback behavior; tests run; dependency delta; security considerations; known limitations.
