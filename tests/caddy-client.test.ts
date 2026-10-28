@@ -110,7 +110,7 @@ describe.skipIf(process.platform !== "linux")("callCaddyHelper", () => {
                 },
             },
         });
-        return { socketPath, close: () => server.stop() };
+        return { socketPath, close: async () => server.stop() };
     }
 
     test("round-trips a request and a chunked answer", async () => {
@@ -122,7 +122,7 @@ describe.skipIf(process.platform !== "linux")("callCaddyHelper", () => {
             const response = await callCaddyHelper(server.socketPath, { action: "status" }, { timeoutMs: 5000 });
             expect(response).toEqual({ ok: true, action: "status", sites: [], unparseable: [], importConfigured: true });
         } finally {
-            server.close();
+            await server.close();
         }
     });
 
@@ -131,7 +131,7 @@ describe.skipIf(process.platform !== "linux")("callCaddyHelper", () => {
         try {
             await expect(callCaddyHelper(server.socketPath, { action: "status" }, { timeoutMs: 200 })).rejects.toThrow(CaddyHelperError);
         } finally {
-            server.close();
+            await server.close();
         }
     });
 
@@ -143,7 +143,7 @@ describe.skipIf(process.platform !== "linux")("callCaddyHelper", () => {
         try {
             await expect(callCaddyHelper(broken.socketPath, { action: "status" }, { timeoutMs: 2000 })).rejects.toThrow(CaddyHelperError);
         } finally {
-            broken.close();
+            await broken.close();
         }
         const big = await serve(`${JSON.stringify({ ok: true, action: "status", sites: [], pad: "x".repeat(3000) })}\n`);
         try {
@@ -151,7 +151,7 @@ describe.skipIf(process.platform !== "linux")("callCaddyHelper", () => {
                 CaddyHelperError,
             );
         } finally {
-            big.close();
+            await big.close();
         }
     });
 });

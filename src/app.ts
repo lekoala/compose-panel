@@ -18,7 +18,6 @@ import {
     otherContainersSection,
     containersPage,
     containerDetailPage,
-    containerLogsPanel,
     serverPage,
     deploymentSection,
     createStackPage,
@@ -36,7 +35,7 @@ import {
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { managedBy } from "./deployment.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
-import { dirname, join, posix } from "node:path";
+import { join, posix } from "node:path";
 import { listStacks, locateComposeFile, readStackCompose, StackError, validateStackName } from "./stacks.ts";
 import {
     loadProjects,

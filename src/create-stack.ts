@@ -55,6 +55,9 @@ export async function createStack(
     let committed = false;
     let stage: CreationStage = "filesystem";
     let failure: StackError | null = null;
+    let failed = false;
+    let thrown: unknown;
+    let incomplete = false;
     let rootInfo: Stats;
     const owned = new Map<string, Stats>();
     const checkIdentity = async () => {
@@ -191,9 +194,9 @@ export async function createStack(
         // Only application errors have a safe message (including redacted
         // validation diagnostics). Never retain/log an arbitrary provider error.
         if (error instanceof StackError) failure = error;
-        throw error;
+        failed = true;
+        thrown = error;
     } finally {
-        let incomplete = false;
         if (reserved) {
             for (const [filename, info] of owned) {
                 if (committed && (filename === "compose.yaml" || filename === ENV_FILENAME)) continue;
@@ -219,6 +222,7 @@ export async function createStack(
         }
         await directoryHandle?.close();
         await rootHandle?.close();
-        if (incomplete) throw new StackCreationPartialError(stage, failure?.message);
     }
+    if (incomplete) throw new StackCreationPartialError(stage, failure?.message);
+    if (failed) throw thrown;
 }

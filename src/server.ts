@@ -49,7 +49,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
         shuttingDown = true;
         console.info(`${signal} received; refusing new operations and draining up to ${config.shutdownGraceMs} ms.`);
         await app.beginShutdown(config.shutdownGraceMs);
-        server.stop(true);
+        await server.stop(true);
         process.exit(0);
     });
 }

@@ -199,7 +199,7 @@ export async function runSelfUpdate(args: UpdaterArgs, deps: UpdaterDeps): Promi
     // 1. The tag must still resolve locally to the approved image, and that
     //    image must carry the digest its release published.
     const tag = await runner(["image", "inspect", "--", args.imageRef]);
-    let tagged: { Id?: unknown; RepoDigests?: unknown } | null = null;
+    let tagged: { Id?: unknown; RepoDigests?: unknown } | null;
     try {
         tagged = tag.code === 0 ? ((JSON.parse(tag.stdout) as { Id?: unknown; RepoDigests?: unknown }[])[0] ?? null) : null;
     } catch {

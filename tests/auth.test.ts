@@ -77,7 +77,7 @@ describe("SessionStore", () => {
 
 describe("LoginRateLimiter", () => {
     test("grows a bounded delay instead of blocking once over the limit", () => {
-        let now = 0;
+        const now = 0;
         const limiter = new LoginRateLimiter(3, 1000, 8000, () => now);
         expect(limiter.check("k").delayMs).toBe(0);
         limiter.recordFailure("k");

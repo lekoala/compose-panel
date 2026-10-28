@@ -726,7 +726,7 @@ console.info(`
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, async () => {
         await app.beginShutdown(1000);
-        server.stop(true);
+        await server.stop(true);
         process.exit(0);
     });
 }

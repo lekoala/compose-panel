@@ -16,6 +16,7 @@ import { constants } from "node:fs";
 import { link, lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { runCommand, type CommandResult } from "./docker.ts";
+import { containsControlCharacters } from "./text.ts";
 import {
     buildSiteFile,
     isValidDomain,
@@ -123,7 +124,7 @@ export function parseHelperEnv(env: Record<string, string | undefined>): HelperE
     if (!mainConfig || !isAbsolute(mainConfig)) {
         throw new HelperConfigError("CADDY_MAIN_CONFIG must be an absolute path to the main Caddyfile.");
     }
-    if (!caddyBin || /[\x00-\x1f\x7f]/.test(caddyBin)) throw new HelperConfigError("CADDY_BIN must be a usable executable reference.");
+    if (!caddyBin || containsControlCharacters(caddyBin)) throw new HelperConfigError("CADDY_BIN must be a usable executable reference.");
     const commandTimeoutMs = env.CADDY_COMMAND_TIMEOUT_MS ? Number(env.CADDY_COMMAND_TIMEOUT_MS) : 15_000;
     if (!Number.isInteger(commandTimeoutMs) || commandTimeoutMs <= 0) {
         throw new HelperConfigError("CADDY_COMMAND_TIMEOUT_MS must be a positive integer.");
@@ -491,7 +492,7 @@ async function handleStatus(env: HelperEnv): Promise<HelperResponse> {
     const entries = await readdir(env.managedDir).catch(() => [] as string[]);
     for (const entry of entries) {
         if (!entry.endsWith(".caddy") || entry.startsWith(".") || sites.length + unparseable.length >= MAX_SITES_LISTED) continue;
-        let source: string | null = null;
+        let source: string | null;
         try {
             source = await readSiteFile(join(env.managedDir, entry));
         } catch {

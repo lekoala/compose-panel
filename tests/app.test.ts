@@ -392,7 +392,7 @@ describe("controlled stack creation", () => {
     test("revoked authorization during validation removes the unpublished stack", async () =>
         fixture(async (app, dir) => {
             const session = await login(app);
-            const csrf = await form(app, session);
+            await form(app, session);
             const original = createComposeProvider({
                 runner: async (args) => ({
                     code: 0,
@@ -404,7 +404,6 @@ describe("controlled stack creation", () => {
             });
             // A separate app with the same filesystem exercises the production
             // session check after an awaited validation call.
-            let current!: App;
             let currentSession = "";
             let token = "";
             original.validateConfig = async () => {
@@ -415,7 +414,7 @@ describe("controlled stack creation", () => {
                 });
                 return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
             };
-            current = makeApp({}, undefined, original, undefined, dir);
+            const current = makeApp({}, undefined, original, undefined, dir);
             currentSession = await login(current);
             token = await form(current, currentSession);
             expect((await post(current, currentSession, { csrf: token, name: "fresh", compose })).status).toBe(401);
@@ -834,7 +833,7 @@ describe("caddy domain attach and detach", () => {
 describe.skipIf(process.platform !== "linux")("caddy domain management flow", () => {
     let helperCounter = 0;
 
-    async function startFakeHelper(managedDir: string): Promise<{ socketPath: string; close: () => void }> {
+    async function startFakeHelper(managedDir: string): Promise<{ socketPath: string; close: () => Promise<void> }> {
         const socketPath = join(
             await mkdtemp(join(tmpdir(), "compose-panel-caddy-flow-")),
             `helper-${process.pid}-${helperCounter++}.sock`,
@@ -906,7 +905,7 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
                 /* the client may have gone */
             }
         }
-        return { socketPath, close: () => server.stop() };
+        return { socketPath, close: async () => server.stop() };
     }
 
     const containerId = "a".repeat(64);
@@ -1025,7 +1024,7 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
             expect(await readdir(managedDir)).toEqual([]);
             expect(await (await authed(app, "/stacks/demo", session)).text()).toContain("No domains attached.");
         } finally {
-            helper.close();
+            await helper.close();
             await rm(managedDir, { recursive: true, force: true });
             await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
         }
@@ -1105,7 +1104,7 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
                 expect(await response.text()).toContain("127.0.0.1 (TCP)");
                 expect(await readdir(managedDir)).toEqual([]);
             } finally {
-                helper.close();
+                await helper.close();
                 await rm(managedDir, { recursive: true, force: true });
             }
         }
@@ -1164,7 +1163,7 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
             expect(await late.text()).toContain("managed externally");
             expect(await readdir(managedDir)).toEqual(["app.example.com.caddy"]);
         } finally {
-            helper.close();
+            await helper.close();
             await rm(managedDir, { recursive: true, force: true });
             await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
         }
@@ -1222,7 +1221,7 @@ describe.skipIf(process.platform !== "linux")("caddy domain management flow", ()
             const response = await pending;
             expect(response.status).toBe(303);
         } finally {
-            server.stop();
+            await server.stop();
             await rm(managedDir, { recursive: true, force: true });
             await writeFile(join(root, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
         }

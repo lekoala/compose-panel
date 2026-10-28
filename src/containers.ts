@@ -1,5 +1,4 @@
 import type { CommandResult, DockerRunner } from "./docker.ts";
-import { CONTAINER_LIST_FIELD_COUNT } from "./container-state.ts";
 
 export class ContainerRefError extends Error {
     readonly status = 400;

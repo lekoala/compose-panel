@@ -41,5 +41,7 @@ Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`,
 ## Quality gates
 `bun run test`, `bun run typecheck` (`bun check` builtin, no `tsc` dependency) and `bun fmt --check` (builtin Prettier-compatible formatter for TS/JS, configured in `bunfig.toml` and `.prettierignore`; run `bun fmt` before committing). For Docker-related code, add an isolated Linux integration test and document manual verification before calling the PR done. No live Docker deployment in unattended CI.
 
+`bun lint` is not a gate yet: Bun 1.4.4 has no stable lint command, and CI must not depend on a canary build. When it ships stable, add a `[lint]` section to `bunfig.toml` (with `typeAware = true` if the cost stays acceptable), fix the findings, add `bun lint` to `verify` and the CI workflow, then update this section. In the meantime, treat lint findings as evidence, not as a gate: fix the real defects they reveal (dead imports, floating promises, a `finally` that replaces the original error) and ignore purely stylistic noise.
+
 ## PR report template
 Summary; changed files; behavior; failure and rollback behavior; tests run; dependency delta; security considerations; known limitations.

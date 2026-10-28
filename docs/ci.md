@@ -7,6 +7,10 @@ only, no Docker socket mounted) and Trivy scans that fail on CRITICAL/HIGH.
 PR builds never publish images. The workflow also runs weekly on the default
 branch, so new fixable CVEs and expired exceptions fail without a push.
 
+`bun lint` is intentionally absent: Bun 1.4.4 has no stable lint command and CI
+must not depend on a canary. See the quality gates in [AGENTS.md](../AGENTS.md)
+for the conditions to add it.
+
 Scans: a filesystem scan covers dependencies and secrets
 (`scanners: vuln,secret`, skipping `node_modules`/`private`/`.git`), and the
 built image is scanned separately. Both gate on `CRITICAL,HIGH`. The image scans

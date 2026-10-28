@@ -22,6 +22,7 @@
  */
 
 import type { ParseResult } from "./compose-extension.ts";
+import { containsControlCharacters } from "./text.ts";
 
 /** Ownership header version. Bumped only by a new ADR. */
 export const CADDY_MANAGED_VERSION = "v1";
@@ -46,7 +47,7 @@ export interface CaddySiteRequest {
 }
 
 function usableText(value: string): boolean {
-    return value.length > 0 && !/[\x00-\x1f\x7f]/.test(value);
+    return value.length > 0 && !containsControlCharacters(value);
 }
 
 /**

@@ -1,4 +1,5 @@
 import { asRecord, readComposeExtension, type ParseResult } from "./compose-extension.ts";
+import { containsControlCharacters } from "./text.ts";
 
 /**
  * External database explorer link (ADR 0027): a stack declares, through the
@@ -28,7 +29,7 @@ export interface DatabaseExplorer {
 
 /** Text of 1..max characters without control characters. */
 function isUsableText(value: string, max: number): boolean {
-    return value.length >= 1 && value.length <= max && !/[\x00-\x1f\x7f]/.test(value);
+    return value.length >= 1 && value.length <= max && !containsControlCharacters(value);
 }
 
 /**

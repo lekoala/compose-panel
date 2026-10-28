@@ -1,4 +1,5 @@
 import type { ImageDetails } from "./compose-state.ts";
+import { containsControlCharacters } from "./text.ts";
 
 export const STACK_LABELS = [
     "stack.version",
@@ -26,7 +27,7 @@ export interface DeployedImage {
 export function metadataText(value: unknown): string | null {
     if (typeof value !== "string") return null;
     const text = value.trim();
-    return text.length > 0 && text.length <= 512 && !/[\x00-\x1f\x7f]/.test(text) ? text : null;
+    return text.length > 0 && text.length <= 512 && !containsControlCharacters(text) ? text : null;
 }
 
 export function metadataUrl(value: unknown): string | null {

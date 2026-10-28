@@ -1,6 +1,7 @@
 import { posix } from "node:path";
 import type { PathAlias } from "./container-state.ts";
 import { normalizeDatabaseExplorerUrl } from "./database.ts";
+import { containsControlCharacters } from "./text.ts";
 
 export interface LoginRateLimitConfig {
     windowMs: number;
@@ -224,7 +225,7 @@ function parseCaddySocketPath(env: Env, caddyEnabled: boolean): string | null {
     if (!posix.isAbsolute(raw)) {
         throw new Error("COMPOSE_PANEL_CADDY_SOCKET_PATH must be an absolute Unix socket path.");
     }
-    if (/[\x00-\x1f\x7f]/.test(raw)) throw new Error("COMPOSE_PANEL_CADDY_SOCKET_PATH contains control characters.");
+    if (containsControlCharacters(raw)) throw new Error("COMPOSE_PANEL_CADDY_SOCKET_PATH contains control characters.");
     return raw;
 }
 

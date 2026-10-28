@@ -127,7 +127,7 @@
         setBusy(true);
         source = new EventSource(url);
         source.addEventListener("snapshot", function (e) {
-            var snap = null;
+            var snap;
             try {
                 snap = JSON.parse(e.data);
                 if (typeof snap.output === "string") output.textContent = snap.output;
@@ -265,7 +265,7 @@
             stop.disabled = false;
             source = new EventSource(url + selection());
             source.addEventListener("replay", function (e) {
-                var payload = null;
+                var payload;
                 opened = true;
                 try {
                     payload = JSON.parse(e.data);
@@ -851,7 +851,7 @@
             if (controller) {
                 try {
                     controller.abort();
-                } catch (e) {
+                } catch {
                     /* ignore */
                 }
                 controller = null;

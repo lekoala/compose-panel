@@ -1589,7 +1589,7 @@ export function containerDetailPage(options: ContainerDetailPageOptions): string
         container.category === "managed" && container.stack
             ? ` · <a href="/stacks/${encodeURIComponent(container.stack)}">Stack ${escapeHtml(container.stack)}</a>`
             : "";
-    let extras = "";
+    let extras: string;
     if (details) {
         extras =
             `<section class="card"><h2>Details</h2><div class="table-wrap"><table class="table"><tbody>` +

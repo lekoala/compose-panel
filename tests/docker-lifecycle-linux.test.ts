@@ -97,7 +97,7 @@ async function assertLabDaemon(): Promise<void> {
 async function freePort(): Promise<number> {
     const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
     const port = probe.port!;
-    probe.stop(true);
+    await probe.stop(true);
     return port;
 }
 

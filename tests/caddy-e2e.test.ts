@@ -123,7 +123,7 @@ import ${managedDir}/*.caddy
 
     afterAll(async () => {
         await stopCaddy();
-        upstream?.stop(true);
+        await upstream?.stop(true);
         process.env.XDG_DATA_HOME = savedEnv.XDG_DATA_HOME;
         process.env.XDG_CONFIG_HOME = savedEnv.XDG_CONFIG_HOME;
         if (savedEnv.XDG_DATA_HOME === undefined) delete process.env.XDG_DATA_HOME;

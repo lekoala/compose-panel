@@ -16,7 +16,7 @@ test("uncaught request errors return a private production response", async () =>
         expect(await response.text()).not.toContain("fixture-password");
         expect(JSON.stringify(log.mock.calls)).not.toContain("fixture-password");
     } finally {
-        server.stop(true);
+        await server.stop(true);
         log.mockRestore();
     }
 });
