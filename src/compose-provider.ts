@@ -1,3 +1,4 @@
+import { compactComposeProgress } from "./compose-progress.ts";
 import { composeEnvironment, runCommand, type CommandResult, type DockerRunner } from "./docker.ts";
 import { projectMetadata, type DeclaredMetadata } from "./deployment.ts";
 
@@ -320,10 +321,21 @@ class DockerComposeProvider implements ComposeProvider {
         return this.runner(args, { cwd: target.cwd, timeoutMs: target.timeoutMs, maxBytes: target.maxBytes, onChunk: target.onOutput });
     }
 
+    /** Pull and Up may download images: their live progress is compacted (ADR 0034). */
+    private async runPulling(target: ComposeTarget, command: string[]): Promise<CommandResult> {
+        if (!target.onOutput) return this.runTarget(target, command);
+        const progress = compactComposeProgress(target.onOutput);
+        try {
+            return await this.runTarget({ ...target, onOutput: (chunk) => progress.write(chunk) }, command);
+        } finally {
+            progress.flush();
+        }
+    }
+
     pull(target: ComposeTarget): Promise<CommandResult> {
         // ADR 0022: services with a `build:` section are skipped, including
         // ones that also declare `image:`. Those are built by Up, not pulled.
-        return this.runTarget(target, ["pull", "--ignore-buildable"]);
+        return this.runPulling(target, ["pull", "--ignore-buildable"]);
     }
 
     up(target: ComposeTarget): Promise<CommandResult> {
@@ -333,7 +345,7 @@ class DockerComposeProvider implements ComposeProvider {
             return Promise.reject(new Error("Invalid service name."));
         }
         const command = target.service === undefined ? ["up", "-d"] : ["up", "-d", "--no-deps", "--", target.service];
-        return this.runTarget(target, command);
+        return this.runPulling(target, command);
     }
 
     stop(target: ComposeTarget): Promise<CommandResult> {

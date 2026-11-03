@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Operations: Pull and Up no longer flood the live output with one line per
+  layer progress update. Repeated `Downloading`/`Extracting` lines of a layer
+  are shown at most every 5 seconds; layer state changes, warnings and errors
+  are unchanged (ADR 0034). This also keeps the capped operation output for
+  the end of the operation.
 - Installer: Debian 13 (trixie) and Debian 12 (bookworm) are supported targets
   next to Ubuntu 24.04/26.04, on amd64 and arm64 (ADR 0033). The supported-host
   table validates distribution, release and codename together, and Docker's APT
