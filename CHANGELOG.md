@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Logs: with JavaScript, stack and container logs are shown one row per line,
+  with the service and time in a muted column and long messages wrapping under
+  the message instead of under the prefix. A prefix identical to the previous
+  line's (a stack trace, a burst in the same second) is hidden but still
+  copied. Without JavaScript, the plain-text snapshot is unchanged.
 - Installer: Debian 13 (trixie) and Debian 12 (bookworm) are supported targets
   next to Ubuntu 24.04/26.04, on amd64 and arm64 (ADR 0033). The supported-host
   table validates distribution, release and codename together, and Docker's APT

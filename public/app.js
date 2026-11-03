@@ -68,6 +68,80 @@
         });
     }
 
+    /* A Docker log line: an optional Compose service column (`web-1  | `), then
+     * an optional timestamp. Anything else is message. */
+    var LOG_PREFIX = /^(?:[A-Za-z0-9][\w.-]*\s*\| )?(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?)?/;
+
+    /* Render log text as one row per line: a muted prefix column and a message
+     * that wraps under itself, not under the prefix. A prefix equal to the
+     * previous line's (a stack trace, a burst in the same second) is kept for
+     * copying but not shown. textContent stays exactly the original text. */
+    function logView(pre, maxChars) {
+        var lastPrefix = null;
+        var total = 0;
+
+        function row(line, eol) {
+            var prefix = LOG_PREFIX.exec(line)[0];
+            var shown = localizeLogText(prefix);
+            var element = document.createElement("span");
+            var head, message, end;
+            element.className = "log-line";
+            if (shown) {
+                head = document.createElement("span");
+                head.className = shown === lastPrefix ? "log-prefix log-same" : "log-prefix";
+                head.textContent = shown;
+                element.appendChild(head);
+            }
+            message = document.createElement("span");
+            message.className = "log-message";
+            message.textContent = localizeLogText(line.slice(prefix.length));
+            element.appendChild(message);
+            if (eol) {
+                end = document.createElement("span");
+                end.className = "log-eol";
+                end.textContent = "\n";
+                element.appendChild(end);
+            }
+            lastPrefix = shown;
+            return element;
+        }
+
+        function add(text) {
+            var lines = text.split("\n");
+            var i, element;
+            for (i = 0; i < lines.length; i++) {
+                if (i === lines.length - 1 && lines[i] === "") break;
+                element = row(lines[i], i < lines.length - 1);
+                total += element.textContent.length;
+                pre.appendChild(element);
+            }
+            while (total > maxChars && pre.firstChild) {
+                total -= pre.firstChild.textContent.length;
+                pre.removeChild(pre.firstChild);
+            }
+            // The first visible row always shows its prefix.
+            if (pre.firstChild && pre.firstChild.firstChild && pre.firstChild.firstChild.className === "log-prefix log-same") {
+                pre.firstChild.firstChild.className = "log-prefix";
+            }
+        }
+
+        return {
+            append: function (text) {
+                var distance = pre.scrollHeight - pre.scrollTop - pre.clientHeight;
+                var stick = !(distance > 24);
+                add(text);
+                if (stick) pre.scrollTop = pre.scrollHeight;
+            },
+            replace: function (text) {
+                pre.textContent = "";
+                lastPrefix = null;
+                total = 0;
+                add(text);
+                pre.scrollTop = pre.scrollHeight;
+            },
+        };
+    }
+
     function activeIcon() {
         var dark = false;
         try {
@@ -203,6 +277,7 @@
         var carry = "";
         if (!url || typeof EventSource === "undefined") return;
         if (!follow || !stop || !output) return;
+        var view = logView(output, MAX_OUTPUT_CHARS);
 
         function setStatus(text) {
             if (status) status.textContent = text;
@@ -226,8 +301,7 @@
                 })
                 .then(function (text) {
                     if (source) return;
-                    output.textContent = localizeLogText(text);
-                    output.scrollTop = output.scrollHeight;
+                    view.replace(text);
                     setStatus("Not following.");
                 })
                 .catch(function () {
@@ -238,7 +312,7 @@
 
         function shutdown(reloadSnapshot) {
             if (carry) {
-                appendText(output, localizeLogText(carry), MAX_OUTPUT_CHARS);
+                view.append(carry);
                 carry = "";
             }
             if (source) {
@@ -258,7 +332,7 @@
         function openFollow() {
             var opened = false;
             if (source) return;
-            output.textContent = "";
+            view.replace("");
             setStatus("Connecting…");
             follow.disabled = true;
             if (refresh) refresh.disabled = true;
@@ -273,8 +347,7 @@
                     payload = null;
                 }
                 carry = "";
-                output.textContent = payload && typeof payload.text === "string" ? localizeLogText(payload.text) : "";
-                output.scrollTop = output.scrollHeight;
+                view.replace(payload && typeof payload.text === "string" ? payload.text : "");
                 setStatus(
                     payload && payload.truncated
                         ? "Following live. Older lines were dropped to stay within the size limit."
@@ -295,7 +368,7 @@
                 carry += incoming;
                 newline = carry.lastIndexOf("\n");
                 if (newline >= 0) {
-                    appendText(output, localizeLogText(carry.slice(0, newline + 1)), MAX_OUTPUT_CHARS);
+                    view.append(carry.slice(0, newline + 1));
                     carry = carry.slice(newline + 1);
                 }
             });
@@ -360,6 +433,7 @@
         var status = document.getElementById("container-logs-status");
         var refresh = document.getElementById("container-logs-refresh");
         if (!url || !output || typeof fetch !== "function") return;
+        var view = logView(output, MAX_OUTPUT_CHARS);
         function load() {
             if (status) status.textContent = "Loading recent lines…";
             fetch(url, { headers: { Accept: "text/plain" } })
@@ -367,8 +441,7 @@
                     return response.text();
                 })
                 .then(function (text) {
-                    output.textContent = localizeLogText(text);
-                    output.scrollTop = output.scrollHeight;
+                    view.replace(text);
                     if (status) status.textContent = "Read only: the panel never follows or restarts this container.";
                 })
                 .catch(function () {

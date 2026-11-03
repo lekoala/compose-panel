@@ -1,28 +1,38 @@
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 
-interface FakeElement {
-    textContent: string;
-    hidden: boolean;
-    disabled: boolean;
-    scrollTop: number;
-    scrollHeight: number;
-    events: Record<string, (event?: { data: string }) => void>;
-    addEventListener: (name: string, handler: (event?: { data: string }) => void) => void;
+class FakeElement {
+    className = "";
+    hidden = false;
+    disabled = false;
+    scrollTop = 0;
+    scrollHeight = 0;
+    events: Record<string, (event?: { data: string }) => void> = {};
+    children: FakeElement[] = [];
+    private text = "";
+    get textContent(): string {
+        return this.text + this.children.map((child) => child.textContent).join("");
+    }
+    set textContent(value: string) {
+        this.text = value;
+        this.children = [];
+    }
+    get firstChild(): FakeElement | null {
+        return this.children[0] ?? null;
+    }
+    appendChild(child: FakeElement): void {
+        this.children.push(child);
+    }
+    removeChild(child: FakeElement): void {
+        this.children = this.children.filter((item) => item !== child);
+    }
+    addEventListener(name: string, handler: (event?: { data: string }) => void): void {
+        this.events[name] = handler;
+    }
 }
 
 function fakeElement(): FakeElement {
-    return {
-        textContent: "",
-        hidden: false,
-        disabled: false,
-        scrollTop: 0,
-        scrollHeight: 0,
-        events: {},
-        addEventListener(name, handler) {
-            this.events[name] = handler;
-        },
-    };
+    return new FakeElement();
 }
 
 /** Load public/app.js in a fresh context with a minimal DOM. */
@@ -54,6 +64,7 @@ async function loadApp(timezone: string | null = null): Promise<{
         document: {
             documentElement: { getAttribute: (name: string) => (name === "data-timezone" ? timezone : null) },
             getElementById: (id: string) => elements.get(id) ?? null,
+            createElement: () => new FakeElement(),
             querySelector: (selector: string) =>
                 selector === "[data-op-stream]" ? operation : selector === "[data-logs-stream]" ? logs : null,
             addEventListener: (_name: string, handler: () => void) => {
@@ -100,4 +111,37 @@ test("the reader's own zone is used when no zone is configured", async () => {
     }).format(new Date(stamp));
     streams[1]!.events.chunk!({ data: JSON.stringify({ text: "svc  | " + stamp + " hi\n" }) });
     expect(elements.get("logs-output")!.textContent).toBe("svc  | " + expected + " hi\n");
+});
+
+test("log lines become rows with the prefix apart and repeated prefixes muted", async () => {
+    const { elements, streams } = await loadApp("UTC");
+    elements.get("logs-follow")!.events.click!();
+    const text = [
+        "onedev  | 2026-11-03T15:48:53.1Z Exception in thread",
+        "onedev  | 2026-11-03T15:48:53.2Z   at org.example.Main.run(Main.java:1)",
+        "db-1    | 2026-11-03T15:48:53.3Z ready",
+        "no prefix at all",
+        "",
+    ].join("\n");
+    streams[1]!.events.chunk!({ data: JSON.stringify({ text }) });
+    const rows = elements.get("logs-output")!.children;
+    expect(rows.map((row) => row.children.map((part) => part.className))).toEqual([
+        ["log-prefix", "log-message", "log-eol"],
+        ["log-prefix log-same", "log-message", "log-eol"],
+        ["log-prefix", "log-message", "log-eol"],
+        ["log-message", "log-eol"],
+    ]);
+    expect(rows[1]!.children[1]!.textContent).toBe("  at org.example.Main.run(Main.java:1)");
+});
+
+test("trimming old log rows keeps the first visible prefix shown", async () => {
+    const { elements, streams } = await loadApp("UTC");
+    elements.get("logs-follow")!.events.click!();
+    const line = `web-1  | 2026-11-03T15:48:53Z ${"x".repeat(1024)}\n`;
+    streams[1]!.events.chunk!({ data: JSON.stringify({ text: line.repeat(300) }) });
+    const output = elements.get("logs-output")!;
+    expect(output.textContent.length).toBeLessThanOrEqual(256 * 1024);
+    expect(output.children.length).toBeLessThan(300);
+    expect(output.children[0]!.children[0]!.className).toBe("log-prefix");
+    expect(output.children[1]!.children[0]!.className).toBe("log-prefix log-same");
 });
