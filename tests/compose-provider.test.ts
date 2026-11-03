@@ -280,6 +280,22 @@ describe("DockerComposeProvider", () => {
         ]);
     });
 
+    test("pull and up compact repeated layer progress in live output (ADR 0034)", async () => {
+        const provider = createComposeProvider({
+            runner: async (_args, options) => {
+                options?.onChunk?.(" 7801f5cb2c57 Downloading 1MB\n 7801f5cb2c57 Downloading 2MB\n");
+                options?.onChunk?.(" 7801f5cb2c57 Pull complete");
+                return ok;
+            },
+        });
+        const base = { project: "demo", composeFile: "compose.yaml", cwd: "/opt/stacks/demo" };
+        for (const call of [provider.pull.bind(provider), provider.up.bind(provider)]) {
+            const chunks: string[] = [];
+            await call({ ...base, onOutput: (chunk) => chunks.push(chunk) });
+            expect(chunks.join("")).toBe(" 7801f5cb2c57 Downloading 1MB\n 7801f5cb2c57 Pull complete");
+        }
+    });
+
     test("scopes log reads to a validated service after `--`", async () => {
         const { runner, calls } = recording();
         const provider = createComposeProvider({ runner });
