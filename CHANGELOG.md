@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Image: dependencies are installed with `--production`, so devDependencies
+  (`@types/bun` and its type packages) no longer ship in the image. There are
+  no runtime dependencies today: `node_modules` is empty.
+- Security: Compose plugin 5.7.0 in the image and in CI (Go 1.26.10,
+  `golang.org/x/net` v0.60.0, verified in the released binary). It fixes
+  CVE-2026-78669, so its Trivy exception, due to expire on 2026-11-10, is
+  removed: `.trivyignore.yaml` now holds no exception.
 - Logs: with JavaScript, stack and container logs are shown one row per line,
   with the service and time in a muted column and long messages wrapping under
   the message instead of under the prefix. A prefix identical to the previous

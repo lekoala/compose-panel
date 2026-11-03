@@ -5,7 +5,7 @@
 ARG DOCKER_CLI_VERSION=5:29.9.2-1~debian.13~trixie
 # Keep COMPOSE_VERSION in .github/workflows/ci.yml on the same release, and
 # drop the matching .trivyignore.yaml entries once a fixed release is pinned.
-ARG DOCKER_COMPOSE_VERSION=5.6.1-1~debian.13~trixie
+ARG DOCKER_COMPOSE_VERSION=5.7.0-1~debian.13~trixie
 
 # Base image pinned by version AND multi-arch index digest so a rebuild cannot
 # silently pick up a different image. The reference is written literally (no
@@ -18,7 +18,9 @@ FROM oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3
 FROM base AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+# Runtime dependencies only: devDependencies (type definitions) never ship.
+# node_modules may be empty while there are no runtime dependencies.
+RUN bun install --production --frozen-lockfile && mkdir -p node_modules
 
 FROM base AS runtime
 ARG DOCKER_CLI_VERSION
