@@ -1,8 +1,10 @@
-# Install on Ubuntu Server
+# Install on Debian or Ubuntu Server
 
-The interactive installer targets **Ubuntu Server 24.04 LTS and 26.04 LTS**,
-on **amd64 and arm64**, with systemd. It is intended for a fresh VPS.
-No Bun installation or image build is needed on the server.
+The interactive installer targets **Debian 13 (trixie), Debian 12 (bookworm)**
+and **Ubuntu Server 24.04 LTS and 26.04 LTS**, on **amd64 and arm64**, with
+systemd. Debian 13 is the recommended target for a new installation; Debian 12
+stays supported while Docker publishes packages for it. It is intended for a
+fresh VPS. No Bun installation or image build is needed on the server.
 
 ```sh
 sudo apt-get update
@@ -18,7 +20,7 @@ self-updater refer to its absolute path. Use a path without spaces. Because
 root runs scripts from it, the installer refuses a checkout whose scripts,
 deployment files or parent directories another user could change: they must
 belong to root or to the user running `sudo`, without group or other write
-access except for a private user group with no other member (Ubuntu's usual
+access except for a private user group with no other member (Ubuntu's default
 umask 002). Sticky directories such as `/tmp` are accepted as parents.
 Use `sudo bash` as shown above; a root shell without `SUDO_UID` requires a
 root-owned checkout. The checks inspect Unix modes and group membership, not
@@ -46,7 +48,9 @@ where settings and the log are.
 ## What is installed
 
 - Missing Docker Engine, CLI, containerd, Buildx and Compose plugin from
-  [Docker's official Ubuntu APT repository](https://docs.docker.com/engine/install/ubuntu/).
+  Docker's official APT repository for the detected distribution
+  ([Debian](https://docs.docker.com/engine/install/debian/) or
+  [Ubuntu](https://docs.docker.com/engine/install/ubuntu/)).
   Existing working Docker CE is reused without a requested restart or upgrade.
   Distribution Docker, the Docker snap (offered by the Ubuntu Server
   installer), rootless Docker and incomplete installations are refused.
@@ -54,11 +58,17 @@ where settings and the log are.
   [official stable package repository](https://caddyserver.com/docs/install#debian-ubuntu-raspbian),
   as the host systemd service. The generated Caddyfile uses `basic_auth`,
   which needs Caddy 2.8 or later; the official repository provides it.
-- Ubuntu's `unattended-upgrades`, if absent, with daily package-list refresh and
-  unattended upgrades, and automatic reboots disabled. Its APT timers are
-  enabled on every run while that exact policy is in place. An existing
-  installation keeps its policy; review any warning that its upgrade timer is
-  disabled.
+- The distribution's `unattended-upgrades`, if absent, with daily package-list
+  refresh and unattended upgrades, and automatic reboots disabled. Its APT
+  timers are enabled on every run while that exact policy is in place. An
+  existing installation keeps its policy; review any warning that its upgrade
+  timer is disabled.
+- A read-only check of the security origins that policy is allowed to install:
+  Ubuntu lists them as `Allowed-Origins`, Debian as `Origins-Pattern`. If the
+  effective configuration has no entry for this release's security archive,
+  the installer prints a warning naming
+  `/etc/apt/apt.conf.d/50unattended-upgrades` and does not rewrite it. The
+  check proves the configured origins, not that updates were installed.
 - `/opt/stacks`, if absent, and the panel from
   `ghcr.io/lekoala/compose-panel:latest`, through `deploy/compose.prod.yaml`.
 - The Caddy helper using `setup-caddy.sh --install --yes --production`,
@@ -243,7 +253,9 @@ Automated tests use temporary files and fake Docker/systemd/Caddy executables.
 They exercise credentials, exact identities, refusal paths, file modes,
 no-clobber publication and rollback, without touching a host daemon.
 CI also runs ShellCheck and real Compose configuration parsing with no daemon
-access. They do not establish that APT, systemd or public TLS work on a real VPS.
+access, and runs the installer fixtures once more under Debian's userland in a
+pinned container. They do not establish that APT, systemd or public TLS work on
+a real VPS.
 The complete preflight runs against fixture host trees with fake host
 commands: each scenario asserts that files and metadata are unchanged and that
 `--check` calls no mutating command. Installer signal cleanup is not yet
@@ -261,18 +273,21 @@ Docker Desktop on macOS, Bun 1.4.3, no host mounts and no Docker socket:
   ownership checks skipped by the unprivileged run.
 - Typechecking, ShellCheck, Bash syntax and documentation build.
 
-These checks do not run an Ubuntu installation or boot systemd. Direct writes
-of helper units and appended manual-deployment settings in `setup-caddy.sh`
-also remain candidates for atomic publication.
+These checks do not run an installation on Debian or Ubuntu, and do not boot
+systemd. Direct writes of helper units and appended manual-deployment settings
+in `setup-caddy.sh` also remain candidates for atomic publication.
 
 The following **manual checks remain required** in disposable systemd VMs:
 
-| Ubuntu | Architecture | Fresh private install | HTTPS + two logins | Rerun + reboot |
-| --- | --- | --- | --- | --- |
-| 24.04 | amd64 | Pending | Pending | Pending |
-| 24.04 | arm64 | Pending | Pending | Pending |
-| 26.04 | amd64 | Pending | Pending | Pending |
-| 26.04 | arm64 | Pending | Pending | Pending |
+| Distribution | Release | Architecture | Fresh private install | HTTPS + two logins | Rerun + reboot |
+| --- | --- | --- | --- | --- | --- |
+| Debian | 13 | amd64 | Pending | Pending | Pending |
+| Debian | 13 | arm64 | Pending | Pending | Pending |
+| Debian | 12 | amd64 | Pending | Pending | Pending |
+| Ubuntu | 24.04 | amd64 | Pending | Pending | Pending |
+| Ubuntu | 24.04 | arm64 | Pending | Pending | Pending |
+| Ubuntu | 26.04 | amd64 | Pending | Pending | Pending |
+| Ubuntu | 26.04 | arm64 | Pending | Pending | Pending |
 
 For each VM:
 

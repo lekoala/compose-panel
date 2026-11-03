@@ -19,7 +19,7 @@ async function shell(command: string, args: string[] = [], input = "", env: Reco
     return { stdout, stderr, code };
 }
 
-describe.skipIf(process.platform === "win32")("Ubuntu installer isolated fixtures", () => {
+describe.skipIf(process.platform === "win32")("host installer isolated fixtures", () => {
     let dir: string;
     beforeEach(async () => {
         dir = await realpath(await mkdtemp(join(tmpdir(), "cp-install-")));
@@ -28,19 +28,80 @@ describe.skipIf(process.platform === "win32")("Ubuntu installer isolated fixture
         await rm(dir, { recursive: true, force: true });
     });
 
-    test("only the requested Ubuntu LTS releases and architectures are accepted", async () => {
-        for (const release of ["24.04", "26.04"]) {
+    test("only the supported distribution releases, codenames and architectures are accepted", async () => {
+        for (const [distro, release, codename] of [
+            ["debian", "12", "bookworm"],
+            ["debian", "13", "trixie"],
+            ["ubuntu", "24.04", "noble"],
+            ["ubuntu", "26.04", "resolute"],
+        ] as const) {
             for (const arch of ["amd64", "arm64"]) {
-                expect((await shell('supported_host "$@"', ["ubuntu", release, arch])).code).toBe(0);
+                expect((await shell('supported_host "$@"', [distro, release, codename, arch])).code).toBe(0);
             }
         }
+        // A derivative, an older release or a mismatched codename is refused.
         for (const args of [
-            ["debian", "24.04", "amd64"],
-            ["ubuntu", "22.04", "amd64"],
-            ["ubuntu", "26.10", "amd64"],
-            ["ubuntu", "24.04", "armhf"],
+            ["debian", "11", "bullseye", "amd64"],
+            ["debian", "13", "bookworm", "amd64"],
+            ["debian", "12", "trixie", "amd64"],
+            ["ubuntu", "22.04", "jammy", "amd64"],
+            ["ubuntu", "26.04", "noble", "amd64"],
+            ["debian", "13", "trixie", "armhf"],
+            ["", "", "", "amd64"],
         ]) {
             expect((await shell('supported_host "$@"', args)).code).not.toBe(0);
+        }
+    });
+
+    test("Docker's repository file follows the detected distribution family", async () => {
+        for (const [distro, codename, arch] of [
+            ["debian", "trixie", "arm64"],
+            ["debian", "bookworm", "amd64"],
+            ["ubuntu", "noble", "amd64"],
+            ["ubuntu", "resolute", "arm64"],
+        ] as const) {
+            const result = await shell('ID=$1; render_docker_sources "$(docker_repo)" "$2" "$3"', [distro, codename, arch]);
+            expect(result.code).toBe(0);
+            expect(result.stdout).toContain(`URIs: https://download.docker.com/linux/${distro}`);
+            expect(result.stdout).toContain(`Suites: ${codename}`);
+            expect(result.stdout).toContain(`Architectures: ${arch}`);
+            expect(result.stdout).toContain("Signed-By: /etc/apt/keyrings/docker.asc");
+        }
+        expect((await shell("ID=kali; docker_repo")).code).not.toBe(0);
+    });
+
+    test("security origins are recognized for both distributions' policy syntaxes", async () => {
+        const ubuntu = [
+            'Unattended-Upgrade "";',
+            'Unattended-Upgrade::Allowed-Origins "";',
+            'Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}";',
+            'Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}-security";',
+        ].join("\n");
+        const debian = [
+            'Unattended-Upgrade "";',
+            'Unattended-Upgrade::Origins-Pattern "";',
+            'Unattended-Upgrade::Origins-Pattern:: "origin=Debian,codename=${distro_codename},label=Debian";',
+            'Unattended-Upgrade::Origins-Pattern:: "origin=Debian,codename=${distro_codename},label=Debian-Security";',
+        ].join("\n");
+        const updatesOnly = [
+            'Unattended-Upgrade "";',
+            'Unattended-Upgrade::Origins-Pattern "";',
+            'Unattended-Upgrade::Origins-Pattern:: "origin=Debian,codename=${distro_codename},label=Debian";',
+        ].join("\n");
+        // Ubuntu's default ESM origins stay after the release security line is removed.
+        const esmOnly = [
+            'Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}";',
+            'Unattended-Upgrade::Allowed-Origins:: "${distro_id}ESMApps:${distro_codename}-apps-security";',
+            'Unattended-Upgrade::Allowed-Origins:: "${distro_id}ESM:${distro_codename}-infra-security";',
+            'Unattended-Upgrade::Origins-Pattern:: "origin=UbuntuESM,archive=noble-infra-security";',
+        ].join("\n");
+        const literal = 'Unattended-Upgrade::Allowed-Origins:: "Ubuntu:noble-security";';
+        const archive = 'Unattended-Upgrade::Origins-Pattern:: "origin=Ubuntu,archive=${distro_codename}-security";';
+        for (const dump of [ubuntu, debian, literal, archive]) {
+            expect((await shell('origins_allow_security "$1"', [dump])).code).toBe(0);
+        }
+        for (const dump of [updatesOnly, esmOnly, "", 'APT::Periodic::Unattended-Upgrade "1";']) {
+            expect((await shell('origins_allow_security "$1"', [dump])).code).not.toBe(0);
         }
     });
 
@@ -201,7 +262,7 @@ esac`,
 };
 const DOCTOR = fileURLToPath(new URL("../scripts/doctor.sh", import.meta.url));
 
-describe.skipIf(process.platform !== "linux")("Ubuntu installer Caddy steps", () => {
+describe.skipIf(process.platform !== "linux")("host installer Caddy steps", () => {
     let dir: string;
     let caddyfile: string;
     beforeEach(async () => {

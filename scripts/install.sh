@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install Compose Panel on Ubuntu Server 24.04/26.04, amd64/arm64 (ADR 0031).
+# Install Compose Panel on Debian 12/13 or Ubuntu Server 24.04/26.04,
+# amd64/arm64 (ADR 0033).
 # sudo bash scripts/install.sh [--check | --install] [--yes]
 # --check is read-only; --yes skips confirmation, not credential prompts.
 # Guard chains deliberately fail when any check fails; library mode supports
@@ -11,9 +12,30 @@ set -euo pipefail
 installer_die() { printf '  FAIL  %s\n' "$*" >&2; exit 1; }
 installed() { [ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null)" = 'install ok installed' ]; }
 
+# Supported host families (ADR 0033): distribution, release and codename are
+# checked together, so a derivative or a mismatched codename is refused.
 supported_host() {
-    [ "$1" = ubuntu ] && { [ "$2" = 24.04 ] || [ "$2" = 26.04 ]; } &&
-        { [ "$3" = amd64 ] || [ "$3" = arm64 ]; }
+    case "$1:$2:$3" in
+        debian:12:bookworm|debian:13:trixie|ubuntu:24.04:noble|ubuntu:26.04:resolute) ;;
+        *) return 1 ;;
+    esac
+    [ "$4" = amd64 ] || [ "$4" = arm64 ]
+}
+
+distro_label() {
+    case "$1" in
+        debian) printf 'Debian' ;;
+        ubuntu) printf 'Ubuntu' ;;
+        *) return 1 ;;
+    esac
+}
+
+# Docker publishes one APT repository per distribution family it supports.
+docker_repo() {
+    case "$ID" in
+        debian|ubuntu) printf '%s' "$ID" ;;
+        *) return 1 ;;
+    esac
 }
 
 valid_user() {
@@ -72,6 +94,20 @@ $domain {
 }
 EOF
     fi
+}
+
+# Docker's deb822 source, matching its own installation instructions for the
+# detected distribution family. Parameters keep it testable without a host.
+render_docker_sources() {
+    local repository="$1" suite="$2" architecture="$3"
+    cat <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/$repository
+Suites: $suite
+Components: stable
+Architectures: $architecture
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
 }
 
 # Publish a new file without overwriting a competing writer or a symlink.
@@ -135,14 +171,32 @@ configure_update_timers() {
     fi
 }
 
+# The APT timers only run unattended-upgrades; what it installs is decided by
+# the package's own origin list, which lives under the Unattended-Upgrade scope
+# (not APT::). Ubuntu lists Allowed-Origins, Debian Origins-Pattern with
+# label=Debian-Security: both count. Ubuntu's ESM suites (-apps-security,
+# -infra-security) are not the release security archive and do not count.
+# An administrator policy is reported, never rewritten (ADR 0031).
+origins_allow_security() {
+    local origins
+    origins="$(grep -Ei '^Unattended-Upgrade::(Allowed-Origins|Origins-Pattern)::' <<< "$1")" || return 1
+    grep -Eq -- '((:|archive=)(\$\{distro_codename\}|[a-z]+)-security("|,)|label=Debian-Security("|,))' <<< "$origins"
+}
+
+check_security_origins() {
+    installed unattended-upgrades || return 0
+    origins_allow_security "$(timeout 20 apt-config dump Unattended-Upgrade 2>/dev/null || true)" && return 0
+    printf '  WARN  unattended-upgrades does not allow this release security origin; review /etc/apt/apt.conf.d/50unattended-upgrades.\n'
+}
+
 caddy_version_supported() {
     [[ "$1" =~ ^v?([0-9]+)\.([0-9]+)\.[0-9]+([[:space:]]|$) ]] || return 1
     (( 10#${BASH_REMATCH[1]} > 2 || (10#${BASH_REMATCH[1]} == 2 && 10#${BASH_REMATCH[2]} >= 8) ))
 }
 
 # Root sources and runs files from the checkout, so only root or the sudo user
-# may change them. A private user group (Ubuntu's umask 002) counts as that
-# user. Ancestors may be sticky world-writable directories such as /tmp.
+# may change them. A private user group (Ubuntu's default umask 002) counts as
+# that user. Ancestors may be sticky world-writable directories such as /tmp.
 trusted_path() {
     local path="$1" ancestor="$2" uid gid mode
     read -r uid gid mode < <(stat -c '%u %g %a' "$path") || return 1
@@ -279,17 +333,14 @@ replace_caddy() {
 }
 
 check_installer_host() {
-    [ "$(uname -s)" = Linux ] && [ "$(id -u)" -eq 0 ] || installer_die "Run as root on Ubuntu Server."
+    [ "$(uname -s)" = Linux ] && [ "$(id -u)" -eq 0 ] || installer_die "Run as root on Debian or Ubuntu Server."
     # shellcheck disable=SC1091
     . "$1"
     arch="$(dpkg --print-architecture)"
-    supported_host "$ID" "$VERSION_ID" "$arch" || installer_die "Supported: Ubuntu 24.04 or 26.04, amd64 or arm64."
-    case "$VERSION_ID:$VERSION_CODENAME" in
-        24.04:noble|26.04:resolute) ;;
-        *) installer_die "Unexpected Ubuntu release codename." ;;
-    esac
+    supported_host "$ID" "$VERSION_ID" "$VERSION_CODENAME" "$arch" ||
+        installer_die "Supported: Debian 12 or 13, Ubuntu 24.04 or 26.04, amd64 or arm64."
     [ -d "$2" ] || installer_die "A booted systemd host is required."
-    printf 'Compose Panel installer — Ubuntu %s · %s\n\nChecking this server...\n' "$VERSION_ID" "$arch"
+    printf 'Compose Panel installer — %s %s · %s\n\nChecking this server...\n' "$(distro_label "$ID")" "$VERSION_ID" "$arch"
 }
 
 check_deployment_paths() {
@@ -456,6 +507,7 @@ installer_preflight() {
     check_caddy_state "$host"
     check_ports
     check_helper_state "$host"
+    check_security_origins
 }
 
 show_install_plan() {
@@ -654,15 +706,8 @@ install_docker() {
     step "Docker"
     if [ "$have_docker" = 0 ]; then
         install -d -m 0755 /etc/apt/keyrings
-        fetch https://download.docker.com/linux/ubuntu/gpg -o "$work/docker.asc"
-        cat > "$work/docker.sources" <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/ubuntu
-Suites: $VERSION_CODENAME
-Components: stable
-Architectures: $arch
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
+        fetch "https://download.docker.com/linux/$(docker_repo)/gpg" -o "$work/docker.asc"
+        render_docker_sources "$(docker_repo)" "$VERSION_CODENAME" "$arch" > "$work/docker.sources"
         publish_same "$work/docker.asc" /etc/apt/keyrings/docker.asc 0644 ||
             installer_die "Docker repository key differs from an existing file; resolve manually."
         publish_same "$work/docker.sources" /etc/apt/sources.list.d/docker.sources 0644 ||
@@ -715,6 +760,7 @@ install_security_updates() {
     if ! apt-config dump | grep -E '^APT::Periodic::Unattended-Upgrade "1";$' >/dev/null; then
         printf '  WARN  Automatic security upgrades are disabled by the existing APT policy.\n'
     fi
+    check_security_origins
 }
 
 deploy_panel() {

@@ -64,6 +64,11 @@ const TOOLS: Record<string, string> = {
         *) printf 'FORBIDDEN systemctl\\n' >> "$CALLS"; exit 97 ;;
     esac`,
     snap: '[ "$*" = "list docker" ] || exit 97; [ "$SNAP_DOCKER" = 1 ]',
+    "apt-config": `case "$*" in
+        'dump Unattended-Upgrade') printf '%s\\n' "$UPGRADE_ORIGINS" ;;
+        dump) printf 'APT::Periodic::Unattended-Upgrade "1";\\n' ;;
+        *) exit 97 ;;
+    esac`,
     ufw: '[ "$*" = status ] || exit 97; printf "Status: inactive\\n"',
 };
 async function snapshot(root: string): Promise<unknown> {
@@ -174,6 +179,10 @@ describe.skipIf(process.platform !== "linux")("complete installer preflight (iso
             BOOT_ENABLED: "1",
             CADDY_EXEC: `caddy run --config ${host}/etc/caddy/Caddyfile`,
             SNAP_DOCKER: "0",
+            UPGRADE_ORIGINS: [
+                'Unattended-Upgrade "";',
+                'Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}-security";',
+            ].join("\n"),
         };
     });
     afterEach(async () => {
@@ -269,13 +278,15 @@ printf 'STATE %s %s %s %s\\n' "$have_docker" "$have_panel" "$have_caddy" "$caddy
         await file(join(host, "etc/caddy/Caddyfile"), content, 0o640);
         if (!owned) env.PACKAGE_SUM = new Bun.CryptoHasher("md5").update(content).digest("hex");
     }
-    for (const [release, codename] of [
-        ["24.04", "noble"],
-        ["26.04", "resolute"],
+    for (const [distro, release, codename] of [
+        ["debian", "12", "bookworm"],
+        ["debian", "13", "trixie"],
+        ["ubuntu", "24.04", "noble"],
+        ["ubuntu", "26.04", "resolute"],
     ]) {
         for (const arch of ["amd64", "arm64"])
-            test(`fresh Ubuntu ${release}/${arch}: check and yes never install`, async () => {
-                await file(join(host, "etc/os-release"), `ID=ubuntu\nVERSION_ID=${release}\nVERSION_CODENAME=${codename}\n`);
+            test(`fresh ${distro} ${release}/${arch}: check and yes never install`, async () => {
+                await file(join(host, "etc/os-release"), `ID=${distro}\nVERSION_ID=${release}\nVERSION_CODENAME=${codename}\n`);
                 env.ARCH = arch;
                 await run(0, ["--check", "--yes"]);
             });
@@ -291,7 +302,8 @@ printf 'STATE %s %s %s %s\\n' "$have_docker" "$have_panel" "$have_caddy" "$caddy
         });
     }
     for (const release of [
-        "ID=debian\nVERSION_ID=24.04\nVERSION_CODENAME=noble\n",
+        "ID=debian\nVERSION_ID=11\nVERSION_CODENAME=bullseye\n",
+        "ID=debian\nVERSION_ID=13\nVERSION_CODENAME=bookworm\n",
         "ID=ubuntu\nVERSION_ID=22.04\nVERSION_CODENAME=jammy\n",
         "ID=ubuntu\nVERSION_ID=26.04\nVERSION_CODENAME=noble\n",
     ]) {
@@ -582,5 +594,10 @@ ${TOOLS.ss}`,
         env.PACKAGES = "unattended-upgrades";
         await file(join(host, "etc/apt/apt.conf.d/52compose-panel-periodic"), "admin policy");
         await run();
+    });
+    test("an update policy without a security origin is reported but never blocks", async () => {
+        env.PACKAGES = "unattended-upgrades";
+        env.UPGRADE_ORIGINS = 'Unattended-Upgrade::Origins-Pattern:: "origin=Debian,codename=${distro_codename},label=Debian";';
+        expect(await run()).toContain("apt-config\tdump Unattended-Upgrade\n");
     });
 });

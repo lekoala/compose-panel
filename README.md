@@ -33,8 +33,8 @@ Mounting the Docker socket gives the panel full control of the host's Docker: on
 
 ## Deploy
 
-On a fresh **Ubuntu Server 24.04 or 26.04** (amd64/arm64), the interactive
-installer prepares Docker, Caddy, the panel and its domain helper:
+On a fresh **Debian 12/13 or Ubuntu Server 24.04/26.04** (amd64/arm64), the
+interactive installer prepares Docker, Caddy, the panel and its domain helper:
 
 ```sh
 git clone https://github.com/lekoala/compose-panel.git
@@ -136,7 +136,7 @@ The same pages are published as a static site at <https://lekoala.github.io/comp
 - [docs/architecture.md](docs/architecture.md) and [docs/adr/](docs/adr/): how it is built and why
 - [docs/security.md](docs/security.md): threat model and invariants
 - [docs/deployment.md](docs/deployment.md): deploying, backups, rollback, release checklist
-- [docs/installation.md](docs/installation.md): interactive Ubuntu installer, recovery and validation
+- [docs/installation.md](docs/installation.md): interactive Debian/Ubuntu installer, recovery and validation
 - [docs/troubleshooting.md](docs/troubleshooting.md): sign-in, stacks, logs and other common issues
 - [docs/migrating-from-dockge.md](docs/migrating-from-dockge.md): switching from Dockge, step by step
 - [docs/operations.md](docs/operations.md): adding Compose commands safely, switching over from another panel

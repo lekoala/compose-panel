@@ -7,6 +7,15 @@ only, no Docker socket mounted) and Trivy scans that fail on CRITICAL/HIGH.
 PR builds never publish images. The workflow also runs weekly on the default
 branch, so new fixable CVEs and expired exceptions fail without a push.
 
+The installer fixtures (`tests/install.test.ts`,
+`tests/install-preflight.test.ts`) also run under Debian's userland: a separate
+job starts the pinned `oven/bun` image from the `Dockerfile`, with no network,
+no daemon, a read-only checkout and an unprivileged user (as on the Ubuntu
+runner, so ownership and mode checks are not bypassed by root). It covers the
+Debian release that image is built on, not every supported release. The installer supports Debian, and `find`, `grep`, `stat`,
+`timeout` or `flock` behave differently there than on the Ubuntu runner. Bump
+that image tag and digest together with the `Dockerfile` `FROM`.
+
 `bun lint` is intentionally absent: Bun 1.4.4 has no stable lint command and CI
 must not depend on a canary. See the quality gates in [AGENTS.md](../AGENTS.md)
 for the conditions to add it.

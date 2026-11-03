@@ -142,7 +142,8 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 
 ## Caddy site management (ADR 0030)
 
-- The one-time Ubuntu installer ([ADR 0031](adr/0031-ubuntu-installer.md))
+- The one-time host installer ([ADR 0031](adr/0031-ubuntu-installer.md),
+  [ADR 0033](adr/0033-debian-host-installation.md))
   provisions packages and an initial Caddyfile after a plan confirmation.
   Private SSH access is the default; optional HTTPS adds a separate Basic Auth
   password. It refuses foreign configuration, symlinked destinations and a

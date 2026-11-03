@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Installer: Debian 13 (trixie) and Debian 12 (bookworm) are supported targets
+  next to Ubuntu 24.04/26.04, on amd64 and arm64 (ADR 0033). The supported-host
+  table validates distribution, release and codename together, and Docker's APT
+  repository follows the detected family (`/linux/debian` or `/linux/ubuntu`).
+  A read-only check verifies that `unattended-upgrades` allows this release's
+  security origin, accepting both Ubuntu's `Allowed-Origins` and Debian's
+  `Origins-Pattern`, and only warns without rewriting an administrator policy.
+  Disposable Debian VM validation is still pending.
 - Tooling: TS and JS code is formatted with the built-in `bun fmt`
   (`bunfig.toml`: 4-space indentation, 140 columns; Markdown, YAML, JSON,
   HTML and CSS are excluded in `.prettierignore`). CI and `bun run verify` run

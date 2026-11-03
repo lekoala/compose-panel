@@ -86,6 +86,22 @@ jobs:
           exit-code: '1'
           skip-dirs: node_modules,private,.git
 
+  # The installer targets Debian too: run its fixtures under Debian's own
+  # userland (find, grep, stat, timeout, flock) instead of the Ubuntu runner.
+  # Every Docker and systemd call is a fixture: no daemon and no network.
+  # Unprivileged like the Ubuntu runner, so ownership and mode checks keep the
+  # same coverage instead of being bypassed by root.
+  installer-debian:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Installer fixtures on Debian
+        run: >-
+          docker run --rm --network none --user 1000:1000 -e HOME=/tmp
+          -v "$PWD:/src:ro" -w /src
+          oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4
+          bun test tests/install.test.ts tests/install-preflight.test.ts
+
   image:
     runs-on: ubuntu-24.04
     steps:

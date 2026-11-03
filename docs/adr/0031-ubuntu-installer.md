@@ -1,6 +1,6 @@
 # ADR 0031 — One-time Ubuntu host installation
 
-Status: accepted
+Status: accepted; host scope extended by [ADR 0033](0033-debian-host-installation.md)
 
 ## Context
 

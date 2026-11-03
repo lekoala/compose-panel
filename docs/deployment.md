@@ -5,7 +5,7 @@ owns your stacks: Compose files on disk and Docker itself stay the sources of
 truth, so removing the panel never stops your services. For sign-in, stack or
 log problems, see [troubleshooting.md](troubleshooting.md).
 
-For a fresh Ubuntu Server 24.04/26.04, see the
+For a fresh Debian 12/13 or Ubuntu Server 24.04/26.04, see the
 [interactive installer](installation.md). It uses `deploy/compose.prod.yaml`
 with the official image. In the manual commands below, substitute that file
 for `deploy/compose.yaml` when maintaining an installer deployment, and pass
