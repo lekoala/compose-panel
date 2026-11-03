@@ -32,8 +32,8 @@ distro_label() {
 
 # Docker publishes one APT repository per distribution family it supports.
 docker_repo() {
-    case "$ID" in
-        debian|ubuntu) printf '%s' "$ID" ;;
+    case "$1" in
+        debian|ubuntu) printf '%s' "$1" ;;
         *) return 1 ;;
     esac
 }
@@ -706,8 +706,10 @@ install_docker() {
     step "Docker"
     if [ "$have_docker" = 0 ]; then
         install -d -m 0755 /etc/apt/keyrings
-        fetch "https://download.docker.com/linux/$(docker_repo)/gpg" -o "$work/docker.asc"
-        render_docker_sources "$(docker_repo)" "$VERSION_CODENAME" "$arch" > "$work/docker.sources"
+        local repository
+        repository="$(docker_repo "$ID")"
+        fetch "https://download.docker.com/linux/$repository/gpg" -o "$work/docker.asc"
+        render_docker_sources "$repository" "$VERSION_CODENAME" "$arch" > "$work/docker.sources"
         publish_same "$work/docker.asc" /etc/apt/keyrings/docker.asc 0644 ||
             installer_die "Docker repository key differs from an existing file; resolve manually."
         publish_same "$work/docker.sources" /etc/apt/sources.list.d/docker.sources 0644 ||

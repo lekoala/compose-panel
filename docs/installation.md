@@ -23,7 +23,10 @@ belong to root or to the user running `sudo`, without group or other write
 access except for a private user group with no other member (Ubuntu's default
 umask 002). Sticky directories such as `/tmp` are accepted as parents.
 Use `sudo bash` as shown above; a root shell without `SUDO_UID` requires a
-root-owned checkout. The checks inspect Unix modes and group membership, not
+root-owned checkout. A Debian system installed with a root password has no
+`sudo`: either install it (`apt-get install sudo` as root, then add your user
+to the `sudo` group and log in again), or clone and run everything as root
+(`su -`) so the checkout belongs to root. The checks inspect Unix modes and group membership, not
 named POSIX ACL entries: do not grant other users write access through ACLs.
 `ss` (`iproute2`) and `getent` (`libc-bin`) must be available for preflight.
 
@@ -284,6 +287,7 @@ The following **manual checks remain required** in disposable systemd VMs:
 | Debian | 13 | amd64 | Pending | Pending | Pending |
 | Debian | 13 | arm64 | Pending | Pending | Pending |
 | Debian | 12 | amd64 | Pending | Pending | Pending |
+| Debian | 12 | arm64 | Pending | Pending | Pending |
 | Ubuntu | 24.04 | amd64 | Pending | Pending | Pending |
 | Ubuntu | 24.04 | arm64 | Pending | Pending | Pending |
 | Ubuntu | 26.04 | amd64 | Pending | Pending | Pending |

@@ -60,14 +60,14 @@ describe.skipIf(process.platform === "win32")("host installer isolated fixtures"
             ["ubuntu", "noble", "amd64"],
             ["ubuntu", "resolute", "arm64"],
         ] as const) {
-            const result = await shell('ID=$1; render_docker_sources "$(docker_repo)" "$2" "$3"', [distro, codename, arch]);
+            const result = await shell('render_docker_sources "$(docker_repo "$1")" "$2" "$3"', [distro, codename, arch]);
             expect(result.code).toBe(0);
             expect(result.stdout).toContain(`URIs: https://download.docker.com/linux/${distro}`);
             expect(result.stdout).toContain(`Suites: ${codename}`);
             expect(result.stdout).toContain(`Architectures: ${arch}`);
             expect(result.stdout).toContain("Signed-By: /etc/apt/keyrings/docker.asc");
         }
-        expect((await shell("ID=kali; docker_repo")).code).not.toBe(0);
+        expect((await shell('docker_repo "$1"', ["kali"])).code).not.toBe(0);
     });
 
     test("security origins are recognized for both distributions' policy syntaxes", async () => {
