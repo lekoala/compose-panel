@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Stack page: the Services table fits the card instead of scrolling
+  sideways, so the per-service actions stay visible. The health check is a
+  badge next to the run state (only for services that declare one) instead of
+  its own column with *Not configured* cells; a bare `sha256:` image ID is
+  shortened to 12 characters, with the full ID as a tooltip; long image
+  references wrap.
 - Image: dependencies are installed with `--production`, so devDependencies
   (`@types/bun` and its type packages) no longer ship in the image. There are
   no runtime dependencies today: `node_modules` is empty.

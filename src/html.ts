@@ -351,14 +351,14 @@ function serviceBadge(service: ComposeService): string {
 const HEALTH_LABELS: Record<string, string> = { healthy: "Healthy", unhealthy: "Unhealthy", starting: "Starting" };
 
 /**
- * Health is Docker's own check result, shown only when the column is relevant
- * (see `servicesSection`). It is never merged into the run-state badge.
+ * Health is Docker's own check result, a separate badge next to the run-state
+ * badge (never merged into it). Nothing is shown without a health check.
  */
 function healthBadge(health: string | null): string {
-    if (!health) return `<span class="muted">Not configured</span>`;
+    if (!health) return "";
     const key = health.toLowerCase();
     const cls = key === "healthy" ? "state-done" : key === "unhealthy" ? "state-failed" : "state-stopped";
-    return `<span class="state ${cls}">${escapeHtml(HEALTH_LABELS[key] ?? health)}</span>`;
+    return `<span class="state ${cls}" title="Docker health check">${escapeHtml(HEALTH_LABELS[key] ?? health)}</span>`;
 }
 
 /**
@@ -596,7 +596,12 @@ export function updateText(update: ServiceUpdate): string {
 
 function imageCell(service: ComposeService, update: ServiceUpdate | undefined): string {
     if (!service.image) return `<span class="muted">—</span>`;
-    const image = `<code>${escapeHtml(service.image)}</code>`;
+    // A locally built image without a tag is reported by its full ID: show the
+    // short form (as `docker images` does) and keep the full one as a tooltip.
+    const id = /^sha256:([0-9a-f]{64})$/.exec(service.image);
+    const image = id
+        ? `<code title="${escapeHtml(service.image)}">${escapeHtml(id[1]!.slice(0, 12))}</code>`
+        : `<code>${escapeHtml(service.image)}</code>`;
     if (!update) return image;
     // Link targets come from image labels: validated as http(s) in updates.ts,
     // escaped here, and opened without referrer or opener access.
@@ -615,23 +620,19 @@ export function servicesSection(
 ): string {
     let content: string;
     if (services.length > 0) {
-        // Only show the health column when at least one service declares a
-        // health check; otherwise it is an empty column with no information.
-        const showHealth = services.some((service) => service.health !== null);
         // Scoped Restart/Up (ADR 0021), plain POST forms like the Actions card.
         // Same state table: offered on `running`/`stopped` only, never on
         // `unknown`; the server re-validates every submission.
         const scoped = actions !== undefined && (state === "running" || state === "stopped");
         const rows = services
             .map((service) => {
-                const health = showHealth ? `<td class="col-optional">${healthBadge(service.health)}</td>` : "";
                 const cell = scoped ? `<td>${serviceActions(actions, service.name, recreatePending.includes(service.name))}</td>` : "";
-                return `<tr><td>${escapeHtml(service.name)}</td><td>${serviceBadge(service)}</td>${health}<td>${imageCell(service, updates[service.name])}</td>${cell}</tr>`;
+                const status = `<span class="badges">${serviceBadge(service)}${healthBadge(service.health)}</span>`;
+                return `<tr><td>${escapeHtml(service.name)}</td><td>${status}</td><td>${imageCell(service, updates[service.name])}</td>${cell}</tr>`;
             })
             .join("");
-        const healthHead = showHealth ? `<th class="col-optional">Health check</th>` : "";
         const actionsHead = scoped ? `<th>Actions</th>` : "";
-        content = `<div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th>Container</th>${healthHead}<th>Image</th>${actionsHead}</tr></thead><tbody>${rows}</tbody></table></div>`;
+        content = `<div class="table-wrap"><table class="table services-table"><thead><tr><th>Service</th><th>Container</th><th>Image</th>${actionsHead}</tr></thead><tbody>${rows}</tbody></table></div>`;
     } else if (state === "not-created") {
         content = `<p class="muted">No containers yet. Use <em>Up</em> to create them.</p>`;
     } else {

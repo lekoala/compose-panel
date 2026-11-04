@@ -74,17 +74,17 @@ test("exposes the display time zone on the document, escaped", () => {
     expect(html).toContain('<html lang="en" data-timezone="Europe/Brussels">');
 });
 
-test("hides the health column when no service declares a health check", () => {
-    const html = servicesSection([service("app", null), service("cache", null)], "running");
+test("shows health as a badge beside the run state, only for services with a check", () => {
+    const html = servicesSection([service("app", "healthy"), service("cache", null)], "running");
     expect(html.match(/<th[\s>]/g)).toHaveLength(3);
-    expect(html).not.toContain("state-done");
+    expect(html.match(/state-done/g)).toHaveLength(1);
+    expect(servicesSection([service("app", null)], "running")).not.toContain("state-done");
 });
 
-test("shows the health column, with a not-configured cell, once one service declares one", () => {
-    const html = servicesSection([service("app", "healthy"), service("cache", null)], "running");
-    expect(html.match(/<th[\s>]/g)).toHaveLength(4);
-    expect(html).toContain("state-done");
-    expect(html).toContain('class="muted"');
+test("shortens a bare image ID and keeps the full ID as a tooltip", () => {
+    const id = `sha256:${"ab".repeat(32)}`;
+    const html = servicesSection([{ ...service("init", null), image: id }], "running");
+    expect(html).toContain(`<code title="${id}">${"ab".repeat(6)}</code>`);
 });
 
 test("keeps health apart from run state and flags unhealthy services", () => {

@@ -145,6 +145,11 @@ footer{border-top:1px solid var(--border);padding-block:1rem;color:var(--muted);
 @media (max-width:36rem){.op-row{grid-template-columns:1fr;gap:.25rem}}
 .row-actions{display:flex;flex-wrap:wrap;gap:.4rem}
 .row-actions .op-form .btn{width:auto}
+/* Services table: fit the card instead of scrolling. Long image references
+ * wrap, the action buttons stay on one line in a column sized to them. */
+.badges{display:inline-flex;flex-wrap:wrap;gap:.3rem}
+.services-table code{overflow-wrap:anywhere}
+.services-table td:last-child .row-actions{flex-wrap:nowrap}
 
 /* Output and code */
 pre{font-family:var(--mono);font-size:.85rem;margin:0;padding:.85rem 1rem;overflow:auto;background:var(--code-bg);border:1px solid var(--border);border-radius:.45rem;tab-size:2}

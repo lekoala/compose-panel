@@ -84,11 +84,11 @@ Dockge switch-over, [migrating-from-dockge.md](migrating-from-dockge.md).
   (the panel loads the last `COMPOSE_PANEL_LOG_TAIL_LINES` lines when the stack
   page opens). Use *Follow live* to stream new lines.
 
-## The Health check column is empty
+## A service shows no health badge
 
-- **Cause:** Docker has no health check configured for those services. The
-  column is hidden entirely when no service declares one; otherwise a service
-  without a check shows *Not configured*.
+- **Cause:** Docker has no health check configured for that service. The
+  Services table shows a health badge next to the run state only for services
+  that declare a check.
 - **Diagnose:** `docker inspect <container> --format '{{json .Config.Healthcheck}}'`
   (empty/null means none).
 - **Fix:** this is not a fault. A `Running` container without a health check can
