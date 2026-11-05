@@ -120,6 +120,13 @@ export interface AppConfig {
     diskUsageTtlMs: number;
     /** Maximum duration of a mutating Compose operation. */
     operationTimeoutMs: number;
+    /**
+     * Opt-in service rollout (ADR 0035). When false, no rollout route, button
+     * or extra Docker read is exposed. The per-service label is a second gate.
+     */
+    rolloutEnabled: boolean;
+    /** Overall budget for one rollout: pull, health, settle, drain, stop, cleanup. */
+    rolloutTimeoutMs: number;
     /** Bounded drain window for running operations on shutdown. */
     shutdownGraceMs: number;
     /** Heartbeat interval for SSE streams. */
@@ -406,6 +413,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
         insightsTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_INSIGHTS_TIMEOUT_MS", 10_000),
         diskUsageTtlMs: parsePositiveInt(env, "COMPOSE_PANEL_DISK_USAGE_TTL_MS", 300_000),
         operationTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_OPERATION_TIMEOUT_MS", 5 * 60 * 1000),
+        rolloutEnabled: parseBool(env, "COMPOSE_PANEL_ROLLOUT_ENABLED", false),
+        rolloutTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_ROLLOUT_TIMEOUT_MS", 15 * 60 * 1000),
         shutdownGraceMs: parsePositiveInt(env, "COMPOSE_PANEL_SHUTDOWN_GRACE_MS", 30 * 1000),
         sseHeartbeatMs: parsePositiveInt(env, "COMPOSE_PANEL_SSE_HEARTBEAT_MS", 15 * 1000),
         sseTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_SSE_TIMEOUT_MS", 30 * 60 * 1000),

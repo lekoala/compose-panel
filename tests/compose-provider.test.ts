@@ -322,3 +322,126 @@ describe("DockerComposeProvider", () => {
         );
     });
 });
+
+describe("rollout support", () => {
+    const target = { project: "demo", composeFile: "/opt/stacks/demo/compose.yaml", cwd: "/opt/stacks/demo" };
+    const configJson = JSON.stringify({
+        services: {
+            web: {
+                image: "ghcr.io/example/app:1.2.3",
+                labels: {
+                    "panel.rollout.enabled": "true",
+                    "panel.rollout.timeout": "60",
+                    "stack.version": "1.2.3",
+                    "com.example.secret": "do-not-keep",
+                },
+            },
+            sidecar: { image: "sidecar:1", network_mode: "service:web" },
+            db: {
+                image: "postgres:16",
+                scale: 1,
+                build: { context: "." },
+                ports: ["5432:5432"],
+                networks: { back: { ipv4_address: "10.0.0.5" }, plain: null, unset: { ipv6_address: null } },
+            },
+        },
+    });
+
+    test("projects only allow-listed rollout facts", async () => {
+        const { runner, calls } = recording({ ...ok, stdout: configJson });
+        const provider = createComposeProvider({ runner });
+        const facts = await provider.serviceRolloutFacts(target);
+        expect(facts).not.toBeNull();
+        expect(calls[0]!.args).toEqual([
+            "compose",
+            "-p",
+            "demo",
+            "--project-directory",
+            "/opt/stacks/demo",
+            "-f",
+            "/opt/stacks/demo/compose.yaml",
+            "config",
+            "--format",
+            "json",
+        ]);
+        const web = facts!.get("web")!;
+        expect(web.labels).toEqual({ enabled: "true", timeout: "60" });
+        expect(web.namespaceDependents).toEqual(["sidecar"]);
+        const db = facts!.get("db")!;
+        expect(db.build).toBe(true);
+        expect(db.publishedPorts).toBe(true);
+        expect(db.replicas).toEqual([1]);
+        expect(db.fixedAddresses).toEqual(["back"]);
+        expect(JSON.stringify([...facts!.entries()])).not.toContain("do-not-keep");
+    });
+
+    test("refuses unusable config answers", async () => {
+        for (const result of [
+            { ...ok, stdout: "not json" },
+            { ...ok, stdout: '{"services":[]}' },
+            { ...ok, stdout: '{"services":{"web":null}}' },
+            { ...ok, stdout: configJson, truncated: true },
+            { ...ok, code: 1, stderr: "secret" },
+        ]) {
+            const { runner } = recording(result);
+            expect(await createComposeProvider({ runner }).serviceRolloutFacts(target)).toBeNull();
+        }
+    });
+
+    test("lists every container of a service, in any state", async () => {
+        const { runner, calls } = recording({ ...ok, stdout: "abc123def456\nabc123def456\n" });
+        const provider = createComposeProvider({ runner });
+        expect(await provider.serviceContainerIds({ ...target, service: "web" })).toEqual(["abc123def456"]);
+        expect(calls[0]!.args).toEqual(["compose", "-p", "demo", "-f", "/opt/stacks/demo/compose.yaml", "ps", "-a", "-q", "web"]);
+        for (const result of [
+            { ...ok, stdout: "not-an-id\n" },
+            { ...ok, stdout: "abc", code: 1 },
+            { ...ok, stdout: "abc", timedOut: true },
+        ]) {
+            const { runner: bad } = recording(result);
+            expect(await createComposeProvider({ runner: bad }).serviceContainerIds({ ...target, service: "web" })).toBeNull();
+        }
+    });
+
+    test("pullService and scaleService build explicit argument arrays", async () => {
+        const { runner, calls } = recording();
+        const provider = createComposeProvider({ runner });
+        await provider.pullService({ ...target, service: "web" });
+        expect(calls[0]!.args).toEqual([
+            "compose",
+            "-p",
+            "demo",
+            "--project-directory",
+            "/opt/stacks/demo",
+            "-f",
+            "/opt/stacks/demo/compose.yaml",
+            "pull",
+            "--ignore-buildable",
+            "--",
+            "web",
+        ]);
+        await provider.scaleService({ ...target, service: "web", replicas: 2 });
+        expect(calls[1]!.args).toEqual([
+            "compose",
+            "-p",
+            "demo",
+            "--project-directory",
+            "/opt/stacks/demo",
+            "-f",
+            "/opt/stacks/demo/compose.yaml",
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-recreate",
+            "--no-build",
+            "--pull",
+            "never",
+            "--scale",
+            "web=2",
+            "--",
+            "web",
+        ]);
+        await expect(provider.pullService({ ...target, service: "--privileged" })).rejects.toThrow(/Invalid service name/);
+        await expect(provider.scaleService({ ...target, service: "web", replicas: 0 })).rejects.toThrow(/Invalid replica count/);
+    });
+});

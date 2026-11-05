@@ -32,6 +32,7 @@ import {
     type StackUsage,
 } from "./insights.ts";
 import type { ToolboxAction, ToolboxRunner } from "./toolbox.ts";
+import type { RolloutDeclaration } from "./rollout.ts";
 import { isExplorerHref } from "./database.ts";
 import { isValidDomain } from "./caddy.ts";
 import packageJson from "../package.json";
@@ -617,6 +618,7 @@ export function servicesSection(
     updates: Record<string, ServiceUpdate> = {},
     actions?: { name: string; csrf: string; busy: boolean },
     recreatePending: string[] = [],
+    rolloutServices: string[] = [],
 ): string {
     let content: string;
     if (services.length > 0) {
@@ -626,7 +628,8 @@ export function servicesSection(
         const scoped = actions !== undefined && (state === "running" || state === "stopped");
         const rows = services
             .map((service) => {
-                const cell = scoped ? `<td>${serviceActions(actions, service.name, recreatePending.includes(service.name))}</td>` : "";
+                const rollout = rolloutServices.includes(service.name) && service.state.toLowerCase() === "running";
+                const cell = scoped ? `<td>${serviceActions(actions, service, recreatePending.includes(service.name), rollout)}</td>` : "";
                 const status = `<span class="badges">${serviceBadge(service)}${healthBadge(service.health)}</span>`;
                 return `<tr><td>${escapeHtml(service.name)}</td><td>${status}</td><td>${imageCell(service, updates[service.name])}</td>${cell}</tr>`;
             })
@@ -641,19 +644,28 @@ export function servicesSection(
     return `<section class="card"><h2>Services</h2>${content}</section>`;
 }
 
-/** Per-service Restart and Up for one table row (ADR 0021), with the ADR 0032 marker. */
-function serviceActions(actions: { name: string; csrf: string; busy: boolean }, service: string, pending: boolean): string {
+/** Per-service Restart, Up and opt-in Rollout for one table row (ADR 0021, ADR 0035). */
+function serviceActions(
+    actions: { name: string; csrf: string; busy: boolean },
+    service: ComposeService,
+    pending: boolean,
+    rollout: boolean,
+): string {
     const buttons = (["restart", "up"] as const)
         .map((action) => {
             const label = action === "restart" ? "Restart" : "Up";
             const disabled = actions.busy ? " disabled" : "";
-            return `<form method="post" action="/stacks/${encodeURIComponent(actions.name)}/operations" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(actions.csrf)}"><input type="hidden" name="action" value="${action}"><input type="hidden" name="service" value="${escapeHtml(service)}"><button type="submit" class="btn btn-quiet"${disabled} data-op-button data-busy-label="Starting…">${label}</button></form>`;
+            return `<form method="post" action="/stacks/${encodeURIComponent(actions.name)}/operations" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(actions.csrf)}"><input type="hidden" name="action" value="${action}"><input type="hidden" name="service" value="${escapeHtml(service.name)}"><button type="submit" class="btn btn-quiet"${disabled} data-op-button data-busy-label="Starting…">${label}</button></form>`;
         })
         .join("");
+    const rolloutLink =
+        rollout && !actions.busy
+            ? `<a class="btn btn-quiet" href="/stacks/${encodeURIComponent(actions.name)}/rollout?service=${encodeURIComponent(service.name)}" title="Start a second instance, wait for it to become healthy, then remove the old one">Rollout…</a>`
+            : "";
     const marker = pending
         ? `<div class="update" data-recreate-pending><span class="state state-update">Recreate pending</span>${infoTip("Up recreates this service with the current Compose file and .env. Restart keeps the existing container as it is.")}</div>`
         : "";
-    return `${marker}<div class="row-actions">${buttons}</div>`;
+    return `${marker}<div class="row-actions">${buttons}${rolloutLink}</div>`;
 }
 
 const OPERATIONS: { action: OperationAction; label: string; help: string; style: string; needsDeployment: boolean }[] = [
@@ -791,6 +803,7 @@ const OPERATION_STATUS_LABELS: Record<string, string> = {
     failed: "Failed",
     unknown: "Outcome unknown",
     refused: "Refused",
+    intervention: "Intervention required",
 };
 
 export function operationStatusLabel(status: string): string {
@@ -979,6 +992,144 @@ export function toolboxPage(options: ToolboxPageOptions): string {
     );
 }
 
+export interface RolloutReadinessView {
+    service: string;
+    /** False when the requested service declares no `panel.rollout.*` label. */
+    declared: boolean;
+    invalid: boolean;
+    ready: boolean;
+    reason: string | null;
+    image: string | null;
+    containerId: string | null;
+    declaration: RolloutDeclaration | null;
+}
+
+export interface RolloutPageOptions {
+    stack: string;
+    csrf: string;
+    /** Null lists every declared service; a name renders its confirmation page. */
+    service: string | null;
+    entries: RolloutReadinessView[];
+    busy?: boolean;
+    notice?: { kind: NoteKind; text: string };
+    error?: { title: string; message: string };
+    access?: string;
+    timezone?: string;
+    nav?: NavigationOptions;
+}
+
+function rolloutParams(declaration: RolloutDeclaration): string {
+    const rows: [string, string][] = [
+        ["Health timeout", `${declaration.timeoutSeconds} s`],
+        ["Settle after healthy", `${declaration.settleSeconds} s`],
+        ["Drain marker", declaration.drainFile ?? "none"],
+        ["Drain detection", declaration.drainFile ? `${declaration.drainDetectSeconds} s` : "—"],
+        ["Drain window", declaration.drainFile ? `${declaration.drainTimeSeconds} s` : "—"],
+        ["Stop timeout", `${declaration.stopTimeoutSeconds} s`],
+    ];
+    const table = rows
+        .map(
+            ([label, value]) =>
+                `<tr><th>${escapeHtml(label)}</th><td>${
+                    value.startsWith("/") ? `<code>${escapeHtml(value)}</code>` : escapeHtml(value)
+                }</td></tr>`,
+        )
+        .join("");
+    return `<div class="table-wrap"><table class="table"><tbody>${table}</tbody></table></div>`;
+}
+
+function rolloutWarnings(declaration: RolloutDeclaration): string {
+    const items = [
+        "Two instances run at the same time during the rollout. The application must tolerate that: sessions, caches, shared files and database migrations included.",
+        "A reverse proxy must discover both instances, route only to healthy ones and stop routing to the old one once it is drained. The Caddy domains managed by this panel use a published loopback port and are not compatible with rollout.",
+        "If the panel crashes during a rollout, the outcome is unknown. Nothing is replayed automatically.",
+        "From the first drain attempt onward, a failure requires manual intervention: the panel keeps the candidate and does not roll back automatically.",
+    ];
+    if (declaration.drainFile === null) {
+        items.push(
+            "No drain marker is declared. The old instance is stopped gracefully, but the panel cannot promise that in-flight requests finish.",
+        );
+    }
+    return `<div class="note note-warn"><strong>${escapeHtml("Before you start")}</strong><ul>${items
+        .map((item) => `<li>${escapeHtml(item)}</li>`)
+        .join("")}</ul></div>`;
+}
+
+function rolloutReadyCard(stack: string, entry: RolloutReadinessView): string {
+    const href = `/stacks/${encodeURIComponent(stack)}/rollout?service=${encodeURIComponent(entry.service)}`;
+    return (
+        `<section class="card"><h2><code>${escapeHtml(entry.service)}</code> <span class="state state-done">Ready</span></h2>` +
+        `<p class="meta">${entry.image ? `<span>Image <code>${escapeHtml(entry.image)}</code></span>` : ""}` +
+        `${
+            entry.containerId
+                ? `<span>Container <code title="${escapeHtml(entry.containerId)}">${escapeHtml(entry.containerId.slice(0, 12))}</code></span>`
+                : ""
+        }</p>` +
+        (entry.declaration ? rolloutParams(entry.declaration) : "") +
+        `<p><a class="btn" href="${href}">Review rollout</a></p></section>`
+    );
+}
+
+function rolloutRefusedCard(entry: RolloutReadinessView): string {
+    const badge = entry.invalid
+        ? `<span class="state state-failed">Declaration invalid</span>`
+        : `<span class="state state-refused">Not eligible</span>`;
+    return `<section class="card"><h2><code>${escapeHtml(entry.service)}</code> ${badge}</h2>${
+        entry.reason ? note("warn", entry.reason) : ""
+    }</section>`;
+}
+
+/**
+ * Rollout readiness and confirmation page (ADR 0035). HTML-first: the preview
+ * is a plain GET and the action a plain POST, so it works without JavaScript.
+ */
+export function rolloutPage(options: RolloutPageOptions): string {
+    const href = `/stacks/${encodeURIComponent(options.stack)}`;
+    const title = options.service === null ? "Rollout readiness" : `Rollout ${options.service}`;
+    const notice = options.notice ? note(options.notice.kind, options.notice.text) : "";
+    const error = options.error ? note("error", options.error.message, { title: options.error.title }) : "";
+    const single = options.service === null ? null : (options.entries.find((entry) => entry.service === options.service) ?? null);
+    let body: string;
+    if (options.service === null) {
+        body =
+            options.entries.length > 0
+                ? options.entries
+                      .map((entry) => (entry.ready ? rolloutReadyCard(options.stack, entry) : rolloutRefusedCard(entry)))
+                      .join("")
+                : `<section class="card"><h2>No service declares a rollout</h2>` +
+                  `<p class="muted">Add <code>panel.rollout.enabled: "true"</code> to the labels of an eligible service. A healthcheck, an image, no published port, no fixed container name and no shared namespace are required.</p></section>`;
+    } else if (!single) {
+        body = `<section class="card"><h2>Rollout</h2>${note("warn", "This service is not declared for rollout.")}</section>`;
+    } else if (!single.ready || !single.declaration) {
+        body = rolloutRefusedCard(single);
+    } else {
+        const form =
+            `<form method="post" action="/stacks/${encodeURIComponent(options.stack)}/rollout" class="op-form">` +
+            `<input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">` +
+            `<input type="hidden" name="service" value="${escapeHtml(single.service)}">` +
+            `<p><label><input type="checkbox" name="pull" value="1" checked> Download the image before the rollout</label></p>` +
+            `<button type="submit" class="btn btn-primary"${options.busy ? " disabled" : ""} data-op-button data-busy-label="Starting…">Roll out ${escapeHtml(single.service)}</button>` +
+            `</form>`;
+        body =
+            `<section class="card"><h2><code>${escapeHtml(single.service)}</code> <span class="state state-done">Ready</span></h2>` +
+            `<p class="meta">${single.image ? `<span>Image <code>${escapeHtml(single.image)}</code></span>` : ""}</p>` +
+            rolloutParams(single.declaration) +
+            rolloutWarnings(single.declaration) +
+            form +
+            `</section>`;
+    }
+    return documentHtml(
+        `${options.stack} · ${title}`,
+        `<p class="crumbs"><a href="${href}">← Back to ${escapeHtml(options.stack)}</a></p>` +
+            `<div class="page-head"><h1>${escapeHtml(title)}</h1><a href="${href}" class="btn">Stack</a></div>` +
+            `<p class="lead">Start a second instance of one service, wait for it to become healthy, then stop and remove only the old one. This is not a general zero-downtime guarantee.</p>` +
+            notice +
+            error +
+            body,
+        { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, nav: options.nav, scripts: ["/app.js"] },
+    );
+}
+
 export interface AuditPageOptions {
     csrf: string;
     access?: string;
@@ -998,6 +1149,7 @@ const AUDIT_RESULT_CLASS: Record<string, string> = {
     partial: "state-failed",
     conflict: "state-stopped",
     refused: "state-stopped",
+    intervention: "state-failed",
 };
 
 /** Read-only activity log: a period selector and the parsed entries of one file. */

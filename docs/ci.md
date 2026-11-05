@@ -122,6 +122,14 @@ every call to the real Docker CLI. Not covered: `SIGKILL` (no state survives
 a restart by design) and save validation timing, which unit tests
 cover.
 
+The rollout test (`tests/rollout-linux.test.ts`) is also opt-in on the same lab
+daemon. It builds a small HTTP image, starts Traefik on a project network and
+sends continuous fast and slow requests through the proxy while a rollout runs;
+a second scenario makes the candidate exit before becoming healthy and checks
+that the old instance is kept. Run it with
+`bash scripts/docker-lab/run.sh tests/rollout-linux.test.ts`. It refuses a
+non-lab daemon exactly like the lifecycle test and never runs in unattended CI.
+
 ## Publication (tags only)
 
 Releases are published by `.github/workflows/release.yml`, triggered only by

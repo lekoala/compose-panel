@@ -11,6 +11,7 @@ import {
     usageBar,
     databaseSection,
     domainsSection,
+    rolloutPage,
 } from "../src/html.ts";
 import { buildExplorerUrl } from "../src/database.ts";
 import type { ComposeService } from "../src/compose-state.ts";
@@ -344,4 +345,116 @@ test("domains section escapes attached values and reports an unreadable status",
     expect(html).not.toContain("<b>web</b>");
     expect(html).toContain("&lt;b&gt;web&lt;/b&gt;");
     expect(html).toContain('class="note note-warn"');
+});
+
+test("servicesSection offers a Rollout link only for a declared running service", () => {
+    const services: ComposeService[] = [
+        { name: "web", state: "running", health: "healthy", exitCode: null, container: "demo-web-1", image: "app:1" },
+        { name: "worker", state: "stopped", health: null, exitCode: 0, container: "demo-worker-1", image: "app:1" },
+    ];
+    const actions = { name: "demo", csrf: "csrf-token", busy: false };
+    const html = servicesSection(services, "running", {}, actions, [], ["web", "worker"]);
+    expect(html).toContain("/stacks/demo/rollout?service=web");
+    expect(html).not.toContain("/stacks/demo/rollout?service=worker");
+});
+
+test("servicesSection adds no Rollout link when the service is not declared", () => {
+    const services: ComposeService[] = [
+        { name: "web", state: "running", health: "healthy", exitCode: null, container: "demo-web-1", image: "app:1" },
+    ];
+    const html = servicesSection(services, "running", {}, { name: "demo", csrf: "csrf-token", busy: false }, [], []);
+    expect(html).not.toContain("/stacks/demo/rollout");
+});
+
+test("rolloutPage renders a plain confirmation form with the declared parameters", () => {
+    const html = rolloutPage({
+        stack: "demo",
+        csrf: "csrf-token",
+        service: "web",
+        entries: [
+            {
+                service: "web",
+                declared: true,
+                invalid: false,
+                ready: true,
+                reason: null,
+                image: "app:1.2.3",
+                containerId: "a".repeat(64),
+                declaration: {
+                    enabled: true,
+                    timeoutSeconds: 60,
+                    settleSeconds: 2,
+                    drainFile: "/tmp/drain",
+                    drainDetectSeconds: 10,
+                    drainTimeSeconds: 15,
+                    stopTimeoutSeconds: 45,
+                },
+            },
+        ],
+        busy: false,
+    });
+    expect(html).toContain('action="/stacks/demo/rollout"');
+    expect(html).toContain('name="csrf" value="csrf-token"');
+    expect(html).toContain('name="service" value="web"');
+    expect(html).toContain('name="pull" value="1" checked');
+    expect(html).toContain("/tmp/drain");
+    expect(html).toContain("not compatible with rollout");
+});
+
+test("rolloutPage shows a refusal and no form when the service is not eligible", () => {
+    const html = rolloutPage({
+        stack: "demo",
+        csrf: "csrf-token",
+        service: "web",
+        entries: [
+            {
+                service: "web",
+                declared: true,
+                invalid: false,
+                ready: false,
+                reason: "A published port cannot be duplicated.",
+                image: "app:1",
+                containerId: null,
+                declaration: null,
+            },
+        ],
+    });
+    expect(html).toContain("A published port cannot be duplicated.");
+    expect(html).not.toContain('action="/stacks/demo/rollout"');
+});
+
+test("rolloutPage escapes service and image values", () => {
+    const html = rolloutPage({
+        stack: "demo",
+        csrf: "csrf-token",
+        service: "web<script>",
+        entries: [
+            {
+                service: "web<script>",
+                declared: true,
+                invalid: false,
+                ready: true,
+                reason: null,
+                image: "app<img src=x>",
+                containerId: "a".repeat(64),
+                declaration: {
+                    enabled: true,
+                    timeoutSeconds: 60,
+                    settleSeconds: 2,
+                    drainFile: null,
+                    drainDetectSeconds: 10,
+                    drainTimeSeconds: 15,
+                    stopTimeoutSeconds: 45,
+                },
+            },
+        ],
+    });
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("<img src=x>");
+    expect(html).toContain("&lt;script&gt;");
+});
+
+test("operationPanel labels an intervention explicitly", () => {
+    const html = operationPanel(operation({ status: "intervention" }));
+    expect(html).toContain("Intervention required");
 });

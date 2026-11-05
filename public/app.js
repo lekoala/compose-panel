@@ -160,7 +160,14 @@
         document.title = busy ? "● " + BASE_TITLE : BASE_TITLE;
     }
 
-    var STATUS_LABELS = { running: "Running", succeeded: "Succeeded", failed: "Failed", unknown: "Outcome unknown", refused: "Refused" };
+    var STATUS_LABELS = {
+        running: "Running",
+        succeeded: "Succeeded",
+        failed: "Failed",
+        unknown: "Outcome unknown",
+        refused: "Refused",
+        intervention: "Intervention required",
+    };
 
     function duration(ms) {
         var s = Math.max(0, Math.round(ms / 1000));

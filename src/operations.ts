@@ -10,10 +10,10 @@ export function isOperationAction(value: string): value is OperationAction {
     return (OPERATION_ACTIONS as readonly string[]).includes(value);
 }
 
-export type OperationStatus = "running" | "succeeded" | "failed" | "unknown" | "refused";
+export type OperationStatus = "running" | "succeeded" | "failed" | "unknown" | "refused" | "intervention";
 
 /** A declared app action either produces a command result or is refused before running. */
-export type AppActionOutcome = CommandResult | { refused: string };
+export type AppActionOutcome = CommandResult | { refused: string } | { intervention: string };
 
 export interface OperationView {
     id: string;
@@ -166,6 +166,38 @@ export class OperationManager {
         this.tasks.add(task);
         void task.finally(() => this.tasks.delete(task));
         return operation;
+    }
+
+    /**
+     * Run an opt-in service rollout (ADR 0035). The lock, project reservation,
+     * streaming and finalize semantics are the same as any other operation;
+     * the `run` closure performs the locked revalidation and the phase machine.
+     */
+    startRollout(input: {
+        stack: string;
+        service: string;
+        project?: string;
+        run: (context: {
+            onOutput: (chunk: string) => void;
+            record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+        }) => Promise<AppActionOutcome>;
+    }): OperationView {
+        const { operation, release } = this.begin({
+            stack: input.stack,
+            action: "rollout",
+            label: "Rollout",
+            service: input.service,
+            project: input.project,
+        });
+        const task = this.executeApp(operation, input.run, release, input.project);
+        this.tasks.add(task);
+        void task.finally(() => this.tasks.delete(task));
+        return operation;
+    }
+
+    /** Whether shutdown has begun; a running rollout uses it between phases. */
+    isShuttingDown(): boolean {
+        return this.shuttingDown;
     }
 
     /** Shared acquisition: per-stack lock, project reservation, operation record. */
@@ -323,6 +355,15 @@ export class OperationManager {
                 // the terminal status and notify exactly once.
                 this.appendText(operation, outcome.refused);
                 operation.status = "refused";
+                operation.endedAt = Date.now();
+                this.emit(operation);
+                return;
+            }
+            if ("intervention" in outcome) {
+                // The rollout reached an irreversible phase and refused to remove
+                // anything automatically. The operator must inspect Docker.
+                if (!live) this.appendText(operation, outcome.intervention);
+                operation.status = "intervention";
                 operation.endedAt = Date.now();
                 this.emit(operation);
                 return;

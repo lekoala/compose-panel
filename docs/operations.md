@@ -156,3 +156,32 @@ script, so a larger `timeout` in the manifest has no effect until that setting i
 raised. The panel passes `--no-interaction`, so a prompt such as "Continue as
 root?" never blocks the action. See
 [ADR 0026](adr/0026-application-toolbox.md).
+
+## Service rollout
+
+With `COMPOSE_PANEL_ROLLOUT_ENABLED=true`, a service that declares
+`panel.rollout.enabled: "true"` gets a **Rollout** link in the Services table
+(and a readiness page under **Rollout**). The panel starts a second instance
+without recreating the first, waits for it to become healthy, optionally drains
+the old one, then stops and removes only the old container. See
+[ADR 0035](adr/0035-optional-service-rollout.md) and the operator guide in
+[deployment.md](deployment.md#optional-service-rollout).
+
+Reconciliation after a failed or interrupted rollout is manual:
+
+- Inspect with `docker compose -p <project> -f <file> ps -a` and
+  `docker inspect`. The activity log records the outcome; the operation output
+  names the phase that failed.
+- Before the first drain attempt, the panel removes a candidate only when it can
+  prove the container was created by that operation. If the identity is
+  ambiguous, it removes nothing.
+- After the first drain attempt, the panel never removes automatically. If the
+  old container was marked but not stopped, the marker is still present; remove
+  it yourself only after deciding whether to finish or roll back. The panel does
+  not remove it.
+- If the candidate is unhealthy, inspect its logs. A normal `Up` recreates the
+  service with downtime; the panel never switches back automatically.
+- Do not run a panel action while reconciling with the CLI.
+
+The integration test is opt-in on a disposable lab daemon and uses a real proxy;
+it is not part of unattended CI.

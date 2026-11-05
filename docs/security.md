@@ -65,6 +65,39 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - On `SIGTERM`/`SIGINT`, new operations, saves and log follows are refused synchronously before anything is awaited, then running work drains under one shared deadline. There is no persistence and no automatic replay: after a crash the outcome may be unknown and the UI re-reads Docker.
 - Operation output is captured from both streams and bounded; pipe chunks stream to observers while the command runs (retention stays head-capped with a truncation flag). Output is HTML-escaped before display and never written to application logs.
 
+## Service rollout (ADR 0035)
+- The route exists only with `COMPOSE_PANEL_ROLLOUT_ENABLED=true` **and** a
+  valid `panel.rollout.enabled: "true"` declaration on the service. The backend
+  refuses a service that is not declared, even if the form is forged.
+- Every mutation reuses the existing guards: session re-check after awaited
+  Docker reads, Origin, CSRF, per-stack lock, shutdown/self-update refusal and
+  audit (`event: "rollout"`). One rollout per stack; a second request is `409`.
+- The Compose facts come from the resolved config through the provider, which
+  projects only the allow-listed fields and `panel.rollout.*` labels. Raw config
+  and stderr are never retained or shown.
+- A new `ContainerMutator` boundary owns three explicit calls: `stop --time`,
+  `remove` (no `--force`, no `-v`) and `exec <id> touch <path>`. IDs must be full
+  64-hex IDs from `container inspect`; the drain command is always `touch` and
+  the path is validated (absolute, no `..`, no control characters, bounded).
+  `ContainerInspector` remains read-only.
+- Cleanup before drainage is allowed only after proving the candidate's
+  identity: full ID, the four Compose labels, a creation date after the
+  operation started and absence from the initial snapshot. Any ambiguity means
+  no deletion. At the first drain attempt the operation becomes irreversible:
+  failures keep the candidate and report an intervention; no automatic rollback,
+  no marker removal.
+- A command whose exit cannot be confirmed is `unknown` and keeps the lock. A
+  crash leaves the outcome unknown; nothing is persisted or replayed.
+- The rollout requires a healthcheck, one existing container, no published
+  ports, no fixed container name, no local build and no shared namespace or
+  volumes. A drain marker on a mount is refused. A reverse proxy that removes
+  unhealthy instances is an operational prerequisite.
+- The existing Caddy site integration attaches a published loopback port and is
+  **not** compatible with rollout; this is documented in the UI and the
+  deployment guide.
+- Integration tests run on a disposable lab daemon, never on a host or in
+  unattended CI.
+
 ## Application toolbox (ADR 0026)
 
 - The panel may execute only **explicitly declared, non-interactive application

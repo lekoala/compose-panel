@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Rollout (optional, off by default): a service that declares
+  `panel.rollout.enabled: "true"` gets a **Rollout** action. The panel starts a
+  second instance without recreating the old one, waits for it to become healthy,
+  optionally drains the old one through a fixed marker, then stops and removes
+  only the old container (ADR 0035). Cleanup of the candidate is conditional
+  before the first drain attempt; after it, the panel reports an intervention
+  and keeps the candidate. No persistence, no automatic rollback, no crash
+  recovery. The existing Caddy site integration is not compatible with this
+  rollout because it targets a published loopback port.
+
 - Stack page: the Services table fits the card instead of scrolling
   sideways, so the per-service actions stay visible. The health check is a
   badge next to the run state (only for services that declare one) instead of

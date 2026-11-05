@@ -540,6 +540,154 @@ Manual verification (release gate, on the target host with its real Caddy):
 - [ ] `systemctl restart caddy-helper.socket`, then the stack page still
       lists the domains (directory mount survives the socket recreation).
 
+## Optional service rollout
+
+The panel can replace **one explicitly declared service** with a short overlap:
+start a second instance, wait for it to become healthy, let a reverse proxy
+discover it, optionally drain the old instance, then stop and remove only the old
+container. It is off by default and is not a general zero-downtime guarantee.
+See [ADR 0035](adr/0035-optional-service-rollout.md).
+
+### Enable it
+
+```dotenv
+COMPOSE_PANEL_ROLLOUT_ENABLED=true
+# Optional: overall budget for one rollout (default 15 minutes).
+# COMPOSE_PANEL_ROLLOUT_TIMEOUT_MS=900000
+```
+
+Then declare the service in its Compose labels:
+
+```yaml
+services:
+  web:
+    image: ghcr.io/example/app:${APP_VERSION}
+    expose: ["8080"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test ! -f /tmp/drain && wget -q -O /dev/null http://127.0.0.1:8080/health/ready
+      interval: 5s
+      timeout: 3s
+      retries: 1
+      start_period: 20s
+    labels:
+      panel.rollout.enabled: "true"
+      panel.rollout.timeout: "120"
+      panel.rollout.settle: "5"
+      panel.rollout.drain-file: "/tmp/drain"
+      panel.rollout.drain-detect: "30"
+      panel.rollout.drain-time: "20"
+      panel.rollout.stop-timeout: "30"
+      traefik.enable: "true"
+      traefik.docker.network: "proxy"
+      traefik.http.routers.monapp.rule: "Host(`app.example.com`)"
+      traefik.http.services.monapp.loadbalancer.server.port: "8080"
+    networks: [proxy]
+
+networks:
+  proxy:
+    external: true
+```
+
+Requirements and refusals:
+
+- An image-based service only; `build:` is refused in this version.
+- No `container_name` and no published `ports`. `expose` is fine.
+- No `deploy.replicas`/`scale` other than 1, no fixed `ipv4_address`/
+  `ipv6_address`, and no `network_mode`, `ipc`, `pid` or `volumes_from` that
+  shares another container.
+- No other service may share this service's namespaces or volumes.
+- Exactly one container for the service, in any state, and it must be running
+  and healthy.
+- A healthcheck is mandatory. The panel reads the effective `State.Health`, so a
+  healthcheck defined in the image is accepted too.
+
+### Drain contract
+
+`panel.rollout.drain-file` is optional, but without it the panel cannot promise
+that in-flight requests finish: it only stops the old container gracefully. With
+a marker:
+
+1. the panel runs `docker exec <old> touch <path>`;
+2. the healthcheck must fail while the marker exists;
+3. the proxy must remove the old instance from rotation;
+4. the panel waits `drain-detect` for `unhealthy`, then `drain-time`, then stops
+   the old container.
+
+The marker must be per container, on the writable layer (for example `/tmp`), and
+must not be on a shared bind mount or volume: two instances would become
+unavailable together. The panel refuses a marker covered by a mount.
+
+Changing the Compose file does not change the healthcheck of the container that
+is already running. The contract must already exist on the old container,
+including the `panel.rollout.drain-file` label, otherwise the panel refuses with
+"run Up once". The new container created by that `Up` then carries the contract.
+
+`panel.rollout.stop-timeout` is the only stop timeout the rollout uses: it is
+passed to `docker stop --time`. `stop_grace_period` still governs
+`docker compose stop`, but the rollout does not consult it. Set both to the same
+value if you want identical behavior.
+
+### Proxy
+
+The proxy must discover both instances, route only to healthy ones and stop
+routing to the old one before it is stopped. The panel does not configure or
+certify it. Traefik on a shared network is one supported pattern; the integration
+test uses it.
+
+**Caddy is different.** The optional Caddy site management in this panel routes
+to a **published loopback port**, while a rollout refuses published ports. Those
+Caddy routes are not compatible with rollout. A Caddy setup would need its own
+container-discovery configuration, which is outside this integration.
+
+### What happens in the UI
+
+- The Services table shows **Rollout…** only for a declared service that is
+  running, and only while no other operation holds the stack lock.
+- The confirmation page shows the parameters, the current image and the
+  warnings. The **Download the image before the rollout** box is checked by
+  default.
+- The operation streams its phases like any other action: pull, start, health,
+  settle, drain, stop, remove. Closing the page does not stop it.
+- The activity log records `rollout` events (started, refused, succeeded,
+  failed, intervention, unknown).
+
+### Failures and recovery
+
+- Before the first drain attempt, the panel may remove the candidate it created.
+  It does so only after proving the container's full ID, its Compose project,
+  service, file and working directory, a creation date after the operation
+  started, and its absence from the initial snapshot. If anything is ambiguous,
+  it removes nothing.
+- From the first drain attempt onward, it removes nothing automatically. It
+  reports **Intervention required** and keeps the candidate. There is no
+  automatic rollback and the marker is never removed.
+- An unconfirmed command is reported as **Outcome unknown** and keeps the stack
+  lock. A panel crash leaves the outcome unknown; nothing is replayed.
+
+Reconcile on the host:
+
+```bash
+docker compose -p <project> -f <compose-file> ps -a
+docker inspect <container>
+docker logs <container>
+```
+
+If the old container was marked but not stopped, decide whether to finish or
+roll back before touching it; the panel will not remove the marker. If the
+candidate is unhealthy, inspect its logs. A normal `Up` recreates the service
+with downtime; the panel never switches back by itself.
+
+### Integration check
+
+`tests/rollout-linux.test.ts` runs on a disposable lab daemon
+(`scripts/docker-lab/run.sh`) with a real Traefik, continuous fast and slow
+requests, and a second scenario where the candidate exits before becoming
+healthy. It is opt-in and never runs in unattended CI.
+
 ## Backups and rollback
 
 Two layers, both plain files:

@@ -10,6 +10,8 @@ import type { AppConfig } from "../src/config.ts";
 import type { CommandResult, DockerRunner } from "../src/docker.ts";
 import type { ComposeCapabilities, ComposeProvider, ComposeTarget } from "../src/compose-provider.ts";
 import type { ContainerInspector } from "../src/containers.ts";
+import type { ContainerMutator } from "../src/container-mutations.ts";
+import type { ServiceRolloutFacts } from "../src/rollout.ts";
 import { resolveRoot } from "../src/stacks.ts";
 import type { SelfUpdater } from "../src/self-update.ts";
 import {
@@ -48,6 +50,7 @@ function makeApp(
     stacksRoot: string = root,
     inspector?: ContainerInspector,
     selfUpdater?: SelfUpdater,
+    mutator?: ContainerMutator,
 ): App {
     const config: AppConfig = {
         stacksDir: stacksRoot,
@@ -78,6 +81,8 @@ function makeApp(
         insightsTimeoutMs: 10_000,
         diskUsageTtlMs: 300_000,
         operationTimeoutMs: 60_000,
+        rolloutEnabled: false,
+        rolloutTimeoutMs: 900_000,
         shutdownGraceMs: 5_000,
         sseHeartbeatMs: 15_000,
         sseTimeoutMs: 1_800_000,
@@ -90,7 +95,7 @@ function makeApp(
         toolboxMaxTimeoutMs: 900_000,
         ...overrides,
     };
-    return createApp({ config, stacksRoot, runner, provider, audit, inspector, selfUpdater });
+    return createApp({ config, stacksRoot, runner, provider, audit, inspector, selfUpdater, containerMutator: mutator });
 }
 
 interface FollowCall {
@@ -127,8 +132,12 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         validateConfig: async () => empty,
         listServices: async () => [],
         runningContainerIds: async () => [],
+        serviceContainerIds: async () => [],
+        serviceRolloutFacts: async () => null,
         readLogs: async () => empty,
         pull: async () => empty,
+        pullService: async () => empty,
+        scaleService: async () => empty,
         up: async () => empty,
         stop: async () => empty,
         start: async () => empty,
@@ -4128,5 +4137,256 @@ describe("self-update (ADR 0018)", () => {
         const response = await app.fetch(new Request(`${ORIGIN}/about/update`, { method: "POST", headers: { origin: ORIGIN } }));
         expect(response.status).toBe(401);
         expect((await app.fetch(new Request(`${ORIGIN}/about`))).status).toBe(302);
+    });
+});
+
+describe("service rollout (ADR 0035)", () => {
+    const OLD = "1".repeat(64);
+    const CANDIDATE = "2".repeat(64);
+    const IMAGE = "sha256:" + "3".repeat(64);
+    const okResult: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+
+    function facts(overrides: Partial<ServiceRolloutFacts> = {}): ServiceRolloutFacts {
+        return {
+            image: "app:1.2.3",
+            build: false,
+            containerName: false,
+            publishedPorts: false,
+            replicas: [],
+            networkMode: null,
+            ipc: null,
+            pid: null,
+            volumesFrom: [],
+            fixedAddresses: [],
+            labels: { enabled: "true", settle: "0" },
+            namespaceDependents: [],
+            ...overrides,
+        };
+    }
+
+    function fixture(options: { factsMap?: Map<string, ServiceRolloutFacts> | null; names?: string[] | null } = {}) {
+        const calls: string[] = [];
+        let scaled = false;
+        const caps: ComposeCapabilities = {
+            engine: "fake",
+            available: true,
+            operations: { ls: true, ps: true, config: true, logs: true },
+            configHashes: false,
+        };
+        const factsMap = options.factsMap === undefined ? new Map([["web", facts()]]) : options.factsMap;
+        const provider: ComposeProvider = {
+            engine: "fake",
+            capabilities: () => caps,
+            detect: async () => caps,
+            listProjects: async () => ({
+                ...okResult,
+                stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]),
+            }),
+            projectName: async () => "demo-proj",
+            projectServices: async () => ({
+                ...okResult,
+                stdout: JSON.stringify([
+                    { Service: "web", State: "running", Health: "healthy", ExitCode: 0, Name: "demo-proj-web-1", Image: "app:1.2.3" },
+                ]),
+            }),
+            projectImages: async () => okResult,
+            stackMetadata: async () => ({}),
+            inspectImages: async () => ({ ...okResult, stdout: JSON.stringify([{ Id: IMAGE }]) }),
+            inspectContainers: async () => okResult,
+            serviceConfigHashes: async () => null,
+            validateConfig: async () => okResult,
+            listServices: async () => (options.names === undefined ? ["web"] : options.names),
+            runningContainerIds: async () => [OLD],
+            serviceContainerIds: async () => (scaled ? [OLD, CANDIDATE] : [OLD]),
+            serviceRolloutFacts: async () => factsMap,
+            readLogs: async () => okResult,
+            pull: async () => okResult,
+            pullService: async () => {
+                calls.push("pull");
+                return okResult;
+            },
+            up: async () => okResult,
+            scaleService: async () => {
+                calls.push("scale");
+                scaled = true;
+                return okResult;
+            },
+            stop: async () => okResult,
+            start: async () => okResult,
+            restart: async () => okResult,
+            down: async () => okResult,
+            serviceImage: async () => "app:1.2.3",
+            recreateService: async () => okResult,
+            followLogs: async () => ({ code: 0, timedOut: false }),
+        };
+        const inspector: ContainerInspector = {
+            engine: "fake",
+            list: async () => okResult,
+            inspect: async (id) => ({
+                ...okResult,
+                stdout: JSON.stringify([
+                    {
+                        Id: id,
+                        Image: IMAGE,
+                        Created: id === CANDIDATE ? new Date().toISOString() : new Date(Date.now() - 60_000).toISOString(),
+                        State: { Status: "running", Running: true, Health: { Status: "healthy" } },
+                        Config: {
+                            Image: "app:1.2.3",
+                            Labels: {
+                                "com.docker.compose.project": "demo-proj",
+                                "com.docker.compose.service": "web",
+                                "com.docker.compose.project.config_files": join(root, "demo", "compose.yaml"),
+                                "com.docker.compose.project.working_dir": join(root, "demo"),
+                            },
+                        },
+                        Mounts: [],
+                    },
+                ]),
+            }),
+            logs: async () => okResult,
+            info: async () => okResult,
+            stats: async () => okResult,
+            diskUsage: async () => okResult,
+        };
+        const mutator: ContainerMutator = {
+            engine: "fake",
+            stop: async (id) => {
+                calls.push(`stop:${id === OLD ? "old" : "new"}`);
+                return okResult;
+            },
+            remove: async (id) => {
+                calls.push(`remove:${id === OLD ? "old" : "new"}`);
+                return okResult;
+            },
+            markDrain: async () => {
+                calls.push("mark");
+                return okResult;
+            },
+        };
+        return { provider, inspector, mutator, calls };
+    }
+
+    async function waitIdle(app: App): Promise<void> {
+        for (let i = 0; i < 300 && app.operations.activeCount() > 0; i += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+    }
+
+    async function csrfOf(app: App, session: string, path = "/"): Promise<string> {
+        const html = await (await authed(app, path, session)).text();
+        return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+    }
+
+    function postRollout(app: App, session: string, body: Record<string, string>) {
+        return authed(app, "/stacks/demo/rollout", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(body).toString(),
+        });
+    }
+
+    test("is not exposed when the global flag is off", async () => {
+        const app = makeApp({ rolloutEnabled: false });
+        const session = await login(app);
+        expect((await authed(app, "/stacks/demo/rollout", session)).status).toBe(404);
+        const csrf = await csrfOf(app, session);
+        expect((await postRollout(app, session, { csrf, service: "web" })).status).toBe(404);
+    });
+
+    test("shows readiness, starts the rollout and records it", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-rollout-audit-"));
+        try {
+            const audit = new AuditLog({ dir });
+            const { provider, inspector, mutator, calls } = fixture();
+            const app = makeApp({ rolloutEnabled: true }, undefined, provider, audit, root, inspector, undefined, mutator);
+            const session = await login(app);
+
+            const stackPage = await (await authed(app, "/stacks/demo", session)).text();
+            expect(stackPage).toContain("/stacks/demo/rollout?service=web");
+
+            const readiness = await authed(app, "/stacks/demo/rollout", session);
+            expect(readiness.status).toBe(200);
+            const readinessHtml = await readiness.text();
+            expect(readinessHtml).toContain("web");
+            expect(calls).toEqual([]);
+
+            const preview = await authed(app, "/stacks/demo/rollout?service=web", session);
+            expect(preview.status).toBe(200);
+            const previewHtml = await preview.text();
+            expect(previewHtml).toContain('action="/stacks/demo/rollout"');
+            expect(previewHtml).toContain('name="pull"');
+            expect(calls).toEqual([]);
+
+            const csrf = /name="csrf" value="([^"]+)"/.exec(previewHtml)![1]!;
+            const response = await postRollout(app, session, { csrf, service: "web", pull: "1" });
+            expect(response.status).toBe(303);
+            expect(response.headers.get("location")).toBe("/stacks/demo");
+            await waitIdle(app);
+            expect(calls).toEqual(["pull", "scale", "stop:old", "remove:old"]);
+            expect(app.operations.forStack("demo")?.status).toBe("succeeded");
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).toContain('"event":"rollout"');
+            expect(raw).toContain('"result":"started"');
+            expect(raw).toContain('"result":"succeeded"');
+            expect(raw).toContain('"service":"web"');
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses a service that does not declare rollout", async () => {
+        const { provider, inspector, mutator, calls } = fixture({
+            factsMap: new Map([["web", facts({ labels: {} })]]),
+        });
+        const app = makeApp({ rolloutEnabled: true }, undefined, provider, undefined, root, inspector, undefined, mutator);
+        const session = await login(app);
+        const page = await authed(app, "/stacks/demo/rollout?service=web", session);
+        expect(page.status).toBe(200);
+        expect(await page.text()).toContain("does not declare");
+        const csrf = await csrfOf(app, session);
+        const response = await postRollout(app, session, { csrf, service: "web" });
+        expect(response.status).toBe(409);
+        expect(calls).toEqual([]);
+    });
+
+    test("refuses when Docker cannot answer the eligibility reads", async () => {
+        const { provider, inspector, mutator, calls } = fixture({ factsMap: null });
+        const app = makeApp({ rolloutEnabled: true }, undefined, provider, undefined, root, inspector, undefined, mutator);
+        const session = await login(app);
+        expect((await authed(app, "/stacks/demo/rollout", session)).status).toBe(503);
+        expect(calls).toEqual([]);
+    });
+
+    test("refuses without CSRF and with a foreign origin", async () => {
+        const { provider, inspector, mutator, calls } = fixture();
+        const app = makeApp({ rolloutEnabled: true }, undefined, provider, undefined, root, inspector, undefined, mutator);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await postRollout(app, session, { service: "web" })).status).toBe(403);
+        const foreign = await authed(app, "/stacks/demo/rollout", session, {
+            method: "POST",
+            headers: { origin: "http://evil.example", "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, service: "web" }).toString(),
+        });
+        expect(foreign.status).toBe(403);
+        expect(calls).toEqual([]);
+    });
+
+    test("refuses while another operation holds the stack lock", async () => {
+        const { provider, inspector, mutator, calls } = fixture();
+        const app = makeApp({ rolloutEnabled: true }, undefined, provider, undefined, root, inspector, undefined, mutator);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        let release!: (value: { refused: string }) => void;
+        const held = new Promise<{ refused: string }>((resolve) => {
+            release = resolve;
+        });
+        app.operations.startRollout({ stack: "demo", service: "web", run: () => held });
+        const response = await postRollout(app, session, { csrf, service: "web" });
+        expect(response.status).toBe(409);
+        expect(calls).toEqual([]);
+        release({ refused: "released" });
+        await waitIdle(app);
     });
 });

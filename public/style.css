@@ -124,7 +124,7 @@ footer{border-top:1px solid var(--border);padding-block:1rem;color:var(--muted);
 .state-refused{border-color:var(--warn);color:var(--warn)}
 .state-not-created{border-style:dashed}
 .state-managed{border-style:dotted}
-.state-unknown,.state-failed{border-color:var(--danger);color:var(--danger)}
+.state-unknown,.state-failed,.state-intervention{border-color:var(--danger);color:var(--danger)}
 .state-succeeded,.state-done{border-color:var(--ok);color:var(--ok)}
 
 /* Tables */

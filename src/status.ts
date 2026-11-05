@@ -14,6 +14,7 @@ import {
 import type { ComposeProvider } from "./compose-provider.ts";
 import { loadImageUpdates, type ServiceUpdate } from "./updates.ts";
 import { loadRecreatePending } from "./recreate-pending.ts";
+import { parseRolloutDeclaration } from "./rollout.ts";
 import type { DeclaredMetadata, DeployedImage } from "./deployment.ts";
 
 export const DOCKER_UNAVAILABLE =
@@ -49,6 +50,8 @@ export interface StackDetailStatus {
     recreatePending?: string[];
     deployed?: DeployedImage[];
     declared?: DeclaredMetadata | null;
+    /** Services that declare a valid `panel.rollout.*` opt-in (ADR 0035). */
+    rolloutDeclared?: string[];
 }
 
 export interface ProjectDiscovery {
@@ -184,7 +187,12 @@ export async function resolveProjectContext(
     return { kind: "resolved", project: match.project.name, ...base, envFile };
 }
 
-export async function loadStackDetail(root: string, name: string, provider: ComposeProvider): Promise<StackDetailStatus> {
+export async function loadStackDetail(
+    root: string,
+    name: string,
+    provider: ComposeProvider,
+    options: { rollout?: boolean } = {},
+): Promise<StackDetailStatus> {
     const location = await locateComposeFile(root, name);
     const { projects, note } = await loadProjects(provider);
     if (note) return { project: null, state: "unknown", note, services: [] };
@@ -216,7 +224,8 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
             return null;
         }
     })();
-    if (!match.project) return { project: null, state: "not-created", note: null, services: [], declared: await declaredTask };
+    if (!match.project)
+        return { project: null, state: "not-created", note: null, services: [], declared: await declaredTask, rolloutDeclared: [] };
 
     const project = match.project;
     const servicesTask = (async (): Promise<StackDetailStatus> => {
@@ -235,11 +244,27 @@ export async function loadStackDetail(root: string, name: string, provider: Comp
             const services = parseComposePs(result.stdout);
             const deployed: DeployedImage[] = [];
             const target = { project: project.name, composeFile: location.path, cwd, envFile };
-            const [updates, recreatePending] = await Promise.all([
+            const [updates, recreatePending, facts] = await Promise.all([
                 loadImageUpdates(provider, target, services, deployed),
                 loadRecreatePending(provider, target, services),
+                options.rollout ? provider.serviceRolloutFacts(target).catch(() => null) : Promise.resolve(null),
             ]);
-            return { project: project.name, state: summarizeServices(services), note: null, services, updates, recreatePending, deployed };
+            const rolloutDeclared = facts
+                ? [...facts]
+                      .filter(([, serviceFacts]) => parseRolloutDeclaration(serviceFacts.labels)?.ok === true)
+                      .map(([service]) => service)
+                      .sort()
+                : [];
+            return {
+                project: project.name,
+                state: summarizeServices(services),
+                note: null,
+                services,
+                updates,
+                recreatePending,
+                deployed,
+                rolloutDeclared,
+            };
         } catch {
             return { project: project.name, state: "unknown", note: DOCKER_UNAVAILABLE, services: [] };
         }

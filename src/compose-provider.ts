@@ -1,6 +1,7 @@
 import { compactComposeProgress } from "./compose-progress.ts";
 import { composeEnvironment, runCommand, type CommandResult, type DockerRunner } from "./docker.ts";
 import { projectMetadata, type DeclaredMetadata } from "./deployment.ts";
+import { projectRolloutLabels, type ServiceRolloutFacts } from "./rollout.ts";
 
 export class ComposeUnsupportedError extends Error {
     constructor(operation: string) {
@@ -88,6 +89,38 @@ export interface ComposeProvider {
         service: string;
         envFile?: string;
     }): Promise<string[] | null>;
+    /**
+     * Read-only: every container of one service, in any state (`ps -a -q`).
+     * `null` when Compose fails, times out, truncates or prints a surprising
+     * ID: a rollout must refuse, never reduce a partial answer to "one".
+     */
+    serviceContainerIds(input: {
+        project: string;
+        composeFile: string;
+        cwd: string;
+        service: string;
+        envFile?: string;
+    }): Promise<string[] | null>;
+    /**
+     * Read-only allow-listed projection of `config --format json` for every
+     * service: image, conflicting Compose fields and only `panel.rollout.*`
+     * labels. No interpolated config leaves the provider. `null` on any
+     * failure or unexpected shape.
+     */
+    serviceRolloutFacts(input: {
+        project: string;
+        composeFile: string;
+        cwd: string;
+        envFile?: string;
+    }): Promise<Map<string, ServiceRolloutFacts> | null>;
+    /** Pull only one service, still skipping locally built services (ADR 0022). */
+    pullService(target: ComposeTarget & { service: string }): Promise<CommandResult>;
+    /**
+     * Start one extra replica of a service without recreating the existing one:
+     * `up -d --no-deps --no-recreate --no-build --pull never --scale svc=N`.
+     * Used only by the opt-in rollout (ADR 0035).
+     */
+    scaleService(target: ComposeTarget & { service: string; replicas: number }): Promise<CommandResult>;
     /** Read-only: which image ID each container of the project runs. */
     projectImages(input: { project: string; composeFile: string; cwd: string; envFile?: string }): Promise<CommandResult>;
     /**
@@ -267,6 +300,43 @@ class DockerComposeProvider implements ComposeProvider {
         return [...new Set(ids)];
     }
 
+    async serviceContainerIds(input: {
+        project: string;
+        composeFile: string;
+        cwd: string;
+        service: string;
+        envFile?: string;
+    }): Promise<string[] | null> {
+        if (!this.caps.operations.ps) return null;
+        if (!isComposeServiceName(input.service)) return null;
+        const args = ["compose", "-p", input.project];
+        if (input.envFile) args.push("--env-file", input.envFile);
+        // `-a` includes stopped and created containers: a rollout must know that
+        // an old instance is still around, not only the running ones.
+        args.push("-f", input.composeFile, "ps", "-a", "-q", input.service);
+        const result = await this.runner(args, { cwd: input.cwd });
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        const ids = result.stdout
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean);
+        if (!ids.every((id) => /^[0-9a-f]{12,64}$/.test(id))) return null;
+        return [...new Set(ids)];
+    }
+
+    async serviceRolloutFacts(input: {
+        project: string;
+        composeFile: string;
+        cwd: string;
+        envFile?: string;
+    }): Promise<Map<string, ServiceRolloutFacts> | null> {
+        if (!this.caps.operations.config) return null;
+        const result = await this.readProject(input, ["config", "--format", "json"]);
+        // stderr may echo interpolated values: it is never read.
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        return parseServiceRolloutFacts(result.stdout);
+    }
+
     inspectImages(refs: string[]): Promise<CommandResult> {
         const safe = [...new Set(refs)].filter(isImageReference);
         if (safe.length === 0) return Promise.resolve({ code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false });
@@ -336,6 +406,34 @@ class DockerComposeProvider implements ComposeProvider {
         // ADR 0022: services with a `build:` section are skipped, including
         // ones that also declare `image:`. Those are built by Up, not pulled.
         return this.runPulling(target, ["pull", "--ignore-buildable"]);
+    }
+
+    pullService(target: ComposeTarget & { service: string }): Promise<CommandResult> {
+        if (!isComposeServiceName(target.service)) return Promise.reject(new Error("Invalid service name."));
+        // `--` ends option parsing: a validated service can never be a flag.
+        return this.runPulling(target, ["pull", "--ignore-buildable", "--", target.service]);
+    }
+
+    scaleService(target: ComposeTarget & { service: string; replicas: number }): Promise<CommandResult> {
+        if (!isComposeServiceName(target.service)) return Promise.reject(new Error("Invalid service name."));
+        if (!Number.isInteger(target.replicas) || target.replicas < 1 || target.replicas > 10) {
+            return Promise.reject(new Error("Invalid replica count."));
+        }
+        // `--no-recreate` keeps the existing instance untouched; `--no-build`
+        // and `--pull never` make the separate pull step the only download.
+        return this.runTarget(target, [
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-recreate",
+            "--no-build",
+            "--pull",
+            "never",
+            "--scale",
+            `${target.service}=${target.replicas}`,
+            "--",
+            target.service,
+        ]);
     }
 
     up(target: ComposeTarget): Promise<CommandResult> {
@@ -535,6 +633,107 @@ export function parseConfigHashes(stdout: string): Map<string, string> | null {
         hashes.set(match[1]!, match[2]!);
     }
     return hashes;
+}
+
+/**
+ * Project `config --format json` onto the allow-listed rollout facts. Only
+ * booleans, numbers, network names and `panel.rollout.*` labels leave this
+ * function; the interpolated config is never retained. Any unexpected shape
+ * makes the whole answer unusable.
+ */
+export function parseServiceRolloutFacts(stdout: string): Map<string, ServiceRolloutFacts> | null {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(stdout);
+    } catch {
+        return null;
+    }
+    const root = record(parsed);
+    const services = record(root?.services);
+    if (!services) return null;
+    const facts = new Map<string, ServiceRolloutFacts>();
+    for (const [name, rawService] of Object.entries(services)) {
+        if (!isComposeServiceName(name)) return null;
+        const service = record(rawService);
+        if (!service) return null;
+        const deploy = record(service.deploy);
+        const replicas: number[] = [];
+        for (const candidate of [deploy?.replicas, service.scale]) {
+            if (candidate === undefined || candidate === null) continue;
+            replicas.push(typeof candidate === "number" && Number.isInteger(candidate) ? candidate : Number.NaN);
+        }
+        const fixedAddresses = fixedNetworkAddresses(service.networks);
+        facts.set(name, {
+            image: typeof service.image === "string" && service.image.length > 0 ? service.image : null,
+            build: service.build !== undefined && service.build !== null,
+            containerName: service.container_name !== undefined && service.container_name !== null,
+            publishedPorts: Array.isArray(service.ports) ? service.ports.length > 0 : service.ports !== undefined && service.ports !== null,
+            replicas,
+            networkMode: modeText(service.network_mode),
+            ipc: modeText(service.ipc),
+            pid: modeText(service.pid),
+            volumesFrom: Array.isArray(service.volumes_from)
+                ? service.volumes_from.map((entry) => (typeof entry === "string" ? entry : "__invalid__"))
+                : service.volumes_from === undefined || service.volumes_from === null
+                  ? []
+                  : ["__invalid__"],
+            fixedAddresses,
+            labels: projectRolloutLabels(service.labels),
+            namespaceDependents: [],
+        });
+    }
+    // A second instance of a service whose namespaces or volumes are shared by
+    // another service would conflict with that dependent.
+    for (const [name, fact] of facts) {
+        const dependents: string[] = [];
+        for (const [otherName, other] of facts) {
+            if (otherName === name) continue;
+            if (
+                referencesService(other.networkMode, name) ||
+                referencesService(other.ipc, name) ||
+                referencesService(other.pid, name) ||
+                other.volumesFrom.some((entry) => referencesService(entry, name))
+            ) {
+                dependents.push(otherName);
+            }
+        }
+        fact.namespaceDependents = dependents.sort();
+    }
+    return facts;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function modeText(value: unknown): string | null {
+    if (value === undefined || value === null) return null;
+    return typeof value === "string" ? value : "__invalid__";
+}
+
+function fixedNetworkAddresses(value: unknown): string[] {
+    if (value === undefined || value === null) return [];
+    const networks = record(value);
+    if (!networks) return ["__invalid__"];
+    const fixed: string[] = [];
+    for (const [name, rawNetwork] of Object.entries(networks)) {
+        // Compose emits `networks: { name: null }` for a service attached
+        // without per-network options. That is the normal case, not a fixed
+        // address and not malformed.
+        if (rawNetwork === null || rawNetwork === undefined) continue;
+        const network = record(rawNetwork);
+        if (!network) {
+            fixed.push("__invalid__");
+            continue;
+        }
+        if (typeof network.ipv4_address === "string" || typeof network.ipv6_address === "string") fixed.push(name);
+    }
+    return fixed;
+}
+
+function referencesService(value: string | null, service: string): boolean {
+    if (!value) return false;
+    return value === service || value === `service:${service}` || value === `container:${service}`;
 }
 
 export interface ComposeProviderOptions {

@@ -84,6 +84,31 @@ A fourth class — declared, non-interactive application actions — runs a
 declared Composer/npm/Bun script inside a stack service ([ADR 0026](adr/0026-application-toolbox.md));
 see *Application actions* below.
 
+## Service rollout (opt-in)
+`src/rollout.ts` holds the pure declaration parser, the allow-listed eligibility
+rules and the restricted `container inspect` projection. `src/rollout-run.ts`
+holds the phase machine. The route is `GET/POST /stacks/<name>/rollout`, exposed
+only when `COMPOSE_PANEL_ROLLOUT_ENABLED=true` **and** the service declares
+`panel.rollout.enabled: "true"` ([ADR 0035](adr/0035-optional-service-rollout.md)).
+
+The provider gains `pullService`, `scaleService`, `serviceContainerIds` and
+`serviceRolloutFacts`; only the latter's allow-listed projection leaves it. A
+separate `ContainerMutator` (`src/container-mutations.ts`) owns the three
+container-level mutations a rollout needs: `stop --time`, `remove` without
+force or volumes, and a fixed `exec <id> touch <path>` for the drain marker.
+`ContainerInspector` stays read-only. The rollout reuses the per-stack lock, the
+operation view/SSE output and the audit log.
+
+The first drain attempt is irreversible: before it, a candidate created by this
+operation may be removed when its full ID, Compose identity labels, creation
+date and absence from the initial snapshot prove it; after it, nothing is
+removed automatically and the operation reports an intervention. A command whose
+exit is unconfirmed is `unknown` and keeps the lock. There is no persistence, no
+journal and no replay after a crash. A reverse proxy that discovers both
+instances and stops routing to unhealthy ones is an operational prerequisite;
+the existing Caddy site integration targets a published loopback port and is not
+compatible with this rollout.
+
 ## Restart semantics
 - Browser disconnect ≠ cancellation.
 - `SIGTERM`: stop accepting new mutations, allow a bounded drain window; check that subprocesses have finished.

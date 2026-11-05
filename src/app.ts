@@ -25,6 +25,8 @@ import {
     toolboxPage,
     databaseSection,
     domainsSection,
+    rolloutPage,
+    type RolloutReadinessView,
     type AttachedDomain,
     type PublishedUpstream,
     type NavSection,
@@ -48,7 +50,17 @@ import {
 import { loadContainerDetail, loadContainers } from "./container-status.ts";
 import { parseContainerFilter, type ContainerFilter } from "./container-state.ts";
 import { createContainerInspector, isContainerId, sanitizeTailLines, type ContainerInspector } from "./containers.ts";
+import { createContainerMutator, type ContainerMutator } from "./container-mutations.ts";
 import { createActionRunner, type ActionRunner } from "./action-runner.ts";
+import {
+    checkRolloutEligibility,
+    parseRolloutDeclaration,
+    parseRolloutInspect,
+    type RolloutDeclaration,
+    type RolloutInspect,
+} from "./rollout.ts";
+import { runRollout, type RolloutDependencies, type RolloutPreparation } from "./rollout-run.ts";
+import { parseImageInspect } from "./compose-state.ts";
 import { buildCatalog, buildRunnerArgv, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
 import { buildExplorerUrl, parseDatabaseExplorer } from "./database.ts";
 import {
@@ -125,6 +137,8 @@ export interface AppOptions {
     inspector?: ContainerInspector;
     /** Application toolbox Docker adapter (ADR 0026). Built from `runner` when omitted. */
     actionRunner?: ActionRunner;
+    /** Narrow container mutation boundary for the opt-in rollout (ADR 0035). */
+    containerMutator?: ContainerMutator;
     /** Per-stack modifying-operation lock. */
     locks?: StackLocks;
     /** Activity log. Built from `config` and `stacksRoot` when omitted. */
@@ -356,6 +370,8 @@ export function createApp(options: AppOptions): App {
         options.inspector ?? createContainerInspector({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
     const actionRunner =
         options.actionRunner ?? createActionRunner({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
+    const containerMutator =
+        options.containerMutator ?? createContainerMutator({ runner: options.runner ?? unavailableRunner, engine: config.composeEngine });
     const audit =
         options.audit ??
         new AuditLog({
@@ -375,7 +391,7 @@ export function createApp(options: AppOptions): App {
         // The outcome is recorded when the action ends, even if nobody watches it.
         onFinish: (operation) =>
             void audit.record({
-                event: operation.source ? "toolbox" : "operation",
+                event: operation.source ? "toolbox" : operation.action === "rollout" ? "rollout" : "operation",
                 result: operation.status,
                 stack: operation.stack,
                 action: operation.action,
@@ -1026,7 +1042,7 @@ export function createApp(options: AppOptions): App {
         const stack = await readStackCompose(stacksRoot, name);
         let status: StackDetailStatus;
         try {
-            status = await loadStackDetail(stacksRoot, name, provider);
+            status = await loadStackDetail(stacksRoot, name, provider, { rollout: config.rolloutEnabled });
         } catch (error) {
             if (error instanceof StackError) throw error;
             status = { project: null, state: "unknown", note: "The status could not be read.", services: [] };
@@ -1039,7 +1055,7 @@ export function createApp(options: AppOptions): App {
             documentHtml(
                 stack.name,
                 `<p class="crumbs"><a href="/">← All stacks</a></p>` +
-                    `<div class="page-head"><h1>${escapeHtml(stack.name)}</h1><span class="row-actions"><a href="${href}/actions" class="btn">App actions</a><a href="${href}/edit" class="btn">Edit files</a></span></div>` +
+                    `<div class="page-head"><h1>${escapeHtml(stack.name)}</h1><span class="row-actions">${status.rolloutDeclared && status.rolloutDeclared.length > 0 ? `<a href="${href}/rollout" class="btn">Rollout</a>` : ""}<a href="${href}/actions" class="btn">App actions</a><a href="${href}/edit" class="btn">Edit files</a></span></div>` +
                     `<p class="meta">${stateBadge(status.state)}<span><code>${escapeHtml(stack.filename)}</code></span>${project}${healthSummaryBadge(status.services)}${managedByBadge(owner)}</p>` +
                     (notice ? note(notice.kind, notice.text) : "") +
                     (status.note ? note("warn", status.note) : "") +
@@ -1057,6 +1073,7 @@ export function createApp(options: AppOptions): App {
                         status.updates,
                         { name: stack.name, csrf, busy: operation?.status === "running" },
                         status.recreatePending,
+                        status.rolloutDeclared,
                     ) +
                     databaseExplorerSection(stack.source) +
                     (await domainsCard(
@@ -2822,6 +2839,381 @@ export function createApp(options: AppOptions): App {
         }
     }
 
+    type RolloutReadinessResult = { ok: true; entries: RolloutReadinessView[] } | { ok: false; reason: string };
+    type PreparedRollout = { kind: "ok"; context: ProjectContext; preparation: RolloutPreparation } | { kind: "refused"; reason: string };
+
+    function rolloutTarget(context: ProjectContext) {
+        return {
+            project: context.project!,
+            composeFile: context.composeFile,
+            cwd: context.cwd,
+            envFile: context.envFile ?? undefined,
+        };
+    }
+
+    async function inspectRolloutContainer(id: string): Promise<RolloutInspect | null> {
+        try {
+            const result = await inspector.inspect(id);
+            if (result.code !== 0 || result.timedOut || result.truncated) return null;
+            return parseRolloutInspect(result.stdout);
+        } catch {
+            return null;
+        }
+    }
+
+    async function resolveLocalImageId(reference: string): Promise<string | null> {
+        try {
+            const result = await provider.inspectImages([reference]);
+            if (result.code !== 0 || result.timedOut || result.truncated) return null;
+            return parseImageInspect(result.stdout)[0]?.id ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Read-only eligibility for one service or every declared service. Docker
+     * is never mutated here; every failure becomes a displayed refusal.
+     */
+    async function collectRolloutReadiness(context: ProjectContext, requested: string | null): Promise<RolloutReadinessResult> {
+        const target = rolloutTarget(context);
+        const [names, factsMap] = await Promise.all([provider.listServices(target), provider.serviceRolloutFacts(target)]);
+        if (names === null || factsMap === null) {
+            return { ok: false, reason: "Docker did not respond, so the rollout eligibility could not be checked." };
+        }
+        if (requested !== null && !names.includes(requested)) {
+            return {
+                ok: true,
+                entries: [
+                    {
+                        service: requested,
+                        declared: false,
+                        invalid: false,
+                        ready: false,
+                        reason: "This stack defines no such service.",
+                        image: null,
+                        containerId: null,
+                        declaration: null,
+                    },
+                ],
+            };
+        }
+        const candidates = requested === null ? names : [requested];
+        const entries: RolloutReadinessView[] = [];
+        for (const service of candidates) {
+            const facts = factsMap.get(service);
+            if (!facts) {
+                if (requested !== null) {
+                    entries.push({
+                        service,
+                        declared: false,
+                        invalid: false,
+                        ready: false,
+                        reason: "This service is not in the resolved Compose configuration.",
+                        image: null,
+                        containerId: null,
+                        declaration: null,
+                    });
+                }
+                continue;
+            }
+            const parsed = parseRolloutDeclaration(facts.labels);
+            if (parsed === null) {
+                if (requested !== null) {
+                    entries.push({
+                        service,
+                        declared: false,
+                        invalid: false,
+                        ready: false,
+                        reason: "This service does not declare panel.rollout.enabled.",
+                        image: facts.image,
+                        containerId: null,
+                        declaration: null,
+                    });
+                }
+                continue;
+            }
+            if (!parsed.ok) {
+                entries.push({
+                    service,
+                    declared: true,
+                    invalid: true,
+                    ready: false,
+                    reason: parsed.reason,
+                    image: facts.image,
+                    containerId: null,
+                    declaration: null,
+                });
+                continue;
+            }
+            const ids = await provider.serviceContainerIds({ ...target, service });
+            if (ids === null) {
+                entries.push({
+                    service,
+                    declared: true,
+                    invalid: false,
+                    ready: false,
+                    reason: "Docker did not respond, so this service's containers could not be read.",
+                    image: facts.image,
+                    containerId: null,
+                    declaration: parsed.value,
+                });
+                continue;
+            }
+            const inspected = ids.length === 1 ? await inspectRolloutContainer(ids[0]!) : null;
+            const eligibility = checkRolloutEligibility({
+                facts,
+                declaration: parsed.value,
+                inspect: inspected,
+                containerCount: ids.length,
+            });
+            if (!eligibility.ok) {
+                entries.push({
+                    service,
+                    declared: true,
+                    invalid: false,
+                    ready: false,
+                    reason: eligibility.reason,
+                    image: facts.image,
+                    containerId: inspected?.id ?? null,
+                    declaration: parsed.value,
+                });
+                continue;
+            }
+            entries.push({
+                service,
+                declared: true,
+                invalid: false,
+                ready: true,
+                reason: null,
+                image: eligibility.image,
+                containerId: inspected!.id,
+                declaration: parsed.value,
+            });
+        }
+        return { ok: true, entries };
+    }
+
+    /**
+     * Authoritative revalidation, called inside the rollout operation with the
+     * per-stack lock held. Re-resolves the project, re-reads the resolved
+     * Compose facts, rediscovers every container and re-runs every rule.
+     */
+    async function prepareRollout(name: string, service: string): Promise<PreparedRollout> {
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind === "invalid") return { kind: "refused", reason: ENV_NOT_REGULAR };
+        if (context.kind === "ambiguous") {
+            return { kind: "refused", reason: "The panel cannot tell which Docker Compose project belongs to this stack." };
+        }
+        if (context.kind === "unavailable") {
+            return { kind: "refused", reason: "Docker did not respond, so the rollout was not started." };
+        }
+        if (context.kind === "absent") {
+            return { kind: "refused", reason: "This stack is not deployed yet, so there is nothing to roll out." };
+        }
+        const readiness = await collectRolloutReadiness(context, service);
+        if (!readiness.ok) return { kind: "refused", reason: readiness.reason };
+        const entry = readiness.entries[0];
+        if (!entry || !entry.ready || !entry.declaration || !entry.containerId || !entry.image) {
+            return { kind: "refused", reason: entry?.reason ?? "This service is not ready for a rollout." };
+        }
+        return {
+            kind: "ok",
+            context,
+            preparation: {
+                oldContainerId: entry.containerId,
+                declaration: entry.declaration,
+                image: entry.image,
+            },
+        };
+    }
+
+    function rolloutDependencies(context: ProjectContext): RolloutDependencies {
+        const target = rolloutTarget(context);
+        return {
+            pull: (rolloutTargetValue, service, onOutput, timeoutMs) =>
+                provider.pullService({ ...rolloutTargetValue, service, onOutput, timeoutMs }),
+            scale: (rolloutTargetValue, service, onOutput, timeoutMs) =>
+                provider.scaleService({ ...rolloutTargetValue, service, replicas: 2, onOutput, timeoutMs }),
+            listServiceContainers: (rolloutTargetValue, service) => provider.serviceContainerIds({ ...rolloutTargetValue, service }),
+            inspect: inspectRolloutContainer,
+            imageId: resolveLocalImageId,
+            stop: (id, seconds, onOutput, timeoutMs) => containerMutator.stop(id, seconds, { onOutput, timeoutMs }),
+            remove: (id, onOutput, timeoutMs) => containerMutator.remove(id, { onOutput, timeoutMs }),
+            markDrain: (id, path, onOutput, timeoutMs) => containerMutator.markDrain(id, path, { onOutput, timeoutMs }),
+            sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+            now: () => Date.now(),
+            isShuttingDown: () => shuttingDown || operations.isShuttingDown(),
+        };
+    }
+
+    async function renderRollout(
+        name: string,
+        csrf: string,
+        service: string | null,
+        options: { notice?: { kind: NoteKind; text: string }; error?: { title: string; message: string }; status?: number } = {},
+    ): Promise<Response> {
+        if (!config.rolloutEnabled) throw new StackError("This page does not exist.", 404);
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind === "invalid") throw new StackError(ENV_NOT_REGULAR, 409);
+        if (context.kind === "ambiguous") {
+            throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack.", 409);
+        }
+        if (context.kind === "unavailable") {
+            throw new StackError("Docker did not respond, so rollout readiness could not be checked.", 503);
+        }
+        if (context.kind === "absent") {
+            throw new StackError("This stack is not deployed yet, so there is nothing to roll out.", 409);
+        }
+        const readiness = await collectRolloutReadiness(context, service);
+        if (!readiness.ok) throw new StackError(readiness.reason, 503);
+        return htmlResponse(
+            rolloutPage({
+                stack: name,
+                csrf,
+                service,
+                entries: readiness.entries,
+                busy: operations.forStack(name)?.status === "running",
+                notice: options.notice,
+                error: options.error,
+                access,
+                timezone: config.timeZone || undefined,
+                nav: await sidebarNav("stacks", name),
+            }),
+            options.status ?? 200,
+        );
+    }
+
+    async function handleRolloutStart(request: Request, name: string, session: Session): Promise<Response> {
+        if (!config.rolloutEnabled) throw new StackError("This page does not exist.", 404);
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}/rollout`;
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+
+        const service = (form.get("service") ?? "").trim();
+        if (!isComposeServiceName(service)) {
+            return renderRollout(name, csrf, service || null, {
+                error: { title: "Nothing was run.", message: "This service name is not valid." },
+                status: 400,
+            });
+        }
+        const pull = form.get("pull") === "1";
+
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind === "invalid") throw new StackError(ENV_NOT_REGULAR, 409);
+        if (context.kind === "ambiguous") {
+            throw new StackError("The panel cannot tell which Docker Compose project belongs to this stack. Nothing was run.", 409);
+        }
+        if (context.kind === "unavailable") {
+            throw new StackError("Docker did not respond, so the panel could not check this stack. Nothing was run.", 503);
+        }
+        if (context.kind === "absent") {
+            throw new StackError("This stack is not deployed yet, so there is nothing to roll out.", 409);
+        }
+
+        const readiness = await collectRolloutReadiness(context, service);
+        if (!readiness.ok) {
+            await recordAudit({
+                event: "rollout",
+                result: "refused",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "rollout",
+                service,
+                detail: readiness.reason,
+            });
+            return renderRollout(name, csrf, service, {
+                error: { title: "Nothing was run.", message: readiness.reason },
+                status: 503,
+            });
+        }
+        const entry = readiness.entries[0];
+        if (!entry || !entry.ready || !entry.declaration) {
+            const reason = entry?.reason ?? "This service is not ready for a rollout.";
+            await recordAudit({
+                event: "rollout",
+                result: "refused",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "rollout",
+                service,
+                detail: reason,
+            });
+            return renderRollout(name, csrf, service, {
+                error: { title: "Nothing was run.", message: reason },
+                status: 409,
+            });
+        }
+
+        if (!sessions.isActive(session.id)) {
+            await recordAudit({
+                event: "rollout",
+                result: "refused",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "rollout",
+                service,
+                detail: "session ended",
+            });
+            return sessionEnded();
+        }
+
+        try {
+            if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+            operations.startRollout({
+                stack: name,
+                service,
+                project: context.project ?? undefined,
+                run: async ({ onOutput, record }) => {
+                    if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                    // The authoritative check runs under the per-stack lock.
+                    const prepared = await prepareRollout(name, service);
+                    if (prepared.kind === "refused") return { refused: prepared.reason };
+                    record({ containerId: prepared.preparation.oldContainerId });
+                    return runRollout(rolloutDependencies(prepared.context), {
+                        target: rolloutTarget(prepared.context),
+                        service,
+                        pull,
+                        operationTimeoutMs: config.operationTimeoutMs,
+                        rolloutTimeoutMs: config.rolloutTimeoutMs,
+                        onOutput,
+                        prepare: async () => ({ ok: true, preparation: prepared.preparation }),
+                    });
+                },
+            });
+            await recordAudit({
+                event: "rollout",
+                result: "started",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "rollout",
+                service,
+            });
+            return redirect(`/stacks/${encodeURIComponent(name)}`, 303);
+        } catch (error) {
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({
+                    event: "rollout",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    action: "rollout",
+                    service,
+                    detail: error.message,
+                });
+                return renderRollout(name, csrf, service, {
+                    error: { title: "Nothing was run.", message: `${error.message} Nothing was run.` },
+                    status: 409,
+                });
+            }
+            throw error;
+        }
+    }
+
     function sseError(error: unknown): Response {
         if (error instanceof StackError) return plain(error.message, error.status);
         console.error("Internal error", error);
@@ -2938,6 +3330,14 @@ export function createApp(options: AppOptions): App {
                 return routeError(error, session.csrf, safeName(operationsMatch[1]!));
             }
         }
+        const rolloutMatch = /^\/stacks\/([^/]+)\/rollout$/.exec(url.pathname);
+        if (rolloutMatch && method === "POST") {
+            try {
+                return await handleRolloutStart(request, decodeName(rolloutMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(rolloutMatch[1]!));
+            }
+        }
         const toolboxMatch = /^\/stacks\/([^/]+)\/actions$/.exec(url.pathname);
         if (toolboxMatch && method === "POST") {
             try {
@@ -3013,6 +3413,16 @@ export function createApp(options: AppOptions): App {
                 return method === "HEAD" ? withoutBody(response) : response;
             }
             if (toolboxMatch) return await renderToolbox(decodeName(toolboxMatch[1]!), session.csrf);
+            if (rolloutMatch) {
+                const serviceParam = url.searchParams.get("service");
+                if (serviceParam !== null && !isComposeServiceName(serviceParam)) {
+                    return await renderRollout(decodeName(rolloutMatch[1]!), session.csrf, null, {
+                        error: { title: "Not found.", message: "This service name is not valid." },
+                        status: 400,
+                    });
+                }
+                return await renderRollout(decodeName(rolloutMatch[1]!), session.csrf, serviceParam || null);
+            }
             const detailMatch = /^\/stacks\/([^/]+)$/.exec(url.pathname);
             if (detailMatch) {
                 // Fixed messages only: the query flag is never reflected.

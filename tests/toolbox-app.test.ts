@@ -92,8 +92,12 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
             }
             return running;
         },
+        serviceContainerIds: async () => running,
+        serviceRolloutFacts: async () => null,
         readLogs: async () => ok,
         pull: async () => ok,
+        pullService: async () => ok,
+        scaleService: async () => ok,
         up: async () => ok,
         stop: async () => ok,
         start: async () => ok,
@@ -160,6 +164,8 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
         insightsTimeoutMs: 10_000,
         diskUsageTtlMs: 300_000,
         operationTimeoutMs: 60_000,
+        rolloutEnabled: false,
+        rolloutTimeoutMs: 900_000,
         shutdownGraceMs: 5_000,
         sseHeartbeatMs: 15_000,
         sseTimeoutMs: 1_800_000,
