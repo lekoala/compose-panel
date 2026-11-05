@@ -62,6 +62,7 @@ interface WorldOptions {
     removeCode?: number;
     removeUnconfirmed?: boolean;
     oldGoneOnScale?: boolean;
+    oldFailsDuringSettle?: "stopped" | "unhealthy" | "no-healthcheck";
     shutdown?: () => boolean;
 }
 
@@ -129,6 +130,11 @@ function world(options: WorldOptions = {}) {
                 }
                 if (mode === "dies-after-remove" && !containers.has(OLD_ID)) container.running = false;
                 if (mode === "dies-during-drain" && old.health === "unhealthy") container.running = false;
+            }
+            if (id === OLD_ID && options.oldFailsDuringSettle && containers.get(CANDIDATE_ID)?.health === "healthy") {
+                if (options.oldFailsDuringSettle === "stopped") container.running = false;
+                if (options.oldFailsDuringSettle === "unhealthy") container.health = "unhealthy";
+                if (options.oldFailsDuringSettle === "no-healthcheck") container.health = null;
             }
             return {
                 id: container.id,
@@ -338,6 +344,18 @@ describe("runRollout failures before the boundary", () => {
         expect(w.calls).toEqual(["scale", "stop:b", "remove:b"]);
     });
 
+    for (const mode of ["stopped", "unhealthy", "no-healthcheck"] as const) {
+        test(`keeps a healthy candidate when the old instance becomes unavailable during settle (${mode})`, async () => {
+            const w = world({ declaration: { settleSeconds: 1 }, oldFailsDuringSettle: mode });
+            const outcome = await runRollout(w.deps, w.input);
+            expect(isIntervention(outcome)).toBe(true);
+            expect(w.calls).toEqual(["scale"]);
+            expect(w.containers.has(OLD_ID)).toBe(true);
+            expect(w.containers.get(CANDIDATE_ID)?.running).toBe(true);
+            expect(w.containers.get(CANDIDATE_ID)?.health).toBe("healthy");
+        });
+    }
+
     test("an unexpected number of containers is ambiguous and removes nothing", async () => {
         const w = world({ createExtra: true, scaleCode: 1 });
         const outcome = await runRollout(w.deps, w.input);
@@ -394,6 +412,16 @@ describe("runRollout failures at or after the boundary", () => {
             declaration: { drainFile: "/tmp/drain", drainDetectSeconds: 2 },
             unhealthyAfterMark: false,
         });
+        const outcome = await runRollout(w.deps, w.input);
+        expect(isIntervention(outcome)).toBe(true);
+        expect(w.calls).toEqual(["scale", "mark:a"]);
+        expect(w.containers.has(OLD_ID)).toBe(true);
+        expect(w.containers.has(CANDIDATE_ID)).toBe(true);
+    });
+
+    test("an exhausted budget during drainage keeps both instances", async () => {
+        const w = world({ declaration: { drainFile: "/tmp/drain", drainTimeSeconds: 20 } });
+        w.input.rolloutTimeoutMs = 2_000;
         const outcome = await runRollout(w.deps, w.input);
         expect(isIntervention(outcome)).toBe(true);
         expect(w.calls).toEqual(["scale", "mark:a"]);

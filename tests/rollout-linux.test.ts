@@ -28,7 +28,9 @@ const LAB_LABEL = "compose-panel-lab=1";
 const enabled = process.platform === "linux" && process.env.COMPOSE_PANEL_TEST_DOCKER_LAB === "1";
 const APP_IMAGE = "cp-rollout-app:1";
 const CURL_IMAGE = "curlimages/curl:8.10.1";
-const TRAEFIK_IMAGE = "traefik:v3.1";
+// Traefik 3.1's Docker client still speaks API 1.24, below the minimum of the
+// Docker 29 lab daemon. 3.6 negotiates a supported version.
+const TRAEFIK_IMAGE = "traefik:v3.6.25";
 
 interface Run {
     code: number;
@@ -202,7 +204,6 @@ describe.skipIf(!enabled)("native rollout on a disposable lab daemon", () => {
                 `    command:\n` +
                 `      - --providers.docker=true\n` +
                 `      - --providers.docker.exposedByDefault=false\n` +
-                `      - --providers.docker.healthcheck=true\n` +
                 `      - --providers.docker.network=${project}-net\n` +
                 `      - --entrypoints.web.address=:80\n` +
                 `      - --log.level=ERROR\n` +

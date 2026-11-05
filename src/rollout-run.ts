@@ -63,8 +63,10 @@ type WindowVerdict = { kind: "ok" } | { kind: "timeout" } | { kind: "failed"; re
  *
  * Failure policy: the first drain attempt (the marker or the stop in a
  * marker-less rollout) is an irreversible boundary. Before it, the candidate
- * may be removed when its identity is proven. At or after it, nothing is
- * removed automatically: the candidate is kept and the operation reports an
+ * may be removed only when its identity is proven and the old container is
+ * still running and healthy; otherwise the candidate is kept because it may be
+ * the last available instance. At or after it, nothing is removed
+ * automatically: the candidate is kept and the operation reports an
  * intervention. A command whose exit could not be confirmed is `unknown` and
  * keeps the stack lock, like every other operation.
  */
@@ -162,6 +164,15 @@ export async function runRollout(deps: RolloutDependencies, input: RolloutInput)
     }
 
     async function abortBeforeBoundary(ids: readonly string[], declaration: RolloutDeclaration, reason: string): Promise<RolloutRunResult> {
+        // Removing the candidate is only safe while the old instance can still
+        // serve traffic. If the old one stopped or lost its health during the
+        // attempt, the candidate may be the last available instance.
+        const oldNow = await deps.inspect(old.id);
+        if (!oldNow || !oldNow.running || oldNow.health !== "healthy") {
+            return intervention(
+                `${reason} The current instance is no longer running and healthy, so the new instance was kept instead of being removed.`,
+            );
+        }
         const cleanup = await cleanupCandidates(ids, declaration);
         if (cleanup.kind === "refused") {
             if (cleanup.unconfirmed) return unknown(result(1, true), `${reason} ${cleanup.reason}`);
@@ -173,13 +184,19 @@ export async function runRollout(deps: RolloutDependencies, input: RolloutInput)
 
     async function waitWindow(totalMs: number, check: () => Promise<WindowVerdict>): Promise<WindowVerdict> {
         if (expired()) return { kind: "timeout" };
-        const end = Math.min(deadline, deps.now() + Math.max(0, totalMs));
+        const requestedEnd = deps.now() + Math.max(0, totalMs);
+        const end = Math.min(deadline, requestedEnd);
         for (;;) {
             if (shuttingDown()) return { kind: "intervention", reason: "The panel is shutting down." };
             const verdict = await check();
             if (verdict.kind !== "ok") return verdict;
             const left = end - deps.now();
-            if (left <= 0) return { kind: "ok" };
+            if (left <= 0) {
+                // Only a fully elapsed requested window is a success. When the
+                // global budget cut it short, the caller must treat it as an
+                // exhausted budget, not as a completed settle or drain.
+                return end < requestedEnd ? { kind: "timeout" } : { kind: "ok" };
+            }
             if (expired()) return { kind: "timeout" };
             await deps.sleep(Math.min(WINDOW_SLICE_MS, left));
         }

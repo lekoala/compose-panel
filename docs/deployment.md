@@ -660,8 +660,10 @@ container-discovery configuration, which is outside this integration.
 - Before the first drain attempt, the panel may remove the candidate it created.
   It does so only after proving the container's full ID, its Compose project,
   service, file and working directory, a creation date after the operation
-  started, and its absence from the initial snapshot. If anything is ambiguous,
-  it removes nothing.
+  started, and its absence from the initial snapshot. It also requires the old
+  container to still be running and healthy; if the old one stopped or lost its
+  health, the candidate is kept because it may be the last available instance.
+  If anything is ambiguous, it removes nothing.
 - From the first drain attempt onward, it removes nothing automatically. It
   reports **Intervention required** and keeps the candidate. There is no
   automatic rollback and the marker is never removed.

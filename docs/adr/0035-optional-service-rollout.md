@@ -110,7 +110,9 @@ Hard refusals:
 - Before it, a created candidate may be removed only when its identity is
   proven: full container ID, the four Compose identity labels matching the
   operation context, a creation date after the operation started, and absence
-  from the initial snapshot.
+  from the initial snapshot. The old container must also still be running and
+  healthy at cleanup time; otherwise the candidate is kept because it may be
+  the last available instance.
 - After it, nothing is removed automatically. A failure is reported as an
   **intervention**; the candidate is kept.
 - A command whose exit could not be confirmed is `unknown`, keeps the stack
