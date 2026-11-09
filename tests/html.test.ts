@@ -12,6 +12,7 @@ import {
     databaseSection,
     domainsSection,
     rolloutPage,
+    infoTip,
 } from "../src/html.ts";
 import { buildExplorerUrl } from "../src/database.ts";
 import type { ComposeService } from "../src/compose-state.ts";
@@ -56,6 +57,18 @@ test("operationPanel shows an application action's own label, not the Compose na
 function service(name: string, health: string | null): ComposeService {
     return { name, state: "running", health, exitCode: 0, container: `demo-${name}-1`, image: "nginx:1" };
 }
+
+test("info tips bind distinct native popovers and escape content and labels", () => {
+    const first = infoTip('<img src=x onerror="alert(1)">', '" autofocus onfocus="alert(1)');
+    const second = infoTip("Other details");
+    const target = /popovertarget="([^"]+)"/.exec(first)![1];
+    expect(first).toContain(`id="${target}" class="info-body" popover`);
+    expect(first).toContain('type="button"');
+    expect(second).not.toContain(`id="${target}"`);
+    expect(first).not.toContain("<img");
+    expect(first).toContain("&lt;img");
+    expect(first).not.toContain('" autofocus');
+});
 
 test("escapes file content in HTML", () => {
     const value = `<script>alert("x")</script> & 'quotes'`;

@@ -603,23 +603,36 @@
     // wide screens must not flash a closed sidebar.
     wireNavDrawer();
 
-    /* Local filter for the navigation stack list and the stacks table. Hides
-     * non-matching entries; without JavaScript every entry is simply shown. */
-    /* Info tips are native <details>; close them on an outside click or Escape
-     * so they behave like small popovers. Without JS they toggle on click. */
+    /* Native popovers handle dismissal and keyboard access. Place the open tip
+     * near its button, keeping it inside the viewport even in clipped tables. */
     function wireInfoTips() {
-        function closeAll(except) {
-            each("details.info[open]", function (tip) {
-                if (tip !== except) tip.removeAttribute("open");
-            });
+        function place(tip) {
+            var button = tip.parentElement.querySelector("button");
+            if (!button) return;
+            var anchor = button.getBoundingClientRect();
+            var gap = 8;
+            tip.style.margin = "0";
+            tip.style.inset = "auto";
+            var box = tip.getBoundingClientRect();
+            var width = document.documentElement.clientWidth;
+            var height = document.documentElement.clientHeight;
+            var left = Math.max(gap, Math.min(anchor.left, width - box.width - gap));
+            var top = anchor.bottom + gap;
+            if (top + box.height > height - gap) top = anchor.top - box.height - gap;
+            top = Math.max(gap, Math.min(top, height - box.height - gap));
+            tip.style.left = left + "px";
+            tip.style.top = top + "px";
         }
-        document.addEventListener("click", function (event) {
-            var target = event.target;
-            closeAll(target && typeof target.closest === "function" ? target.closest("details.info") : null);
+        each(".info-body[popover]", function (tip) {
+            tip.addEventListener("toggle", function (event) {
+                if (event.newState === "open") place(tip);
+            });
         });
-        document.addEventListener("keydown", function (event) {
-            if (event.key === "Escape") closeAll(null);
-        });
+        function reposition() {
+            each(".info-body:popover-open", place);
+        }
+        window.addEventListener("resize", reposition);
+        document.addEventListener("scroll", reposition, true);
     }
 
     function wireNavSearch() {

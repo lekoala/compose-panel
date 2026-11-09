@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Services: move the recreate-pending marker below the container state, leaving
+  the Actions column for buttons. Information tips use native popovers in the
+  browser's top layer, avoiding clipping by tables, with viewport-aware
+  placement when JavaScript is available.
+
 - CI: explicitly pin Trivy v0.76.2 for repository and image scans in CI and
   releases, replacing the action's v0.70.0 default. Temporarily accept
   CVE-2026-78661 only at the Compose binary path until 2026-11-23 (ADR 0039).

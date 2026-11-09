@@ -287,11 +287,14 @@ describe("loadRecreatePending", () => {
 describe("rendering", () => {
     const actions = { name: "demo", csrf: "token", busy: false };
 
-    test("marks only pending services, next to their scoped actions", () => {
+    test("marks only pending services in the container cell, separate from actions", () => {
         const html = servicesSection([service("app"), service("db")], "running", {}, actions, ["app"]);
         expect(html.match(/data-recreate-pending/g)).toHaveLength(1);
         const appRow = html.split("<tr>").find((row) => row.startsWith("<td>app</td>"))!;
-        expect(appRow).toContain("data-recreate-pending");
+        const cells = appRow.split("<td>").slice(1);
+        expect(cells[1]).toContain("data-recreate-pending");
+        expect(cells[3]).toContain('class="row-actions"');
+        expect(cells[3]).not.toContain("data-recreate-pending");
     });
 
     test("shows nothing when no scoped action is offered", () => {

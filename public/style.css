@@ -149,7 +149,8 @@ footer{border-top:1px solid var(--border);padding-block:1rem;color:var(--muted);
  * wrap, the action buttons stay on one line in a column sized to them. */
 .badges{display:inline-flex;flex-wrap:wrap;gap:.3rem}
 .services-table code{overflow-wrap:anywhere}
-.services-table td:last-child .row-actions{flex-wrap:nowrap}
+.services-table td:last-child .row-actions{gap:.5rem;flex-wrap:nowrap}
+.services-table [data-recreate-pending]{margin-top:.5rem}
 
 /* Output and code */
 pre{font-family:var(--mono);font-size:.85rem;margin:0;padding:.85rem 1rem;overflow:auto;background:var(--code-bg);border:1px solid var(--border);border-radius:.45rem;tab-size:2}
@@ -257,12 +258,11 @@ footer a{color:inherit}
 .update a{white-space:nowrap}
 .update .version{white-space:nowrap}
 /* Info tip: a small "i" that opens a bubble with secondary details */
-.info{display:inline-block;position:relative;width:1.15rem;height:1.15rem;vertical-align:middle;margin-left:.4rem;font-size:.8rem;font-weight:400;line-height:1}
-.info>summary{list-style:none;cursor:pointer;display:flex;box-sizing:border-box;align-items:center;justify-content:center;width:1.15rem;height:1.15rem;border:1px solid var(--border);border-radius:50%;color:var(--muted);font-family:Georgia,"Times New Roman",serif;font-style:italic;font-weight:600}
-.info>summary::-webkit-details-marker{display:none}
-.info>summary:hover,.info[open]>summary{border-color:var(--muted);color:var(--ink)}
-.info>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.info-body{position:absolute;z-index:20;top:calc(100% + .4rem);left:-.5rem;width:max-content;max-width:min(20rem,80vw);padding:.5rem .7rem;background:var(--surface);border:1px solid var(--border);border-radius:.45rem;box-shadow:0 4px 14px rgba(0,0,0,.14);color:var(--ink);font-size:.85rem;line-height:1.4;white-space:normal;text-transform:none;letter-spacing:normal}
+.info{display:inline-block;width:1.15rem;height:1.15rem;vertical-align:middle;margin-left:.4rem;font-size:.8rem;font-weight:400;line-height:1}
+.info>button{cursor:pointer;display:flex;box-sizing:border-box;align-items:center;justify-content:center;width:1.15rem;height:1.15rem;padding:0;background:transparent;border:1px solid var(--border);border-radius:50%;color:var(--muted);font-family:Georgia,"Times New Roman",serif;font-size:inherit;font-style:italic;font-weight:600}
+.info>button:hover{border-color:var(--muted);color:var(--ink)}
+.info>button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.info-body{position:fixed;box-sizing:border-box;width:max-content;max-width:min(20rem,calc(100vw - 1rem));max-height:calc(100dvh - 1rem);overflow:auto;padding:.5rem .7rem;background:var(--surface);border:1px solid var(--border);border-radius:.45rem;box-shadow:0 4px 14px rgba(0,0,0,.14);color:var(--ink);font-size:.85rem;font-weight:400;line-height:1.4;white-space:normal;overflow-wrap:anywhere;text-align:left;text-transform:none;letter-spacing:normal}
 /* Numeric table columns: right-aligned, fixed-width digits, never wrapped */
 .table th.num,.table td.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 /* Containers stopped with an error, folded under Needs attention */

@@ -64,14 +64,13 @@ export function escapeHtml(value: string): string {
 
 /**
  * A small ⓘ for secondary details, kept out of the page until asked for.
- * Native `<details>`: works without JavaScript, on touch and with the keyboard
- * (a `title` tooltip would not). `text` is escaped; app.js only closes it on an
- * outside click or Escape. Place it in a heading or a block, never inside a
- * `<p>`: the parser would close the paragraph and the tip would land on its
- * own line.
+ * Native popover: works without JavaScript, on touch and with the keyboard.
+ * The browser's top layer escapes clipping ancestors. app.js enhances placement
+ * near the button; without it the browser centers the popover. Text is escaped.
  */
 export function infoTip(text: string, label = "More information"): string {
-    return `<details class="info"><summary aria-label="${escapeHtml(label)}">i</summary><span class="info-body">${escapeHtml(text)}</span></details>`;
+    const id = `info-${crypto.randomUUID()}`;
+    return `<span class="info"><button type="button" popovertarget="${id}" aria-label="${escapeHtml(label)}">i</button><span id="${id}" class="info-body" popover>${escapeHtml(text)}</span></span>`;
 }
 
 export type NoteKind = "info" | "success" | "warn" | "error";
@@ -633,8 +632,12 @@ export function servicesSection(
         const rows = services
             .map((service) => {
                 const rollout = rolloutServices.includes(service.name) && service.state.toLowerCase() === "running";
-                const cell = scoped ? `<td>${serviceActions(actions, service, recreatePending.includes(service.name), rollout)}</td>` : "";
-                const status = `<span class="badges">${serviceBadge(service)}${healthBadge(service.health)}</span>`;
+                const cell = scoped ? `<td>${serviceActions(actions, service, rollout)}</td>` : "";
+                const pending =
+                    scoped && recreatePending.includes(service.name)
+                        ? `<div class="update" data-recreate-pending><span class="state state-update">Recreate pending</span>${infoTip("Up recreates this service with the current Compose file and .env. Restart keeps the existing container as it is.")}</div>`
+                        : "";
+                const status = `<span class="badges">${serviceBadge(service)}${healthBadge(service.health)}</span>${pending}`;
                 return `<tr><td>${escapeHtml(service.name)}</td><td>${status}</td><td>${imageCell(service, updates[service.name])}</td>${cell}</tr>`;
             })
             .join("");
@@ -649,12 +652,7 @@ export function servicesSection(
 }
 
 /** Per-service Restart, Up and opt-in Rollout for one table row (ADR 0021, ADR 0035). */
-function serviceActions(
-    actions: { name: string; csrf: string; busy: boolean },
-    service: ComposeService,
-    pending: boolean,
-    rollout: boolean,
-): string {
+function serviceActions(actions: { name: string; csrf: string; busy: boolean }, service: ComposeService, rollout: boolean): string {
     const buttons = (["restart", "up"] as const)
         .map((action) => {
             const label = action === "restart" ? "Restart" : "Up";
@@ -666,10 +664,7 @@ function serviceActions(
         rollout && !actions.busy
             ? `<a class="btn btn-quiet" href="/stacks/${encodeURIComponent(actions.name)}/rollout?service=${encodeURIComponent(service.name)}" title="Start a second instance, wait for it to become healthy, then remove the old one">Rollout…</a>`
             : "";
-    const marker = pending
-        ? `<div class="update" data-recreate-pending><span class="state state-update">Recreate pending</span>${infoTip("Up recreates this service with the current Compose file and .env. Restart keeps the existing container as it is.")}</div>`
-        : "";
-    return `${marker}<div class="row-actions">${buttons}${rolloutLink}</div>`;
+    return `<div class="row-actions">${buttons}${rolloutLink}</div>`;
 }
 
 const OPERATIONS: { action: OperationAction; label: string; help: string; style: string; needsDeployment: boolean }[] = [

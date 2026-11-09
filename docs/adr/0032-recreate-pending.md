@@ -75,9 +75,11 @@ same question; this ADR covers the configuration side.
   leave the service alone (image digest, network or volume mismatches and
   parent recreation are decided by Compose separately).
 - **UI.** In the Services table, a pending service shows a "Recreate pending"
-  marker next to the existing per-service **Up** form (ADR 0021), with a short
-  note that **Restart** does not apply configuration changes. Server-rendered,
-  no JavaScript, no new action.
+  marker below the container state, separate from the per-service action forms
+  (ADR 0021), with an information popover explaining that **Restart** does not
+  apply configuration changes. The native popover escapes table clipping and
+  works without JavaScript; JavaScript places it near its button. Server-rendered,
+  no new action.
 - **Any failure means "no information"**, never an invented state: Docker
   unavailable, timeout, truncated output, an unknown service in the output, a
   missing or malformed label, or a stack whose project context cannot be
