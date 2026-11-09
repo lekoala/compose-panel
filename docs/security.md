@@ -107,7 +107,9 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   declared set of actions.
 - Actions come only from a project's manifest (`extra["compose-panel"]` in
   `composer.json`, `"compose-panel"` in `package.json`), intersected with its
-  `scripts`. The Compose `x-compose-panel.toolbox.sources` extension only names
+  `scripts`; under the `exec` runner each action carries its own fixed `command`
+  instead, a bounded argv whose executable never looks like an option, run as is
+  ([ADR 0036](adr/0036-exec-runner.md)). The Compose `x-compose-panel.toolbox.sources` extension only names
   where to run and never authorizes an action. The manifest is trusted code: a
   deployment can change an action's behavior; the catalog revision records what
   ran, it does not guarantee immutability.

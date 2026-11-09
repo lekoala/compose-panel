@@ -119,7 +119,8 @@ compatible with this rollout.
 
 ## Application actions
 A stack may declare an `x-compose-panel.toolbox.sources` extension in its
-canonical Compose file, naming the services, runners (Composer/npm/Bun) and
+canonical Compose file, naming the services, runners (Composer/npm/Bun, or
+`exec` for an action that declares its own command, [ADR 0036](adr/0036-exec-runner.md)) and
 optional `user`/`workdir` where non-interactive application actions run. Compose
 ignores `x-*` fields at deploy time. The extension only says **where**; the
 exposed actions come solely from each project's own manifest

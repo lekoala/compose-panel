@@ -26,6 +26,18 @@ services:
     image: my-app:latest
 `;
 
+const EXEC_COMPOSE = `x-compose-panel:
+  toolbox:
+    sources:
+      - id: commands
+        service: app
+        runner: exec
+        manifest: composer.json
+services:
+  app:
+    image: my-app:latest
+`;
+
 let root: string;
 let passwordHash: string;
 
@@ -33,6 +45,8 @@ beforeAll(async () => {
     root = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-toolbox-")));
     await mkdir(join(root, "demo"));
     await writeFile(join(root, "demo", "compose.yaml"), COMPOSE);
+    await mkdir(join(root, "tools"));
+    await writeFile(join(root, "tools", "compose.yaml"), EXEC_COMPOSE);
     passwordHash = await Bun.password.hash(PASSWORD);
 });
 
@@ -73,9 +87,12 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
         detect: async () => caps,
         listProjects: async () => ({
             ...ok,
-            stdout: JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") }]),
+            stdout: JSON.stringify([
+                { Name: "demo-proj", Status: "running(1)", ConfigFiles: join(root, "demo", "compose.yaml") },
+                { Name: "tools-proj", Status: "running(1)", ConfigFiles: join(root, "tools", "compose.yaml") },
+            ]),
         }),
-        projectName: async () => "demo-proj",
+        projectName: async (input: { composeFile: string }) => (input.composeFile.includes("tools") ? "tools-proj" : "demo-proj"),
         projectServices: async () => ok,
         projectImages: async () => ok,
         stackMetadata: async () => ({}),
@@ -224,11 +241,17 @@ async function post(
     app: App,
     session: string,
     body: Record<string, string>,
-    init: { origin?: string | null; csrf?: string } = {},
+    init: { origin?: string | null; csrf?: string; stack?: string } = {},
 ): Promise<Response> {
     const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded", cookie: `cp_session=${session}` };
     if (init.origin !== null) headers["origin"] = init.origin ?? ORIGIN;
-    return app.fetch(new Request(`${ORIGIN}/stacks/demo/actions`, { method: "POST", headers, body: new URLSearchParams(body).toString() }));
+    return app.fetch(
+        new Request(`${ORIGIN}/stacks/${init.stack ?? "demo"}/actions`, {
+            method: "POST",
+            headers,
+            body: new URLSearchParams(body).toString(),
+        }),
+    );
 }
 
 function revisionFrom(html: string): string {
@@ -275,6 +298,55 @@ describe("application toolbox routes", () => {
         await settle(app);
         expect(execCalls).toEqual([["composer", "--no-interaction", "run-script", "cache:clear"]]);
         expect(app.operations.forStack("demo")!.status).toBe("succeeded");
+    });
+
+    test("runs an exec action with its declared command, nothing from the request", async () => {
+        const { app, execCalls, setManifest } = await harness();
+        setManifest(
+            JSON.stringify({
+                extra: { "compose-panel": { version: 1, actions: { "world:reset": { command: ["php", "bin/console", "app:reset"] } } } },
+            }),
+        );
+        const session = await login(app);
+        const page = await app.fetch(new Request(`${ORIGIN}/stacks/tools/actions`, { headers: { cookie: `cp_session=${session}` } }));
+        const revision = revisionFrom(await page.text());
+        expect(revision).toMatch(/^[0-9a-f]{64}$/);
+        const csrf = await sessionCsrf(app, session);
+        const response = await post(
+            app,
+            session,
+            { source: "commands", action: "world:reset", revision, csrf, command: "rm -rf /" },
+            { stack: "tools" },
+        );
+        expect(response.status).toBe(303);
+        await settle(app);
+        expect(execCalls).toEqual([["php", "bin/console", "app:reset"]]);
+        expect(app.operations.forStack("tools")!.status).toBe("succeeded");
+    });
+
+    test("refuses an exec command changed between the pre-check and locked revalidation", async () => {
+        const { app, execCalls, setManifest, armOnResolve } = await harness();
+        const commandManifest = (target: string) =>
+            JSON.stringify({
+                extra: { "compose-panel": { version: 1, actions: { reset: { command: ["php", "bin/console", target] } } } },
+            });
+        setManifest(commandManifest("app:reset-demo"));
+        const session = await login(app);
+        const csrf = await sessionCsrf(app, session);
+        const page = await app.fetch(new Request(`${ORIGIN}/stacks/tools/actions`, { headers: { cookie: `cp_session=${session}` } }));
+        const revision = revisionFrom(await page.text());
+        // Keep the pre-check unchanged; replace only the command when the
+        // operation resolves the container again under its stack lock.
+        armOnResolve(async () => {
+            armOnResolve(async () => {
+                setManifest(commandManifest("app:reset-production"));
+            });
+        });
+        const response = await post(app, session, { source: "commands", action: "reset", revision, csrf }, { stack: "tools" });
+        expect(response.status).toBe(303);
+        await settle(app);
+        expect(app.operations.forStack("tools")!.status).toBe("refused");
+        expect(execCalls).toHaveLength(0);
     });
 
     test("refuses an undeclared action name", async () => {

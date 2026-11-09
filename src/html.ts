@@ -914,7 +914,7 @@ export interface ToolboxPageOptions {
     error?: { title: string; message: string };
 }
 
-const RUNNER_LABELS: Record<ToolboxRunner, string> = { composer: "Composer", npm: "npm", bun: "Bun" };
+const RUNNER_LABELS: Record<ToolboxRunner, string> = { composer: "Composer", npm: "npm", bun: "Bun", exec: "Command" };
 
 function toolboxActionForm(stack: string, source: ToolboxSourceView, action: ToolboxAction, csrf: string, busy: boolean): string {
     const actionUrl = `/stacks/${encodeURIComponent(stack)}/actions`;

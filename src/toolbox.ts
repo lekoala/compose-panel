@@ -8,10 +8,11 @@ import { asRecord, readComposeExtension, type ParseResult } from "./compose-exte
  * application actions are declared in each project's own manifest
  * (`extra["compose-panel"]` in `composer.json`, `"compose-panel"` in
  * `package.json`). The extension only says where to run; the manifest says what
- * may run. This module is pure (parsing, validation, catalog, revision, argv):
+ * may run. Under the `exec` runner (ADR 0036) an action carries its own fixed
+ * `command` instead of naming a script, so the image needs no package manager. This module is pure (parsing, validation, catalog, revision, argv):
  * no Docker, no filesystem.
  */
-export const TOOLBOX_RUNNERS = ["composer", "npm", "bun"] as const;
+export const TOOLBOX_RUNNERS = ["composer", "npm", "bun", "exec"] as const;
 export type ToolboxRunner = (typeof TOOLBOX_RUNNERS)[number];
 
 export const TOOLBOX_SCHEMA_VERSION = 1;
@@ -26,6 +27,11 @@ const MAX_LABEL = 200;
 const MAX_GROUP = 80;
 const MAX_CONFIRMATION = 500;
 const MAX_PATH = 4096;
+/** Bounds for an `exec` action command: the same argv cap the action runner enforces. */
+export const MAX_COMMAND_PARTS = 16;
+const MAX_COMMAND_PART = 1024;
+const MANIFEST_FILES = ["composer.json", "package.json"] as const;
+export type ManifestFile = (typeof MANIFEST_FILES)[number];
 /** Upper bounds for the stack-side source list. */
 const MAX_SOURCES = 32;
 
@@ -36,8 +42,8 @@ export interface ToolboxSource {
     /** Absolute path inside the container, or null for the container default. */
     workdir: string | null;
     user: string | null;
-    /** Manifest filename implied by the runner. */
-    manifestFile: "composer.json" | "package.json";
+    /** Manifest filename: implied by a script runner, declared for `exec`. */
+    manifestFile: ManifestFile;
 }
 
 export interface ToolboxAction {
@@ -47,6 +53,8 @@ export interface ToolboxAction {
     confirmation: string | null;
     /** Effective timeout cap in ms, or null for the manager default. */
     timeoutMs: number | null;
+    /** The fixed argv of an `exec` action; null for a script runner. */
+    command: string[] | null;
 }
 
 export interface ToolboxCatalog {
@@ -70,12 +78,13 @@ export function isActionName(value: string): boolean {
     return ACTION_NAME.test(value) && !value.startsWith("-");
 }
 
-export function manifestFileFor(runner: ToolboxRunner): "composer.json" | "package.json" {
+/** The manifest a script runner reads; `exec` names its own in the source. */
+export function manifestFileFor(runner: Exclude<ToolboxRunner, "exec">): ManifestFile {
     return runner === "composer" ? "composer.json" : "package.json";
 }
 
-/** The fixed argv the runner is launched with inside the container. */
-export function buildRunnerArgv(runner: ToolboxRunner, name: string): string[] {
+/** The fixed argv the script runner is launched with inside the container. */
+export function buildRunnerArgv(runner: Exclude<ToolboxRunner, "exec">, name: string): string[] {
     switch (runner) {
         // `--no-interaction` is a Composer global option (before the command),
         // so the action never waits on a prompt such as "Continue as root?".
@@ -86,6 +95,15 @@ export function buildRunnerArgv(runner: ToolboxRunner, name: string): string[] {
         case "bun":
             return ["bun", "run", name];
     }
+}
+
+/** The argv a catalog action runs with: its declared command under `exec`, the runner otherwise. */
+export function actionArgv(runner: ToolboxRunner, action: ToolboxAction): string[] {
+    if (runner === "exec") {
+        if (!action.command) throw new Error(`Action "${action.name}" has no command.`);
+        return [...action.command];
+    }
+    return buildRunnerArgv(runner, action.name);
 }
 
 /** A container-internal absolute path without ".." segments or NUL bytes. */
@@ -146,13 +164,32 @@ export function parseToolboxSources(composeSource: string): ParseResult<ToolboxS
             }
         }
 
+        // A script runner implies its manifest; `exec` has none of its own, so
+        // the source names which project manifest declares its actions.
+        const manifest = record["manifest"];
+        let manifestFile: ManifestFile;
+        if (runner === "exec") {
+            if (typeof manifest !== "string" || !(MANIFEST_FILES as readonly string[]).includes(manifest)) {
+                return {
+                    ok: false,
+                    error: `Toolbox source "${id}" with the exec runner must name its manifest: ${MANIFEST_FILES.join(" or ")}.`,
+                };
+            }
+            manifestFile = manifest as ManifestFile;
+        } else {
+            if (manifest !== undefined && manifest !== null) {
+                return { ok: false, error: `Toolbox source "${id}" declares a manifest, which only the exec runner takes.` };
+            }
+            manifestFile = manifestFileFor(runner);
+        }
+
         sources.push({
             id,
             service,
             runner,
             workdir: typeof workdir === "string" ? workdir : null,
             user: typeof user === "string" ? user : null,
-            manifestFile: manifestFileFor(runner),
+            manifestFile,
         });
     }
     return { ok: true, value: sources };
@@ -167,18 +204,18 @@ interface Manifest {
  * Parse a project manifest and return its declared actions and scripts. The
  * whole document is only ever projected, never re-serialized or executed.
  */
-export function parseManifest(raw: string, runner: ToolboxRunner): ParseResult<Manifest> {
+export function parseManifest(raw: string, file: ManifestFile): ParseResult<Manifest> {
     let document: unknown;
     try {
         document = JSON.parse(raw);
     } catch {
-        return { ok: false, error: `The ${manifestFileFor(runner)} is not valid JSON.` };
+        return { ok: false, error: `The ${file} is not valid JSON.` };
     }
     const root = asRecord(document);
-    if (!root) return { ok: false, error: `The ${manifestFileFor(runner)} is not a JSON object.` };
+    if (!root) return { ok: false, error: `The ${file} is not a JSON object.` };
 
-    const section = runner === "composer" ? asRecord(asRecord(root["extra"])?.["compose-panel"]) : asRecord(root["compose-panel"]);
-    if (!section) return { ok: false, error: `No compose-panel actions are declared in this ${manifestFileFor(runner)}.` };
+    const section = file === "composer.json" ? asRecord(asRecord(root["extra"])?.["compose-panel"]) : asRecord(root["compose-panel"]);
+    if (!section) return { ok: false, error: `No compose-panel actions are declared in this ${file}.` };
     if (section["version"] !== TOOLBOX_SCHEMA_VERSION) {
         return { ok: false, error: `Unsupported compose-panel schema version: expected ${TOOLBOX_SCHEMA_VERSION}.` };
     }
@@ -207,7 +244,7 @@ export function buildCatalog(
     execution: { containerId: string; imageId: string },
     limits: ToolboxLimits,
 ): ParseResult<ToolboxCatalog> {
-    const parsed = parseManifest(rawManifest, source.runner);
+    const parsed = parseManifest(rawManifest, source.manifestFile);
     if (!parsed.ok) return parsed;
     const { actions, scripts } = parsed.value;
 
@@ -221,16 +258,33 @@ export function buildCatalog(
         if (!isActionName(name)) {
             return { ok: false, error: `Action "${name}" is not a valid script name.` };
         }
-        if (!Object.hasOwn(scripts, name)) {
-            return { ok: false, error: `Action "${name}" refers to a script this project does not define.` };
-        }
-        // The definition must be runnable by the runner: for npm/Bun a missing or
-        // non-string value would make `bun run <name>` fall through to a file.
-        if (!isUsableScript(source.runner, ownValue(scripts, name))) {
-            return { ok: false, error: `Action "${name}" does not define a runnable ${source.runner} script.` };
-        }
         const entry = asRecord(actions[name]);
         if (!entry) return { ok: false, error: `Action "${name}" must be a mapping of metadata.` };
+
+        // One style per source: an exec action carries its command, a script
+        // action names a script. Never both, so no declaration is ambiguous.
+        let command: string[] | null = null;
+        if (source.runner === "exec") {
+            command = parseCommand(entry["command"]);
+            if (!command) {
+                return {
+                    ok: false,
+                    error: `Action "${name}" needs a command: a list of 1-${MAX_COMMAND_PARTS} non-empty strings whose first item is not an option.`,
+                };
+            }
+        } else {
+            if (entry["command"] !== undefined) {
+                return { ok: false, error: `Action "${name}" declares a command, which only the exec runner runs.` };
+            }
+            if (!Object.hasOwn(scripts, name)) {
+                return { ok: false, error: `Action "${name}" refers to a script this project does not define.` };
+            }
+            // The definition must be runnable by the runner: for npm/Bun a missing or
+            // non-string value would make `bun run <name>` fall through to a file.
+            if (!isUsableScript(source.runner, ownValue(scripts, name))) {
+                return { ok: false, error: `Action "${name}" does not define a runnable ${source.runner} script.` };
+            }
+        }
 
         const label = stringField(entry["label"], MAX_LABEL);
         if (!label.ok) return { ok: false, error: `Action "${name}" label ${label.error}.` };
@@ -248,6 +302,7 @@ export function buildCatalog(
             group: group.value,
             confirmation: confirmation.value,
             timeoutMs: timeoutMs === null ? null : timeoutMs,
+            command,
         });
     }
 
@@ -259,6 +314,20 @@ export function buildCatalog(
             revision: computeRevision(source, catalogActions, scripts, execution),
         },
     };
+}
+
+/**
+ * An `exec` command: a fixed argv run with no shell. Every part is non-empty
+ * text without NUL, and the executable never looks like an option. The panel
+ * never adds to it: the browser only ever sends the action identifier.
+ */
+function parseCommand(value: unknown): string[] | null {
+    if (!Array.isArray(value) || value.length === 0 || value.length > MAX_COMMAND_PARTS) return null;
+    for (const part of value) {
+        if (typeof part !== "string" || part.length === 0 || part.length > MAX_COMMAND_PART || part.includes("\0")) return null;
+    }
+    if ((value[0] as string).startsWith("-")) return null;
+    return [...(value as string[])];
 }
 
 /** Seconds in the manifest, clamped to [1s, cap]; null when not declared. */
@@ -280,7 +349,7 @@ function ownValue(source: Record<string, unknown>, key: string): unknown {
  * non-empty command string is required: `bun run <name>` resolves a file or
  * binary when the name has no usable `scripts` entry, which is never allowed.
  */
-function isUsableScript(runner: ToolboxRunner, value: unknown): boolean {
+function isUsableScript(runner: Exclude<ToolboxRunner, "exec">, value: unknown): boolean {
     if (runner === "composer") {
         if (typeof value === "string") return value.trim() !== "";
         return Array.isArray(value) && value.length > 0 && value.every((part) => typeof part === "string");
@@ -305,7 +374,14 @@ function computeRevision(
     const material = {
         container: execution.containerId,
         image: execution.imageId,
-        source: { id: source.id, service: source.service, runner: source.runner, workdir: source.workdir, user: source.user },
+        source: {
+            id: source.id,
+            service: source.service,
+            runner: source.runner,
+            workdir: source.workdir,
+            user: source.user,
+            manifest: source.manifestFile,
+        },
         actions: [...actions]
             .sort((a, b) => a.name.localeCompare(b.name))
             .map((action) => ({
@@ -314,6 +390,7 @@ function computeRevision(
                 group: action.group,
                 confirmation: action.confirmation,
                 timeoutMs: action.timeoutMs,
+                command: action.command,
             })),
         // The whole script map, order-stable: a referenced definition counts too.
         scripts: Object.keys(scripts)

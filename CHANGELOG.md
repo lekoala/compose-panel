@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- App actions: new `exec` runner (ADR 0036). An action declares its own fixed
+  `command` (a bounded argv, no shell) in the manifest the source names with
+  `manifest: composer.json` or `package.json`, so an image needs no Composer, npm
+  or Bun to expose actions. Script runners refuse a `command`; `exec` refuses an
+  action without one. The catalog revision covers the command and the manifest.
+
 - Rollout (optional, off by default): a service that declares
   `panel.rollout.enabled: "true"` gets a **Rollout** action. The panel starts a
   second instance without recreating the old one, waits for it to become healthy,

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
 import { createActionRunner, type ActionRunner } from "../src/action-runner.ts";
 import { createDockerRunner } from "../src/docker.ts";
-import { buildCatalog, buildRunnerArgv, type ToolboxSource } from "../src/toolbox.ts";
+import { actionArgv, buildCatalog, buildRunnerArgv, type ToolboxSource } from "../src/toolbox.ts";
 
 // Opt-in integration check of the application-toolbox Docker boundary
 // (`docker cp` read + `docker exec` launch) against a REAL but DISPOSABLE
@@ -121,6 +121,45 @@ describe.skipIf(!enabled)("Application toolbox on a disposable lab daemon", () =
         expect(result.code).toBe(0);
         expect(result.stdout).toContain("toolbox-ok");
     }, 120_000);
+
+    test("runs a manifest command without Composer, npm or Bun and preserves literal arguments", async () => {
+        await ready();
+        const literal = "spaces ; $HOME $(id) *";
+        const manifest = JSON.stringify({
+            extra: {
+                "compose-panel": { version: 1, actions: { hello: { command: ["/bin/busybox", "printf", "%s\\n", literal] } } },
+            },
+        });
+        // Fixed fixture setup on the guarded disposable daemon only. Alpine
+        // supplies BusyBox but none of the application package managers.
+        const command = `mkdir -p /app && printf %s '${Buffer.from(manifest).toString("base64")}' | base64 -d > /app/composer.json && sleep 3600`;
+        const id = (await dockerOk(["run", "-d", "alpine:3.22", "sh", "-c", command], 300_000)).trim();
+        try {
+            for (const program of ["composer", "npm", "bun"]) {
+                expect((await docker(["exec", id, program, "--version"])).code).not.toBe(0);
+            }
+            const file = await actionRunner.readFile(id, "/app/composer.json", { timeoutMs: 30_000, maxBytes: 256 * 1024 });
+            expect(file.kind).toBe("ok");
+            if (file.kind !== "ok") return;
+            const imageId = (await dockerOk(["inspect", "--format", "{{.Image}}", id])).trim();
+            const source: ToolboxSource = { ...SOURCE, runner: "exec", manifestFile: "composer.json" };
+            const catalog = buildCatalog(source, file.content, { containerId: id, imageId }, { maxActions: 50, maxTimeoutMs: 900_000 });
+            expect(catalog.ok).toBe(true);
+            if (!catalog.ok) return;
+            const result = await actionRunner.exec({
+                id,
+                argv: actionArgv(source.runner, catalog.value.actions[0]!),
+                workdir: source.workdir,
+                user: "65534:65534",
+                timeoutMs: 30_000,
+                maxBytes: 64 * 1024,
+            });
+            expect(result.code).toBe(0);
+            expect(result.stdout).toBe(`${literal}\n`);
+        } finally {
+            await docker(["rm", "-f", id], 30_000);
+        }
+    }, 360_000);
 
     test("refuses a manifest path that is a directory", async () => {
         await ready();

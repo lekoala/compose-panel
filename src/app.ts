@@ -61,7 +61,7 @@ import {
 } from "./rollout.ts";
 import { runRollout, type RolloutDependencies, type RolloutPreparation } from "./rollout-run.ts";
 import { parseImageInspect } from "./compose-state.ts";
-import { buildCatalog, buildRunnerArgv, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
+import { actionArgv, buildCatalog, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
 import { buildExplorerUrl, parseDatabaseExplorer } from "./database.ts";
 import {
     buildSiteFile,
@@ -2802,7 +2802,7 @@ export function createApp(options: AppOptions): App {
                     record({ containerId: check.containerId, imageId: check.imageId, revision: check.revision });
                     return actionRunner.exec({
                         id: check.containerId,
-                        argv: buildRunnerArgv(source.runner, actionName),
+                        argv: actionArgv(source.runner, check.action),
                         user: source.user,
                         workdir: source.workdir,
                         timeoutMs: check.action.timeoutMs ?? config.operationTimeoutMs,

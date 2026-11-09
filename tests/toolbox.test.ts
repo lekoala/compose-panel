@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+    actionArgv,
     buildCatalog,
     buildRunnerArgv,
     isActionName,
@@ -25,6 +26,13 @@ function composerManifest(
     scripts: Record<string, unknown> = { "cache:clear": "php bin/console cache:clear" },
 ): string {
     return JSON.stringify({ scripts, extra: { "compose-panel": { version: 1, actions } } });
+}
+
+const COMMANDS: ToolboxSource = { ...BACKEND, id: "commands", runner: "exec", manifestFile: "composer.json" };
+
+function execSource(manifest: "composer.json" | "package.json" | null, extra = ""): string {
+    const line = manifest === null ? "" : `\n        manifest: ${manifest}`;
+    return `x-compose-panel:\n  toolbox:\n    sources:\n      - id: a\n        service: app\n        runner: exec${line}${extra}\n`;
 }
 
 function npmManifest(actions: Record<string, unknown>, scripts: Record<string, unknown> = { build: "vite build" }): string {
@@ -69,6 +77,21 @@ services:
         expect(result.ok).toBe(false);
     });
 
+    test("takes the manifest an exec source names, and only from exec", () => {
+        const composer = parseToolboxSources(execSource("composer.json"));
+        const npm = parseToolboxSources(execSource("package.json"));
+        expect(composer.ok && composer.value[0]!.manifestFile).toBe("composer.json");
+        expect(npm.ok && npm.value[0]!.manifestFile).toBe("package.json");
+        // exec has no manifest of its own: naming none, or another file, is refused.
+        expect(parseToolboxSources(execSource(null)).ok).toBe(false);
+        expect(parseToolboxSources(execSource(null, "\n        manifest: /etc/passwd")).ok).toBe(false);
+        // A script runner implies its manifest; declaring one is a mistake.
+        const scripted = parseToolboxSources(
+            "x-compose-panel:\n  toolbox:\n    sources:\n      - id: a\n        service: app\n        runner: npm\n        manifest: package.json\n",
+        );
+        expect(scripted.ok).toBe(false);
+    });
+
     test("refuses a duplicate source id", () => {
         const result = parseToolboxSources(`x-compose-panel:
   toolbox:
@@ -107,19 +130,19 @@ services:
 
 describe("parseManifest", () => {
     test("reads Composer extra and npm root forms", () => {
-        const composer = parseManifest(composerManifest({ "cache:clear": {} }), "composer");
+        const composer = parseManifest(composerManifest({ "cache:clear": {} }), "composer.json");
         expect(composer.ok).toBe(true);
-        const npm = parseManifest(npmManifest({ build: {} }), "npm");
+        const npm = parseManifest(npmManifest({ build: {} }), "package.json");
         expect(npm.ok).toBe(true);
     });
 
     test("refuses an unsupported schema version", () => {
         const raw = JSON.stringify({ scripts: {}, extra: { "compose-panel": { version: 2, actions: {} } } });
-        expect(parseManifest(raw, "composer").ok).toBe(false);
+        expect(parseManifest(raw, "composer.json").ok).toBe(false);
     });
 
     test("refuses invalid JSON", () => {
-        expect(parseManifest("{not json", "npm").ok).toBe(false);
+        expect(parseManifest("{not json", "package.json").ok).toBe(false);
     });
 });
 
@@ -142,6 +165,23 @@ describe("buildRunnerArgv", () => {
         expect(buildRunnerArgv("composer", "cache:clear")).toEqual(["composer", "--no-interaction", "run-script", "cache:clear"]);
         expect(buildRunnerArgv("npm", "build")).toEqual(["npm", "run", "build"]);
         expect(buildRunnerArgv("bun", "check")).toEqual(["bun", "run", "check"]);
+    });
+});
+
+describe("actionArgv", () => {
+    const execution = { containerId: "a".repeat(64), imageId: "sha256:" + "b".repeat(64) };
+
+    test("runs the declared command under exec and the runner otherwise", () => {
+        const raw = composerManifest({ "world:reset": { command: ["php", "bin/console", "app:reset", "--force"] } }, {});
+        const catalog = buildCatalog(COMMANDS, raw, execution, LIMITS);
+        expect(catalog.ok).toBe(true);
+        if (!catalog.ok) return;
+        expect(actionArgv("exec", catalog.value.actions[0]!)).toEqual(["php", "bin/console", "app:reset", "--force"]);
+
+        const scripted = buildCatalog(BACKEND, composerManifest({ "cache:clear": {} }), execution, LIMITS);
+        expect(scripted.ok).toBe(true);
+        if (!scripted.ok) return;
+        expect(actionArgv("composer", scripted.value.actions[0]!)).toEqual(["composer", "--no-interaction", "run-script", "cache:clear"]);
     });
 });
 
@@ -260,6 +300,46 @@ describe("buildCatalog", () => {
         expect(base.value.revision).not.toBe(otherUser.value.revision);
         expect(base.value.revision).not.toBe(otherDir.value.revision);
         expect(base.value.revision).not.toBe(otherContainer.value.revision);
+    });
+
+    test("exec: needs a well-formed command and no script", () => {
+        const good = buildCatalog(
+            COMMANDS,
+            composerManifest({ "world:reset": { command: ["php", "bin/console", "x"] } }, {}),
+            execution,
+            LIMITS,
+        );
+        expect(good.ok).toBe(true);
+        if (good.ok) expect(good.value.actions[0]!.command).toEqual(["php", "bin/console", "x"]);
+
+        const tooLong = Array.from({ length: 17 }, () => "x");
+        for (const bad of [undefined, null, "php bin/console x", [], [""], ["-rm"], ["php", 1], ["php", "a\0b"], tooLong] as unknown[]) {
+            const raw = composerManifest({ "world:reset": bad === undefined ? {} : { command: bad } }, {});
+            expect(buildCatalog(COMMANDS, raw, execution, LIMITS).ok).toBe(false);
+        }
+        // The action identifier keeps its grammar under exec too.
+        expect(buildCatalog(COMMANDS, composerManifest({ "-rm": { command: ["rm"] } }, {}), execution, LIMITS).ok).toBe(false);
+    });
+
+    test("script runners refuse a declared command", () => {
+        const raw = composerManifest({ "cache:clear": { command: ["rm", "-rf", "/"] } });
+        expect(buildCatalog(BACKEND, raw, execution, LIMITS).ok).toBe(false);
+    });
+
+    test("exec: changes when the command or the manifest changes", () => {
+        const raw = (command: string[]) => composerManifest({ "world:reset": { command } }, {});
+        const a = buildCatalog(COMMANDS, raw(["php", "bin/console", "a"]), execution, LIMITS);
+        const b = buildCatalog(COMMANDS, raw(["php", "bin/console", "b"]), execution, LIMITS);
+        const otherManifest = buildCatalog(
+            { ...COMMANDS, manifestFile: "package.json" },
+            JSON.stringify({ "compose-panel": { version: 1, actions: { "world:reset": { command: ["php", "bin/console", "a"] } } } }),
+            execution,
+            LIMITS,
+        );
+        expect(a.ok && b.ok && otherManifest.ok).toBe(true);
+        if (!a.ok || !b.ok || !otherManifest.ok) return;
+        expect(a.value.revision).not.toBe(b.value.revision);
+        expect(a.value.revision).not.toBe(otherManifest.value.revision);
     });
 
     test("refuses more actions than the limit", () => {

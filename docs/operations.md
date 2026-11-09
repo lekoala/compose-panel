@@ -114,9 +114,10 @@ declare them, and the split is deliberate:
           user: www-data
   ```
 
-  `service` and `runner` (`composer`, `npm` or `bun`) are required; `workdir` and
-  `user` are optional and otherwise use the container's own defaults. A `workdir`
-  must be an absolute path inside the container.
+  `service` and `runner` (`composer`, `npm`, `bun` or `exec`) are required;
+  `workdir` and `user` are optional and otherwise use the container's own
+  defaults. A `workdir` must be an absolute path inside the container. An `exec`
+  source also names its `manifest` (`composer.json` or `package.json`).
 
 - The project manifest says **what** may run, only through declared actions:
 
@@ -138,6 +139,45 @@ declare them, and the split is deliberate:
   `npm run`, `bun run`), never the extracted command, so `pre`/`post` hooks keep
   working.
 
+- With the `exec` runner, the image needs no package manager: each action
+  declares its own fixed `command`, run as is without the panel adding a shell,
+  and needs no `scripts` entry ([ADR 0036](adr/0036-exec-runner.md)):
+
+  ```yaml
+  x-compose-panel:
+    toolbox:
+      sources:
+        - id: app
+          service: web
+          runner: exec
+          manifest: composer.json
+  ```
+
+  ```json
+  {
+    "extra": {
+      "compose-panel": {
+        "version": 1,
+        "actions": {
+          "world:reset": {
+            "label": "Reset the demo world",
+            "confirmation": "Erase this environment's data and reseed it?",
+            "command": ["php", "bin/console", "app:world:reset", "--no-interaction"]
+          }
+        }
+      }
+    }
+  }
+  ```
+
+  A `command` is a list of 1-16 non-empty strings whose first item is not an
+  option. One style per source: a script runner refuses an action that declares
+  a `command`, and `exec` refuses an action without one.
+
+  The manifest is trusted executable code. A command can explicitly invoke an
+  interpreter, including `sh -c`; the panel does not prohibit this or inspect
+  the program's behavior. No command or argument comes from the browser.
+
 The panel reads the manifest from the running container, launches the action
 with a fixed argument array (no shell, no TTY, no free arguments) under the
 per-stack lock, and streams the bounded output like any other operation. The
@@ -148,8 +188,9 @@ loading the page and clicking, the run is refused and asks you to reload.
 The manifest is trusted code, like the Compose file: a deployment can change an
 action's behavior. The tool's timeout is honest — a run stopped at the limit is
 reported as an unknown outcome, and the panel cannot guarantee that the work
-inside the container stopped. The image must provide the runner on its `PATH`;
-the panel never installs Composer, npm or Bun.
+inside the container stopped. The image must provide the runner (or, under
+`exec`, the command's program) on its `PATH`; the panel never installs Composer,
+npm or Bun.
 
 Composer applies its own `config.process-timeout` (300 s by default) to a
 script, so a larger `timeout` in the manifest has no effect until that setting is
