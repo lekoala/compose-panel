@@ -121,6 +121,26 @@ Dockge switch-over, [migrating-from-dockge.md](migrating-from-dockge.md).
 - **Fix:** run Compose commands from the host or from the panel. The panel ships
   its own Docker CLI and Compose plugin.
 
+## Show disk usage returns a proxy 502
+
+- **Possible cause:** older panel builds use Bun's default 10-second socket
+  idle timeout. The Server page reads the container list and engine diagnostics
+  before requesting disk usage; these bounded reads can together outlast that
+  deadline. The proxy then sees a reset upstream connection. A 502 alone does
+  not prove this cause: an unavailable panel or a proxy error can also produce it.
+- **Fix:** update to a build with the explicit 60-second HTTP idle timeout.
+  Docker command deadlines stay unchanged; a disk read that exceeds
+  `COMPOSE_PANEL_INSIGHTS_TIMEOUT_MS` returns an unavailable warning rather than
+  keeping the page waiting indefinitely. If you raise the Docker read deadlines,
+  keep their combined duration below the HTTP timeout and the proxy's own limits.
+- **Verification:** run `bun test tests/http-server.test.ts` on Linux. Its
+  isolated HTTP fixture takes 22 seconds to respond and must still return 200;
+  it uses no Docker daemon. On the deployed panel, open **Server**, click
+  **Show disk usage**, and check that the page returns either usage or an
+  unavailable warning. If a 502 persists, check the proxy error log and whether
+  `/health/live` is reachable through the same access path; do not publish raw
+  Docker logs, which may contain secrets.
+
 ## Which Caddyfile is actually active?
 
 - **Cause:** a Caddy running as a systemd service reads `/etc/caddy/Caddyfile`,

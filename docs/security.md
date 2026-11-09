@@ -26,6 +26,9 @@ authorization or counts as proof of who deployed the stack (ADR 0025).
 An administrator able to edit and then deploy a Compose file on a rootful Docker daemon can obtain very high control over the host. This panel is **not** a Docker sandbox, nor a multi-tenant API. Trusted users only.
 
 ## Delivered entry protections (P1)
+- The HTTP socket idle deadline is explicitly 60 seconds, allowing the default
+  bounded diagnostics chain to finish or return its timeout warning. Docker
+  command deadlines and output limits remain independent and unchanged.
 - The production HTTP listener explicitly disables Bun development errors; uncaught request errors return a generic, non-cacheable text 500 without the thrown value in the response or fallback log. The image sets `NODE_ENV=production`.
 - Local loopback `127.0.0.1` only, no exposed bind. A single administrator authenticates; the password is stored only as an Argon2id hash (`Bun.password`) supplied outside the repo.
 - Common/guessable administrator usernames (`admin`, `administrator`, `root`, `user`, `test`, `guest`) are refused at startup unless `COMPOSE_PANEL_DEV=true` (local development only). A unique `COMPOSE_PANEL_ADMIN_USER` is required.

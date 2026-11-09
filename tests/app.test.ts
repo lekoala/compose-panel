@@ -3856,6 +3856,22 @@ describe("server page", () => {
         expect(calls).toBe(1);
     });
 
+    test.each([
+        { ...SERVER_DF, code: 1, stdout: "", stderr: "fixture-secret" },
+        { ...SERVER_DF, timedOut: true, stderr: "fixture-secret" },
+        { ...SERVER_DF, truncated: true, stderr: "fixture-secret" },
+        { ...SERVER_DF, stdout: "not-json", stderr: "fixture-secret" },
+    ])("disk usage failures keep the Server page available without leaking diagnostics (%#)", async (diskUsage) => {
+        const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({ list: containerFixture(), diskUsage }));
+        const session = await login(app);
+        const response = await authed(app, "/server?disk=1", session);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        const html = await response.text();
+        expect(html).toContain("note-warn");
+        expect(html).not.toContain("fixture-secret");
+    });
+
     test("still renders with a note when Docker diagnostics fail", async () => {
         const failure: CommandResult = { code: 1, stdout: "", stderr: "boom", timedOut: false, truncated: false };
         const app = makeApp(

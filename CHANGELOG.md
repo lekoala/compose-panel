@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- HTTP: allow 60 seconds of socket inactivity so the Server page's sequential,
+  bounded Docker reads (including on-demand disk usage) can return a result or
+  an unavailable warning instead of a connection reset / proxy 502. Docker
+  command deadlines and output limits are unchanged.
+
 - Services: move the recreate-pending marker below the container state, leaving
   the Actions column for buttons. Information tips use native popovers in the
   browser's top layer, avoiding clipping by tables, with viewport-aware
