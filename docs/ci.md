@@ -31,7 +31,8 @@ applying and the scan fails again. Remove an entry as soon as a pinned version
 carries the fix. The image installs no `gnupg` (apt reads the `.asc` key
 directly), to keep unused packages and their CVEs out. The build runs no
 `apt-get upgrade`: Debian fixes arrive through deliberate base digest
-refreshes, not as a side effect of the build date. The base image
+refreshes or explicitly version-pinned, targeted package fixes (ADR 0038),
+not a blanket upgrade as a side effect of the build date. The base image
 is pinned by version and multi-arch digest in the `Dockerfile`, and every GitHub
 Action is pinned to a full commit SHA (with the human tag in a comment). The
 runner image is pinned too (`ubuntu-24.04`, not `ubuntu-latest`), so a new
@@ -51,6 +52,12 @@ the earliest `expired_at` in `.trivyignore.yaml`, and bump
 Reproducibility: the base image and Docker tooling versions are pinned and
 builds are security-scanned, but exact byte-for-byte reproducibility is not
 guaranteed (apt resolves `ca-certificates` and `curl` at build time).
+
+The 2026-11-09 image report requires apt/libapt-pkg7.0 3.0.4 and zlib1g
+1:1.3.dfsg+really1.3.1-1+deb13u1; the Dockerfile installs these exact fixes.
+Compose 5.7.0 still embeds `golang.org/x/net` v0.60.0, so CVE-2026-78661
+(fixed in v0.62.0) remains blocking. Updating Debian packages cannot repair
+a Go dependency compiled into the Compose binary. No exception is added.
 
 Image metadata: the runtime stage carries OCI `org.opencontainers.image.*`
 labels (title, description, url, source, licenses, vendor, version, revision).

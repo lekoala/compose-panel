@@ -4,6 +4,7 @@
 # path it applies to, and an expiry date. Past `expired_at` the entry stops
 # applying and the scan fails again, so every exception is re-decided.
 #
-# No exception is currently needed: Docker Compose v5.7.0 is built with Go
-# 1.26.10 and golang.org/x/net v0.60.0, which fixes CVE-2026-78669.
+# No exception is currently configured. Compose v5.7.0 fixes CVE-2026-78669 but still
+# embeds golang.org/x/net v0.60.0: CVE-2026-78661 (fixed in v0.62.0) remains
+# a blocking finding until a fixed release or a reviewed exception is available.
 vulnerabilities: []

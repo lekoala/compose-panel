@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Image security: explicitly pin corrected apt/libapt-pkg7.0 and zlib1g
+  packages over the Bun base (ADR 0038). The newer CVE-2026-78661 in
+  Compose 5.7.0 remains a blocking Trivy finding; no exception is added.
+
 - Container inspection: show each attached network's name, IPv4 and DNS names
   (falling back to aliases on older Docker responses). Only these fields are
   projected from the existing inspect response; no new Docker call or mutation

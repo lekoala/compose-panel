@@ -36,7 +36,10 @@ ARG REVISION=unknown
 # (Build-time shell only; the panel itself never uses a shell at runtime.)
 # No gnupg: apt reads the ASCII-armored key named by signed-by directly, and
 # gnupg would only add unused packages (and their CVEs) to the image.
+# Targeted base-package security fixes (ADR 0038), not a blanket upgrade.
+# Install before curl or Docker repository access so downloads use fixed apt.
 RUN apt-get update \
+    && apt-get install -y --no-install-recommends apt=3.0.4 libapt-pkg7.0=3.0.4 zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
