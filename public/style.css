@@ -156,11 +156,12 @@ pre{font-family:var(--mono);font-size:.85rem;margin:0;padding:.85rem 1rem;overfl
 .output{white-space:pre-wrap;max-height:28rem}
 .output:empty{display:none}
 #logs-status:empty{display:none}
-/* Log rows (app.js): the message wraps under itself, the prefix stays a column */
-.log-line{display:flex;gap:1ch}
-.log-prefix{flex:none;color:var(--muted)}
-.log-same{color:transparent}
-.log-message{flex:1;min-width:0;overflow-wrap:anywhere}
+/* Metadata heads each group instead of reserving a column beside every message.
+ * Collapse repeated headers without removing their text from selections/copies. */
+.log-line{display:block;position:relative}
+.log-prefix{display:block;color:var(--muted);overflow-wrap:anywhere}
+.log-same{position:absolute;inset:0 auto auto 0;max-width:100%;opacity:0;pointer-events:none}
+.log-message{display:block;min-height:1lh;overflow-wrap:anywhere}
 .log-eol{display:none}
 details > summary{cursor:pointer;font-weight:600}
 details[open] > summary{margin-bottom:.75rem}

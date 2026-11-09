@@ -46,8 +46,8 @@
   CVE-2026-78669, so its Trivy exception, due to expire on 2026-11-10, is
   removed. The separate CVE-2026-78661 exception is recorded in ADR 0039.
 - Logs: with JavaScript, stack and container logs are shown one row per line,
-  with the service and time in a muted column and long messages wrapping under
-  the message instead of under the prefix. A prefix identical to the previous
+  with the service and time in a muted header above full-width messages,
+  including on narrow screens. A prefix identical to the previous
   line's (a stack trace, a burst in the same second) is hidden but still
   copied. Without JavaScript, the plain-text snapshot is unchanged.
 - Operations: Pull and Up no longer flood the live output with one line per

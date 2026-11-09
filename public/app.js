@@ -72,9 +72,9 @@
      * an optional timestamp. Anything else is message. */
     var LOG_PREFIX = /^(?:[A-Za-z0-9][\w.-]*\s*\| )?(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ?)?/;
 
-    /* Render log text as one row per line: a muted prefix column and a message
-     * that wraps under itself, not under the prefix. A prefix equal to the
-     * previous line's (a stack trace, a burst in the same second) is kept for
+    /* Render log text as one row per line: a muted header above a full-width
+     * message. A prefix equal to the previous line's (a stack trace, a burst
+     * in the same second) is kept for
      * copying but not shown. textContent stays exactly the original text. */
     function logView(pre, maxChars) {
         var lastPrefix = null;
