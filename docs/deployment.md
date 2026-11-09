@@ -605,6 +605,33 @@ Requirements and refusals:
 - A healthcheck is mandatory. The panel reads the effective `State.Health`, so a
   healthcheck defined in the image is accepted too.
 
+### Application prerequisites and first activation
+
+Before enabling rollout, check that the application can run two releases at
+once:
+
+- Sessions and durable files must be accessible to both instances. Keep session
+  secrets and cookie settings compatible across releases; a shared session
+  store alone does not guarantee that existing sessions survive a change.
+- Check uploads, generated files and any cache used as application state.
+  Container-local files disappear when the old container is removed.
+- Allow enough memory, CPU and database connections for two instances, and
+  ensure that startup hooks and background work tolerate the overlap.
+- Use an immutable image reference for the release, such as a digest or a tag
+  your release process never replaces.
+- Apply schema changes using the new release's migration code before rollout,
+  and keep them compatible with the old web instance and any workers still
+  running. Add first; remove or rename in a later release. An App action in
+  the old container executes the old release's code. The panel does not run
+  migrations as part of rollout.
+
+For the first activation, ship the drain-aware readiness endpoint, the Docker
+healthcheck and the rollout labels together, including
+`panel.rollout.drain-file`. Run one ordinary **Up** to put that contract on the
+running container, then wait for it to be healthy. Adding the label only after
+that Up leaves the old container without the contract and rollout is refused.
+This initial Up can interrupt traffic.
+
 ### Drain contract
 
 `panel.rollout.drain-file` is optional, but without it the panel cannot promise
@@ -631,6 +658,13 @@ passed to `docker stop --time`. `stop_grace_period` still governs
 `docker compose stop`, but the rollout does not consult it. Set both to the same
 value if you want identical behavior.
 
+Size `drain-detect` for Docker's effective healthcheck interval, timeout and
+retry count. The `drain-time` window starts only after Docker reports the old
+instance unhealthy; it must still cover proxy propagation and the remaining
+duration of requests already sent to that instance. Long uploads, exports,
+WebSockets and SSE connections need an explicit interruption policy. The
+example values are starting points, not a continuity guarantee.
+
 ### Proxy
 
 The proxy must discover both instances, route only to healthy ones and stop
@@ -642,6 +676,37 @@ test uses it.
 to a **published loopback port**, while a rollout refuses published ports. Those
 Caddy routes are not compatible with rollout. A Caddy setup would need its own
 container-discovery configuration, which is outside this integration.
+
+In particular, Caddy's standard `dynamic a` upstreams do **not** run active
+health checks: adding `health_uri` to that configuration does not make it
+drain-aware. A shared Docker network and DNS refresh alone do not prove that
+an unhealthy instance is excluded. See the
+[Caddy dynamic upstream documentation](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#dynamic-upstreams).
+Use a discovery mechanism that actually excludes unready instances and verify
+it with the deployed proxy. If the proxy checks readiness over HTTP, that
+endpoint must itself fail while the drain marker exists; a marker checked only
+by Docker's healthcheck is insufficient for an independent HTTP check.
+
+### Verify before production use
+
+On an isolated disposable Linux daemon with the intended proxy configuration:
+
+1. Prove that a signed-in session survives an ordinary replacement after shared
+   session storage is enabled.
+2. Start two instances and observe requests reaching both. Mark one for drain
+   and verify that new traffic stops reaching it while in-flight requests can
+   finish. Restore exactly one healthy, unmarked instance before testing rollout.
+3. Run a rollout under continuous authenticated traffic, including a slow
+   request and a state-changing request. Check responses, session continuity,
+   duplicate effects and the final image/container state.
+4. Exercise a candidate that fails readiness and a failure after drainage.
+   Verify preservation of the old instance before the boundary and manual
+   intervention after it. Reconcile the service before retrying.
+
+The existing disposable-daemon integration test uses Traefik. It does not
+validate another proxy configuration or the application's session and schema
+compatibility. Keep production validation supervised; never point automated
+tests at a production daemon.
 
 ### What happens in the UI
 

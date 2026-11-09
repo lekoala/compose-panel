@@ -51,3 +51,11 @@ After V1 the direction is to understand the host the stacks run on, not only the
 ## Compose
 - **Opt-in service rollout.** Done ([ADR 0035](adr/0035-optional-service-rollout.md)): a service that declares `panel.rollout.enabled` gets a Rollout action. The panel starts a second instance, waits for it to become healthy, optionally drains the old one through a fixed marker and a real proxy, then stops and removes only the old container. Cleanup of the candidate is conditional before drainage; after the first drain attempt the panel reports an intervention instead of rolling back. One service, one stack lock, no persistence and no automatic crash recovery.
 - **Compose override files.** Stacks with `compose.override.yaml`, or several primary files, are refused today. Supporting them means editing and validating several files as one project (see ADR 0004).
+- **Trigger rollout from CI (later, not accepted).** A narrowly scoped machine
+  trigger could reuse the existing rollout implementation, stack lock and audit
+  log. It needs its own ADR because a non-browser API and technical credentials
+  change the current access model. Define stack/service permissions, credential
+  revocation, duplicate-trigger handling and bounded status observation before
+  implementation. A lost response or client timeout must not trigger an automatic
+  second rollout; a panel crash still leaves the outcome unknown, with no durable
+  queue or automatic recovery.

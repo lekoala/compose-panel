@@ -220,9 +220,23 @@ Reconciliation after a failed or interrupted rollout is manual:
   old container was marked but not stopped, the marker is still present; remove
   it yourself only after deciding whether to finish or roll back. The panel does
   not remove it.
+- Identify the old and candidate containers by full ID and inspect their images,
+  health and logs before choosing which to keep. Do not infer their roles from
+  a container name or number. Before restoring a drained instance, verify that
+  its release remains compatible with the current schema and shared state.
+- After reconciliation, verify the proxy routes to the intended instance and
+  exactly one container remains for the service, running and healthy. Include
+  stopped containers in the count: a leftover stopped container also blocks
+  rollout.
 - If the candidate is unhealthy, inspect its logs. A normal `Up` recreates the
   service with downtime; the panel never switches back automatically.
 - Do not run a panel action while reconciling with the CLI.
+
+Rollout currently has a browser workflow, with session, Origin and CSRF guards;
+there is no supported CI token or non-browser rollout API. Do not automate a
+retry after a disconnected observer, client timeout or panel crash: observation
+ending does not stop an operation, and a crash can leave its outcome unknown.
+Inspect Docker state before deciding on another attempt.
 
 The integration test is opt-in on a disposable lab daemon and uses a real proxy;
 it is not part of unattended CI.
