@@ -262,6 +262,11 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - The outcome is read back from the finished updater container (`container inspect` and bounded `container logs` of the fixed name, only when it carries the panel's label). Output is HTML-escaped and never written to application logs. A same-named container without the label is never read or removed.
 
 ## Container inspection (read-only)
+- The detail whitelist includes only network names, IPv4 and DNS names from
+  `NetworkSettings.Networks` (`DNSNames`, or `Aliases` when unavailable), all
+  escaped in HTML. Network IDs, endpoint IDs, MACs, gateways and other endpoint
+  fields remain excluded. No network operation is exposed
+  ([ADR 0037](adr/0037-container-networks.md)).
 - A second boundary, `ContainerInspector`, exposes only `docker container ls`, `inspect` and `logs` through the fixed executable and explicit argument arrays (never a shell). IDs are validated (`^[0-9a-f]{12,64}$`) and passed after `--`; there is no start/stop/remove/exec and no user-supplied option. See [ADR 0014](adr/0014-docker-container-inspection.md).
 - **Read-only is application-level.** Mounting the socket `:ro` does not restrict the Docker API; the guarantee is that the panel only ever builds the three read commands. A full compromise of the panel still has root-equivalent access through the socket, accepted for the single trusted administrator.
 - The home "Other containers" section and `GET /containers` are behind authentication and `no-store`. Container listing reads a fixed `docker container ls` template (fields individually JSON-encoded, Compose labels read with `.Label`, never the `.Labels` string parsed as a dictionary); `HealthStatus` and `Status` are untrusted text and are HTML-escaped before display.

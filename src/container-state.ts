@@ -146,6 +146,12 @@ export interface ContainerMount {
     readOnly: boolean;
 }
 
+export interface ContainerNetwork {
+    name: string;
+    ipv4: string | null;
+    dnsNames: string[];
+}
+
 /**
  * The whitelisted projection of `docker container inspect`. Only these fields
  * are ever extracted: `Config.Env`, `Args` and every other field are dropped and
@@ -168,6 +174,7 @@ export interface ContainerDetails {
     restartPolicy: string | null;
     ports: ContainerPort[];
     mounts: ContainerMount[];
+    networks: ContainerNetwork[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -222,6 +229,22 @@ function parseMounts(value: unknown): ContainerMount[] {
     return mounts;
 }
 
+function parseNetworks(value: unknown): ContainerNetwork[] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const networks: ContainerNetwork[] = [];
+    for (const [name, endpoint] of Object.entries(value)) {
+        if (!endpoint || typeof endpoint !== "object" || Array.isArray(endpoint)) continue;
+        const entry = asRecord(endpoint);
+        const names = Array.isArray(entry.DNSNames) ? entry.DNSNames : Array.isArray(entry.Aliases) ? entry.Aliases : [];
+        networks.push({
+            name,
+            ipv4: asText(entry.IPAddress),
+            dnsNames: [...new Set(names.filter((item): item is string => typeof item === "string" && item.length > 0))],
+        });
+    }
+    return networks.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /**
  * Project `docker container inspect` onto the whitelisted fields. The raw object
  * is never returned: `Config.Env` and `Args` cannot leak through here.
@@ -259,6 +282,7 @@ export function parseContainerInspect(stdout: string): ContainerDetails {
         restartPolicy: asText(asRecord(hostConfig.RestartPolicy).Name),
         ports: parsePublishedPorts(network.Ports),
         mounts: parseMounts(container.Mounts),
+        networks: parseNetworks(network.Networks),
     };
 }
 

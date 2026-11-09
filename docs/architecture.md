@@ -30,6 +30,11 @@ application-level, not enforced by the socket mount. See
 adds a separate `ActionRunner` boundary (`src/action-runner.ts`) for
 `docker cp`/`docker exec`; this boundary stays read-only ([ADR 0026](adr/0026-application-toolbox.md)).
 
+The container detail projection includes attached network names, IPv4 addresses
+and DNS names (`DNSNames`, else `Aliases`), using the existing inspect response
+and no additional Docker call ([ADR 0037](adr/0037-container-networks.md)). It
+does not infer connectivity or DNS resolution from membership.
+
 ## Engine and resource insights (read-only)
 `GET /server` renders Docker's own diagnostics: engine facts (`docker info`,
 projected onto a fixed field whitelist), per-container and per-stack resource

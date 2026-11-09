@@ -190,6 +190,53 @@ describe("parseContainerInspect", () => {
         ]);
     });
 
+    test("projects only network names, IPv4 and DNS names, with alias fallback", () => {
+        const raw = JSON.stringify({
+            Id: ID,
+            Config: { Env: ["SECRET=hidden"] },
+            NetworkSettings: {
+                SandboxKey: "private-sandbox",
+                Networks: {
+                    edge: {
+                        IPAddress: "172.20.0.3",
+                        DNSNames: ["web", "web", "", null, 42, "app-1"],
+                        Aliases: ["ignored-alias"],
+                        NetworkID: "private-network-id",
+                        EndpointID: "private-endpoint-id",
+                        MacAddress: "private-mac",
+                        Gateway: "private-gateway",
+                        GlobalIPv6Address: "private-ipv6",
+                    },
+                    database: { IPAddress: "172.21.0.4", DNSNames: null, Aliases: ["demo-db", "", false] },
+                    legacy: { Aliases: ["old-db"] },
+                    empty: { DNSNames: [], Aliases: ["must-not-fallback"] },
+                },
+            },
+        });
+        const details = parseContainerInspect(raw);
+        expect(details.networks).toEqual([
+            { name: "database", ipv4: "172.21.0.4", dnsNames: ["demo-db"] },
+            { name: "edge", ipv4: "172.20.0.3", dnsNames: ["web", "app-1"] },
+            { name: "empty", ipv4: null, dnsNames: [] },
+            { name: "legacy", ipv4: null, dnsNames: ["old-db"] },
+        ]);
+        const projected = JSON.stringify(details);
+        for (const secret of ["SECRET=hidden", "private-", "ignored-alias", "must-not-fallback"]) {
+            expect(projected).not.toContain(secret);
+        }
+    });
+
+    test("tolerates absent, empty and malformed network data without fabricating values", () => {
+        expect(parseContainerInspect(JSON.stringify({ Id: ID })).networks).toEqual([]);
+        for (const Networks of [undefined, null, {}, [], "bad", 123, { broken: null, array: [], string: "bad" }]) {
+            expect(parseContainerInspect(JSON.stringify({ Id: ID, NetworkSettings: { Networks } })).networks).toEqual([]);
+        }
+        const details = parseContainerInspect(
+            JSON.stringify({ Id: ID, NetworkSettings: { Networks: { edge: { IPAddress: 42, DNSNames: "bad", Aliases: {} } } } }),
+        );
+        expect(details.networks).toEqual([{ name: "edge", ipv4: null, dnsNames: [] }]);
+    });
+
     test("rejects malformed or unrecognized inspect output", () => {
         expect(() => parseContainerInspect("")).toThrow(ContainerStateError);
         expect(() => parseContainerInspect("not json")).toThrow(ContainerStateError);

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Container inspection: show each attached network's name, IPv4 and DNS names
+  (falling back to aliases on older Docker responses). Only these fields are
+  projected from the existing inspect response; no new Docker call or mutation
+  is exposed (ADR 0037).
+
 - App actions: new `exec` runner (ADR 0036). An action declares its own fixed
   `command` (a bounded argv, no shell) in the manifest the source names with
   `manifest: composer.json` or `package.json`, so an image needs no Composer, npm

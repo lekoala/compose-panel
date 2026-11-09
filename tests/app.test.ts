@@ -3538,6 +3538,41 @@ describe("home other-containers section", () => {
 });
 
 describe("container detail and logs", () => {
+    test.each(["aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"])("renders escaped networks for container %s", async (id) => {
+        const raw = JSON.parse(inspectJson(id, "network-fixture"));
+        raw[0].NetworkSettings.Networks = {
+            "edge<script>": {
+                IPAddress: "172.20.0.2<img>",
+                DNSNames: ["database<script>"],
+                EndpointID: "hidden-endpoint",
+                Gateway: "hidden-gateway",
+            },
+            legacy: { Aliases: ["demo-db"] },
+        };
+        const app = makeApp(
+            {},
+            undefined,
+            undefined,
+            undefined,
+            root,
+            detailedInspector({
+                list: containerFixture(),
+                inspect: { code: 0, stdout: JSON.stringify(raw), stderr: "", timedOut: false, truncated: false },
+            }),
+        );
+        const session = await login(app);
+        const response = await authed(app, `/containers/${id}`, session);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        const html = await response.text();
+        for (const value of ["edge&lt;script&gt;", "172.20.0.2&lt;img&gt;", "database&lt;script&gt;", "demo-db"]) {
+            expect(html).toContain(`<code>${value}</code>`);
+        }
+        for (const value of ["edge<script>", "172.20.0.2<img>", "database<script>", "hidden-endpoint", "hidden-gateway", "SECRET=hidden"]) {
+            expect(html).not.toContain(value);
+        }
+    });
+
     test("renders a read-only detail page with ports and mounts", async () => {
         const app = makeApp(
             {},

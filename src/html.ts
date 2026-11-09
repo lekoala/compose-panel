@@ -1678,6 +1678,24 @@ function containerPortsSection(details: ContainerDetails): string {
     );
 }
 
+function containerNetworksSection(details: ContainerDetails): string {
+    if (details.networks.length === 0) {
+        return `<section class="card"><h2>Networks</h2><p class="muted">No network attachments reported.</p></section>`;
+    }
+    const rows = details.networks
+        .map((network) => {
+            const ipv4 = network.ipv4 ? `<code>${escapeHtml(network.ipv4)}</code>` : `<span class="muted">—</span>`;
+            const names = network.dnsNames.length
+                ? network.dnsNames.map((name) => `<code>${escapeHtml(name)}</code>`).join(", ")
+                : `<span class="muted">—</span>`;
+            return `<tr><td><code>${escapeHtml(network.name)}</code></td><td>${ipv4}</td><td>${names}</td></tr>`;
+        })
+        .join("");
+    return `<section class="card"><h2>Networks</h2>
+        <p class="muted">Attachments and DNS names reported by Docker; connectivity and name resolution are not checked.</p>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Network</th><th>IPv4</th><th>DNS names</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+
 function containerMountsSection(details: ContainerDetails): string {
     if (details.mounts.length === 0) {
         return `<section class="card"><h2>Mounts</h2><p class="muted">No mounts.</p></section>`;
@@ -1731,7 +1749,7 @@ export interface ContainerDetailPageOptions {
 
 /**
  * Read-only detail of a single container. Shows the whitelisted `inspect`
- * projection, ports, restart policy, health and mounts (collapsed); there is no
+ * projection, ports, networks, restart policy, health and mounts (collapsed); there is no
  * start/stop/remove/exec and no env or args.
  */
 export function containerDetailPage(options: ContainerDetailPageOptions): string {
@@ -1760,6 +1778,7 @@ export function containerDetailPage(options: ContainerDetailPageOptions): string
             detailRow("Exit code", details.exitCode !== null ? `<code>${details.exitCode}</code>` : `<span class="muted">—</span>`) +
             `</tbody></table></div></section>` +
             containerPortsSection(details) +
+            containerNetworksSection(details) +
             containerMountsSection(details);
     } else {
         extras =

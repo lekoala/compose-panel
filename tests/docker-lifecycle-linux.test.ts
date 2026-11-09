@@ -384,6 +384,33 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         }
     }, 60_000);
 
+    test("network membership and DNS aliases appear on the real container detail page", async () => {
+        const network = (await dockerOk(["network", "create", "cp-qa-inspection"])).trim();
+        let id = "";
+        try {
+            id = (await dockerOk(["run", "-d", "--network", network, "--network-alias", "demo-db", IMAGE, "sleep", "3600"])).trim();
+            const raw = JSON.parse(await dockerOk(["container", "inspect", "--", id]));
+            const ipv4 = raw[0].NetworkSettings.Networks["cp-qa-inspection"].IPAddress;
+            expect(ipv4).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+            const response = await panel!.get(`/containers/${id}`);
+            expect(response.status).toBe(200);
+            const html = await response.text();
+            for (const value of ["cp-qa-inspection", ipv4, "demo-db"]) {
+                expect(html).toContain(`<code>${value}</code>`);
+            }
+            // Re-read after detachment: stale membership and IPv4 must disappear.
+            await dockerOk(["network", "disconnect", network, id]);
+            const detached = await panel!.get(`/containers/${id}`);
+            expect(detached.status).toBe(200);
+            const detachedHtml = await detached.text();
+            expect(detachedHtml).not.toContain("<code>cp-qa-inspection</code>");
+            expect(detachedHtml).not.toContain(`<code>${ipv4}</code>`);
+        } finally {
+            if (id) await docker(["rm", "-f", id]);
+            await docker(["network", "rm", network]);
+        }
+    }, 60_000);
+
     test("pulling by tag records the multi-platform index digest in RepoDigests (ADR 0018)", async () => {
         // The release publishes the index digest; the panel compares it with
         // RepoDigests, never with the local image ID. IMAGE is multi-platform.
