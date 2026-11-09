@@ -51,6 +51,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock ./
 COPY src ./src
+RUN bun -e 'await Bun.write("src/build-info.json", JSON.stringify({ version: process.env.VERSION ?? "dev", revision: process.env.REVISION ?? "unknown" }))'
 COPY public ./public
 # The panel always binds 127.0.0.1 (see src/server.ts); reach it via the host
 # loopback (host networking) or an SSH tunnel, never a public port.

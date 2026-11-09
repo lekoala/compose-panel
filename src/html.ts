@@ -36,8 +36,12 @@ import type { RolloutDeclaration } from "./rollout.ts";
 import { isExplorerHref } from "./database.ts";
 import { isValidDomain } from "./caddy.ts";
 import packageJson from "../package.json";
+import buildInfo from "./build-info.json";
 
-const VERSION = packageJson.version;
+const BUILD_REVISION =
+    typeof buildInfo.revision === "string" && /^[a-f0-9]{7,64}$/i.test(buildInfo.revision) ? buildInfo.revision.slice(0, 12) : null;
+const VERSION =
+    buildInfo.version === "dev" ? `${packageJson.version}-dev${BUILD_REVISION ? ` + ${BUILD_REVISION}` : ""}` : packageJson.version;
 
 export function escapeHtml(value: string): string {
     return value.replace(/[&<>"']/g, (char) => {

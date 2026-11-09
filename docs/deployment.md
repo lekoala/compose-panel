@@ -833,6 +833,13 @@ container uses it.
 
 ### Upgrade and rollback
 
+For a local development image, build with `--build-arg VERSION=dev` (the
+default) and `--build-arg REVISION="$(git rev-parse HEAD)"`. The footer and
+About page show the package version with a `-dev` suffix and the first twelve
+characters of the commit when supplied. Official release builds keep the plain
+package version. These values identify the build inputs; they do not certify a
+clean working tree. Running from source also shows `-dev`, without a commit.
+
 Run these commands **on the host**, from the repository checkout, never from
 inside the panel: recreating the panel container stops the process that would
 run them. This is also the recovery path when an update from the browser fails.
