@@ -52,6 +52,7 @@ jobs:
       - name: Scan linux/amd64 image (gate before any push)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: v0.76.2
           image-ref: ghcr.io/lekoala/compose-panel:scan-amd64
           format: table
           severity: CRITICAL,HIGH
@@ -68,6 +69,7 @@ jobs:
       - name: Scan linux/arm64 image (gate before any push)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: v0.76.2
           image-ref: ghcr.io/lekoala/compose-panel:scan-arm64
           format: table
           severity: CRITICAL,HIGH

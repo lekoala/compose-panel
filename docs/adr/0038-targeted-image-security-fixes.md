@@ -2,6 +2,9 @@
 
 Status: accepted.
 
+The later [ADR 0039](0039-temporary-compose-html-cve-exception.md) supersedes
+the blocking/no-exception decision for CVE-2026-78661 below through 2026-11-23.
+
 ## Context
 
 The pinned Bun base contains apt/libapt-pkg7.0 3.0.3 and zlib1g

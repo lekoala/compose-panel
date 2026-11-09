@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+- CI: explicitly pin Trivy v0.76.2 for repository and image scans in CI and
+  releases, replacing the action's v0.70.0 default. Temporarily accept
+  CVE-2026-78661 only at the Compose binary path until 2026-11-23 (ADR 0039).
+  Compose remains vulnerable; remove the exception when a fixed binary ships.
+
 - Image security: explicitly pin corrected apt/libapt-pkg7.0 and zlib1g
-  packages over the Bun base (ADR 0038). The newer CVE-2026-78661 in
-  Compose 5.7.0 remains a blocking Trivy finding; no exception is added.
+  packages over the Bun base (ADR 0038). The separate Compose finding is
+  covered by the temporary exception in ADR 0039.
 
 - Container inspection: show each attached network's name, IPv4 and DNS names
   (falling back to aliases on older Docker responses). Only these fields are
@@ -39,7 +44,7 @@
 - Security: Compose plugin 5.7.0 in the image and in CI (Go 1.26.10,
   `golang.org/x/net` v0.60.0, verified in the released binary). It fixes
   CVE-2026-78669, so its Trivy exception, due to expire on 2026-11-10, is
-  removed: `.trivyignore.yaml` now holds no exception.
+  removed. The separate CVE-2026-78661 exception is recorded in ADR 0039.
 - Logs: with JavaScript, stack and container logs are shown one row per line,
   with the service and time in a muted column and long messages wrapping under
   the message instead of under the prefix. A prefix identical to the previous

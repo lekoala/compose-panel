@@ -20,6 +20,11 @@ that image tag and digest together with the `Dockerfile` `FROM`.
 must not depend on a canary. See the quality gates in [AGENTS.md](../AGENTS.md)
 for the conditions to add it.
 
+All four scans explicitly pin Trivy v0.76.2 through the action's `version`
+input; the pinned trivy-action v0.36.0 otherwise defaults to Trivy v0.70.0.
+Update the scanner version in both workflows together. Updating the scanner
+does not update dependencies embedded in the image it scans.
+
 Scans: a filesystem scan covers dependencies and secrets
 (`scanners: vuln,secret`, skipping `node_modules`/`private`/`.git`), and the
 built image is scanned separately. Both gate on `CRITICAL,HIGH`. The image scans
@@ -56,8 +61,11 @@ guaranteed (apt resolves `ca-certificates` and `curl` at build time).
 The 2026-11-09 image report requires apt/libapt-pkg7.0 3.0.4 and zlib1g
 1:1.3.dfsg+really1.3.1-1+deb13u1; the Dockerfile installs these exact fixes.
 Compose 5.7.0 still embeds `golang.org/x/net` v0.60.0, so CVE-2026-78661
-(fixed in v0.62.0) remains blocking. Updating Debian packages cannot repair
-a Go dependency compiled into the Compose binary. No exception is added.
+(fixed in v0.62.0) remains present. Updating Debian packages cannot repair
+a Go dependency compiled into the Compose binary. A maintainer-requested
+exception covers only this CVE at the Compose binary path until 2026-11-23
+([ADR 0039](adr/0039-temporary-compose-html-cve-exception.md)); it accepts
+residual risk and does not claim the binary is fixed or non-exploitable.
 
 Image metadata: the runtime stage carries OCI `org.opencontainers.image.*`
 labels (title, description, url, source, licenses, vendor, version, revision).

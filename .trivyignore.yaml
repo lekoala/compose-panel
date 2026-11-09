@@ -4,7 +4,17 @@
 # path it applies to, and an expiry date. Past `expired_at` the entry stops
 # applying and the scan fails again, so every exception is re-decided.
 #
-# No exception is currently configured. Compose v5.7.0 fixes CVE-2026-78669 but still
-# embeds golang.org/x/net v0.60.0: CVE-2026-78661 (fixed in v0.62.0) remains
-# a blocking finding until a fixed release or a reviewed exception is available.
-vulnerabilities: []
+# Compose v5.7.0 fixes CVE-2026-78669, not CVE-2026-78661. See ADR 0039.
+vulnerabilities:
+  - id: CVE-2026-78661
+    paths:
+      - usr/libexec/docker/cli-plugins/docker-compose
+    expired_at: 2026-11-23
+    statement: >-
+      Temporary maintainer-approved risk acceptance (ADR 0039, 2026-11-09).
+      Compose v5.7.0 still embeds golang.org/x/net v0.60.0; the HTML parser
+      denial of service is fixed in v0.62.0. One trusted administrator and
+      fixed authenticated commands with subprocess timeouts limit exposure,
+      but parser reachability is not proven absent and memory exhaustion
+      remains possible. Remove when a corrected official Compose binary is
+      pinned; review before expiry, do not automatically renew.
