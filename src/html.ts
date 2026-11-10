@@ -490,8 +490,8 @@ export interface DomainsSectionOptions {
 
 /**
  * Caddy site management (ADR 0030). One card with three parts: the attached
- * domains with an Open-application link and a two-step Detach, the Attach
- * form (POST, only with a configured helper), and the GET preview of the
+ * domains with an Open-application link and a two-step Detach, a shared form
+ * for Attach (POST, only with a configured helper) and the GET preview of the
  * managed file (never a mutation). Stacks with a declared external owner get
  * a read-only card instead of the forms. Every dynamic value is escaped; the
  * domain link is only built for a strictly valid domain.
@@ -521,31 +521,30 @@ export function domainsSection(options: DomainsSectionOptions): string {
     if (owner) {
         return `<section class="card domains"><h2>Domains</h2>${note("info", `Routing for this stack is managed externally (${owner}). Domains are shown here for information only and cannot be attached from this panel.`)}${status}${list}</section>`;
     }
-    const attach = socketReady
-        ? `<form method="post" action="${href}/domains/attach" class="form domains-form">` +
-          `<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">` +
-          `<label>Domain <input type="text" name="domain" value="${escapeHtml(preview.domain)}" placeholder="app.example.com" autocomplete="off" spellcheck="false" required></label>` +
-          `<label>Target service <input type="text" name="service" value="${escapeHtml(preview.service)}" placeholder="web" list="caddy-services" autocomplete="off" spellcheck="false" required><datalist id="caddy-services">${services.map((name) => `<option value="${escapeHtml(name)}">`).join("")}</datalist></label>` +
-          `<label>Local upstream port <input type="text" name="port" value="${escapeHtml(preview.port)}" placeholder="8080" list="caddy-ports" autocomplete="off" spellcheck="false" inputmode="numeric" required>${portOptions("caddy-ports", published)}</label>` +
-          `<div class="form-actions"><button type="submit" class="btn btn-primary">Attach domain</button></div></form>` +
-          `<p class="muted">Attaching validates the service and port, publishes the Caddy file and reloads Caddy. Only TCP ports bound to 127.0.0.1 are eligible. DNS and HTTPS are not checked by the panel.</p>`
+    const explanation = socketReady
+        ? `<p class="muted">Attaching validates the service and port, publishes the Caddy file and reloads Caddy. Only TCP ports bound to 127.0.0.1 are eligible. DNS and HTTPS are not checked by the panel.</p>`
         : note(
               "info",
               "Preview only: the helper is not configured, so nothing can be attached. See the deployment guide to enable domain management.",
           );
-    const previewOptions = services.map((name) => `<option value="${escapeHtml(name)}">`).join("");
-    const form =
-        `<form method="get" action="${href}" class="form domains-form">` +
-        `<label>Domain <input type="text" name="caddyDomain" value="${escapeHtml(preview.domain)}" placeholder="app.example.com" autocomplete="off" spellcheck="false"></label>` +
-        `<label>Target service <input type="text" name="caddyService" value="${escapeHtml(preview.service)}" placeholder="web" list="caddy-services-preview" autocomplete="off" spellcheck="false"><datalist id="caddy-services-preview">${previewOptions}</datalist></label>` +
-        `<label>Local upstream port <input type="text" name="caddyPort" value="${escapeHtml(preview.port)}" placeholder="8080" list="caddy-ports-preview" autocomplete="off" spellcheck="false" inputmode="numeric">${portOptions("caddy-ports-preview", published)}</label>` +
-        `<div class="form-actions"><button type="submit" class="btn">Preview configuration</button></div></form>`;
+    const serviceOptions = services.map((name) => `<option value="${escapeHtml(name)}">`).join("");
+    // Only the Attach submitter sends the CSRF token, keeping it out of GET preview URLs.
+    const attachButton = socketReady
+        ? `<button type="submit" class="btn btn-primary" name="csrf" value="${escapeHtml(csrf)}">Attach domain</button>`
+        : "";
+    const required = socketReady ? " required" : "";
+    const form = `<form method="${socketReady ? "post" : "get"}" action="${socketReady ? `${href}/domains/attach` : href}" class="form domains-form">
+        <label>Domain <input type="text" name="${socketReady ? "domain" : "caddyDomain"}" value="${escapeHtml(preview.domain)}" placeholder="app.example.com" autocomplete="off" spellcheck="false"${required}></label>
+        <label>Target service <input type="text" name="${socketReady ? "service" : "caddyService"}" value="${escapeHtml(preview.service)}" placeholder="web" list="caddy-services" autocomplete="off" spellcheck="false"${required}><datalist id="caddy-services">${serviceOptions}</datalist></label>
+        <label>Local upstream port <input type="text" name="${socketReady ? "port" : "caddyPort"}" value="${escapeHtml(preview.port)}" placeholder="8080" list="caddy-ports" autocomplete="off" spellcheck="false" inputmode="numeric"${required}>${portOptions("caddy-ports", published)}</label>
+        <div class="form-actions">${attachButton}<button type="submit" class="btn" formmethod="get" formaction="${href}" formnovalidate>Preview configuration</button></div>
+    </form>`;
     const output = preview.error
         ? note("warn", preview.error)
         : preview.file
           ? `<details open><summary>Generated Caddy configuration</summary><pre class="output">${escapeHtml(preview.file)}</pre></details>`
           : "";
-    return `<section class="card domains"><h2>Domains</h2>${status}${list}${publishedPorts(published)}${attach}${form}${output}</section>`;
+    return `<section class="card domains"><h2>Domains</h2>${status}${list}${publishedPorts(published)}${socketReady ? "" : explanation}${form}${socketReady ? explanation : ""}${output}</section>`;
 }
 
 /** Eligible host ports as suggestions for the port field. */

@@ -263,6 +263,33 @@ test("domains section suggests only eligible published host ports", () => {
     expect(html).toContain("0.0.0.0:5433");
 });
 
+test("domains section shares fields between POST attach and a token-free GET preview", () => {
+    const html = domainsSection({
+        stackName: "web",
+        csrf: "csrf-token",
+        services: ["web"],
+        owner: null,
+        attached: [],
+        statusError: null,
+        socketReady: true,
+        preview: { domain: "app.example.com", service: "web", port: "8080", file: null, error: null, hasInput: true },
+        confirmDetach: null,
+    });
+    expect(html.match(/<form\b/g)).toHaveLength(1);
+    expect(html.match(/<input\b/g)).toHaveLength(3);
+    expect(html).toContain('method="post" action="/stacks/web/domains/attach"');
+    for (const [name, value] of [
+        ["domain", "app.example.com"],
+        ["service", "web"],
+        ["port", "8080"],
+    ]) {
+        expect(html).toContain(`name="${name}" value="${value}"`);
+    }
+    expect(html).toContain('class="btn btn-primary" name="csrf" value="csrf-token"');
+    expect(html).not.toContain('<input type="hidden" name="csrf"');
+    expect(html).toContain('class="btn" formmethod="get" formaction="/stacks/web" formnovalidate');
+});
+
 test("domains section escapes the generated file instead of interpreting it", () => {
     const file =
         "# compose-panel:managed v1\n# compose-panel:stack web\n# compose-panel:service <b>web</b>\n\napp.example.com {\n\treverse_proxy 127.0.0.1:8080\n}\n";

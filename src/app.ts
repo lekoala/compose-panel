@@ -934,10 +934,10 @@ export function createApp(options: AppOptions): App {
         confirmDetach: string | null,
     ): Promise<string> {
         if (!config.caddyEnabled) return "";
-        const domain = (query?.get("caddyDomain") ?? "").slice(0, 253);
-        const service = (query?.get("caddyService") ?? "").slice(0, 64);
-        const portText = (query?.get("caddyPort") ?? "").slice(0, 5);
-        const hasInput = query !== null && (query.has("caddyDomain") || query.has("caddyService") || query.has("caddyPort"));
+        const domain = (query?.get("caddyDomain") ?? query?.get("domain") ?? "").slice(0, 253);
+        const service = (query?.get("caddyService") ?? query?.get("service") ?? "").slice(0, 64);
+        const portText = (query?.get("caddyPort") ?? query?.get("port") ?? "").slice(0, 5);
+        const hasInput = ["caddyDomain", "caddyService", "caddyPort", "domain", "service", "port"].some((key) => query?.has(key));
         let preview: { file: string | null; error: string | null } = { file: null, error: null };
         if (hasInput && !owner) {
             preview = previewSiteFile(stackName, serviceNames, domain, service, portText);

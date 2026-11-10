@@ -724,26 +724,29 @@ describe("caddy domains preview", () => {
         expect(html).toContain('name="caddyDomain"');
     });
 
-    test("previews the managed file for valid input", async () => {
-        const { provider } = controllableProvider();
-        const withService: ComposeProvider = {
-            ...provider,
-            projectServices: async () => ({
-                code: 0,
-                stdout: JSON.stringify([{ Service: "web", State: "running" }]),
-                stderr: "",
-                timedOut: false,
-                truncated: false,
-            }),
-        };
-        const app = makeApp({ caddyEnabled: true }, undefined, withService);
-        const session = await login(app);
-        const response = await authed(app, "/stacks/demo?caddyDomain=app.example.com&caddyService=web&caddyPort=8080", session);
-        expect(response.status).toBe(200);
-        const html = await response.text();
-        expect(html).toContain("app.example.com");
-        expect(html).toContain("reverse_proxy 127.0.0.1:8080");
-    });
+    test.each(["caddyDomain=app.example.com&caddyService=web&caddyPort=8080", "domain=app.example.com&service=web&port=8080"])(
+        "previews the managed file for valid input: %s",
+        async (query) => {
+            const { provider } = controllableProvider();
+            const withService: ComposeProvider = {
+                ...provider,
+                projectServices: async () => ({
+                    code: 0,
+                    stdout: JSON.stringify([{ Service: "web", State: "running" }]),
+                    stderr: "",
+                    timedOut: false,
+                    truncated: false,
+                }),
+            };
+            const app = makeApp({ caddyEnabled: true }, undefined, withService);
+            const session = await login(app);
+            const response = await authed(app, `/stacks/demo?${query}`, session);
+            expect(response.status).toBe(200);
+            const html = await response.text();
+            expect(html).toContain("app.example.com");
+            expect(html).toContain("reverse_proxy 127.0.0.1:8080");
+        },
+    );
 
     test("reports invalid input as a warning without failing the page", async () => {
         const app = makeApp({ caddyEnabled: true });
