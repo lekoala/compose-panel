@@ -148,6 +148,15 @@ that the old instance is kept. Run it with
 `bash scripts/docker-lab/run.sh tests/rollout-linux.test.ts`. It refuses a
 non-lab daemon exactly like the lifecycle test and never runs in unattended CI.
 
+The maintenance test (`tests/maintenance-linux.test.ts`) is opt-in on the same
+lab daemon. It builds backdated and recent fixtures, keeps one image referenced
+by a stopped container and a volume with data, then runs each fixed prune scope
+through `HostMaintenance` and checks that only the expected artifacts
+disappear. It covers both storage stores: the containerd store of Docker 29
+keeps its own import timestamp, so a backdated image config is not eligible
+there and the test asserts the week-old floor keeps it instead of overreaching.
+Never runs in unattended CI.
+
 ## Publication (tags only)
 
 Releases are published by `.github/workflows/release.yml`, triggered only by

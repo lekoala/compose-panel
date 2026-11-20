@@ -6,7 +6,7 @@ Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`,
 - One local Linux Docker Engine and one Bun web process. Single trusted administrator.
 - Existing Compose directories are the source of truth. Docker is the source of truth for container state.
 - HTML from the server, minimal vanilla JS, optional pinned static Actual CSS. No Vue, React, Socket.IO, ORM, Redis, scheduler, generic job framework, remote agents, or interactive terminal.
-- No arbitrary Docker command or arbitrary file browser. Only explicit allowed actions.
+- No arbitrary Docker command or arbitrary file browser. Only explicit allowed actions. Docker storage maintenance (ADR 0040) is part of that allow-list: three fixed prune scopes with a one-week age floor, never volumes, containers or networks, and never `docker system prune`. No scheduler.
 - No database or durable operation queue in V1. No claim of restart recovery. A crash may leave an operation outcome unknown.
 - Compose CLI calls go through the `ComposeProvider` boundary (`src/compose-provider.ts`); do not scatter engine-specific argument building or `if (engine === ...)` checks. V1 targets Docker Compose only.
 

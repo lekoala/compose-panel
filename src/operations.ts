@@ -1,7 +1,7 @@
 import { randomSuffix } from "./fs-safe.ts";
 import type { CommandResult } from "./docker.ts";
 import type { ComposeProvider, ComposeTarget } from "./compose-provider.ts";
-import { StackLocks, StackBusyError } from "./locks.ts";
+import { StackLocks, MaintenanceBusyError, StackBusyError } from "./locks.ts";
 
 export const OPERATION_ACTIONS = ["up", "pull", "stop", "start", "restart", "down", "pull-up"] as const;
 export type OperationAction = (typeof OPERATION_ACTIONS)[number];
@@ -212,7 +212,9 @@ export class OperationManager {
     }): { operation: OperationView; release: () => void } {
         if (this.shuttingDown) throw new OperationsDisabledError();
         const release = this.locks.tryAcquire(input.stack);
-        if (!release) throw new StackBusyError();
+        if (!release) {
+            throw this.locks.maintenanceActive() ? new MaintenanceBusyError() : new StackBusyError();
+        }
         if (input.project && this.projects.has(input.project)) {
             release();
             throw new StackBusyError(

@@ -123,6 +123,8 @@ export interface DiskUsage {
 export interface DiskUsageCache {
     /** Return the cached result while fresh, else read again (never on a live refresh). */
     read(inspector: ContainerInspector, now: number, ttlMs: number, options?: InspectorReadOptions): Promise<DiskUsage>;
+    /** Drop the cached result, e.g. after a storage prune changed the numbers. */
+    clear(): void;
 }
 
 // ---- Parsing helpers --------------------------------------------------------
@@ -471,6 +473,10 @@ export function createDiskUsageCache(): DiskUsageCache {
                 cachedAt = now;
             }
             return fresh;
+        },
+        clear() {
+            cached = null;
+            cachedAt = 0;
         },
     };
 }

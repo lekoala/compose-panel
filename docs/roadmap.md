@@ -40,6 +40,10 @@ After V1 the direction is to understand the host the stacks run on, not only the
 - **Check a registry without pulling.** Compare a tag's remote digest with the local one so "update available" shows before any download. Needs registry credentials in the container and honest handling of rate limits, private registries and local builds (ADR 0011 covers only images already pulled).
 
 ## Host insights and maintenance
+- **Docker storage maintenance.** Done ([ADR 0040](adr/0040-docker-storage-maintenance.md)):
+  the Server page prunes build cache and images older than a week, in three
+  fixed scopes, one run at a time and never volumes or containers. Manual only:
+  recurring cleanup stays a host timer and the panel never schedules it.
 - **Read-only host status** the container cannot see through namespaces: available packages and security updates, reboot required, filesystems, swap, zombie processes. Data comes from an optional, strictly allow-listed read-only host component — no arbitrary commands, no terminal, no free `sudo`.
 - **Targeted maintenance** using the distribution's own mechanism (for example `unattended-upgrades`): check, review and apply updates, then a controlled reboot with a separate confirmation. One package transaction at a time, audited, never a distribution upgrade. A single failing third-party repository should be identifiable and offered for temporary disable without blocking the rest.
 - **Host toolbox (later, not accepted).** A host-side runner, socket, sudoers entries or systemd units for administrator scripts stay out of scope; [ADR 0026](adr/0026-application-toolbox.md) covers only the application toolbox. A concrete need would need its own ADR.

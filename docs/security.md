@@ -283,6 +283,41 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - The optional Live refresh polls `GET /server/stats` (authenticated, `no-store`, JSON) which reads only the container list and `docker stats` — never `docker info` and never `docker system df`. Polling is client-side, sequential, paused while the tab is hidden and stopped on `401`; the server starts no background collection.
 - Stack aggregation reuses the strict ADR 0014 classification: external and standalone containers are visible but never added to a managed stack on a name resemblance. A stack's CPU is a cumulative figure that may exceed 100 %, network/block I/O are cumulative counters (not rates), and disk usage is Docker-managed storage only — not total host disk usage.
 
+## Docker storage maintenance (ADR 0040)
+- Available to the authenticated administrator like any other mutation; no
+  feature flag. The card and the route are always present, but nothing runs
+  without a confirmed POST. No Docker call is made on page load beyond what the
+  Server page already reads.
+- The browser only names one of three fixed scopes. The argument array is built
+  on the server, with a hard-coded one-week age floor, the fixed `docker`
+  executable and no shell. No filter, amount, label or image reference from a
+  request reaches the command line.
+- The build-cache scope runs with `BUILDX_BUILDER=default`, so a host that has
+  Buildx installed cannot be redirected to a remote BuildKit builder through
+  the inherited environment or the current builder selection. The default
+  builder is the local docker driver; the legacy CLI ignores the variable.
+- Volumes, containers and networks are never removed, and `docker system prune`
+  is not offered. The panel acts only on the daemon its socket is connected to.
+- The POST requires an active session, an allowed Origin, a matching CSRF
+  token, the confirmation field, no pending self-update and no active stack
+  mutation. The engine is reserved synchronously before the redirect, so a
+  double submit cannot start two runs.
+- `StackLocks` makes maintenance mutually exclusive with every stack mutation
+  (operations, saves, app actions, rollouts, backup purge) and `hasActive()`
+  includes it, so a panel self-update is refused while a prune runs.
+- The run is server-side and bounded (timeout, output cap). A timeout or an
+  unconfirmed exit is `unknown`; only the unconfirmed case keeps the engine
+  lock. The command is irreversible and is never replayed after a crash.
+- The audit line records the scope, status, exit code, flags and best-effort
+  parsed bytes, never the command output. Reclaimed size stays best effort: an
+  unparsed or truncated summary is unknown, never zero.
+- The interface states that `unused-images` removes tagged images no container
+  references, so future deployments, recreations and rollbacks — including the
+  panel's own rollback image, whose age is its creation time — may need a
+  download or a rebuild. A stopped container keeps its image.
+- Nothing is scheduled. Recurring cleanup remains a host timer, outside the
+  panel and outside its guarantees.
+
 ## Streaming (P5)
 - Both event streams require an authenticated session and answer `401` (never a login redirect) without one. Stack names are validated exactly like reads; unknown stacks are `404`.
 - Open streams are bound to their session id: logout closes them immediately, and each heartbeat closes a stream whose session has expired (the check does not refresh idle activity). The session is also re-checked synchronously just before subscribing, so a logout during the awaited Docker discovery cannot let a stream register. An operation observer disconnect still leaves the operation running; closing the last log reader still triggers the follow cleanup.

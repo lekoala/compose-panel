@@ -83,6 +83,7 @@ function makeApp(
         operationTimeoutMs: 60_000,
         rolloutEnabled: false,
         rolloutTimeoutMs: 900_000,
+        maintenanceTimeoutMs: 300_000,
         shutdownGraceMs: 5_000,
         sseHeartbeatMs: 15_000,
         sseTimeoutMs: 1_800_000,
@@ -3964,6 +3965,145 @@ describe("server stats endpoint", () => {
         expect(payload.runningContainers).toBeGreaterThan(0);
         expect(Array.isArray(payload.attention)).toBe(true);
         expect(payload.notes.length).toBeGreaterThan(0);
+    });
+});
+
+describe("Docker maintenance (ADR 0040)", () => {
+    const emptyOk: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+
+    function appWith(
+        runner: DockerRunner,
+        overrides: Partial<AppConfig> = {},
+        inspector: ContainerInspector = serverInspector({ list: containerFixture() }),
+    ): App {
+        return makeApp(overrides, runner, serverProvider(), undefined, root, inspector);
+    }
+
+    function postMaintenance(app: App, session: string, fields: Record<string, string>, origin = ORIGIN): Promise<Response> {
+        return authed(app, "/server/maintenance", session, {
+            method: "POST",
+            headers: { origin, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(fields).toString(),
+        });
+    }
+
+    async function csrfOf(app: App, session: string, path = "/server"): Promise<string> {
+        return /name="csrf" value="([^"]+)"/.exec(await (await authed(app, path, session)).text())![1]!;
+    }
+
+    async function until(condition: () => boolean, timeoutMs = 2000): Promise<void> {
+        const started = Date.now();
+        while (!condition()) {
+            if (Date.now() - started > timeoutMs) throw new Error("condition not reached");
+            await Bun.sleep(5);
+        }
+    }
+
+    test("is available by default and the route requires a session", async () => {
+        const app = appWith(async () => emptyOk);
+        const session = await login(app);
+        const html = await (await authed(app, "/server", session)).text();
+        expect(html).toContain('id="maintenance"');
+        // No configuration turns it on: only an authenticated, confirmed POST runs.
+        const anonymous = await app.fetch(
+            new Request(`${ORIGIN}/server/maintenance`, {
+                method: "POST",
+                headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+                body: "scope=unused-images&confirm=1",
+            }),
+        );
+        expect(anonymous.status).toBe(401);
+        expect(app.maintenance.last()).toBeNull();
+    });
+
+    test("starts the fixed command, redirects at once and keeps the result for the next page", async () => {
+        const calls: string[][] = [];
+        const app = appWith(async (args) => {
+            calls.push(args);
+            if (args[0] === "image" && args[1] === "prune") return { ...emptyOk, stdout: "Total reclaimed space: 3GB\n" };
+            return emptyOk;
+        });
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const response = await postMaintenance(app, session, { csrf, scope: "unused-images", confirm: "1" });
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/server?maintenance=1");
+        await until(() => app.maintenance.last()?.status !== "running");
+        expect(calls).toContainEqual(["image", "prune", "-a", "-f", "--filter", "until=168h"]);
+        expect(app.maintenance.last()!.status).toBe("succeeded");
+        expect(app.maintenance.last()!.reclaimedBytes).toBe(3_000_000_000);
+        const html = await (await authed(app, "/server?maintenance=1", session)).text();
+        expect(html).toContain('id="maintenance"');
+        expect(html).toContain("3GB");
+    });
+
+    test("refuses without confirmation, with an unknown scope or a foreign origin, and runs nothing", async () => {
+        const calls: string[][] = [];
+        const app = appWith(async (args) => {
+            calls.push(args);
+            return emptyOk;
+        });
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+
+        expect((await postMaintenance(app, session, { csrf, scope: "unused-images" })).status).toBe(400);
+        expect((await postMaintenance(app, session, { csrf, scope: "everything", confirm: "1" })).status).toBe(400);
+        // A stale form and a foreign origin are refused before anything starts.
+        expect((await postMaintenance(app, session, { csrf: "wrong", scope: "unused-images", confirm: "1" })).status).not.toBe(303);
+        expect(
+            (await postMaintenance(app, session, { csrf, scope: "unused-images", confirm: "1" }, "http://evil.example")).status,
+        ).not.toBe(303);
+        expect(app.maintenance.last()).toBeNull();
+        expect(calls).toEqual([]);
+    });
+
+    test("refuses a second run while one is in progress", async () => {
+        let release: (() => void) | null = null;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const app = appWith(async () => {
+            await gate;
+            return emptyOk;
+        });
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await postMaintenance(app, session, { csrf, scope: "build-cache", confirm: "1" })).status).toBe(303);
+        expect((await postMaintenance(app, session, { csrf, scope: "build-cache", confirm: "1" })).status).toBe(409);
+        release!();
+        await until(() => app.maintenance.last()?.status !== "running");
+    });
+
+    test("blocks every stack mutation while the engine is held", async () => {
+        let release: (() => void) | null = null;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const app = appWith(async () => {
+            await gate;
+            return emptyOk;
+        });
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        await postMaintenance(app, session, { csrf, scope: "unused-images", confirm: "1" });
+
+        const response = await authed(app, "/stacks/demo/operations", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, action: "up" }).toString(),
+        });
+        expect(response.status).toBe(409);
+        expect(await response.text()).toContain("maintenance");
+        release!();
+        await until(() => app.maintenance.last()?.status !== "running");
+    });
+
+    test("POST only", async () => {
+        const app = appWith(async () => emptyOk);
+        const session = await login(app);
+        const response = await authed(app, "/server/maintenance", session);
+        expect(response.status).toBe(405);
+        expect(response.headers.get("allow")).toBe("POST");
     });
 });
 

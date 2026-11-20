@@ -127,6 +127,13 @@ export interface AppConfig {
     rolloutEnabled: boolean;
     /** Overall budget for one rollout: pull, health, settle, drain, stop, cleanup. */
     rolloutTimeoutMs: number;
+    /**
+     * Docker storage maintenance (ADR 0040): three fixed prune scopes on the
+     * Server page, each limited to data older than a week, always available to
+     * the authenticated administrator. Manual only: volumes are never removed
+     * and nothing is scheduled. This is the maximum duration of one command.
+     */
+    maintenanceTimeoutMs: number;
     /** Bounded drain window for running operations on shutdown. */
     shutdownGraceMs: number;
     /** Heartbeat interval for SSE streams. */
@@ -415,6 +422,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         operationTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_OPERATION_TIMEOUT_MS", 5 * 60 * 1000),
         rolloutEnabled: parseBool(env, "COMPOSE_PANEL_ROLLOUT_ENABLED", false),
         rolloutTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_ROLLOUT_TIMEOUT_MS", 15 * 60 * 1000),
+        maintenanceTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_MAINTENANCE_TIMEOUT_MS", 5 * 60 * 1000),
         shutdownGraceMs: parsePositiveInt(env, "COMPOSE_PANEL_SHUTDOWN_GRACE_MS", 30 * 1000),
         sseHeartbeatMs: parsePositiveInt(env, "COMPOSE_PANEL_SSE_HEARTBEAT_MS", 15 * 1000),
         sseTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_SSE_TIMEOUT_MS", 30 * 60 * 1000),

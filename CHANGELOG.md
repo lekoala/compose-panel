@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Docker maintenance (ADR 0040): the Server page can prune the build cache,
+  dangling images or unused images older than a week, in three fixed scopes. No
+  feature flag: the card is always available, but nothing runs without a
+  confirmed POST. One run at a time, holding the engine against every stack
+  mutation and refusing a self-update meanwhile; volumes, containers and
+  networks are never removed and nothing is scheduled. A timeout or an
+  unconfirmed exit stays unknown, and reclaimed size is best effort.
+
 - Toolchain: Bun 1.4.5 (image `oven/bun:1.4.5-slim`, CI, release and Pages
   workflows, `engines.bun >=1.4.5`), which carries upstream security fixes;
   `@types/bun` 1.4.5. The base image digest and every pinned `bun-version` move

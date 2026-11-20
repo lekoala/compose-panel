@@ -33,6 +33,8 @@ import {
 } from "./insights.ts";
 import type { ToolboxAction, ToolboxRunner } from "./toolbox.ts";
 import type { RolloutDeclaration } from "./rollout.ts";
+import { MAINTENANCE_SCOPES, type MaintenanceScope } from "./maintenance.ts";
+import type { MaintenanceView } from "./host-maintenance.ts";
 import { isExplorerHref } from "./database.ts";
 import { isValidDomain } from "./caddy.ts";
 import packageJson from "../package.json";
@@ -1521,6 +1523,30 @@ function engineFacts(info: EngineInfo): string {
     );
 }
 
+const MAINTENANCE_CARDS: Record<MaintenanceScope, { title: string; button: string; confirm: string; warning: string }> = {
+    "build-cache": {
+        title: "Build cache",
+        button: "Prune build cache…",
+        confirm: "Yes, prune the build cache",
+        warning:
+            "Build cache entries older than 7 days are removed. The next builds are slower until the cache is rebuilt. Cache kept by a separate Buildx builder or collected by BuildKit garbage collection is not covered.",
+    },
+    "dangling-images": {
+        title: "Dangling images",
+        button: "Prune dangling images…",
+        confirm: "Yes, prune dangling images",
+        warning:
+            "Untagged images older than 7 days that no container references are removed. They must be rebuilt or downloaded if they are needed again.",
+    },
+    "unused-images": {
+        title: "Unused images",
+        button: "Prune unused images…",
+        confirm: "Yes, prune unused images",
+        warning:
+            "Every image older than 7 days that no container references is removed, including tagged images. Future deployments, service recreations and rollbacks may need to download or rebuild them, including the panel's own rollback image. A stopped container keeps its image.",
+    },
+};
+
 export interface ServerPageOptions {
     csrf: string;
     access?: string;
@@ -1529,6 +1555,10 @@ export interface ServerPageOptions {
     insights: Insights;
     /** Disk usage when requested with ?disk=1; null shows the on-demand link. */
     disk: DiskUsage | null;
+    /** Last maintenance run in this process, if any. The card is always shown. */
+    maintenance: { last: MaintenanceView | null };
+    /** Fixed server-side feedback after a redirect, already trusted copy. */
+    notice?: string;
 }
 
 /**
@@ -1613,6 +1643,59 @@ export function serverPage(options: ServerPageOptions): string {
     }
     const diskSection = `<section class="card"><h2>Docker disk usage${infoTip("Images, containers, volumes and build cache only, not the whole disk.")}</h2>${diskCard}</section>`;
 
+    const last = options.maintenance.last;
+    const running = last?.status === "running";
+    let status = `<p class="muted">No maintenance has run since the panel started.</p>`;
+    if (last) {
+        const card = MAINTENANCE_CARDS[last.scope];
+        if (last.status === "running") {
+            status =
+                note("info", `${card.title}: pruning is running. This page does not update by itself.`) +
+                `<p class="muted">Started ${timeTag(last.startedAt)}.</p>` +
+                `<form method="get" action="/server"><button type="submit" class="btn btn-quiet">Refresh status</button></form>`;
+        } else {
+            const reclaimed =
+                last.reclaimedBytes === null ? "Docker did not report a reclaimed size." : `${formatBytes(last.reclaimedBytes)} reclaimed.`;
+            const kind = last.status === "succeeded" ? "success" : last.status === "failed" ? "error" : "warn";
+            const text =
+                last.status === "succeeded"
+                    ? `${card.title} pruned. ${reclaimed}`
+                    : last.status === "failed"
+                      ? `${card.title} failed with exit code ${last.exitCode ?? "—"}. Some data may already have been removed: check Docker disk usage before retrying.`
+                      : `${card.title}: the outcome is unknown because Docker did not confirm the end of the command. Check Docker disk usage before retrying.`;
+            status =
+                note(kind, text) +
+                `<p class="muted">Started ${timeTag(last.startedAt)}` +
+                (last.endedAt === null ? "" : ` · ended ${timeTag(last.endedAt)}`) +
+                (last.timedOut ? " · reached its deadline" : "") +
+                (last.truncated ? " · output truncated" : "") +
+                `</p>` +
+                `<form method="get" action="/server"><button type="submit" class="btn btn-quiet">Refresh status</button></form>` +
+                (last.output.length === 0
+                    ? ""
+                    : `<details><summary>Command output</summary><pre class="output">${escapeHtml(last.output.replace(/\s+$/, "") || "(no output)")}</pre></details>`);
+        }
+    }
+    const forms = MAINTENANCE_SCOPES.map((scope) => {
+        const card = MAINTENANCE_CARDS[scope];
+        return (
+            `<details class="confirm"><summary><span class="btn btn-danger">${escapeHtml(card.button)}</span></summary>` +
+            `<div class="confirm-panel">${note("warn", card.warning)}` +
+            `<form method="post" action="/server/maintenance" class="form inline-form">` +
+            `<input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">` +
+            `<input type="hidden" name="scope" value="${scope}">` +
+            `<input type="hidden" name="confirm" value="1">` +
+            `<button type="submit" class="btn btn-danger" data-busy-label="Starting…"${running ? " disabled" : ""}>${escapeHtml(card.confirm)}</button>` +
+            `</form></div></details>`
+        );
+    }).join("");
+    const maintenanceCard =
+        `<section class="card" id="maintenance"><h2>Docker maintenance${infoTip("Fixed prune commands for this Docker engine. Volumes are never removed and nothing runs on a schedule.")}</h2>` +
+        `<p class="muted">Prune old Docker data on the engine this panel is connected to. Running and stopped containers keep their images; volumes are never removed. Each scope only removes data older than 7 days, and a run keeps running if you close the page.</p>` +
+        status +
+        forms +
+        `</section>`;
+
     const body =
         `<p class="crumbs"><a href="/">← All stacks</a></p>` +
         `<div class="page-head"><h1>Server${infoTip("Only what Docker reports. Server load, uptime, filesystems and system updates are not shown.")}</h1></div>` +
@@ -1623,12 +1706,14 @@ export function serverPage(options: ServerPageOptions): string {
         `<a class="btn btn-quiet" href="/server">Refresh</a>` +
         `</div>` +
         `<p class="lead">What runs on this Docker engine and what it uses.</p>` +
+        (options.notice ? note("info", options.notice) : "") +
         insights.notes.map((text) => note("warn", text)).join("") +
         engineCard +
         topCard +
         stacksCard +
         attentionCard +
-        diskSection;
+        diskSection +
+        maintenanceCard;
     return documentHtml("Server", body, {
         logoutCsrf: options.csrf,
         access: options.access,

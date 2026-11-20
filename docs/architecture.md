@@ -48,6 +48,26 @@ and a stack's CPU is a cumulative figure that may exceed 100 %. Host-level healt
 need a separate host component and its own ADR. See
 [ADR 0015](adr/0015-readonly-engine-insights.md).
 
+## Docker storage maintenance
+`src/maintenance.ts` holds the three fixed scopes and their exact Docker
+argument arrays, plus best-effort parsing of Docker's `Total reclaimed space`
+line. `src/host-maintenance.ts` runs one command at a time through the same
+fixed runner, keeps the outcome in memory and never persists or replays it.
+`POST /server/maintenance` requires the session, Origin, CSRF and the
+confirmation field, reserves the engine synchronously and redirects; the Server
+page then shows the running or finished result. The command keeps running when
+the browser disconnects, and the page is reloaded by the administrator: there
+is no dedicated SSE channel. A timeout or an unconfirmed exit is `unknown`, and
+only the unconfirmed case keeps the engine lock.
+
+`StackLocks` carries the engine lock next to the per-stack locks: maintenance
+is refused while any stack is locked, and every stack mutation is refused while
+maintenance runs. `hasActive()` includes maintenance, so the panel self-update
+is refused during a prune. Volumes, containers and networks are never touched;
+`docker system prune` is not offered. The panel only sees the daemon behind its
+socket, not a separate runner or Docker-in-Docker daemon. See
+[ADR 0040](adr/0040-docker-storage-maintenance.md).
+
 ## Self-update
 `src/self-update.ts` finds the panel's own container (`/proc/self/mountinfo`,
 then `container inspect`) and validates its Compose labels, image reference and

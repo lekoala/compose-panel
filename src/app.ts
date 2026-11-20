@@ -77,10 +77,12 @@ import { CaddyHelperError, callCaddyHelper } from "./caddy-client.ts";
 import { parseContainerInspect, parseContainerLs, type ContainerPort } from "./container-state.ts";
 import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
-import { StackBusyError, StackLocks } from "./locks.ts";
+import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
+import { HostMaintenance, MaintenanceDisabledError } from "./host-maintenance.ts";
+import { isMaintenanceScope } from "./maintenance.ts";
+import { MaintenanceBusyError, StackBusyError, StackLocks } from "./locks.ts";
 import { listBackups, pruneBackups } from "./backups.ts";
 import { FileSafetyError } from "./fs-safe.ts";
-import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
 import { LogManager, stripAnsi } from "./logs.ts";
 import { AuditLog, AuditError } from "./audit.ts";
 import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
@@ -151,6 +153,7 @@ export interface App {
     fetch(request: Request): Promise<Response>;
     operations: OperationManager;
     logs: LogManager;
+    maintenance: HostMaintenance;
     sseSubscriptions(): number;
     beginShutdown(graceMs: number): Promise<void>;
 }
@@ -418,6 +421,31 @@ export function createApp(options: AppOptions): App {
     });
     // `docker system df` is expensive, so it is read on demand and cached (ADR 0015).
     const diskCache = createDiskUsageCache();
+    // Docker storage maintenance (ADR 0040). One run at a time, holding the
+    // engine against every stack mutation. The outcome is recorded when the
+    // command ends, even if nobody watches it; the cached disk usage is dropped
+    // so the next read shows the new numbers.
+    const maintenance = new HostMaintenance(locks, options.runner ?? unavailableRunner, {
+        timeoutMs: config.maintenanceTimeoutMs,
+        maxBytes: config.dockerMaxBytes,
+        onFinish: (view) => {
+            diskCache.clear();
+            void recordAudit({
+                event: "maintenance",
+                result: view.status,
+                action: view.scope,
+                detail:
+                    [
+                        view.reclaimedBytes !== null ? `reclaimed ${view.reclaimedBytes} bytes` : "",
+                        view.exitCode !== null ? `exit code ${view.exitCode}` : "",
+                        view.timedOut ? "timed out" : "",
+                        view.truncated ? "output truncated" : "",
+                    ]
+                        .filter(Boolean)
+                        .join(", ") || undefined,
+            });
+        },
+    });
     const selfUpdater =
         options.selfUpdater ??
         new SelfUpdater({
@@ -777,7 +805,7 @@ export function createApp(options: AppOptions): App {
         return htmlResponse(accessPage({ csrf, access, timezone: config.timeZone || undefined, report, nav: await sidebarNav("access") }));
     }
 
-    async function renderServer(csrf: string, request: Request): Promise<Response> {
+    async function renderServer(csrf: string, request: Request, notice?: string): Promise<Response> {
         // Reuse the same classification as the container views (ADR 0014) so a
         // container is attributed to a stack on the same strict basis.
         const { containers, note: containerNote } = await loadContainers(stacksRoot, provider, inspector, config.hostStacksPathAliases);
@@ -796,8 +824,55 @@ export function createApp(options: AppOptions): App {
               })
             : null;
         return htmlResponse(
-            serverPage({ csrf, access, timezone: config.timeZone || undefined, insights, disk, nav: await sidebarNav("server") }),
+            serverPage({
+                csrf,
+                access,
+                timezone: config.timeZone || undefined,
+                insights,
+                disk,
+                notice,
+                maintenance: { last: maintenance.last() },
+                nav: await sidebarNav("server"),
+            }),
         );
+    }
+
+    /**
+     * Start one fixed Docker storage prune (ADR 0040). The command owns the
+     * engine and keeps running after the redirect; its outcome is read from the
+     * maintenance view on the next Server page load. Nothing is awaited here
+     * beyond the synchronous reservation, so a slow prune cannot hold the HTTP
+     * connection open.
+     */
+    async function handleMaintenanceStart(request: Request, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, "/server");
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, "/server");
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, "/server");
+        if (!sessions.isActive(session.id)) return sessionEnded();
+        const actor = clientKey(request, config);
+        const refuse = async (message: string, status = 409): Promise<never> => {
+            await recordAudit({ event: "maintenance", result: "refused", actor, detail: message });
+            throw new StackError(`${message} Nothing was run.`, status);
+        };
+        const scope = form.get("scope") ?? "";
+        if (!isMaintenanceScope(scope)) return await refuse("This maintenance action is not available.", 400);
+        if (form.get("confirm") !== "1") return await refuse("This maintenance action was not confirmed.", 400);
+        if (shuttingDown) return await refuse("The panel is shutting down.", 503);
+        if (selfUpdatePending) return await refuse(SELF_UPDATE_RUNNING, 409);
+        const busy = maintenance.isRunning()
+            ? "Docker maintenance is already running. Wait for it to finish."
+            : "An action or save is still running. Wait for it to finish, then start maintenance.";
+        try {
+            maintenance.start(scope);
+        } catch (error) {
+            if (error instanceof MaintenanceDisabledError) return await refuse("The panel is shutting down.", 503);
+            if (error instanceof MaintenanceBusyError) return await refuse(busy, 409);
+            throw error;
+        }
+        // The run is not cancelled by a disconnected browser and is never replayed.
+        return redirect("/server?maintenance=1", 303);
     }
 
     /**
@@ -3374,6 +3449,14 @@ export function createApp(options: AppOptions): App {
                 return routeError(error, session.csrf);
             }
         }
+        if (url.pathname === "/server/maintenance") {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return await handleMaintenanceStart(request, session);
+            } catch (error) {
+                return routeError(error, session.csrf);
+            }
+        }
         if (method !== "GET" && method !== "HEAD") return methodNotAllowed("GET");
 
         try {
@@ -3390,7 +3473,14 @@ export function createApp(options: AppOptions): App {
                 const response = await handleServerStats();
                 return method === "HEAD" ? withoutBody(response) : response;
             }
-            if (url.pathname === "/server") return await renderServer(session.csrf, request);
+            if (url.pathname === "/server")
+                return await renderServer(
+                    session.csrf,
+                    request,
+                    url.searchParams.get("maintenance") === "1"
+                        ? "Maintenance started. Reload this page to follow the outcome: it does not update by itself."
+                        : undefined,
+                );
             if (url.pathname === "/audit") return await renderAudit(session.csrf, url.searchParams.get("period"));
             if (url.pathname === "/access") return await renderAccess(session.csrf, request);
             if (url.pathname === "/containers")
@@ -3465,6 +3555,7 @@ export function createApp(options: AppOptions): App {
         fetch,
         operations,
         logs,
+        maintenance,
         sseSubscriptions: () => activeSse,
         beginShutdown: async (graceMs: number) => {
             // Refuse everything synchronously first: no new mutation, save or
@@ -3472,12 +3563,13 @@ export function createApp(options: AppOptions): App {
             shuttingDown = true;
             operations.refuseNew();
             logs.refuseNew();
+            maintenance.refuseNew();
             // One shared deadline for operations, saves and follows; unresolved work stays
             // unknown and is never reported as done.
             let timer: ReturnType<typeof setTimeout> | undefined;
             try {
                 await Promise.race([
-                    Promise.allSettled([logs.shutdown(graceMs), operations.shutdown(graceMs), ...saves]),
+                    Promise.allSettled([logs.shutdown(graceMs), operations.shutdown(graceMs), maintenance.shutdown(graceMs), ...saves]),
                     new Promise<void>((resolve) => {
                         timer = setTimeout(resolve, graceMs);
                     }),

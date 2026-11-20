@@ -183,6 +183,7 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
         operationTimeoutMs: 60_000,
         rolloutEnabled: false,
         rolloutTimeoutMs: 900_000,
+        maintenanceTimeoutMs: 300_000,
         shutdownGraceMs: 5_000,
         sseHeartbeatMs: 15_000,
         sseTimeoutMs: 1_800_000,
