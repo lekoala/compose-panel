@@ -17,10 +17,19 @@
   browser's top layer, avoiding clipping by tables, with viewport-aware
   placement when JavaScript is available.
 
+- Compose: pin 5.8.0 (apt `5.8.0-1~debian.13~trixie`, CI `COMPOSE_VERSION` and
+  `COMPOSE_SHA256`) so the image and the CI `compose config` check stay on the
+  same current release. This does not clear CVE-2026-78661: the module is still
+  `golang.org/x/net` v0.60.0, but the advisory package `x/net/html` is not
+  linked into the binary, which is now the documented basis of the exception.
+
 - CI: explicitly pin Trivy v0.76.2 for repository and image scans in CI and
-  releases, replacing the action's v0.70.0 default. Temporarily accept
-  CVE-2026-78661 only at the Compose binary path until 2026-11-23 (ADR 0039).
-  Compose remains vulnerable; remove the exception when a fixed binary ships.
+  releases, replacing the action's v0.70.0 default. Accept CVE-2026-78661 only
+  at the Compose binary path until 2027-02-19 (ADR 0039, amended): the finding
+  is module-level, the vulnerable package is absent from the binary, and the
+  exception is re-decided after repeating the symbol check. No fix has shipped
+  (Compose v5.8.0 still declares x/net v0.60.0); it is not a claim that Compose
+  is patched.
 
 - Image security: explicitly pin corrected apt/libapt-pkg7.0 and zlib1g
   packages over the Bun base (ADR 0038). The separate Compose finding is

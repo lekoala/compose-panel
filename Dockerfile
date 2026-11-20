@@ -5,7 +5,7 @@
 ARG DOCKER_CLI_VERSION=5:29.9.2-1~debian.13~trixie
 # Keep COMPOSE_VERSION in .github/workflows/ci.yml on the same release, and
 # drop the matching .trivyignore.yaml entries once a fixed release is pinned.
-ARG DOCKER_COMPOSE_VERSION=5.7.0-1~debian.13~trixie
+ARG DOCKER_COMPOSE_VERSION=5.8.0-1~debian.13~trixie
 
 # Base image pinned by version AND multi-arch index digest so a rebuild cannot
 # silently pick up a different image. The reference is written literally (no

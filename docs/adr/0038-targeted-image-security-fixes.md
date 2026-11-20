@@ -3,7 +3,9 @@
 Status: accepted.
 
 The later [ADR 0039](0039-temporary-compose-html-cve-exception.md) supersedes
-the blocking/no-exception decision for CVE-2026-78661 below through 2026-11-23.
+the blocking/no-exception decision for CVE-2026-78661 below through 2027-02-19
+(amended 2026-11-20: the vulnerable package is not linked into the Compose
+binary).
 
 ## Context
 
