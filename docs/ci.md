@@ -1,6 +1,6 @@
 # CI — pipeline
 
-The pipeline lives in `.github/workflows/ci.yml` (`ubuntu-24.04` runners, Bun 1.4.4
+The pipeline lives in `.github/workflows/ci.yml` (`ubuntu-24.04` runners, Bun 1.4.5
 pinned): `bun install --frozen-lockfile`, `bun audit`, `bun run typecheck`, `bun fmt --check`, `bun run test`,
 then a pinned image build, a socket-less smoke test (reads and auth
 only, no Docker socket mounted) and Trivy scans that fail on CRITICAL/HIGH.
@@ -16,7 +16,7 @@ Debian release that image is built on, not every supported release. The installe
 `timeout` or `flock` behave differently there than on the Ubuntu runner. Bump
 that image tag and digest together with the `Dockerfile` `FROM`.
 
-`bun lint` is intentionally absent: Bun 1.4.4 has no stable lint command and CI
+`bun lint` is intentionally absent: Bun 1.4.5 has no stable lint command and CI
 must not depend on a canary. See the quality gates in [AGENTS.md](../AGENTS.md)
 for the conditions to add it.
 
@@ -81,7 +81,7 @@ vulnerabilities, 4 packages). Fix advisories with deliberate version bumps,
 regenerate the lockfile and re-run `bun run verify`; never rewrite ranges
 blindly (`bun audit fix -L` needs the same review as a dependency change).
 `@types/bun` is type-only and may lag the runtime by a patch release
-(`@types/bun@1.4.3` with Bun 1.4.4); bump it when the matching version is
+(`@types/bun@1.4.5` with Bun 1.4.5); bump it when the matching version is
 published. The production-only boot step proves the
 server starts with devDependencies stripped (`bun install --production`,
 `node_modules/@types` asserted absent, `/health/live` reachable).

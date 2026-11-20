@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Toolchain: Bun 1.4.5 (image `oven/bun:1.4.5-slim`, CI, release and Pages
+  workflows, `engines.bun >=1.4.5`), which carries upstream security fixes;
+  `@types/bun` 1.4.5. The base image digest and every pinned `bun-version` move
+  together.
+
 - HTTP: allow 60 seconds of socket inactivity so the Server page's sequential,
   bounded Docker reads (including on-demand disk usage) can return a result or
   an unavailable warning instead of a connection reset / proxy 502. Docker

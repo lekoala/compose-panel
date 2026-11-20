@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - run: bun install --frozen-lockfile
       - run: bun audit
       - run: bun run typecheck
@@ -100,7 +100,7 @@ jobs:
         run: >-
           docker run --rm --network none --user 1000:1000 -e HOME=/tmp
           -v "$PWD:/src:ro" -w /src
-          oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4
+          oven/bun:1.4.5-slim@sha256:b780593f3e10918cbdaec3d5a08d52224b9198069a65eb47812085c2ec007643
           bun test tests/install.test.ts tests/install-preflight.test.ts
 
   image:
