@@ -1510,10 +1510,12 @@ export function createApp(options: AppOptions): App {
         if (!isOperationAction(action))
             return renderStackDetail(name, csrf, { kind: "error", text: "Unknown action. Nothing was run." }, 400);
 
-        // Scoped operations (ADR 0021): only `up` and `restart` accept a
-        // service. Anywhere else the field is refused, never ignored.
+        // Scoped operations (ADR 0021, extended by ADR 0041): only `up`,
+        // `restart` and `pull` accept a service. Anywhere else the field is
+        // refused, never ignored.
         const serviceParam = (form.get("service") ?? "").trim();
-        if (serviceParam !== "" && action !== "up" && action !== "restart") {
+        const scopedActions = new Set(["up", "restart", "pull"]);
+        if (serviceParam !== "" && !scopedActions.has(action)) {
             return renderStackDetail(
                 name,
                 csrf,

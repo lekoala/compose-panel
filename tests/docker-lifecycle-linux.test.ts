@@ -43,6 +43,7 @@ const PROJECTS = [
     "cp-qa-self",
     "cp-qa-scoped",
     "cp-qa-pull",
+    "cp-qa-pullpolicy",
     "cp-qa-panel",
     "cp-qa-metadata",
     "cp-qa-recreate",
@@ -262,11 +263,26 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
                 "name: cp-qa-pull",
                 "services:",
                 `  remote:\n    image: ${IMAGE}\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                `  extra:\n    image: alpine:3.19\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                `  extra2:\n    image: alpine:3.17\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
                 "  local:\n    build: .",
                 "  both:\n    image: cp-qa-pull-both:local\n    build: .",
                 "",
             ].join("\n"),
             "pullable/Dockerfile": `FROM ${IMAGE}\nCMD ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]\n`,
+            "pullpolicy/compose.yaml": [
+                "name: cp-qa-pullpolicy",
+                "services:",
+                "  pinned:",
+                "    image: localhost:5031/pinned:1",
+                "    pull_policy: missing",
+                `    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                "  nevered:",
+                "    image: localhost:5031/never:1",
+                "    pull_policy: never",
+                `    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                "",
+            ].join("\n"),
             "scoped/compose.yaml": [
                 "name: cp-qa-scoped",
                 "services:",
@@ -701,6 +717,72 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         expect(await pending()).toEqual([]);
     }, 240_000);
 
+    test("a scoped pull selects one service and downloads only its images (ADR 0041)", async () => {
+        const p = panel!;
+        const present = async (image: string) => (await docker(["image", "inspect", image])).code === 0;
+        // Both tags are absent before the scoped pull; `alpine:3.20` is not a
+        // useful witness because the lab suite already pulled it. The fixture
+        // has one image per service and no lifecycle hooks: Compose may also
+        // pull a selected service's own hook images, which the panel cannot
+        // narrow further.
+        expect(await present("alpine:3.19")).toBe(false);
+        expect(await present("alpine:3.17")).toBe(false);
+        expect((await p.action("pullable", "pull", { service: "extra" })).status).toBe(303);
+        expect(await p.operationResult("pullable", 120_000)).toBe("succeeded");
+        expect(await present("alpine:3.19")).toBe(true);
+        // Another service of the same stack is untouched.
+        expect(await present("alpine:3.17")).toBe(false);
+        // The operation is recorded against the service, and no container is created.
+        expect(await runningServices("cp-qa-pull")).toEqual([]);
+        const all = await dockerOk(["ps", "-a", "--filter", "label=com.docker.compose.project=cp-qa-pull", "--format", "{{.Names}}"]);
+        expect(all.trim()).toBe("");
+    }, 240_000);
+
+    test("Pull refreshes an already present versioned tag despite pull_policy: missing or never (ADR 0041)", async () => {
+        const p = panel!;
+        const imageId = async (ref: string) => (await dockerOk(["image", "inspect", ref, "--format", "{{.Id}}"])).trim();
+        // No registry tag moving, no Hub image: build two scratch images, publish
+        // v2 under the service reference, then retag the daemon locally to v1.
+        // That is exactly what a republished tag looks like from the daemon's
+        // side — a present tag whose registry content moved on.
+        const build = async (dir: string, marker: string, tag: string) => {
+            await mkdir(dir, { recursive: true });
+            await writeFile(join(dir, "marker"), marker);
+            await writeFile(join(dir, "Dockerfile"), "FROM scratch\nCOPY marker /marker\n");
+            await dockerOk(["build", "-q", "-t", tag, dir], 180_000);
+        };
+        await dockerOk(["run", "-d", "--name", "cp-qa-registry-policy", "-p", "127.0.0.1:5031:5000", "registry:2"], 180_000);
+        try {
+            for (const { service, ref } of [
+                { service: "pinned", ref: "localhost:5031/pinned:1" },
+                { service: "nevered", ref: "localhost:5031/never:1" },
+            ]) {
+                const root = join(lab, "policy", service);
+                await build(join(root, "v2"), "new", ref);
+                await dockerOk(["push", "-q", ref], 180_000);
+                await build(join(root, "v1"), "old", `localhost:5031/stale-${service}:1`);
+                await dockerOk(["tag", `localhost:5031/stale-${service}:1`, ref]);
+                const first = await imageId(ref);
+                // Without --policy always, Compose skips a present versioned tag
+                // under `missing`, and always under `never`: the pull succeeds
+                // and downloads nothing.
+                const skipped = await docker(
+                    ["compose", "-p", "cp-qa-pullpolicy", "-f", join(stacks, "pullpolicy", "compose.yaml"), "pull", service],
+                    120_000,
+                );
+                expect(skipped.code).toBe(0);
+                expect(await imageId(ref)).toBe(first);
+                // The panel's explicit Pull means "refresh now", even when the
+                // service declares pull_policy: never.
+                expect((await p.action("pullpolicy", "pull", { service })).status).toBe(303);
+                expect(await p.operationResult("pullpolicy", 120_000)).toBe("succeeded");
+                expect(await imageId(ref)).not.toBe(first);
+            }
+        } finally {
+            await docker(["rm", "-f", "cp-qa-registry-policy"]);
+        }
+    }, 300_000);
+
     test("pull skips locally built services, including image + build (ADR 0022)", async () => {
         const p = panel!;
         expect((await p.action("pullable", "pull")).status).toBe(303);
@@ -708,10 +790,14 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         // The image+build service was skipped, not downloaded: its tag is
         // still absent (a plain pull would fail on it).
         expect((await docker(["image", "inspect", "cp-qa-pull-both:local"])).code).not.toBe(0);
+        // Scoped pull still skips it, never standing in for a rebuild.
+        expect((await p.action("pullable", "pull", { service: "both" })).status).toBe(303);
+        expect(await p.operationResult("pullable", 120_000)).toBe("succeeded");
+        expect((await docker(["image", "inspect", "cp-qa-pull-both:local"])).code).not.toBe(0);
         // Up then builds the local images and starts everything.
         expect((await p.action("pullable", "up")).status).toBe(303);
         expect(await p.operationResult("pullable", 180_000)).toBe("succeeded");
-        expect(await runningServices("cp-qa-pull")).toEqual(["both", "local", "remote"]);
+        expect(await runningServices("cp-qa-pull")).toEqual(["both", "extra", "extra2", "local", "remote"]);
     }, 300_000);
 
     test("the real updater container updates a panel deployed on a custom PORT (ADR 0018)", async () => {

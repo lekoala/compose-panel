@@ -37,7 +37,15 @@ After V1 the direction is to understand the host the stacks run on, not only the
 - **Per-stack and per-container CPU/RAM**, a top-consumers view and Docker disk usage (`docker system df`). Done ([ADR 0015](adr/0015-readonly-engine-insights.md)): the read-only `/server` page reads `info`/`stats` on load and `system df` on demand behind a short TTL cache, with no daemon, database or retained history. Remaining: validate Podman output parity like the other commands.
 - **Simplified service health**: `unhealthy`, restart loops, abnormal exits, surfaced with the stack they belong to. A current-state version (`unhealthy`/`restarting`, with non-zero exits listed apart) ships with `/server` (ADR 0015); restart-loop detection needs history and stays future.
 - **Recreate pending.** Done ([ADR 0032](adr/0032-recreate-pending.md)): compare each container's `com.docker.compose.config-hash` label with `compose config --hash`, so a service still running a previous `.env`/Compose configuration shows that **Up** (not Restart) is needed. Read-only, hashes only, no new action; Compose 5.5.0+ only, and services sharing another container's namespaces or volumes are left unmarked.
-- **Check a registry without pulling.** Compare a tag's remote digest with the local one so "update available" shows before any download. Needs registry credentials in the container and honest handling of rate limits, private registries and local builds (ADR 0011 covers only images already pulled).
+- **Check a registry without pulling.** Decided in [ADR 0041](adr/0041-targeted-pull-and-remote-image-check.md)
+  and still to implement: compare the top-level digest a tag resolves to with the
+  digest Docker recorded for that tag, by capability (`.Descriptor.digest`, else
+  a single unambiguous `RepoDigests` entry, else unknown), through
+  `docker buildx imagetools inspect`, as an explicit background check. Unknown
+  stays unknown (no tag, auth, rate limit, timeout, ambiguous local digest),
+  `build:` services are not tracked, and no CVE or remote version is claimed.
+  Private registries rely on an operator-provided `DOCKER_CONFIG`, not a
+  credential UI.
 
 ## Host insights and maintenance
 - **Docker storage maintenance.** Done ([ADR 0040](adr/0040-docker-storage-maintenance.md)):
@@ -53,6 +61,10 @@ After V1 the direction is to understand the host the stacks run on, not only the
 - **Update Compose Panel from the browser.** Done in 0.3.0 ([ADR 0018](adr/0018-self-update.md)): About pulls the panel's own tag, then a one-shot updater container recreates only the panel service and waits for it to be healthy; the outcome is read back from Docker. Remaining: choosing a specific version (it would mean rewriting the image reference in the Compose file), and noticing a newer image without pulling it (see *Check a registry without pulling* above).
 
 ## Compose
+- **Targeted pull.** Done ([ADR 0041](adr/0041-targeted-pull-and-remote-image-check.md)):
+  `pull` accepts one validated service, so a corrected PHP or Nginx image can be
+  downloaded and applied with **Pull** then **Up** on that service alone, without
+  touching the others or rebuilding the application image.
 - **Opt-in service rollout.** Done ([ADR 0035](adr/0035-optional-service-rollout.md)): a service that declares `panel.rollout.enabled` gets a Rollout action. The panel starts a second instance, waits for it to become healthy, optionally drains the old one through a fixed marker and a real proxy, then stops and removes only the old container. Cleanup of the candidate is conditional before drainage; after the first drain attempt the panel reports an intervention instead of rolling back. One service, one stack lock, no persistence and no automatic crash recovery.
 - **Compose override files.** Stacks with `compose.override.yaml`, or several primary files, are refused today. Supporting them means editing and validating several files as one project (see ADR 0004).
 - **Trigger rollout from CI (later, not accepted).** A narrowly scoped machine

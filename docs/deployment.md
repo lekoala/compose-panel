@@ -72,6 +72,48 @@ Rules that must stay true:
   never reach a stack. Other variables (e.g. `COMPOSE_PROJECT_NAME`,
   `DOCKER_HOST`) pass through by design.
 
+## Private registries
+
+The panel never stores or displays registry credentials. Its Docker CLI reads
+the usual client configuration (`$DOCKER_CONFIG`, default `$HOME/.docker`), which
+is **empty inside the container**: mounting `/var/run/docker.sock` gives access
+to the daemon, not to the credentials configured on the host. Public images work
+as they are. On a private registry without credentials, `Pull` fails with an
+authentication error and the operation is reported as failed — nothing is
+downloaded and nothing claims the image is current. A future remote check
+(ADR 0041, part B) will report such a registry as an unknown result instead.
+
+To let **Pull** (and, in a later version, the remote image check) reach a private
+registry, mount a dedicated configuration file read-only and point the panel at
+it. ADR 0041 verified this path end to end: without it the registry returns 401,
+with it the same command authenticates, and Pull and the check share one
+configuration.
+
+```yaml
+services:
+  panel:
+    environment:
+      DOCKER_CONFIG: /etc/compose-panel/docker-config
+    volumes:
+      - /etc/compose-panel/docker-config:/etc/compose-panel/docker-config:ro
+```
+
+The service is `panel` in both `deploy/compose.yaml` and
+`deploy/compose.prod.yaml`. Keep the file outside `/run` (a tmpfs that is cleared
+on reboot) and outside `$HOME`, so it survives a restart and cannot be picked up
+by another tool: `/etc/compose-panel/docker-config/config.json` holds only what is
+needed, with a token that has the narrowest possible scope (read-only package
+access is enough for pulls):
+
+```json
+{ "auths": { "ghcr.io": { "auth": "<base64 user:token>" } } }
+```
+
+Keep the file `0600` and owned by root, and never reuse it for anything else.
+Credential helpers (`credsStore`) are not installed in the image and produce an
+unknown result, so use `auths` entries. The panel never reads, logs or renders
+the file: it only passes the environment to the Docker CLI it already runs.
+
 ## Upgrading from 0.1.0
 
 0.2.0 replaces the single `COMPOSE_PANEL_PUBLIC_ORIGIN` with the list

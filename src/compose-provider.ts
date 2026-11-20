@@ -405,13 +405,23 @@ class DockerComposeProvider implements ComposeProvider {
     pull(target: ComposeTarget): Promise<CommandResult> {
         // ADR 0022: services with a `build:` section are skipped, including
         // ones that also declare `image:`. Those are built by Up, not pulled.
-        return this.runPulling(target, ["pull", "--ignore-buildable"]);
+        // ADR 0041: an explicit Pull means "refresh now". Without `--policy
+        // always`, a versioned tag already present is skipped under
+        // `pull_policy: missing` (and always under `never`), so the action
+        // would succeed without downloading anything. `up` keeps honouring
+        // the declared policy; `--ignore-buildable` still exempts builds.
+        const command = ["pull", "--ignore-buildable", "--policy", "always"];
+        // Scoped (ADR 0041): one service, without touching the others.
+        if (target.service !== undefined) {
+            if (!isComposeServiceName(target.service)) return Promise.reject(new Error("Invalid service name."));
+            return this.runPulling(target, [...command, "--", target.service]);
+        }
+        return this.runPulling(target, command);
     }
 
     pullService(target: ComposeTarget & { service: string }): Promise<CommandResult> {
-        if (!isComposeServiceName(target.service)) return Promise.reject(new Error("Invalid service name."));
-        // `--` ends option parsing: a validated service can never be a flag.
-        return this.runPulling(target, ["pull", "--ignore-buildable", "--", target.service]);
+        // Same code path as a scoped `pull`, so both can never diverge.
+        return this.pull(target);
     }
 
     scaleService(target: ComposeTarget & { service: string; replicas: number }): Promise<CommandResult> {

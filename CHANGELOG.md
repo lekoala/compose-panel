@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Targeted pull (ADR 0041): `Pull` accepts one validated service from the
+  Services table, so a corrected runtime image can be downloaded on its own and
+  applied with **Up** on that service. Same lock, audit, SSE and `build:`
+  exclusion as the stack-wide action; no container is touched. An explicit Pull
+  now runs with `--policy always`: a versioned tag that is already present is
+  refreshed even when the service declares `pull_policy: missing` (or `never`),
+  which previously made the action succeed without downloading anything.
+
 - Docker maintenance (ADR 0040): the Server page can prune the build cache,
   dangling images or unused images older than a week, in three fixed scopes. No
   feature flag: the card is always available, but nothing runs without a

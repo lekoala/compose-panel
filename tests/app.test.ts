@@ -2380,12 +2380,37 @@ describe("operations routes", () => {
         const app = makeApp({}, deployedRunner(calls));
         const session = await login(app);
         const csrf = await csrfOf(app, session);
-        for (const action of ["down", "pull", "start", "pull-up"]) {
+        for (const action of ["down", "start", "pull-up"]) {
             expect((await postScopedOperation(app, session, csrf, action, "web")).status).toBe(400);
         }
         expect((await postScopedOperation(app, session, csrf, "restart", "--privileged")).status).toBe(400);
         expect((await postScopedOperation(app, session, csrf, "restart", "missing")).status).toBe(409);
         expect(calls.some((args) => ["down", "pull", "start", "restart", "up"].some((verb) => args.includes(verb)))).toBe(false);
+    });
+
+    test("Pull runs scoped to one service and downloads nothing else (ADR 0041)", async () => {
+        const calls: string[][] = [];
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-audit-scoped-pull-"));
+        try {
+            const audit = new AuditLog({ dir });
+            const app = makeApp({}, deployedRunner(calls), undefined, audit);
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+            const page = await (await authed(app, "/stacks/demo", session)).text();
+            expect(page).toContain('value="pull"');
+            expect((await postScopedOperation(app, session, csrf, "pull", "db")).status).toBe(303);
+            await waitIdle(app);
+            const pull = calls.find((args) => args.includes("pull"));
+            expect(pull).toEqual(expect.arrayContaining(["pull", "--ignore-buildable", "--", "db"]));
+            // One service only: no whole-stack pull, and no container is touched.
+            expect(pull).not.toContain("up");
+            expect(app.operations.forStack("demo")?.service).toBe("db");
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).toContain('"action":"pull","service":"db"');
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
     });
 });
 

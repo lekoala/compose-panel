@@ -277,7 +277,32 @@ describe("DockerComposeProvider", () => {
             "compose.yaml",
             "pull",
             "--ignore-buildable",
+            "--policy",
+            "always",
         ]);
+    });
+
+    test("scoped pull downloads one validated service after `--` (ADR 0041)", async () => {
+        const { runner, calls } = recording();
+        const provider = createComposeProvider({ runner });
+        const base = { project: "demo", composeFile: "compose.yaml", cwd: "/opt/stacks/demo" };
+        await provider.pull({ ...base, service: "web" });
+        expect(calls[0]!.args).toEqual([
+            "compose",
+            "-p",
+            "demo",
+            "--project-directory",
+            "/opt/stacks/demo",
+            "-f",
+            "compose.yaml",
+            "pull",
+            "--ignore-buildable",
+            "--policy",
+            "always",
+            "--",
+            "web",
+        ]);
+        await expect(provider.pull({ ...base, service: "--privileged" })).rejects.toThrow(/Invalid service name/);
     });
 
     test("pull and up compact repeated layer progress in live output (ADR 0034)", async () => {
@@ -417,6 +442,8 @@ describe("rollout support", () => {
             "/opt/stacks/demo/compose.yaml",
             "pull",
             "--ignore-buildable",
+            "--policy",
+            "always",
             "--",
             "web",
         ]);

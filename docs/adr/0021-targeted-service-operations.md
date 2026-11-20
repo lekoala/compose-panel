@@ -1,6 +1,7 @@
 # ADR 0021 — Restart and Up scoped to one service
 
-Status: accepted.
+Status: accepted. Amended by [ADR 0041](0041-targeted-pull-and-remote-image-check.md):
+`pull` also accepts one service, so the refusal list below no longer includes it.
 
 ## Context
 Restarting or updating a single service (`web`) without touching `db` is a
@@ -23,8 +24,8 @@ and images. Service discovery (`listServices`, ADR 0020) is reused unchanged.
   - `up` with service requires a deployed stack: `absent` is refused, it
     never creates.
   - `restart` with or without service requires a deployed stack (unchanged).
-  - A `service` field on `down`, `pull`, `start` or `pull-up` is **refused**
-    (`400`), never silently ignored.
+  - A `service` field on `down`, `start` or `pull-up` is **refused**
+    (`400`), never silently ignored. Since ADR 0041, `pull` is scoped too.
 - **Validation, same as logs (ADR 0020).** Syntax check, then exact
   membership in `listServices`; `400` / `503` / `409` before any mutation
   subprocess is spawned (the discovery call itself is expected). Names pass

@@ -1,6 +1,8 @@
 # ADR 0011 — Pull on its own, and "Update ready" from local images
 
-Status: accepted.
+Status: accepted. Amended by [ADR 0041](0041-targeted-pull-and-remote-image-check.md):
+`pull` accepts one service and runs with `--policy always`, so an explicit Pull
+refreshes a versioned tag even under `pull_policy: missing` or `never`.
 
 ## Context
 `Pull + up` downloaded images and recreated containers in one click, with no

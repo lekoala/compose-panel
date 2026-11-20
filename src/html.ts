@@ -652,11 +652,11 @@ export function servicesSection(
     return `<section class="card"><h2>Services</h2>${content}</section>`;
 }
 
-/** Per-service Restart, Up and opt-in Rollout for one table row (ADR 0021, ADR 0035). */
+/** Per-service Pull, Restart, Up and opt-in Rollout for one table row (ADR 0021, ADR 0035, ADR 0041). */
 function serviceActions(actions: { name: string; csrf: string; busy: boolean }, service: ComposeService, rollout: boolean): string {
-    const buttons = (["restart", "up"] as const)
+    const buttons = (["pull", "restart", "up"] as const)
         .map((action) => {
-            const label = action === "restart" ? "Restart" : "Up";
+            const label = action === "pull" ? "Pull" : action === "restart" ? "Restart" : "Up";
             const disabled = actions.busy ? " disabled" : "";
             return `<form method="post" action="/stacks/${encodeURIComponent(actions.name)}/operations" class="op-form"><input type="hidden" name="csrf" value="${escapeHtml(actions.csrf)}"><input type="hidden" name="action" value="${action}"><input type="hidden" name="service" value="${escapeHtml(service.name)}"><button type="submit" class="btn btn-quiet"${disabled} data-op-button data-busy-label="Starting…">${label}</button></form>`;
         })
@@ -679,7 +679,7 @@ const OPERATIONS: { action: OperationAction; label: string; help: string; style:
     {
         action: "pull",
         label: "Pull",
-        help: "Download this stack's images, except services built from a Dockerfile (those are built by Up). No container is touched: services with a newer image are then marked “Update ready”.",
+        help: "Download this stack's images, except services built from a Dockerfile (those are built by Up). No container is touched: services with a newer image are then marked “Update ready”. Pull always refreshes the tag, even when a service declares pull_policy: missing or never. Per-service Pull is offered in the Services table.",
         style: "",
         needsDeployment: false,
     },
