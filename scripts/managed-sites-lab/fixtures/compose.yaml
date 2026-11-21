@@ -1,0 +1,21 @@
+name: ${LAB_PROJECT:?}
+
+services:
+  web:
+    image: ${LAB_WEB_IMAGE:?}
+    restart: "no"
+    ports:
+      - "127.0.0.1:${LAB_PORT:?}:80"
+    volumes:
+      - ${LAB_SITE_ROOT:?}/site/runtime:${LAB_SITE_ROOT:?}/site/runtime:ro
+      - ${LAB_SITE_ROOT:?}/generated/nginx-site.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - php
+
+  php:
+    image: ${LAB_RUNTIME_IMAGE:?}
+    restart: "no"
+    volumes:
+      - ${LAB_SITE_ROOT:?}/site/runtime:${LAB_SITE_ROOT:?}/site/runtime:ro
+      - ${LAB_SITE_ROOT:?}/site/shared:${LAB_SITE_ROOT:?}/site/shared:rw
+      - ${LAB_FIXTURES:?}/opcache.ini:/usr/local/etc/php/conf.d/zz-opcache.ini:ro

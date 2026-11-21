@@ -543,3 +543,43 @@ describe("rollout support", () => {
         await expect(provider.scaleService({ ...target, service: "web", replicas: 0 })).rejects.toThrow(/Invalid replica count/);
     });
 });
+
+describe("recreateService", () => {
+    const base = {
+        project: "site",
+        cwd: "/srv/site",
+        composeFiles: ["/srv/site/compose.yaml"],
+        envFiles: [] as string[],
+    };
+
+    test("keeps the default recreation non-forced, without pull or build", async () => {
+        const { runner, calls } = recording();
+        await createComposeProvider({ runner }).recreateService({ ...base, service: "php" });
+        expect(calls[0]!.args).toEqual([
+            "compose",
+            "-p",
+            "site",
+            "--project-directory",
+            "/srv/site",
+            "-f",
+            "/srv/site/compose.yaml",
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-build",
+            "--pull",
+            "never",
+            "--",
+            "php",
+        ]);
+    });
+
+    test("forces the recreation before the service argument", async () => {
+        const { runner, calls } = recording();
+        await createComposeProvider({ runner }).recreateService({ ...base, service: "php", force: true });
+        expect(calls[0]!.args.slice(-3)).toEqual(["--force-recreate", "--", "php"]);
+        expect(calls[0]!.args).toContain("--no-deps");
+        expect(calls[0]!.args).toContain("--no-build");
+        expect(calls[0]!.args[calls[0]!.args.indexOf("--pull") + 1]).toBe("never");
+    });
+});

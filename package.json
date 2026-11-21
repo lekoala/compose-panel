@@ -15,6 +15,7 @@
     "test:proxy:wsl": "wsl -- bash scripts/proxy-e2e/run.sh",
     "test:caddy:wsl": "wsl -- bash scripts/caddy-e2e.sh",
     "test:docker-lab:wsl": "wsl -- bash scripts/docker-lab/run.sh",
+    "test:managed-sites:wsl": "wsl -- bash scripts/managed-sites-lab/run.sh",
     "preview": "bun scripts/preview.ts",
     "docs:build": "bun scripts/build-docs.ts",
     "docs:preview": "bun scripts/build-docs.ts --serve",

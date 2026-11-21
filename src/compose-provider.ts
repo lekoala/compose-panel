@@ -211,10 +211,18 @@ export interface ComposeProvider {
     /**
      * Recreate one service from the local image only:
      * `up -d --no-deps --no-build --pull never <service>`. Nothing is pulled or
-     * built, and no other service is touched.
+     * built, and no other service is touched. `force: true` adds
+     * `--force-recreate`: a release switch changes only a bind-mounted pointer,
+     * which Compose cannot detect, so the container must be replaced
+     * explicitly.
      */
     recreateService(
-        input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void },
+        input: ComposeProjectFiles & {
+            service: string;
+            force?: boolean;
+            timeoutMs?: number;
+            onOutput?: (chunk: string) => void;
+        },
     ): Promise<CommandResult>;
     /**
      * One-shot history read: `compose logs --tail N --timestamps --no-color`,
@@ -580,14 +588,18 @@ class DockerComposeProvider implements ComposeProvider {
     }
 
     recreateService(
-        input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void },
+        input: ComposeProjectFiles & {
+            service: string;
+            force?: boolean;
+            timeoutMs?: number;
+            onOutput?: (chunk: string) => void;
+        },
     ): Promise<CommandResult> {
         // `--` ends option parsing: the service name can never be read as a flag.
-        return this.runner([...this.projectArgs(input), "up", "-d", "--no-deps", "--no-build", "--pull", "never", "--", input.service], {
-            cwd: input.cwd,
-            timeoutMs: input.timeoutMs,
-            onChunk: input.onOutput,
-        });
+        const args = [...this.projectArgs(input), "up", "-d", "--no-deps", "--no-build", "--pull", "never"];
+        if (input.force === true) args.push("--force-recreate");
+        args.push("--", input.service);
+        return this.runner(args, { cwd: input.cwd, timeoutMs: input.timeoutMs, onChunk: input.onOutput });
     }
 
     readLogs(target: ComposeTarget & { tailLines?: number }): Promise<CommandResult> {

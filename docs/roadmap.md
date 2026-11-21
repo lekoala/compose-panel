@@ -76,3 +76,24 @@ After V1 the direction is to understand the host the stacks run on, not only the
   implementation. A lost response or client timeout must not trigger an automatic
   second rollout; a panel crash still leaves the outcome unknown, with no durable
   queue or automatic recovery.
+
+## Managed sites and Git deployment
+Accepted as pilot contracts, not implemented and not scheduled:
+
+- **Managed site ownership.** [ADR 0042](adr/0042-managed-site-ownership.md):
+  a versioned `compose-panel-site.json` next to the Compose file, either opting
+  a hand-written stack into one bind-mount release layout (`owner: opt-in`) or
+  generating one fixed PHP profile (`owner: managed`). Deterministic generated
+  files, server-side drift refusal, validated paths and no second orchestration
+  engine. The directory stays a Compose project the CLI can run.
+- **Manual Git deploy.** [ADR 0043](adr/0043-bounded-git-release-lifecycle.md):
+  one configured HTTPS ref fetched into an immutable release, an atomic
+  `current` switch, a runtime recreation, a verified serving SHA on the actual
+  loopback binding and a probed code rollback. Image-only stacks keep their CI
+  path; there is no scheduler, webhook, image build or migration.
+
+First increment: one hand-authored PHP Compose stack, one public branch, one
+browser action. Private SSH and a disposable Composer preparation container,
+the creation form with a stable loopback/Caddy attach, the Silverstripe profile
+with an existing MariaDB, offsite backup and restore, CI triggers, host timers,
+production cutover and cloning each need their own ADR before any code.
