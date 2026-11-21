@@ -23,6 +23,8 @@ interface TestService {
     network_mode?: unknown;
     ports?: unknown;
     volumes?: unknown;
+    tmpfs?: unknown;
+    volumes_from?: unknown;
     networks?: unknown;
 }
 
@@ -280,7 +282,104 @@ describe("checkManagedSiteProfile", () => {
         expect(
             refused(added("web", { type: "bind", source: "/data/uploads", target: `${stackDir}/site/private/x`, read_only: true })),
         ).toBe(true);
-        expect(check(added("php", { type: "bind", source: sharedDir, target: "/data", read_only: false })).ok).toBe(true);
+        expect(check(added("php", { type: "bind", source: sharedDir, target: "/data", read_only: false })).ok).toBe(false);
+        // Same-path only: an alias of shared/ (or of any release path) is refused.
+        expect(refused(added("php", { type: "bind", source: sharedDir, target: sharedDir, read_only: true }))).toBe(true);
+        expect(refused(added("web", { type: "bind", source: sharedDir, target: sharedDir, read_only: false }))).toBe(true);
+        expect(check(added("php", { type: "bind", source: sharedDir, target: sharedDir, read_only: false })).ok).toBe(true);
+    });
+
+    test("refuses parent binds, release aliases, non-canonical paths and volumes_from", () => {
+        const added = (service: "web" | "php", mount: Record<string, unknown>) =>
+            mutated((config) => {
+                const current = config.services[service]!.volumes as Record<string, unknown>[] | undefined;
+                config.services[service]!.volumes = [...(current ?? []), mount];
+            });
+        // The whole site tree, or its parent, exposes private/ and staging/.
+        expect(refused(added("web", { type: "bind", source: `${stackDir}/site`, target: "/mnt/site", read_only: true }))).toBe(true);
+        expect(refused(added("web", { type: "bind", source: stackDir, target: "/mnt/stack", read_only: true }))).toBe(true);
+        expect(refused(added("web", { type: "bind", source: "/opt/stacks", target: "/stacks", read_only: true }))).toBe(true);
+        // A write alias of one release, of releases/ or of runtime/ is not the
+        // single accepted read-only runtime mount.
+        expect(refused(added("php", { type: "bind", source: `${runtimeDir}/releases`, target: "/data", read_only: false }))).toBe(true);
+        expect(refused(added("php", { type: "bind", source: `${runtimeDir}/releases`, target: "/data", read_only: true }))).toBe(true);
+        expect(refused(added("php", { type: "bind", source: `${runtimeDir}/current/public`, target: "/www", read_only: true }))).toBe(true);
+        expect(refused(added("php", { type: "bind", source: runtimeDir, target: "/runtime", read_only: true }))).toBe(true);
+        // Non-canonical paths are refused instead of silently normalized.
+        expect(
+            refused(
+                added("php", { type: "bind", source: `${runtimeDir}/../runtime`, target: `${runtimeDir}/../runtime`, read_only: true }),
+            ),
+        ).toBe(true);
+        expect(refused(added("php", { type: "bind", source: `${stackDir}//site/artifacts`, target: "/artifacts", read_only: true }))).toBe(
+            true,
+        );
+        expect(refused(added("php", { type: "bind", source: "/srv/data/", target: "/data", read_only: true }))).toBe(true);
+        // volumes_from always mounts an unverified path.
+        expect(refused(mutated((config) => (config.services.php!.volumes_from = ["web"])))).toBe(true);
+        expect(refused(mutated((config) => (config.services.web!.volumes_from = ["other"])))).toBe(true);
+    });
+
+    test("refuses a tmpfs overlay on releases or current", () => {
+        const inline = (target: string) =>
+            mutated((config) => {
+                config.services.php!.volumes = [...(config.services.php!.volumes as Record<string, unknown>[]), { type: "tmpfs", target }];
+            });
+        expect(refused(inline(`${runtimeDir}/current/public`))).toBe(true);
+        expect(refused(inline(runtimeDir))).toBe(true);
+        expect(refused(inline(`${stackDir}/site/private`))).toBe(true);
+        expect(check(inline("/run/cache")).ok).toBe(true);
+        expect(refused(mutated((config) => (config.services.php!.tmpfs = [`${runtimeDir}/current`])))).toBe(true);
+        expect(refused(mutated((config) => (config.services.web!.tmpfs = [stackDir])))).toBe(true);
+        expect(check(mutated((config) => (config.services.php!.tmpfs = ["/run", "/tmp"]))).ok).toBe(true);
+    });
+
+    test("checks every service, not only the declared pair", () => {
+        const withThird = (service: Record<string, unknown>) =>
+            mutated((config) => {
+                config.services.worker = service;
+            });
+        expect(
+            refused(
+                withThird({
+                    image: "alpine:3.20",
+                    volumes: [{ type: "bind", source: `${stackDir}/site/private`, target: "/private", read_only: true }],
+                }),
+            ),
+        ).toBe(true);
+        expect(
+            refused(withThird({ image: "alpine:3.20", volumes: [{ type: "bind", source: stackDir, target: "/stack", read_only: true }] })),
+        ).toBe(true);
+        expect(
+            refused(
+                withThird({ image: "alpine:3.20", volumes: [{ type: "bind", source: runtimeDir, target: runtimeDir, read_only: true }] }),
+            ),
+        ).toBe(true);
+        expect(refused(withThird({ image: "alpine:3.20", network_mode: "host" }))).toBe(true);
+        expect(refused(withThird({ image: "alpine:3.20", tmpfs: [`${runtimeDir}/current/public`] }))).toBe(true);
+        expect(refused(withThird({ image: "alpine:3.20", volumes_from: ["php"] }))).toBe(true);
+        expect(check(withThird({ image: "alpine:3.20" })).ok).toBe(true);
+    });
+
+    test("requires the gateway and runtime to share a project network", () => {
+        expect(
+            refused(
+                mutated((config) => {
+                    config.networks = { default: null, backend: null };
+                    config.services.web!.networks = { default: null };
+                    config.services.php!.networks = { backend: null };
+                }),
+            ),
+        ).toBe(true);
+        expect(
+            check(
+                mutated((config) => {
+                    config.networks = { default: null, backend: null };
+                    config.services.web!.networks = { default: null, backend: null };
+                    config.services.php!.networks = { backend: null };
+                }),
+            ).ok,
+        ).toBe(true);
     });
 
     test("refuses an external network or host networking", () => {
@@ -289,6 +388,16 @@ describe("checkManagedSiteProfile", () => {
                 mutated((config) => {
                     config.networks = { default: null, shared: { external: true } };
                     config.services.php!.networks = { default: null, shared: null };
+                }),
+            ),
+        ).toBe(true);
+        // A third service on an external network is refused too: ADR 0043
+        // refuses any declared service, not only the declared pair.
+        expect(
+            refused(
+                mutated((config) => {
+                    config.networks = { default: null, shared: { external: true } };
+                    config.services.worker = { image: "alpine:3.20", networks: { default: null, shared: null } };
                 }),
             ),
         ).toBe(true);

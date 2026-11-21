@@ -38,16 +38,26 @@ fetched:
 - the declared gateway and runtime services exist in `config --services`;
 - the gateway publishes exactly one TCP port on `127.0.0.1` and the runtime
   publishes none;
-- no declared service joins a network marked `external: true`; the site's own
+- no service in the project joins a network marked `external: true`, and the
+  gateway and runtime share at least one project network; the site's own
   project network is the isolation boundary (ADR 0042);
 - both services mount `<stack>/site/runtime` at the same absolute source and
   destination, read-only, with no mount destination at or below
-  `runtime/current` and no mount of `staging/`, `private/` or the checkout
-  (ADR 0042); names and `deploy.kind` alone prove nothing;
+  `runtime/current`, no parent bind, no alias of a release path, no
+  `volumes_from`, no non-canonical path and no mount of `staging/`, `private/`
+  or the checkout in any service (ADR 0042); names and `deploy.kind` alone
+  prove nothing;
 - the runtime service runs an explicit image reference (no implicit `latest`,
-  no local `build:` in the release path);
-- the effective Compose project, `-f` files, project directory and `.env`
-  interpolation still match the manifest; any drift refuses (ADR 0042);
+  no local `build:` in the release path), and that reference still resolves to
+  the local image ID of the running runtime container: `--pull never` would
+  otherwise recreate the container on a different already-present image under
+  the same tag, so the pilot refuses that drift instead of changing the
+  application runtime underneath the rollback target;
+- the effective project name is resolved before `-p` is injected (a `name:` in
+  the Compose file never overrides it), the manifest is re-read under the stack
+  lock at every deploy, and the effective Compose project, `-f` files, project
+  directory and `.env` interpolation still match it; any drift refuses
+  (ADR 0042);
 - the baseline is provable before any stop: `current` validates, its release
   metadata is complete, and the probe reports exactly the commit SHA that
   `current` targets. A first deployment without a rollback target is not
@@ -262,7 +272,11 @@ Unit tests: ref/SHA validation, full-SHA requirement, path containment and
 symlink/submodule refusal, staging layout, attempt-record bounds, probe parsing
 (status, exact 41-byte body, lowercase hex, timeout) and the rollback decision
 table (no-op only when proven active, rollback only when identity and state are
-certain). Provider tests cover the forced versus non-forced recreation argv.
+certain). Provider tests cover the forced versus non-forced recreation argv and
+the service-scoped stop and start. Profile tests cover every service, not just
+the declared pair: parent binds, release aliases, `tmpfs` overlays,
+`volumes_from`, non-canonical paths, external networks and the shared project
+network.
 
 Linux integration, disposable only: `scripts/managed-sites-lab/run.sh` runs on
 its own Docker-in-Docker daemon and proves the mount/switch/recreate contract

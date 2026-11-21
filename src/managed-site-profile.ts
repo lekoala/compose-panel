@@ -2,7 +2,7 @@
  * The effective profile of a managed site (ADR 0042, ADR 0043): what the
  * Compose configuration actually declares, projected onto the handful of facts
  * the deploy is allowed to trust. Names and `deploy.kind` prove nothing; the
- * deploy refuses unless the gateway, the runtime and the mounts match the
+ * deploy refuses unless the project, the services and the mounts match the
  * manifest exactly.
  *
  * Only booleans, numbers, ports, image references, network names and mount
@@ -19,7 +19,9 @@ export interface ManagedSitePortFact {
 }
 
 export interface ManagedSiteMountFact {
+    /** `bind`, `volume`, `tmpfs`, or anything unexpected. */
     type: string | null;
+    /** Host path of a bind mount; a volume name; null for tmpfs. */
     source: string | null;
     target: string;
     readOnly: boolean;
@@ -30,7 +32,12 @@ export interface ManagedSiteServiceFact {
     build: boolean;
     networkMode: string | null;
     ports: ManagedSitePortFact[];
+    /** Volume entries, including inline `type: tmpfs`. */
     mounts: ManagedSiteMountFact[];
+    /** Service-level `tmpfs:` targets. */
+    tmpfs: string[];
+    /** `volumes_from:` entries; any value refuses a deploy. */
+    volumesFrom: string[];
     networks: string[];
 }
 
@@ -46,7 +53,6 @@ export type ManagedSiteProfileResult = { ok: true } | { ok: false; reason: strin
 
 const SERVICE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,128}$/;
 const NETWORK_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,128}$/;
-const TOP_LEVEL_PROJECT_FILE = "compose.yaml";
 
 /**
  * Project the effective configuration onto the allow-listed profile facts.
@@ -73,6 +79,10 @@ export function parseManagedSiteComposeFacts(stdout: string): ManagedSiteCompose
         if (!ports) return null;
         const mounts = entries(service.volumes, mountFact);
         if (!mounts) return null;
+        const tmpfs = stringTargets(service.tmpfs);
+        if (!tmpfs) return null;
+        const volumesFrom = stringList(service.volumes_from);
+        if (!volumesFrom) return null;
         const networks = networkNames(service.networks);
         if (!networks) return null;
         facts.set(name, {
@@ -86,6 +96,8 @@ export function parseManagedSiteComposeFacts(stdout: string): ManagedSiteCompose
                       : "__invalid__",
             ports,
             mounts,
+            tmpfs,
+            volumesFrom,
             networks,
         });
     }
@@ -112,6 +124,13 @@ export function parseManagedSiteComposeFacts(stdout: string): ManagedSiteCompose
 /**
  * Verify the facts against the manifest before anything is fetched, stopped or
  * recreated. Every refusal names the manifest rule that failed.
+ *
+ * Mount rules are deliberately textual and total: every service in the project
+ * is inspected, not only the declared pair, and a mount is refused when its
+ * source or target intersects the site tree without being one of the fixed
+ * allowed mounts. That closes parent binds (`site/` over `/mnt/site`), indirect
+ * aliases of `runtime/releases`, `volumes_from`, and tmpfs overlays that would
+ * hide `runtime/current`.
  */
 export function checkManagedSiteProfile(input: {
     manifest: ManagedSiteManifest;
@@ -120,14 +139,15 @@ export function checkManagedSiteProfile(input: {
     facts: ManagedSiteComposeFacts;
 }): ManagedSiteProfileResult {
     const { manifest, facts } = input;
+    const siteTree = posix.join(input.stackDir, "site");
     const runtimeDir = posix.join(input.stackDir, MANAGED_SITE_PATHS.runtime);
-    const stagingDir = posix.join(input.stackDir, MANAGED_SITE_PATHS.staging);
-    const privateDir = posix.join(input.stackDir, MANAGED_SITE_PATHS.private);
-    const forbiddenSources = [
-        stagingDir,
-        privateDir,
+    const sharedDir = posix.join(input.stackDir, MANAGED_SITE_PATHS.shared);
+    const declaredPaths = (manifest.paths ?? []).map((path) => posix.join(input.stackDir, path));
+    // Control files stay outside every container: the manifest, the Compose
+    // file and the interpolation file are panel input, not application data.
+    const forbiddenFiles = [
         posix.join(input.stackDir, "compose-panel-site.json"),
-        posix.join(input.stackDir, TOP_LEVEL_PROJECT_FILE),
+        posix.join(input.stackDir, "compose.yaml"),
         posix.join(input.stackDir, ".env"),
     ];
 
@@ -144,18 +164,23 @@ export function checkManagedSiteProfile(input: {
         return { ok: false, reason: `The runtime service "${manifest.services.runtime}" is not in the effective Compose configuration.` };
     }
 
-    if (gateway.networkMode !== null) {
-        return { ok: false, reason: "The gateway service uses network_mode, so its published port is not the site endpoint." };
+    for (const [name, service] of facts.services) {
+        if (service.networkMode !== null) {
+            return { ok: false, reason: `The service "${name}" uses network_mode, so the project network is not its boundary.` };
+        }
+        const external = service.networks.filter((network) => facts.externalNetworks.includes(network));
+        if (external.length > 0) {
+            return {
+                ok: false,
+                reason: `The service "${name}" joins the external network "${external[0]}"; a site stays on its own project network.`,
+            };
+        }
     }
-    if (runtime.networkMode !== null) {
-        return { ok: false, reason: "The runtime service uses network_mode, which leaves the site network." };
-    }
-    const external = [...new Set([...gateway.networks, ...runtime.networks])].filter((name) => facts.externalNetworks.includes(name));
-    if (external.length > 0) {
-        return {
-            ok: false,
-            reason: `The gateway or runtime joins the external network "${external[0]}"; a site stays on its own project network.`,
-        };
+    const sharedNetworks = gateway.networks.filter(
+        (network) => runtime.networks.includes(network) && !facts.externalNetworks.includes(network),
+    );
+    if (sharedNetworks.length === 0) {
+        return { ok: false, reason: "The gateway and runtime services must share a project network." };
     }
 
     if (gateway.ports.length !== 1) {
@@ -185,6 +210,21 @@ export function checkManagedSiteProfile(input: {
         return { ok: false, reason: "The runtime image must carry an explicit tag or digest." };
     }
 
+    for (const [name, service] of facts.services) {
+        if (service.volumesFrom.length > 0) {
+            return { ok: false, reason: `The service "${name}" uses volumes_from, which mounts paths this profile cannot verify.` };
+        }
+        const label = name === manifest.services.gateway ? "gateway" : name === manifest.services.runtime ? "runtime" : "";
+        for (const mount of service.mounts) {
+            const refusal = checkMount(label, mount);
+            if (refusal) return refusal;
+        }
+        for (const target of service.tmpfs) {
+            const refusal = checkMount(label, { type: "tmpfs", source: null, target, readOnly: false });
+            if (refusal) return refusal;
+        }
+    }
+
     for (const [label, service] of [
         ["gateway", gateway],
         ["runtime", runtime],
@@ -199,35 +239,64 @@ export function checkManagedSiteProfile(input: {
         if (!mounting[0]!.readOnly) {
             return { ok: false, reason: `The ${label} service must mount ${MANAGED_SITE_PATHS.runtime} read-only.` };
         }
-        const accepted = mounting[0]!;
-        for (const mount of service.mounts) {
-            if (mount === accepted) continue;
-            if (mount.target === `${runtimeDir}/current` || mount.target.startsWith(`${runtimeDir}/current/`)) {
-                return { ok: false, reason: `The ${label} service mounts at or below current, which would pin or mask the release.` };
-            }
-            // A second mount anywhere inside runtime/ would hide a release path
-            // (the whole runtime, or one directory of it) from the process.
-            if (within(mount.target, runtimeDir)) {
-                return {
-                    ok: false,
-                    reason: `The ${label} service mounts over part of ${MANAGED_SITE_PATHS.runtime}, which would mask the release.`,
-                };
-            }
-            const source = mount.source;
-            if (source !== null && forbiddenSources.some((forbidden) => within(source, forbidden))) {
-                return { ok: false, reason: `The ${label} service mounts staging or private site state.` };
-            }
-            if (forbiddenSources.some((forbidden) => within(mount.target, forbidden))) {
-                return { ok: false, reason: `The ${label} service mounts staging or private site state.` };
-            }
-        }
     }
 
     return { ok: true };
+
+    function checkMount(declaredLabel: "" | "gateway" | "runtime", mount: ManagedSiteMountFact): ManagedSiteProfileResult | null {
+        const label = declaredLabel || "additional";
+        if (!isCanonicalAbsolute(mount.target)) {
+            return { ok: false, reason: `The ${label} service has a container path that is not canonical.` };
+        }
+        const bind = mount.type === "bind";
+        if (bind && (mount.source === null || !isCanonicalAbsolute(mount.source))) {
+            return { ok: false, reason: `The ${label} service has a bind source that is not a canonical absolute path.` };
+        }
+        const sourceTouchesSite = bind && (within(mount.source!, siteTree) || isAncestor(mount.source!, siteTree));
+        const targetTouchesSite = within(mount.target, siteTree) || isAncestor(mount.target, siteTree);
+        if (bind && forbiddenFiles.includes(mount.source!)) {
+            return { ok: false, reason: `The ${label} service mounts a panel control file.` };
+        }
+        if (!sourceTouchesSite && !targetTouchesSite) return null;
+
+        // Only the declared pair may mount site state, and only these shapes.
+        if (declaredLabel === "") {
+            return { ok: false, reason: `A service other than the declared gateway and runtime mounts site state.` };
+        }
+        if (!bind) {
+            return { ok: false, reason: `The ${label} service overlays ${MANAGED_SITE_PATHS.runtime} with a non-bind mount.` };
+        }
+        const source = mount.source!;
+        const samePath = mount.target === source;
+        if (source === runtimeDir && samePath && mount.readOnly) return null;
+        if (declaredLabel === "runtime") {
+            if (source === sharedDir && samePath && !mount.readOnly) return null;
+            if (!mount.readOnly && samePath && declaredPaths.some((path) => within(source, path))) return null;
+        }
+        return {
+            ok: false,
+            reason: `The ${label} service mounts ${MANAGED_SITE_PATHS.runtime}, releases or other site state outside the allowed profile.`,
+        };
+    }
+}
+
+/** Textual canonical form: absolute, already normalized, no `..`, `//` or trailing `/`. */
+function isCanonicalAbsolute(value: string): boolean {
+    if (!posix.isAbsolute(value)) return false;
+    if (value.length > 1 && value.endsWith("/")) return false;
+    if (value.includes("//")) return false;
+    return posix.normalize(value) === value;
 }
 
 function within(path: string, root: string): boolean {
     return path === root || path.startsWith(`${root}/`);
+}
+
+/** Whether `path` is a strict ancestor directory of `descendant`. */
+function isAncestor(path: string, descendant: string): boolean {
+    if (path === descendant) return false;
+    if (path === "/") return true;
+    return descendant.startsWith(`${path}/`);
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -310,6 +379,33 @@ function mountFact(entry: unknown): ManagedSiteMountFact | null {
         target: value.target,
         readOnly: value.read_only === true,
     };
+}
+
+function stringList(value: unknown): string[] | null {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) return null;
+    const items: string[] = [];
+    for (const entry of value) {
+        if (typeof entry !== "string") return null;
+        items.push(entry);
+    }
+    return items;
+}
+
+function stringTargets(value: unknown): string[] | null {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) return null;
+    const items: string[] = [];
+    for (const entry of value) {
+        if (typeof entry === "string") {
+            items.push(entry);
+            continue;
+        }
+        const target = record(entry)?.target;
+        if (typeof target !== "string") return null;
+        items.push(target);
+    }
+    return items;
 }
 
 function networkNames(value: unknown): string[] | null {

@@ -127,9 +127,15 @@ and names the path. `owner: managed` replaces this step with the creation form.
   must mount `site/runtime/` at the same absolute source and destination,
   read-only; no mount destination may be at or below `runtime/current` (that
   would mask the switch or the probe script); `staging/`, `private/` and the
-  checkout are mounted into no service. A stack whose editor changed one of
-  these mounts is refused before any stop, even when the names and the port
-  still match.
+  checkout are mounted into no service. Every service of the project is
+  checked, not only the declared pair, because one extra service is enough to
+  expose the tree. A parent bind (`site/`, the stack directory or any ancestor)
+  is refused, as is any alias of a release path, a `tmpfs` overlay at or below
+  `runtime/current`, and `volumes_from`, which mounts a path this profile
+  cannot verify. Paths are compared in canonical textual form: a bind source or
+  container path containing `..`, `//` or a trailing slash is refused rather
+  than normalized. A stack whose editor changed one of these mounts is refused
+  before any stop, even when the names and the port still match.
 - The gateway has read-only access to `public/`. The runtime service reads the
   release read-only and writes only declared `shared/` paths. Protected assets
   and secrets stay invisible to the gateway.
@@ -332,7 +338,10 @@ VM checklist before calling the pilot done:
    runtime is mounted read-only at the same host and container path and no
    mount masks `current`, a forced recreate changes the runtime container ID
    and leaves the gateway's unchanged, and the directory still runs with
-   `docker compose -f compose.yaml -p <project> up -d` without the panel.
+   `docker compose -f compose.yaml -p <project> up -d` without the panel. A
+   parent bind (`site/` or above), an alias of a release path, a `tmpfs` at or
+   below `runtime/current`, a `volumes_from` and a third service mounting site
+   state are refused.
 4. A copy of `generated/` edited by hand is refused as drift; the affected file
    is named and nothing runs.
 5. The gateway serves `public/` only: `private/`, `generated/`, the manifest and

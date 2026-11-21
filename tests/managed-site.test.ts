@@ -165,6 +165,8 @@ describe("parseManagedSiteManifest", () => {
         const withoutImage = { ...result, runtime: { profile: "php-front-controller" } };
         expect(rejected(withoutImage)).toBe(true);
         expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "php" } }))).toBe(true);
+        expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "php:" } }))).toBe(true);
+        expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "ghcr.io/acme/php:" } }))).toBe(true);
         expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "ghcr.io/acme/php@sha256:abc" } }))).toBe(true);
         expect(
             parse(
@@ -206,9 +208,13 @@ describe("parseManagedSiteManifest", () => {
         expect(rejected(withRef("refs/heads/../main"))).toBe(true);
         expect(rejected(withRef("refs/heads/feature//x"))).toBe(true);
         expect(rejected(withRef("refs/heads/feature/.hidden"))).toBe(true);
+        expect(rejected(withRef("refs/heads/release.lock/v1"))).toBe(true);
+        expect(rejected(withRef("refs/heads/a/b.lock"))).toBe(true);
+        expect(rejected(withRef("refs/heads/@"))).toBe(true);
         expect(rejected(withRef("refs/heads/main.lock"))).toBe(true);
         expect(rejected(withRef("refs/heads/main "))).toBe(true);
         expect(rejected(withRef("refs/heads/main"))).toBe(false);
+        expect(rejected(withRef("refs/heads/locked/release"))).toBe(false);
         expect(rejected(withRef("refs/heads/feat/oci-2.1_x"))).toBe(false);
     });
 

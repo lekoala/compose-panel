@@ -110,11 +110,13 @@ export function isValidDeployRef(value: string): boolean {
     const prefix = "refs/heads/";
     if (!value.startsWith(prefix)) return false;
     const branch = value.slice(prefix.length);
-    if (branch.length === 0) return false;
+    if (branch.length === 0 || branch === "@") return false;
     if (!/^[A-Za-z0-9._/-]+$/.test(branch)) return false;
-    if (branch.startsWith("/") || branch.endsWith("/") || branch.endsWith(".") || branch.endsWith(".lock")) return false;
+    if (branch.startsWith("/") || branch.endsWith("/") || branch.endsWith(".")) return false;
     if (branch.includes("..") || branch.includes("//") || branch.includes("@{")) return false;
-    return branch.split("/").every((segment) => segment.length > 0 && !segment.startsWith("."));
+    // `git check-ref-format` refuses a dot-prefixed component and any component
+    // ending in `.lock`, at every level, not only the last one.
+    return branch.split("/").every((segment) => segment.length > 0 && !segment.startsWith(".") && !segment.endsWith(".lock"));
 }
 
 /**
@@ -304,7 +306,10 @@ export function isExplicitImageReference(value: string): boolean {
     if (!/^[a-z0-9][a-z0-9._/:@-]{0,254}$/i.test(value)) return false;
     const [reference, digest] = value.split("@");
     if (digest !== undefined) return /^sha256:[0-9a-f]{64}$/.test(digest);
-    return reference!.lastIndexOf(":") > reference!.lastIndexOf("/");
+    const lastColon = reference!.lastIndexOf(":");
+    if (lastColon <= reference!.lastIndexOf("/")) return false;
+    // A trailing colon names no tag: `php:` must not pass as "explicit".
+    return /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(reference!.slice(lastColon + 1));
 }
 
 function unknownField(record: Record<string, unknown>, allowed: readonly string[], prefix: string): { ok: false; reason: string } | null {
