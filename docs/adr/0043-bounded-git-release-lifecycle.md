@@ -305,10 +305,18 @@ its own Docker-in-Docker daemon and proves the mount/switch/recreate contract
 without the panel, including the runtime container ID changing while the
 gateway's stays, the effective mounts, the pinned OPcache policy actually
 loaded by the runtime, the release readable by an unprivileged UID, the probe
-format and `/` answering the same SHA. The deployment suite adds a local bare
-repository and a fake fetch adapter to deploy two commits, verify the served
-SHA, fail an activation and roll back, with a second stack unchanged. Never
-against a host daemon running real stacks, never in unattended CI.
+format and `/` answering the same SHA. `scripts/managed-sites-e2e/run.sh`
+(`bun run test:managed-sites-e2e:wsl`) then drives the real deploy code on a
+second disposable daemon: it publishes a first commit, deploys a second one,
+proves the no-op for the SHA already served, returns to the previous release,
+refuses a changed project and a parent bind before any mutation, and kills the
+deploy process with SIGKILL after the gateway stop and after the pointer
+switch, then inspects the marker, the pointer, the containers and the probe. A
+second Compose project must not change. The Git URL is mapped to a local bare
+repository by an injected runner, which re-allows the `file` transport for that
+fixture; URL validation and the `https`-only environment stay covered by the
+unit tests. Never against a host daemon running real stacks, never in
+unattended CI.
 
 VM checklist:
 

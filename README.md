@@ -125,6 +125,8 @@ bun run test:wsl   # on Windows: the same suite on Linux through WSL
 bun run test:proxy:wsl  # on Windows: end-to-end check behind a real Caddy (TLS)
 bun run test:caddy:wsl  # on Windows: Caddy helper against a real, disposable Caddy
 bun run test:docker-lab:wsl  # on Windows: collisions and SIGTERM on a disposable Docker-in-Docker daemon
+bun run test:managed-sites:wsl  # on Windows: the managed-site mount/switch lab, without the panel
+bun run test:managed-sites-e2e:wsl  # on Windows: the real two-commit deploy, refusals and killed deploys
 ```
 
 `test:wsl` needs Bun in the default WSL distribution. It copies the working tree into the Linux file system so that the signal, symlink and file-mode tests actually run. Contributors and coding agents: read [AGENTS.md](AGENTS.md) first.

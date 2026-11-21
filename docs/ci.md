@@ -157,6 +157,22 @@ keeps its own import timestamp, so a backdated image config is not eligible
 there and the test asserts the week-old floor keeps it instead of overreaching.
 Never runs in unattended CI.
 
+The managed-site deploy suite (`tests/managed-site-e2e-linux.test.ts`) starts
+its own lab daemon through `scripts/managed-sites-e2e/run.sh`
+(`bun run test:managed-sites-e2e:wsl`). It creates a real two-commit Git
+repository and a real gateway/PHP Compose project inside the lab, publishes the
+first commit as the baseline, then drives the real deploy code: a full deploy,
+a no-op for the SHA already served, a return to the previous release, a changed
+project and a parent bind refused before any mutation, and a second Compose
+project left untouched. It then kills the deploy process with `SIGKILL` after
+the gateway stop and after the pointer switch and inspects the attempt marker,
+the pointer, the containers and the revision probe. The Git URL is mapped to a
+local bare repository by an injected runner, which re-allows the `file`
+transport for the fixture; URL validation and the `https`-only environment stay
+in the unit tests. The gateway binds `127.0.0.1` inside the lab daemon's network
+namespace, so the probe runs there through `docker exec`. Never runs in
+unattended CI.
+
 ## Publication (tags only)
 
 Releases are published by `.github/workflows/release.yml`, triggered only by

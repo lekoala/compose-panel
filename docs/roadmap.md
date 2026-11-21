@@ -78,22 +78,28 @@ After V1 the direction is to understand the host the stacks run on, not only the
   queue or automatic recovery.
 
 ## Managed sites and Git deployment
-Accepted as pilot contracts, not implemented and not scheduled:
+Opt-in and default-off (`COMPOSE_PANEL_MANAGED_SITES_ENABLED`). The pilot
+contracts are accepted ([ADR 0042](adr/0042-managed-site-ownership.md),
+[ADR 0043](adr/0043-bounded-git-release-lifecycle.md)) and the manual deploy is
+implemented for an opted-in stack; everything after it still needs its own ADR:
 
-- **Managed site ownership.** [ADR 0042](adr/0042-managed-site-ownership.md):
-  a versioned `compose-panel-site.json` next to the Compose file, either opting
-  a hand-written stack into one bind-mount release layout (`owner: opt-in`) or
-  generating one fixed PHP profile (`owner: managed`). Deterministic generated
-  files, server-side drift refusal, validated paths and no second orchestration
-  engine. The directory stays a Compose project the CLI can run.
-- **Manual Git deploy.** [ADR 0043](adr/0043-bounded-git-release-lifecycle.md):
-  one configured HTTPS ref fetched into an immutable release, an atomic
-  `current` switch, a runtime recreation, a verified serving SHA on the actual
-  loopback binding and a probed code rollback. Image-only stacks keep their CI
-  path; there is no scheduler, webhook, image build or migration.
-
-First increment: one hand-authored PHP Compose stack, one public branch, one
-browser action. Private SSH and a disposable Composer preparation container,
-the creation form with a stable loopback/Caddy attach, the Silverstripe profile
-with an existing MariaDB, offsite backup and restore, CI triggers, host timers,
-production cutover and cloning each need their own ADR before any code.
+- **Managed site ownership.** A versioned `compose-panel-site.json` next to the
+  Compose file, either opting a hand-written stack into one bind-mount release
+  layout (`owner: opt-in`) or, later, generating one fixed PHP profile
+  (`owner: managed`). Deterministic generated files, server-side drift refusal,
+  validated paths and no second orchestration engine. The directory stays a
+  Compose project the CLI can run. The manifest parser, the effective-profile
+  check and the layout exist; generation does not.
+- **Manual Git deploy.** Implemented behind the flag: one configured HTTPS ref
+  fetched into an immutable release, an atomic `current` switch, a forced
+  runtime recreation, a verified serving SHA on the actual loopback binding and
+  a probed code rollback, with an attempt marker when the outcome is ambiguous.
+  Image-only stacks keep their CI path; there is no scheduler, webhook, image
+  build or migration. Proven by unit tests, the mount lab and a disposable
+  two-commit suite that drives the real code, refuses profile drift and kills
+  the deploy before and after the switch.
+- **Next increments, each with its own ADR or vertical PR:** private SSH and a
+  disposable Composer preparation container; the creation form with generated
+  Compose/gateway files, a stable loopback port and the existing Caddy attach;
+  the Silverstripe profile with an existing MariaDB; offsite backup and restore;
+  CI triggers; host timers and retention; production cutover and cloning.

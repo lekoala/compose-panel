@@ -327,6 +327,14 @@ its own disposable Docker-in-Docker daemon; `bun run test:managed-sites:wsl`
 runs it from Windows through WSL. Fixtures are copied into the site's
 `generated/` directory because that daemon only sees the shared lab directory;
 a fixture mounted from the checkout is silently replaced by an empty directory.
+`scripts/managed-sites-e2e/run.sh` (`bun run test:managed-sites-e2e:wsl`) then
+drives the real deploy code on a second disposable daemon and covers checklist
+item 1 and the relative pointer of item 2 end to end: a real two-commit
+repository, a published baseline, a full deploy, a proven no-op, a return to the
+previous release, two refusals before any mutation, and two SIGKILLs that leave
+the attempt marker, pointer, containers and probe for inspection. The gateway
+exposure, the incomplete-release refusal and Caddy attach checks stay manual on
+a VM.
 
 VM checklist before calling the pilot done:
 

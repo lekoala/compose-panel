@@ -957,10 +957,13 @@ guard.
 Unit tests cover the manifest, the profile check, the Git adapter and the
 deploy decision table, including rollback and unconfirmed outcomes. The
 disposable layout lab (`bun run test:managed-sites:wsl`) proves the mount,
-switch, forced-recreation and probe contract without the panel. A disposable
-two-commit deployment suite against the real operation and daemon is the
-remaining gate before calling this pilot done; do not treat a production host as
-its test bed.
+switch, forced-recreation and probe contract without the panel. The disposable
+deployment suite (`bun run test:managed-sites-e2e:wsl`) drives the real deploy
+code against a real Git repository and Compose project: two commits, a proven
+no-op, a return to the previous release, two refusals before any mutation, and
+two SIGKILLs (after the gateway stop and after the pointer switch) followed by
+an inspection of the marker, pointer, containers and probe. It is opt-in and
+never runs in unattended CI; do not treat a production host as its test bed.
 
 ## Backups and rollback
 

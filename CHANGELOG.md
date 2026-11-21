@@ -31,8 +31,14 @@
   the rollback repeats stop/switch/recreate/start/probe with both the container
   ID and image ID checked. Admission and acknowledgement run under the stack
   lock, and the acknowledgement is bound to the displayed attempt ID. The
-  disposable two-commit deployment suite on a real daemon is still the gate
-  before the pilot is called done.
+  disposable two-commit suite (`tests/managed-site-e2e-linux.test.ts`,
+  `bun run test:managed-sites-e2e:wsl`) now drives that code against a real Git
+  repository and a real Compose project on its own Docker-in-Docker daemon: two
+  commits deploy, the SHA already proven active is a no-op, the previous release
+  deploys again, a changed project and a parent bind are refused before any
+  mutation, and two SIGKILLs (after the gateway stop and after the pointer
+  switch) leave the attempt marker, pointer, containers and probe in the state
+  the operator must inspect. A second Compose project stays untouched.
 
 - Targeted pull (ADR 0041): `Pull` accepts one validated service from the
   Services table, so a corrected runtime image can be downloaded on its own and
