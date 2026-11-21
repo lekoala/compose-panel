@@ -134,9 +134,10 @@ and names the path. `owner: managed` replaces this step with the creation form.
   release read-only and writes only declared `shared/` paths. Protected assets
   and secrets stay invisible to the gateway.
 - One gateway and one private PHP-FPM container per site, on their own Compose
-  network. The gateway publishes one fixed `127.0.0.1:<port>`; the port is
-  stable across activations and recreation and changes only with an explicit
-  detach.
+  network defined by the project. An `external: true` network is refused in the
+  pilot: it would join the site to another project's network. The gateway
+  publishes one fixed `127.0.0.1:<port>`; the port is stable across activations
+  and recreation and changes only with an explicit detach.
 - The gateway is the application web policy: document root, rewrites, PHP
   execution, public assets, sensitive paths. The same policy holds when the
   gateway is reached directly, so the host Caddy route is not a trust boundary.
@@ -144,6 +145,31 @@ and names the path. `owner: managed` replaces this step with the creation form.
   mapped to a panel-written script outside `public/` in each release. It emits
   the release SHA and is the only revision probe (ADR 0043). An `opt-in` stack
   must implement the same fixed route in its own gateway configuration.
+
+### Ownership and permissions
+
+The pilot assumes one Linux host, one panel process and service images that
+choose their own users. The release layout therefore depends on explicit
+numeric facts, not on shared groups:
+
+- The panel writes as the UID/GID of the Bun process — `root` in the documented
+  deployment ([deploy/compose.yaml](../../deploy/compose.yaml)) — with a `022`
+  umask: release directories `0755`, files `0644`. Publication never relies on
+  a group, so the gateway and PHP images keep their default user.
+- The stack directory and its parents are traversable by every service UID
+  (`0755`, like a conventional `/opt/stacks`). A stack path the panel cannot
+  publish into, or that a service UID cannot traverse, refuses the operation
+  instead of publishing an unreadable release.
+- `site/private/` and `site/staging/` are `0700`, hold attempt records and the
+  checkout, and stay outside every container mount. They are never made
+  readable to a service.
+- A published release is never writable by a service. The pilot declares no
+  writable runtime path, so `shared/` is optional and owned by the operator. The
+  first profile that needs writes (Silverstripe assets, cache) adds bounded
+  `runtime.uid`/`runtime.gid` manifest fields in the same version change and
+  applies them to the declared path only. Nothing is chowned implicitly.
+- The revision script is an ordinary `0644` file inside the release, so it
+  follows the same rule as the code it identifies.
 
 ### Generated artifacts (`owner: managed`)
 
@@ -212,11 +238,12 @@ guarantees:
 
 ### Activation gate
 
-`COMPOSE_PANEL_MANAGED_SITES_ENABLED` (default `false`) **and** a valid manifest.
-Deploy additionally requires the `deploy` block and ADR 0043's eligibility.
-When the flag is off there is no route, no site section, no manifest read and no
-extra Docker call. When the manifest is invalid the stack stays an ordinary,
-read-only stack.
+`COMPOSE_PANEL_MANAGED_SITES_ENABLED` (default `false`) **and** a valid manifest,
+which in v1 always carries the `deploy` block. Deploy additionally requires
+ADR 0043's eligibility; an image-only stack cannot be a managed site and keeps
+its CI/image path. When the flag is off there is no route, no site section, no
+manifest read and no extra Docker call. When the manifest is invalid the stack
+stays an ordinary, read-only stack.
 
 ### Security invariants
 
@@ -285,11 +312,15 @@ non-forced recreation arguments.
 Linux integration, opt-in and disposable: `scripts/managed-sites-lab/run.sh`
 (manual, never in unattended CI) starts a gateway and a PHP runtime with the
 layout above, then proves two local revisions, a pointer switch, the recreate
-requirement (the runtime container ID changes, the gateway's does not), the
-effective mounts (same path, read-only, nothing masking `current`), the probe
+requirement (the runtime container ID changes, the gateway's does not, and only
+the new process serves the switch because the runtime really loads the pinned
+OPcache policy), the effective mounts (same path, read-only, nothing masking
+`current`), the release readable by an unprivileged service UID, the probe
 format, a rollback and the front controller serving the same SHA. It runs on
 its own disposable Docker-in-Docker daemon; `bun run test:managed-sites:wsl`
-runs it from Windows through WSL.
+runs it from Windows through WSL. Fixtures are copied into the site's
+`generated/` directory because that daemon only sees the shared lab directory;
+a fixture mounted from the checkout is silently replaced by an empty directory.
 
 VM checklist before calling the pilot done:
 
@@ -312,6 +343,9 @@ VM checklist before calling the pilot done:
 7. The probe answers HTTP `200` with exactly 40 lowercase hexadecimal characters
    and one newline, and `/` serves the same SHA after activation and after a
    rollback.
+8. The release tree is `0755`/`0644` and readable by an unprivileged service
+   UID, `staging/` and `private/` stay `0700` and outside every mount, and the
+   runtime reports the pinned OPcache policy.
 
 ## Out of scope
 

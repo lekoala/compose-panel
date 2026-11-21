@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Managed sites (ADR 0042, ADR 0043): the ownership model and the bounded Git
+  release lifecycle are accepted as pilot contracts, with a disposable lab that
+  proves the bind-mount release layout without the panel — two revisions, the
+  atomic `current` switch, the forced runtime recreation that alone makes the
+  running PHP process follow it, a probed rollback, the effective mounts, the
+  probe format and a front controller answering the same SHA. The lab
+  (`scripts/managed-sites-lab/run.sh`, `bun run test:managed-sites:wsl`) copies
+  its fixtures into the site instead of mounting them from the checkout, so the
+  runtime really loads the pinned OPcache policy, and it checks that an
+  unprivileged UID can read a release while `private/` and `staging/` stay
+  closed. `ComposeProvider.recreateService` gains an explicit `force` option,
+  unused by the self-update path. No managed-site route, manifest parser or
+  deploy action exists yet.
+
 - Targeted pull (ADR 0041): `Pull` accepts one validated service from the
   Services table, so a corrected runtime image can be downloaded on its own and
   applied with **Up** on that service. Same lock, audit, SSE and `build:`

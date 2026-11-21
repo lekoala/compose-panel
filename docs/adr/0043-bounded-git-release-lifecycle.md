@@ -38,6 +38,8 @@ fetched:
 - the declared gateway and runtime services exist in `config --services`;
 - the gateway publishes exactly one TCP port on `127.0.0.1` and the runtime
   publishes none;
+- no declared service joins a network marked `external: true`; the site's own
+  project network is the isolation boundary (ADR 0042);
 - both services mount `<stack>/site/runtime` at the same absolute source and
   destination, read-only, with no mount destination at or below
   `runtime/current` and no mount of `staging/`, `private/` or the checkout
@@ -265,11 +267,12 @@ certain). Provider tests cover the forced versus non-forced recreation argv.
 Linux integration, disposable only: `scripts/managed-sites-lab/run.sh` runs on
 its own Docker-in-Docker daemon and proves the mount/switch/recreate contract
 without the panel, including the runtime container ID changing while the
-gateway's stays, the effective mounts, the probe format and `/` answering the
-same SHA. The deployment suite adds a local bare repository and a fake fetch
-adapter to deploy two commits, verify the served SHA, fail an activation and
-roll back, with a second stack unchanged. Never against a host daemon running
-real stacks, never in unattended CI.
+gateway's stays, the effective mounts, the pinned OPcache policy actually
+loaded by the runtime, the release readable by an unprivileged UID, the probe
+format and `/` answering the same SHA. The deployment suite adds a local bare
+repository and a fake fetch adapter to deploy two commits, verify the served
+SHA, fail an activation and roll back, with a second stack unchanged. Never
+against a host daemon running real stacks, never in unattended CI.
 
 VM checklist:
 

@@ -18,11 +18,19 @@
 #   - static files follow the switch immediately, while PHP (including the front
 #     controller on /) keeps the previous release until the runtime service is
 #     force-recreated, which changes its container ID and not the gateway's;
+#     the runtime really loads the pinned OPcache policy, so this is not just a
+#     two-second revalidation window;
 #   - a force-recreate serves the new release, and a rollback restores the old
 #     one with the same probe and front-controller answer;
+#   - the release is readable by an unprivileged service UID, not only by root;
 #   - the probe answers HTTP 200 with exactly 40 lowercase hex characters and
 #     one newline; public/ only: private/, the release root and the probe
 #     script name are not reachable.
+#
+# The gateway configuration and the OPcache policy are copied into the site's
+# generated/ directory: the disposable daemon only sees the shared lab
+# directory, never the checkout. Mounting a fixture straight from the checkout
+# silently creates an empty source directory inside the daemon instead.
 #
 # Needs Docker with the Compose plugin and a writable ~/.cache. The lab daemon
 # pulls two public images (overridable) the first time it runs.
@@ -48,7 +56,7 @@ BASE="http://127.0.0.1:$PORT"
 export LAB_PROJECT="$PROJECT"
 export LAB_SITE_ROOT="$SITE"
 export LAB_PORT="$PORT"
-export LAB_FIXTURES="$FIXTURES"
+export LAB_GENERATED="$SITE/generated"
 export LAB_WEB_IMAGE="${MANAGED_SITES_LAB_WEB_IMAGE:-nginx:alpine}"
 export LAB_RUNTIME_IMAGE="${MANAGED_SITES_LAB_RUNTIME_IMAGE:-php:8.3-fpm-alpine}"
 
@@ -194,9 +202,18 @@ echo "managed-site lab: project=$PROJECT stack=$STACK port=$PORT"
 echo "site root: $SITE"
 
 mkdir -p "$SITE/site/runtime/releases" "$SITE/site/staging" "$SITE/site/shared" "$SITE/site/private/releases" "$SITE/generated"
+# ADR 0042: staging and metadata stay closed and outside every container mount.
+chmod 700 "$SITE/site/staging" "$SITE/site/private"
+# lib.sh creates the shared directory 0700 for privacy. The real deployment
+# keeps /opt/stacks traversable by the service UIDs, so open this disposable
+# copy to the same convention and let the unprivileged read check below mean
+# something. It contains lab fixtures only and is removed on exit.
+chmod 755 "$LAB_SHARED"
 publish_release "$SHA_A"
 publish_release "$SHA_B"
 sed -e "s#__SITE_ROOT__#$SITE#g" "$FIXTURES/nginx-site.conf" > "$SITE/generated/nginx-site.conf"
+# Copied, never mounted from the checkout: see the header.
+cp "$FIXTURES/opcache.ini" "$SITE/generated/opcache.ini"
 printf 'do-not-serve\n' > "$SITE/site/private/secret.txt"
 printf 'release-root-marker\n' > "$SITE/site/runtime/releases/$SHA_A/REVISION"
 printf '{"marker":"manifest-marker"}\n' > "$SITE/compose-panel-site.json"
@@ -223,6 +240,21 @@ expect_eq "gateway publishes one loopback port" "80/tcp -> 127.0.0.1:$PORT" "$(d
 expect_eq "runtime publishes nothing" "" "$(docker port "$php_id")"
 assert_mounts "$web_id" "gateway"
 assert_mounts "$php_id" "runtime"
+
+# The pinned policy is what makes the next assertion deterministic: with the
+# default validate_timestamps=1 / revalidate_freq=2 the old code would be
+# revalidated after two seconds and the lab would prove nothing.
+expect_eq "the runtime loaded the pinned OPcache policy" "0" \
+    "$(compose exec -T php php -r 'echo ini_get("opcache.validate_timestamps");')"
+# 65534 = nobody: the release must be readable by a service UID that did not
+# create it and that belongs to no shared group.
+if ! compose exec -T -u 65534:65534 php sh -c \
+    "test -r $SITE/site/runtime/current/public/index.php && test -r $SITE/site/runtime/current/.compose-panel/revision.php"; then
+    fail "an unprivileged UID cannot read the release"
+fi
+pass "an unprivileged UID can read the release"
+expect_eq "staging/ stays closed" "700" "$(stat -c '%a' "$SITE/site/staging")"
+expect_eq "private/ stays closed" "700" "$(stat -c '%a' "$SITE/site/private")"
 
 for path in "/private/secret.txt" "/../private/secret.txt" "/REVISION" "/../compose-panel-site.json"; do
     body="$(fetch_path "$path" 2>/dev/null || true)"
