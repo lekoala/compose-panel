@@ -206,6 +206,32 @@ export class OperationManager {
         return this.shuttingDown;
     }
 
+    /**
+     * Run one managed-site deploy (ADR 0043). The lock, project reservation,
+     * streaming and finalize semantics are the same as any other operation; the
+     * `run` closure performs the locked revalidation, the fetch/publish and the
+     * activation phase machine.
+     */
+    startDeploy(input: {
+        stack: string;
+        project?: string;
+        run: (context: {
+            onOutput: (chunk: string) => void;
+            record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+        }) => Promise<AppActionOutcome>;
+    }): OperationView {
+        const { operation, release } = this.begin({
+            stack: input.stack,
+            action: "deploy",
+            label: "Deploy",
+            project: input.project,
+        });
+        const task = this.executeApp(operation, input.run, release, input.project);
+        this.tasks.add(task);
+        void task.finally(() => this.tasks.delete(task));
+        return operation;
+    }
+
     /** Shared acquisition: per-stack lock, project reservation, operation record. */
     private begin(input: {
         stack: string;

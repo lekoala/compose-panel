@@ -37,7 +37,8 @@ import {
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { managedBy } from "./deployment.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
-import { join, posix } from "node:path";
+import { lstat, unlink } from "node:fs/promises";
+import { dirname, join, posix } from "node:path";
 import { listStacks, locateComposeFile, readStackCompose, StackError, validateStackName } from "./stacks.ts";
 import {
     loadProjects,
@@ -77,7 +78,7 @@ import { CaddyHelperError, callCaddyHelper } from "./caddy-client.ts";
 import { parseContainerInspect, parseContainerLs, type ContainerPort } from "./container-state.ts";
 import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
-import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
+import { OperationManager, OperationsDisabledError, isOperationAction, type AppActionOutcome, type OperationView } from "./operations.ts";
 import {
     ImageCheckBusyError,
     ImageCheckDisabledError,
@@ -90,11 +91,22 @@ import { HostMaintenance, MaintenanceDisabledError } from "./host-maintenance.ts
 import { isMaintenanceScope } from "./maintenance.ts";
 import { MaintenanceBusyError, StackBusyError, StackLocks } from "./locks.ts";
 import { listBackups, pruneBackups } from "./backups.ts";
-import { FileSafetyError } from "./fs-safe.ts";
+import { FileSafetyError, randomSuffix, readFileSafe } from "./fs-safe.ts";
 import { LogManager, stripAnsi } from "./logs.ts";
 import { AuditLog, AuditError } from "./audit.ts";
 import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
 import { createComposeProvider, COMPOSE_LOG_TAIL_OPTIONS, isComposeServiceName, type ComposeProvider } from "./compose-provider.ts";
+import {
+    MANAGED_SITE_MANIFEST_FILE,
+    MANAGED_SITE_MANIFEST_MAX_BYTES,
+    parseManagedSiteManifest,
+    type ManagedSiteManifest,
+    type ManagedSiteManifestResult,
+} from "./managed-site.ts";
+import { checkManagedSiteProfile } from "./managed-site-profile.ts";
+import { fetchAndPublishGitRelease } from "./git-release.ts";
+import { managedSiteAttemptPath, pendingDeployAttempt, runManagedSiteDeploy, type ManagedSiteDeployResult } from "./managed-site-deploy.ts";
+import { createManagedSiteProbe } from "./managed-site-probe.ts";
 import { buildAccessReport, type Access } from "./access.ts";
 import type { DockerRunner } from "./docker.ts";
 import {
@@ -424,7 +436,13 @@ export function createApp(options: AppOptions): App {
         onFinish: (operation) => {
             imageCheck.imagesChanged();
             void audit.record({
-                event: operation.source ? "toolbox" : operation.action === "rollout" ? "rollout" : "operation",
+                event: operation.source
+                    ? "toolbox"
+                    : operation.action === "rollout"
+                      ? "rollout"
+                      : operation.action === "deploy"
+                        ? "deploy"
+                        : "operation",
                 result: operation.status,
                 stack: operation.stack,
                 action: operation.action,
@@ -1157,6 +1175,7 @@ export function createApp(options: AppOptions): App {
         const operation = operations.forStack(stack.name);
         const check = imageCheck.forStack(stack.name);
         const owner = managedBy(status.declared);
+        const siteCard = config.managedSitesEnabled ? await managedSiteCard(stack.name) : null;
         const project = status.project ? `<span>Compose project <code>${escapeHtml(status.project)}</code></span>` : "";
         return htmlResponse(
             documentHtml(
@@ -1174,6 +1193,7 @@ export function createApp(options: AppOptions): App {
                         managedBy: owner,
                     }) +
                     operationPanel(operation, stack.name) +
+                    managedSiteSection(siteCard, stack.name, csrf, operation?.status === "running") +
                     servicesSection(
                         status.services,
                         status.state,
@@ -1430,6 +1450,9 @@ export function createApp(options: AppOptions): App {
         // The body may have arrived long after the session was checked.
         if (!sessions.isActive(session.id)) return sessionEnded();
 
+        const pendingDeploy = await refusePendingDeploy(request, name, csrf, "save");
+        if (pendingDeploy) return pendingDeploy;
+
         const saveRequest = {
             composeSource: form.get("compose") ?? "",
             envSource: form.get("env") ?? "",
@@ -1557,6 +1580,9 @@ export function createApp(options: AppOptions): App {
         const action = form.get("action") ?? "";
         if (!isOperationAction(action))
             return renderStackDetail(name, csrf, { kind: "error", text: "Unknown action. Nothing was run." }, 400);
+
+        const pendingDeploy = await refusePendingDeploy(request, name, csrf, action);
+        if (pendingDeploy) return pendingDeploy;
 
         // Scoped operations (ADR 0021, extended by ADR 0041): only `up`,
         // `restart` and `pull` accept a service. Anywhere else the field is
@@ -2919,6 +2945,9 @@ export function createApp(options: AppOptions): App {
         if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
         if (!sessions.isActive(session.id)) return sessionEnded();
 
+        const pendingDeploy = await refusePendingDeploy(request, name, csrf, "action");
+        if (pendingDeploy) return pendingDeploy;
+
         const sourceId = (form.get("source") ?? "").trim();
         const actionName = (form.get("action") ?? "").trim();
         const revision = (form.get("revision") ?? "").trim();
@@ -3024,6 +3053,306 @@ export function createApp(options: AppOptions): App {
             }
             throw error;
         }
+    }
+
+    const managedSiteProbe = createManagedSiteProbe();
+    const MANAGED_SITE_PENDING_MESSAGE =
+        "A previous deploy of this site has an unconfirmed outcome. Inspect the current pointer, the Docker service state and the revision probe, then acknowledge that attempt before running another modifying action.";
+
+    async function readManagedSiteManifest(stackDir: string): Promise<ManagedSiteManifestResult> {
+        try {
+            const file = await readFileSafe(join(stackDir, MANAGED_SITE_MANIFEST_FILE), MANAGED_SITE_MANIFEST_MAX_BYTES);
+            if (!file) return { ok: false, reason: "This stack has no compose-panel-site.json site manifest." };
+            return parseManagedSiteManifest(file.source);
+        } catch (error) {
+            if (error instanceof FileSafetyError) return { ok: false, reason: error.message };
+            return { ok: false, reason: "The site manifest could not be read." };
+        }
+    }
+
+    async function managedSiteStackDir(name: string): Promise<string> {
+        return dirname((await locateComposeFile(stacksRoot, name)).path);
+    }
+
+    /**
+     * The pending marker is evidence that a crash left an ambiguous serving
+     * state. It refuses every modifying operation until the operator inspects
+     * and acknowledges it; reads, logs and the probe stay available.
+     */
+    async function refusePendingDeploy(request: Request, name: string, csrf: string, action: string): Promise<Response | null> {
+        if (!config.managedSitesEnabled) return null;
+        const stackDir = await managedSiteStackDir(name);
+        if (!(await pendingDeployAttempt(stackDir))) return null;
+        await recordAudit({
+            event: "deploy",
+            result: "refused",
+            actor: clientKey(request, config),
+            stack: name,
+            action,
+            detail: "an unacknowledged deploy attempt needs inspection",
+        });
+        return routeError(new StackError(MANAGED_SITE_PENDING_MESSAGE, 409), csrf, name);
+    }
+
+    function deployResultOutcome(
+        result: ManagedSiteDeployResult,
+        record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void,
+        onOutput: (chunk: string) => void,
+    ): AppActionOutcome {
+        // The operation view treats any live chunk as the complete output for a
+        // call, so the synthesized summary goes through the same stream instead
+        // of relying on the post-call append.
+        const emit = (text: string, code = 0): AppActionOutcome => {
+            onOutput(`${text}\n`);
+            return { code, stdout: "", stderr: "", timedOut: false, truncated: false };
+        };
+        switch (result.kind) {
+            case "refused":
+                return { refused: result.reason };
+            case "failed":
+                return emit(result.reason, 1);
+            case "noop":
+                record({ revision: result.releaseId });
+                return emit(`Already serving ${result.releaseId}; nothing changed.`);
+            case "deployed":
+                record({ revision: result.releaseId });
+                return emit(`Served revision verified: ${result.releaseId} (previous ${result.priorReleaseId}).`);
+            case "rolled-back":
+                record({ revision: result.servedReleaseId });
+                return emit(
+                    `Verification failed for ${result.releaseId}; the site was rolled back to ${result.servedReleaseId}, which the probe confirmed.`,
+                    1,
+                );
+            case "intervention":
+                if (result.releaseId) record({ revision: result.releaseId });
+                onOutput(`\n${result.reason}\n`);
+                return { intervention: result.reason };
+            case "unknown":
+                if (result.releaseId) record({ revision: result.releaseId });
+                onOutput(`${result.reason}\n`);
+                return {
+                    code: -1,
+                    stdout: "",
+                    stderr: "",
+                    timedOut: false,
+                    truncated: false,
+                    terminationUnconfirmed: true,
+                };
+        }
+    }
+
+    /** The locked body of a deploy: revalidation, fetch/publish, activation. */
+    async function executeManagedSiteDeploy(input: {
+        name: string;
+        manifest: ManagedSiteManifest;
+        onOutput: (chunk: string) => void;
+        record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+    }): Promise<AppActionOutcome> {
+        const context = await resolveProjectContext(stacksRoot, input.name, provider);
+        if (context.kind !== "resolved") {
+            return { refused: "The panel could not resolve exactly one deployed Compose project for this stack." };
+        }
+        if (context.project !== input.manifest.project) {
+            return { refused: `The deployed project is "${context.project}", not the declared project "${input.manifest.project}".` };
+        }
+        const stackDir = context.cwd;
+        if (await pendingDeployAttempt(stackDir)) return { refused: MANAGED_SITE_PENDING_MESSAGE };
+        const result = await runManagedSiteDeploy({
+            stackDir,
+            attemptId: randomSuffix(),
+            loadManifest: async () => {
+                const located = await locateComposeFile(stacksRoot, input.name);
+                return readManagedSiteManifest(dirname(located.path));
+            },
+            inspectProfile: async (manifest) => {
+                // No `-p` here: the effective project the files declare is what
+                // the manifest must match before any command injects one.
+                const facts = await provider.managedSiteFacts({
+                    composeFile: context.composeFile,
+                    cwd: context.cwd,
+                    envFile: context.envFile ?? undefined,
+                });
+                if (!facts) return { ok: false, reason: "Docker did not return the effective Compose configuration." };
+                if (facts.name !== manifest.project) {
+                    return { ok: false, reason: `The effective Compose project is "${facts.name}", not "${manifest.project}".` };
+                }
+                const checked = checkManagedSiteProfile({ manifest, stackDir: context.cwd, facts });
+                return checked.ok ? { ok: true, facts } : checked;
+            },
+            provider,
+            inspector,
+            files: (manifest) => ({
+                project: manifest.project,
+                cwd: context.cwd,
+                composeFiles: [context.composeFile],
+                envFiles: context.envFile ? [context.envFile] : [],
+            }),
+            fetchRelease: ({ manifest, attemptId, onOutput }) =>
+                fetchAndPublishGitRelease({
+                    stackDir: context.cwd,
+                    attemptId,
+                    siteId: manifest.siteId,
+                    url: manifest.deploy.git.url,
+                    ref: manifest.deploy.git.ref,
+                    onOutput,
+                }),
+            probe: managedSiteProbe,
+            now: () => Date.now(),
+            sleep,
+            isShuttingDown: () => shuttingDown,
+            onOutput: input.onOutput,
+            commandTimeoutMs: config.operationTimeoutMs,
+        });
+        return deployResultOutcome(result, input.record, input.onOutput);
+    }
+
+    async function handleDeploy(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!config.managedSitesEnabled) throw new StackError("Managed sites are not enabled on this panel.", 404);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+
+        const stackDir = await managedSiteStackDir(name);
+        const manifestResult = await readManagedSiteManifest(stackDir);
+        if (!manifestResult.ok) {
+            await recordAudit({
+                event: "deploy",
+                result: "refused",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "deploy",
+                detail: manifestResult.reason,
+            });
+            return renderStackDetail(name, csrf, { kind: "error", text: manifestResult.reason }, 409);
+        }
+        if (await pendingDeployAttempt(stackDir)) {
+            const response = await refusePendingDeploy(request, name, csrf, "deploy");
+            if (response) return response;
+        }
+        const manifest = manifestResult.manifest;
+        if (!sessions.isActive(session.id)) return sessionEnded();
+
+        try {
+            if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+            operations.startDeploy({
+                stack: name,
+                project: manifest.project,
+                run: async ({ onOutput, record }) => {
+                    if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                    return executeManagedSiteDeploy({ name, manifest, onOutput, record });
+                },
+            });
+            await recordAudit({
+                event: "deploy",
+                result: "started",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "deploy",
+                detail: `site ${manifest.siteId}, ${manifest.deploy.git.ref}`,
+            });
+            return redirect(back, 303);
+        } catch (error) {
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({
+                    event: "deploy",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    action: "deploy",
+                    detail: error.message,
+                });
+                return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
+            }
+            throw error;
+        }
+    }
+
+    async function handleDeployAcknowledge(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!config.managedSitesEnabled) throw new StackError("Managed sites are not enabled on this panel.", 404);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+        if (operations.isRunning(name)) {
+            return renderStackDetail(
+                name,
+                csrf,
+                {
+                    kind: "error",
+                    text: "An operation is still running for this stack. Wait for it to finish before acknowledging a deploy.",
+                },
+                409,
+            );
+        }
+        const marker = managedSiteAttemptPath(await managedSiteStackDir(name));
+        let info;
+        try {
+            info = await lstat(marker);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return redirect(back, 303);
+            throw error;
+        }
+        if (info.isDirectory()) throw new StackError("The deploy marker is not a file. Inspect it on the host instead.", 409);
+        await unlink(marker);
+        await recordAudit({
+            event: "deploy",
+            result: "acknowledged",
+            actor: clientKey(request, config),
+            stack: name,
+            action: "deploy",
+            detail: "operator cleared the pending attempt marker after inspection",
+        });
+        return redirect(back, 303);
+    }
+
+    type ManagedSiteCard = { manifest: ManagedSiteManifest; pending: boolean } | { reason: string; pending: boolean };
+
+    async function managedSiteCard(name: string): Promise<ManagedSiteCard | null> {
+        try {
+            const stackDir = await managedSiteStackDir(name);
+            // An ordinary stack has no manifest: no site card, no warning.
+            const file = await readFileSafe(join(stackDir, MANAGED_SITE_MANIFEST_FILE), MANAGED_SITE_MANIFEST_MAX_BYTES);
+            if (!file) return null;
+            const pending = await pendingDeployAttempt(stackDir);
+            const manifest = parseManagedSiteManifest(file.source);
+            return manifest.ok ? { manifest: manifest.manifest, pending } : { reason: manifest.reason, pending };
+        } catch {
+            return null;
+        }
+    }
+
+    function managedSiteSection(card: ManagedSiteCard | null, name: string, csrf: string, busy: boolean): string {
+        if (!card) return "";
+        const href = `/stacks/${encodeURIComponent(name)}`;
+        if (card.pending) {
+            return (
+                `<section class="card"><h2>Managed site</h2>` +
+                note("warn", MANAGED_SITE_PENDING_MESSAGE) +
+                `<form method="post" action="${href}/deploy/acknowledge"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit">Acknowledge and clear the marker</button></form>` +
+                `</section>`
+            );
+        }
+        if (!("manifest" in card)) {
+            return `<section class="card"><h2>Managed site</h2>${note("warn", `The site manifest cannot be used: ${card.reason}`)}</section>`;
+        }
+        const manifest = card.manifest;
+        return (
+            `<section class="card"><h2>Managed site</h2>` +
+            `<p class="meta"><span>Site <code>${escapeHtml(manifest.siteId)}</code></span><span>Project <code>${escapeHtml(manifest.project)}</code></span><span>Branch <code>${escapeHtml(manifest.deploy.git.ref)}</code></span></p>` +
+            `<form method="post" action="${href}/deploy"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy ? " disabled" : ""}>Deploy ${escapeHtml(manifest.deploy.git.ref)}</button></form>` +
+            note(
+                "info",
+                "Fetches the configured branch into an immutable release, briefly stops the gateway, switches the pointer atomically and recreates the runtime. A failed revision probe rolls back to the verified baseline.",
+            ) +
+            `</section>`
+        );
     }
 
     type RolloutReadinessResult = { ok: true; entries: RolloutReadinessView[] } | { ok: false; reason: string };
@@ -3281,6 +3610,9 @@ export function createApp(options: AppOptions): App {
         if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
         if (!sessions.isActive(session.id)) return sessionEnded();
 
+        const pendingDeploy = await refusePendingDeploy(request, name, csrf, "rollout");
+        if (pendingDeploy) return pendingDeploy;
+
         const service = (form.get("service") ?? "").trim();
         if (!isComposeServiceName(service)) {
             return renderRollout(name, csrf, service || null, {
@@ -3506,6 +3838,24 @@ export function createApp(options: AppOptions): App {
                 return await handleBackupPurge(request, decodeName(backupsMatch[1]!), session);
             } catch (error) {
                 return routeError(error, session.csrf, safeName(backupsMatch[1]!));
+            }
+        }
+        const deployAcknowledgeMatch = /^\/stacks\/([^/]+)\/deploy\/acknowledge$/.exec(url.pathname);
+        if (deployAcknowledgeMatch && config.managedSitesEnabled) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return await handleDeployAcknowledge(request, decodeName(deployAcknowledgeMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(deployAcknowledgeMatch[1]!));
+            }
+        }
+        const deployMatch = /^\/stacks\/([^/]+)\/deploy$/.exec(url.pathname);
+        if (deployMatch && config.managedSitesEnabled) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return await handleDeploy(request, decodeName(deployMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(deployMatch[1]!));
             }
         }
         const operationsMatch = /^\/stacks\/([^/]+)\/operations$/.exec(url.pathname);

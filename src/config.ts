@@ -128,6 +128,11 @@ export interface AppConfig {
     /** Overall budget for one rollout: pull, health, settle, drain, stop, cleanup. */
     rolloutTimeoutMs: number;
     /**
+     * Managed-site deploy (ADR 0042, ADR 0043). When false, no deploy route, no
+     * site section and no manifest read. A valid manifest is the second gate.
+     */
+    managedSitesEnabled: boolean;
+    /**
      * Docker storage maintenance (ADR 0040): three fixed prune scopes on the
      * Server page, each limited to data older than a week, always available to
      * the authenticated administrator. Manual only: volumes are never removed
@@ -422,6 +427,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
         operationTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_OPERATION_TIMEOUT_MS", 5 * 60 * 1000),
         rolloutEnabled: parseBool(env, "COMPOSE_PANEL_ROLLOUT_ENABLED", false),
         rolloutTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_ROLLOUT_TIMEOUT_MS", 15 * 60 * 1000),
+        managedSitesEnabled: parseBool(env, "COMPOSE_PANEL_MANAGED_SITES_ENABLED", false),
         maintenanceTimeoutMs: parsePositiveInt(env, "COMPOSE_PANEL_MAINTENANCE_TIMEOUT_MS", 5 * 60 * 1000),
         shutdownGraceMs: parsePositiveInt(env, "COMPOSE_PANEL_SHUTDOWN_GRACE_MS", 30 * 1000),
         sseHeartbeatMs: parsePositiveInt(env, "COMPOSE_PANEL_SSE_HEARTBEAT_MS", 15 * 1000),

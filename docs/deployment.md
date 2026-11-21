@@ -805,6 +805,154 @@ with downtime; the panel never switches back by itself.
 requests, and a second scenario where the candidate exits before becoming
 healthy. It is opt-in and never runs in unattended CI.
 
+## Optional managed-site deploy (ADR 0042, ADR 0043)
+
+This pilot deploys one public HTTPS Git branch into an immutable release and
+verifies the revision the gateway actually serves. It is off by default and
+does not change ordinary stacks.
+
+### Enable it
+
+```bash
+# /etc/compose-panel/compose-panel.env (or your container environment)
+COMPOSE_PANEL_MANAGED_SITES_ENABLED=true
+```
+
+The panel image installs the `git` executable this feature uses. With the flag
+off there is no deploy route, no site section and no manifest read.
+
+### Prepare the stack by hand
+
+A managed site is an ordinary Compose directory with a trusted manifest next to
+the Compose file. The panel never creates the layout or a first release: the
+operator initialises both, exactly as `scripts/managed-sites-lab/run.sh`
+demonstrates.
+
+```text
+/opt/stacks/acme-shop/
+  compose.yaml
+  compose-panel-site.json
+  site/
+    staging/                       # 0700, outside every mount
+    runtime/
+      releases/<full-sha>/          # immutable, 0755/0644
+      current -> releases/<full-sha>
+    shared/                        # optional explicit data mounts
+    private/                       # 0700: release metadata, attempt marker
+```
+
+```bash
+mkdir -p /opt/stacks/acme-shop/site/{staging,runtime/releases,private}
+chmod 700 /opt/stacks/acme-shop/site/staging /opt/stacks/acme-shop/site/private
+```
+
+Publish one baseline release with `public/index.php` and
+`.compose-panel/revision.php`, write
+`site/private/releases/<sha>.json` with
+`{"version":1,"siteId":"acme-shop","release":"<sha>","status":"complete"}`, and
+point `current` at `releases/<sha>`. The deploy refuses an unprovable baseline:
+there is no first deployment without a rollback target in the pilot.
+
+The Compose project must declare its exact name, mount `site/runtime` read-only
+at the same host and container path in the gateway and runtime services, publish
+exactly one `127.0.0.1` TCP port on the gateway, expose no port on the runtime,
+and keep every service on the project's own network (no `external: true`). The
+gateway must serve the fixed probe route:
+
+```nginx
+location = /.compose-panel/revision {
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME /opt/stacks/acme-shop/site/runtime/current/.compose-panel/revision.php;
+    fastcgi_pass php:9000;
+}
+```
+
+A minimal `compose-panel-site.json` for a hand-written stack:
+
+```json
+{
+  "version": 1,
+  "siteId": "acme-shop",
+  "owner": "opt-in",
+  "project": "acme-shop",
+  "services": { "gateway": "web", "runtime": "php" },
+  "publicRoot": "public",
+  "runtime": { "profile": "php-front-controller" },
+  "deploy": {
+    "kind": "bind-mount",
+    "git": { "url": "https://github.com/acme/shop.git", "ref": "refs/heads/main" }
+  }
+}
+```
+
+The manifest is administrator input: the browser never supplies a URL, ref,
+path or command.
+
+### What a deploy does
+
+The stack page shows **Deploy refs/heads/main** only when the flag is on and the
+manifest is valid. One click, then the operation streams its phases:
+
+1. Re-read the manifest, resolve the effective Compose project without `-p`,
+   check the profile, the mounts, the networks and the runtime image identity.
+2. Prove the baseline: `current`, its completed metadata, its revision script
+   and the `/.compose-panel/revision` probe must agree on one full SHA.
+3. Fetch the configured branch (depth 1, HTTPS only) into
+   `site/staging/<attempt-id>`, resolve the full SHA, verify the tree and
+   publish `site/runtime/releases/<sha>` by one rename.
+4. Briefly stop the gateway, switch `current`, force-recreate the runtime,
+   start the gateway and probe until the body is exactly the intended SHA.
+5. On a failed probe, return to the baseline, recreate the runtime, start the
+   gateway and probe again. The result says **rolled back** only when that probe
+   succeeds.
+
+A deployment of the SHA already served is a no-op only when the pointer,
+metadata and probe all agree. The site is unavailable between the gateway stop
+and start; this is part of the pilot contract, not hidden.
+
+### Failures and recovery
+
+The panel writes `site/private/deploy-attempt.json` before the first stop and
+removes it only on a confirmed terminal outcome. If it remains (crash, timeout,
+unconfirmed command), the stack page reports an unconfirmed outcome and
+**refuses Up, Down, Start, Stop, Restart, rollout, app actions, raw save and a
+new deploy** until you inspect the host and acknowledge it. Reads, logs and the
+probe stay available. Nothing is resumed or retried automatically.
+
+Inspect the three facts separately:
+
+```bash
+readlink /opt/stacks/acme-shop/site/runtime/current
+docker compose -p acme-shop -f /opt/stacks/acme-shop/compose.yaml ps -a
+curl -fsS http://127.0.0.1:<port>/.compose-panel/revision
+cat /opt/stacks/acme-shop/site/private/deploy-attempt.json
+```
+
+To finish or undo by hand, use the same commands the panel uses:
+
+```bash
+# finish the switch to a known release
+ln -sfn releases/<sha> /opt/stacks/acme-shop/site/runtime/.current.tmp
+mv -T /opt/stacks/acme-shop/site/runtime/.current.tmp /opt/stacks/acme-shop/site/runtime/current
+docker compose -p acme-shop -f /opt/stacks/acme-shop/compose.yaml up -d --no-deps --no-build --pull never --force-recreate php
+docker compose -p acme-shop -f /opt/stacks/acme-shop/compose.yaml start web
+curl -fsS http://127.0.0.1:<port>/.compose-panel/revision
+```
+
+When the pointer, Docker state and probe are what you intend, use
+**Acknowledge and clear the marker** on the stack page. Deleting the marker
+without inspecting the site only removes the guard.
+
+### Verification status
+
+Unit tests cover the manifest, the profile check, the Git adapter and the
+deploy decision table, including rollback and unconfirmed outcomes. The
+disposable layout lab (`bun run test:managed-sites:wsl`) proves the mount,
+switch, forced-recreation and probe contract without the panel. A disposable
+two-commit deployment suite against the real operation and daemon is the
+remaining gate before calling this pilot done; do not treat a production host as
+its test bed.
+
 ## Backups and rollback
 
 Two layers, both plain files:

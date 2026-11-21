@@ -102,6 +102,56 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Integration tests run on a disposable lab daemon, never on a host or in
   unattended CI.
 
+## Managed-site deploy (ADR 0042, ADR 0043)
+- The deploy route exists only with `COMPOSE_PANEL_MANAGED_SITES_ENABLED=true`
+  **and** a valid manifest. The browser sends identifiers only: no URL, ref,
+  path, image or option comes from a request. The manifest is trusted operator
+  configuration, read as a bounded regular file, and never rendered without
+  escaping or logged.
+- Every call reuses the existing guards: session re-check after awaited Docker
+  reads, Origin, CSRF, one modifying operation per stack, project reservation,
+  shutdown/self-update refusal and audit (`event: "deploy"`, including site ID,
+  attempt ID, SHA and outcome, never output or file content). A second stack is
+  never touched: every provider call carries an explicit project, directory and
+  file.
+- The effective Compose project is resolved **before** `-p` is injected; the
+  manifest is re-read under the lock; the profile check inspects every service
+  (parent binds, release aliases, `tmpfs`, `volumes_from`, non-canonical paths,
+  external networks, shared project network). Any drift refuses before a fetch
+  and before a stop.
+- The runtime image reference must still resolve to the local image ID of the
+  running runtime container, both before the fetch and again immediately before
+  each forced recreation. `--pull never` only prevents a download: a recreation
+  could otherwise apply a different already-present image under the same tag.
+  That drift refuses instead of changing the rollback target.
+- The baseline is mandatory: `current`, its completed metadata, its revision
+  script and the fixed probe must agree on one full SHA before the first stop.
+  There is no first deploy without a rollback target in the pilot.
+- `src/git-release.ts` runs a fixed `git` executable with an explicit argument
+  array, never a shell, and an environment built from an allow-list: no
+  inherited system/global config, hooks, credential helper, askpass, terminal
+  prompt, redirects or protocol beyond HTTPS. The fetch is depth-1 and
+  non-recursive; time, output, files and bytes are bounded. The checkout is
+  content: it is never executed, sourced, mounted into the panel or read as
+  Compose/env input. Symlinks, gitlinks/submodules, `.git` entries and a
+  repository-supplied `.compose-panel` are refused. Publication is one rename
+  into an immutable release; only the attempt's own staging directory is
+  removed, after comparing the inode created by the attempt.
+- The probe is one bounded `GET http://127.0.0.1:<published>/.compose-panel/revision`
+  with no redirects, no DNS and no TLS; it must answer HTTP 200 with exactly 40
+  lowercase hex characters and one newline. The port is the validated loopback
+  binding of the gateway container, never a request value.
+- The pointer switch is one rename. The runtime is always force-recreated after
+  a switch; the gateway container must keep its identity. A failed probe rolls
+  back only when service identity and process state are certain, and the
+  rollback is probed before it is reported.
+- An unconfirmed command is `unknown` and keeps the lock. A crash may leave a
+  staging directory, a release, a switched pointer or an attempt marker. The
+  marker makes every modifying operation on that stack refuse until an explicit
+  operator acknowledgement; nothing is resumed, replayed or retried.
+- The disposable two-commit deployment suite on its own daemon is the
+  integration gate; it never runs against a host daemon or in unattended CI.
+
 ## Application toolbox (ADR 0026)
 
 - The panel may execute only **explicitly declared, non-interactive application

@@ -5,6 +5,7 @@ import { compactComposeProgress } from "./compose-progress.ts";
 import { composeEnvironment, runCommand, type CommandResult, type DockerRunner } from "./docker.ts";
 import { projectMetadata, type DeclaredMetadata } from "./deployment.ts";
 import { projectRolloutLabels, type ServiceRolloutFacts } from "./rollout.ts";
+import { parseManagedSiteComposeFacts, type ManagedSiteComposeFacts } from "./managed-site-profile.ts";
 
 export class ComposeUnsupportedError extends Error {
     constructor(operation: string) {
@@ -156,6 +157,21 @@ export interface ComposeProvider {
         cwd: string;
         envFile?: string;
     }): Promise<Map<string, ServiceImageFact> | null>;
+    /**
+     * Read-only: the managed-site profile projection of `config --format json`
+     * (ADR 0042, ADR 0043): effective project name, services, ports, mounts,
+     * `tmpfs`, `volumes_from` and external networks. Only these facts leave the
+     * provider; the interpolated configuration never does. When `project` is
+     * omitted, `-p` is not injected, so `name` is the effective project the
+     * files declare — the value the deploy compares before it injects `-p`.
+     * `null` on any failure or unexpected shape.
+     */
+    managedSiteFacts(input: {
+        project?: string;
+        composeFile: string;
+        cwd: string;
+        envFile?: string;
+    }): Promise<ManagedSiteComposeFacts | null>;
     /**
      * Read-only: the top-level digest a mutable tag resolves to in its
      * registry, through `docker buildx imagetools inspect --format
@@ -451,6 +467,19 @@ class DockerComposeProvider implements ComposeProvider {
         // stderr may echo interpolated values: it is never read.
         if (result.code !== 0 || result.timedOut || result.truncated) return null;
         return parseServiceImageFacts(result.stdout);
+    }
+
+    async managedSiteFacts(input: {
+        project?: string;
+        composeFile: string;
+        cwd: string;
+        envFile?: string;
+    }): Promise<ManagedSiteComposeFacts | null> {
+        if (!this.caps.operations.config) return null;
+        const result = await this.readProject(input, ["config", "--format", "json"]);
+        // stderr may echo interpolated values: it is never read.
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        return parseManagedSiteComposeFacts(result.stdout);
     }
 
     async serviceConfigHashes(input: {

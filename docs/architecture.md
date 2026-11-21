@@ -134,6 +134,42 @@ instances and stops routing to unhealthy ones is an operational prerequisite;
 the existing Caddy site integration targets a published loopback port and is not
 compatible with this rollout.
 
+## Managed-site deploy (opt-in)
+`src/managed-site.ts` parses the trusted `compose-panel-site.json` strictly
+(bounded size, versioned, unknown/duplicate keys refused). `src/managed-site-profile.ts`
+projects `config --format json` onto the allow-listed mount, network, port and
+image facts and checks every service against the profile. `src/git-release.ts`
+owns the fetch/publish adapter: fixed `git` executable, explicit argv, an
+environment built from an allow-list (no inherited config, hooks, credential
+helper, prompt, redirect or protocol beyond HTTPS), depth-1 fetch, full-SHA
+resolution, `ls-tree` refusal of symlinks and gitlinks before checkout, a
+bounded staged-tree walk and one rename into `site/runtime/releases/<sha>`.
+`src/managed-site-deploy.ts` owns the phase machine and the rollback decision
+table; `src/managed-site-probe.ts` is the fixed loopback probe.
+
+The route is `POST /stacks/<name>/deploy`, exposed only when
+`COMPOSE_PANEL_MANAGED_SITES_ENABLED=true` **and** the manifest is valid
+([ADR 0042](adr/0042-managed-site-ownership.md), [ADR 0043](adr/0043-bounded-git-release-lifecycle.md)).
+The body carries only the stack name, the CSRF token and a confirmation. Under
+the existing per-stack lock and project reservation the panel re-reads the
+manifest, resolves the effective Compose project **without** injecting `-p`,
+runs the profile check, rejects a runtime image reference that no longer
+resolves to the running container's image ID, and proves the baseline (pointer,
+completed metadata, revision script and probe agree) before fetching anything.
+
+A deploy stops the gateway, switches `current` by one rename, force-recreates
+the runtime service and starts the gateway. It verifies that the runtime
+container ID changed and the gateway container ID did not, then probes
+`/.compose-panel/revision` until one 41-byte body names the intended SHA. A
+failed verification returns the pointer to the verified baseline, recreates the
+runtime, starts the gateway and probes again; it reports `rolled back` only when
+that probe succeeds. The attempt marker under `site/private/` is written before
+the first stop and removed on a confirmed terminal outcome. While it exists,
+Up, Down, Start, Stop, Restart, rollout, app actions, raw save and a new deploy
+are refused; reads, logs and the probe remain available, and only an explicit
+acknowledgement clears it. There is no queue, no replay and no automatic
+retry.
+
 ## Restart semantics
 - Browser disconnect ≠ cancellation.
 - `SIGTERM`: stop accepting new mutations, allow a bounded drain window; check that subprocesses have finished.

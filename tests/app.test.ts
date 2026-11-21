@@ -83,6 +83,7 @@ function makeApp(
         operationTimeoutMs: 60_000,
         rolloutEnabled: false,
         rolloutTimeoutMs: 900_000,
+        managedSitesEnabled: false,
         maintenanceTimeoutMs: 300_000,
         shutdownGraceMs: 5_000,
         sseHeartbeatMs: 15_000,
@@ -130,6 +131,7 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         inspectImages: async () => empty,
         inspectContainers: async () => empty,
         serviceImageFacts: async () => null,
+        managedSiteFacts: async () => null,
         inspectRemoteManifest: async () => empty,
         serviceConfigHashes: async () => null,
         validateConfig: async () => empty,
@@ -4588,6 +4590,7 @@ describe("service rollout (ADR 0035)", () => {
             inspectImages: async () => ({ ...okResult, stdout: JSON.stringify([{ Id: IMAGE }]) }),
             inspectContainers: async () => okResult,
             serviceImageFacts: async () => null,
+            managedSiteFacts: async () => null,
             inspectRemoteManifest: async () => okResult,
             serviceConfigHashes: async () => null,
             validateConfig: async () => okResult,
@@ -4786,5 +4789,98 @@ describe("service rollout (ADR 0035)", () => {
         expect(calls).toEqual([]);
         release({ refused: "released" });
         await waitIdle(app);
+    });
+});
+
+describe("managed-site deploy gate", () => {
+    const manifest = JSON.stringify({
+        version: 1,
+        siteId: "acme-shop",
+        owner: "opt-in",
+        project: "acme-shop",
+        services: { gateway: "web", runtime: "php" },
+        publicRoot: "public",
+        runtime: { profile: "php-front-controller" },
+        deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+    });
+
+    async function managedRoot(): Promise<string> {
+        const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-managed-")));
+        const stack = join(dir, "demo");
+        await mkdir(stack);
+        await writeFile(join(stack, "compose.yaml"), "name: acme-shop\nservices:\n  web:\n    image: nginx:alpine\n");
+        await writeFile(join(stack, "compose-panel-site.json"), manifest);
+        return dir;
+    }
+
+    async function csrfOf(app: App, session: string): Promise<string> {
+        return /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/about", session)).text())![1]!;
+    }
+
+    test("has no route at all when the feature flag is off", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const response = await authed(app, "/stacks/demo/deploy", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf }).toString(),
+        });
+        expect([404, 405]).toContain(response.status);
+        expect(app.operations.forStack("demo")).toBeNull();
+        await app.beginShutdown(100);
+    });
+
+    test("refuses a deploy while an unacknowledged attempt marker exists", async () => {
+        const dir = await managedRoot();
+        await mkdir(join(dir, "demo", "site", "private"), { recursive: true });
+        await writeFile(join(dir, "demo", "site", "private", "deploy-attempt.json"), '{"phase":"switch"}\n');
+        const { provider, calls } = controllableProvider();
+        const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const response = await authed(app, "/stacks/demo/deploy", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf }).toString(),
+        });
+        expect(response.status).toBe(409);
+        expect(await response.text()).toContain("unconfirmed outcome");
+        expect(calls).toEqual([]);
+        expect(app.operations.forStack("demo")).toBeNull();
+        await app.beginShutdown(100);
+    });
+
+    test("shows the deploy form and the acknowledgement form on the stack page", async () => {
+        const dir = await managedRoot();
+        const { provider } = controllableProvider();
+        const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir);
+        const session = await login(app);
+
+        const page = await authed(app, "/stacks/demo", session);
+        expect(page.status).toBe(200);
+        expect(await page.text()).toContain('action="/stacks/demo/deploy"');
+
+        await mkdir(join(dir, "demo", "site", "private"), { recursive: true });
+        await writeFile(join(dir, "demo", "site", "private", "deploy-attempt.json"), '{"phase":"switch"}\n');
+        const pendingPage = await authed(app, "/stacks/demo", session);
+        expect(pendingPage.status).toBe(200);
+        const html = await pendingPage.text();
+        expect(html).toContain('action="/stacks/demo/deploy/acknowledge"');
+        expect(html).not.toContain('action="/stacks/demo/deploy"');
+        await app.beginShutdown(100);
+    });
+
+    test("adds no site card to an ordinary stack without a manifest", async () => {
+        const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-ordinary-")));
+        await mkdir(join(dir, "demo"));
+        await writeFile(join(dir, "demo", "compose.yaml"), "services:\n  app:\n    image: nginx:alpine\n");
+        const { provider } = controllableProvider();
+        const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir);
+        const session = await login(app);
+        const page = await authed(app, "/stacks/demo", session);
+        expect(page.status).toBe(200);
+        expect(await page.text()).not.toContain("Managed site");
+        await app.beginShutdown(100);
     });
 });

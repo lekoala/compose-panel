@@ -13,8 +13,19 @@
   runtime really loads the pinned OPcache policy, and it checks that an
   unprivileged UID can read a release while `private/` and `staging/` stay
   closed. `ComposeProvider.recreateService` gains an explicit `force` option,
-  unused by the self-update path. No managed-site route, manifest parser or
-  deploy action exists yet.
+  unused by the self-update path.
+
+  The pilot now has the pieces of the manual deploy: a strict manifest parser,
+  an effective-profile check over every service, a bounded Git adapter (fixed
+  executable, neutralised environment, HTTPS only, full-SHA resolution,
+  symlink/submodule refusal, immutable publication under
+  `site/runtime/releases/<sha>`) and a `deploy` operation with a verified
+  baseline, an atomic pointer switch, a forced runtime recreation, a fixed
+  41-byte revision probe, a probed rollback, an attempt marker that blocks
+  modifying operations until acknowledged, and a loopback-only route behind
+  `COMPOSE_PANEL_MANAGED_SITES_ENABLED` (default off). The disposable
+  two-commit deployment suite on a real daemon is still the gate before the
+  pilot is called done.
 
 - Targeted pull (ADR 0041): `Pull` accepts one validated service from the
   Services table, so a corrected runtime image can be downloaded on its own and
