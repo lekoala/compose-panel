@@ -46,7 +46,29 @@ note, never a fabricated zero. Stack usage reuses the ADR 0014 classification,
 and a stack's CPU is a cumulative figure that may exceed 100 %. Host-level health
 (load, memory, uptime, filesystems, package updates) is out of scope and would
 need a separate host component and its own ADR. See
-[ADR 0015](adr/0015-readonly-engine-insights.md).
+[ADR 0015](adr/0015-readonly-engine-insights.md). The Live refresh reuses the
+same view functions for its rows and is bounded to the dynamic zones
+([ADR 0044](adr/0044-one-renderer-per-live-region.md)).
+
+## Web layer and live regions
+The HTML is server-rendered in `src/html.ts`, with each feature moving to
+`src/features/<feature>/views.ts` as it is touched (`src/features/server/` first)
+and shared formatting in `src/web/`. `src/app.ts` keeps the single `fetch`
+dispatcher and its guard order — Host, static assets, session, routes — because
+every mutation depends on that one choke point. Routers (Hono, h3 or
+`Bun.serve({ routes })`) stay deferred until route declaration or per-route
+guarding becomes a recurring difficulty.
+
+A dynamic region has exactly one renderer. The Server stats, stacks, attention
+and exited tables are produced by the same functions on the first load and by
+`GET /server/stats`; the endpoint returns the escaped row fragments and the
+browser assigns them to the existing `<tbody>`. A null fragment means the
+section could not be collected: the browser keeps the last good rows and still
+updates the counters it could read. The endpoint answers `401` without a session
+instead of redirecting, so a sign-in page can never enter a fragment, and the
+memory total displayed by the page is echoed back to size the decorative stack
+bars because the refresh never calls `docker info`. See
+[ADR 0044](adr/0044-one-renderer-per-live-region.md).
 
 ## Docker storage maintenance
 `src/maintenance.ts` holds the three fixed scopes and their exact Docker

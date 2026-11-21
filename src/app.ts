@@ -18,7 +18,6 @@ import {
     otherContainersSection,
     containersPage,
     containerDetailPage,
-    serverPage,
     deploymentSection,
     createStackPage,
     managedByBadge,
@@ -34,6 +33,7 @@ import {
     type NoteKind,
     type ToolboxSourceView,
 } from "./html.ts";
+import { serverLiveView, serverPage } from "./features/server/views.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
 import { managedBy } from "./deployment.ts";
 import { createStack, StackCreationPartialError, type CreateStackRequest } from "./create-stack.ts";
@@ -76,7 +76,7 @@ import {
 } from "./caddy.ts";
 import { CaddyHelperError, callCaddyHelper } from "./caddy-client.ts";
 import { parseContainerInspect, parseContainerLs, type ContainerPort } from "./container-state.ts";
-import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
+import { createDiskUsageCache, loadInsights } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { OperationManager, OperationsDisabledError, isOperationAction, type AppActionOutcome, type OperationView } from "./operations.ts";
 import {
@@ -392,6 +392,17 @@ function clientKey(request: Request, config: AppConfig): string {
         if (last) return last;
     }
     return "direct";
+}
+
+/**
+ * The stack memory total echoed by the page only sizes a decorative bar: the
+ * refresh deliberately avoids `docker info`, so the server cannot read it. A
+ * strict bounded integer, never used for a decision.
+ */
+function parseMemoryTotalParam(value: string | null): number | null {
+    if (!value || !/^[1-9][0-9]{0,14}$/.test(value)) return null;
+    const total = Number(value);
+    return Number.isSafeInteger(total) ? total : null;
 }
 
 export function createApp(options: AppOptions): App {
@@ -944,11 +955,12 @@ export function createApp(options: AppOptions): App {
     }
 
     /**
-     * Live data for the Server page: the dynamic zones only. It never reads
-     * `docker system df` and never runs `docker info`; a browser polls it on
-     * demand while the page is visible (ADR 0015). Authenticated, `no-store`.
+     * Live data for the Server page: the dynamic zones only, rendered by the
+     * same view functions as the first render. It never reads `docker system df`
+     * and never runs `docker info`; a browser polls it on demand while the page
+     * is visible (ADR 0015, ADR 0044). Authenticated, `no-store`.
      */
-    async function handleServerStats(): Promise<Response> {
+    async function handleServerStats(memoryTotalBytes: number | null): Promise<Response> {
         const { containers, note: containerNote } = await loadContainers(stacksRoot, provider, inspector, config.hostStacksPathAliases);
         const insights = await loadInsights(inspector, containerNote === null ? containers : null, {
             includeInfo: false,
@@ -956,31 +968,7 @@ export function createApp(options: AppOptions): App {
             maxBytes: config.dockerMaxBytes,
         });
         if (containerNote) insights.notes.unshift(containerNote);
-        const payload = {
-            readAt: insights.readAt,
-            runningContainers: insights.runningContainers,
-            stats:
-                insights.stats === null
-                    ? null
-                    : insights.stats.map((stat) => ({
-                          id: stat.id,
-                          // Same name as the first render, so Live never brings IDs back.
-                          name: statDisplayName(stat),
-                          cpuPercent: stat.cpuPercent,
-                          memUsedBytes: stat.memUsedBytes,
-                          memLimitBytes: stat.memLimitBytes,
-                          memPercent: stat.memPercent,
-                          netIo: stat.netIo,
-                          blockIo: stat.blockIo,
-                          pids: stat.pids,
-                          stack: stat.container?.stack ?? null,
-                          category: stat.container?.category ?? null,
-                      })),
-            stacks: insights.stacks,
-            attention: insights.attention,
-            exited: insights.exited,
-            notes: insights.notes,
-        };
+        const payload = { ...serverLiveView(insights, memoryTotalBytes), notes: insights.notes };
         return new Response(JSON.stringify(payload), {
             headers: { "Content-Type": "application/json; charset=utf-8", ...BASE_HEADERS },
         });
@@ -3852,6 +3840,10 @@ export function createApp(options: AppOptions): App {
         const opEventsMatch = /^\/stacks\/([^/]+)\/operations\/events$/.exec(url.pathname);
         const logEventsMatch = /^\/stacks\/([^/]+)\/logs\/events$/.exec(url.pathname);
         const isEventStream = opEventsMatch !== null || logEventsMatch !== null;
+        // The Live refresh replaces page fragments: a login page would end up
+        // inside the statistics, so this endpoint answers 401 like an event
+        // stream instead of redirecting.
+        const isServerStats = url.pathname === "/server/stats";
 
         // Everything below requires an authenticated session. Event streams
         // answer 401 instead of a login redirect so clients do not parse HTML.
@@ -3859,7 +3851,7 @@ export function createApp(options: AppOptions): App {
         const id = cookies[SESSION_COOKIE];
         const session = id ? sessions.get(id) : null;
         if (!session) {
-            if (isEventStream) return plain("Unauthorized", 401);
+            if (isEventStream || isServerStats) return plain("Unauthorized", 401);
             if (method === "GET" || method === "HEAD") return redirect("/login", 302);
             return sessionEnded();
         }
@@ -4012,7 +4004,7 @@ export function createApp(options: AppOptions): App {
                 return await renderAbout(session.csrf, { notice });
             }
             if (url.pathname === "/server/stats") {
-                const response = await handleServerStats();
+                const response = await handleServerStats(parseMemoryTotalParam(url.searchParams.get("mem")));
                 return method === "HEAD" ? withoutBody(response) : response;
             }
             if (url.pathname === "/server")

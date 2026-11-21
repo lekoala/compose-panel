@@ -4035,8 +4035,9 @@ describe("server page", () => {
         const html = await (await authed(app, "/server", session)).text();
         expect(html).toContain(">demo-app-1</a>");
         expect(html).not.toContain(">aaaaaaaaaaaa</a>");
-        const payload = (await (await authed(app, "/server/stats", session)).json()) as { stats: { name: string }[] };
-        expect(payload.stats[0]!.name).toBe("demo-app-1");
+        const payload = (await (await authed(app, "/server/stats", session)).json()) as { statsHtml: string };
+        expect(payload.statsHtml).toContain(">demo-app-1</a>");
+        expect(payload.statsHtml).not.toContain(">aaaaaaaaaaaa</a>");
     });
 
     test("reads disk usage only on demand and caches it", async () => {
@@ -4103,21 +4104,24 @@ describe("server page", () => {
 interface ServerStatsPayload {
     readAt: number;
     runningContainers: number | null;
-    stats: { id: string; stack: string | null; category: string | null }[] | null;
-    stacks: unknown[] | null;
-    attention: unknown[] | null;
+    attentionCount: number | null;
+    statsHtml: string | null;
+    stacksHtml: string | null;
+    attentionHtml: string | null;
+    exitedHtml: string | null;
+    exitedCount: number | null;
     notes: string[];
 }
 
 describe("server stats endpoint", () => {
-    test("requires a session", async () => {
+    test("answers 401 without a session so a fragment is never a login page", async () => {
         const app = makeApp({}, undefined, serverProvider(), undefined, root, serverInspector({ list: containerFixture() }));
         const response = await app.fetch(new Request(`${ORIGIN}/server/stats`));
-        expect(response.status).toBe(302);
-        expect(response.headers.get("location")).toBe("/login");
+        expect(response.status).toBe(401);
+        expect(response.headers.get("content-type")).toContain("text/plain");
     });
 
-    test("returns the dynamic contract and never reads disk usage or info", async () => {
+    test("returns server-rendered fragments and never reads disk usage or info", async () => {
         let diskCalls = 0;
         let infoCalls = 0;
         const inspector = serverInspector({ list: containerFixture(), stats: SERVER_STATS });
@@ -4139,11 +4143,23 @@ describe("server stats endpoint", () => {
 
         const payload = (await response.json()) as ServerStatsPayload;
         expect(payload.runningContainers).toBeGreaterThan(0);
-        expect(payload.stats).toHaveLength(1);
-        expect(payload.stats![0]!.stack).toBe("demo");
-        expect(payload.stats![0]!.category).toBe("managed");
+        // The fragment is the same markup as the first render, not a second one.
+        expect(payload.statsHtml).toContain('href="/stacks/demo"');
+        expect(payload.statsHtml).toContain('title="of 1.0 GiB"');
+        expect(payload.statsHtml).toContain('<svg class="bar"');
+        expect(payload.stacksHtml).toContain('href="/stacks/demo"');
+        expect(payload.attentionHtml).toEqual(expect.any(String));
+        expect(payload.exitedHtml).toEqual(expect.any(String));
         expect(payload.notes).toEqual([]);
         expect(diskCalls).toBe(0);
+        expect(infoCalls).toBe(0);
+
+        // The page echoes the memory total it displayed: the stack bars keep the
+        // same scale without a second docker info call on every refresh.
+        const noTotal = (await (await authed(app, "/server/stats", session)).json()) as ServerStatsPayload;
+        const withTotal = (await (await authed(app, "/server/stats?mem=8589934592", session)).json()) as ServerStatsPayload;
+        expect(noTotal.stacksHtml).not.toContain('<svg class="bar"');
+        expect(withTotal.stacksHtml).toContain('<svg class="bar"');
         expect(infoCalls).toBe(0);
     });
 
@@ -4162,10 +4178,10 @@ describe("server stats endpoint", () => {
         const response = await authed(app, "/server/stats", session);
         expect(response.status).toBe(200);
         const payload = (await response.json()) as ServerStatsPayload;
-        expect(payload.stats).toBeNull();
-        expect(payload.stacks).toBeNull();
+        expect(payload.statsHtml).toBeNull();
+        expect(payload.stacksHtml).toBeNull();
         expect(payload.runningContainers).toBeGreaterThan(0);
-        expect(Array.isArray(payload.attention)).toBe(true);
+        expect(typeof payload.attentionHtml).toBe("string");
         expect(payload.notes.length).toBeGreaterThan(0);
     });
 });

@@ -8,12 +8,12 @@ import {
     operationPanel,
     renderSidebar,
     servicesSection,
-    usageBar,
     databaseSection,
     domainsSection,
     rolloutPage,
     infoTip,
 } from "../src/html.ts";
+import { usageBar } from "../src/features/server/views.ts";
 import { buildExplorerUrl } from "../src/database.ts";
 import type { ComposeService } from "../src/compose-state.ts";
 import type { OperationView } from "../src/operations.ts";
