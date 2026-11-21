@@ -64,7 +64,9 @@ and exited tables are produced by the same functions on the first load and by
 `GET /server/stats`; the endpoint returns the escaped row fragments and the
 browser assigns them to the existing `<tbody>`. A null fragment means the
 section could not be collected: the browser keeps the last good rows and still
-updates the counters it could read. The endpoint answers `401` without a session
+updates the counters it could read, without moving the measurement time. A
+partial collection is announced, so a repeated failure cannot present old CPU
+and memory values as fresh. The endpoint answers `401` without a session
 instead of redirecting, so a sign-in page can never enter a fragment, and the
 memory total displayed by the page is echoed back to size the decorative stack
 bars because the refresh never calls `docker info`. See

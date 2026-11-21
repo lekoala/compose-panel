@@ -682,10 +682,12 @@
     /* Live refresh of the Server page. The endpoint returns the same
      * server-rendered rows as the first render, so a column is added once and
      * every value is escaped server-side. A null section is a collection
-     * failure: the last good rows stay visible. Sequential setTimeout (not
-     * setInterval) so a slow read cannot overlap the next one, paused while the
-     * tab is hidden, aborted on disable or page hide. No history is kept. */
-    function applyServer(payload) {
+     * failure: the last good rows stay visible and keep the time of their last
+     * successful measurement, so a partial refresh is never dated as fresh.
+     * Sequential setTimeout (not setInterval) so a slow read cannot overlap the
+     * next one, paused while the tab is hidden, aborted on disable or page
+     * hide. No history is kept. */
+    function applyServer(payload, measured) {
         if (payload.runningContainers !== null && payload.runningContainers !== undefined) {
             var running = document.getElementById("live-running");
             if (running) running.textContent = String(payload.runningContainers);
@@ -697,10 +699,12 @@
         var statsBody = document.getElementById("live-stats");
         if (statsBody && payload.statsHtml !== null && payload.statsHtml !== undefined) {
             statsBody.innerHTML = payload.statsHtml;
+            measured.statsAt = payload.readAt;
         }
         var stacksBody = document.getElementById("live-stacks");
         if (stacksBody && payload.stacksHtml !== null && payload.stacksHtml !== undefined) {
             stacksBody.innerHTML = payload.stacksHtml;
+            measured.stacksAt = payload.readAt;
         }
         var attentionBody = document.getElementById("live-attention-rows");
         if (attentionBody && payload.attentionHtml !== null && payload.attentionHtml !== undefined) {
@@ -716,11 +720,6 @@
                 if (payload.exitedCount > 0) exited.removeAttribute("hidden");
                 else exited.setAttribute("hidden", "");
             }
-        }
-        var timeEl = document.getElementById("live-read-at");
-        if (payload.readAt && timeEl) {
-            timeEl.setAttribute("datetime", new Date(payload.readAt).toISOString());
-            localizeTime(timeEl);
         }
     }
 
@@ -744,11 +743,36 @@
         var enabled = false,
             timer = null,
             controller = null,
-            lastSuccess = "";
+            lastMeasured = "";
+        // When each measured zone was last collected successfully. The zone may
+        // be older than this payload: its rows then stay visible, undated.
+        var measured = { statsAt: null, stacksAt: null };
+        var timeEl = document.getElementById("live-read-at");
 
         function setStatus(text) {
             if (status) status.textContent = text;
         }
+
+        function missing(value) {
+            return value === null || value === undefined;
+        }
+
+        /* The page is dated by its oldest displayed measurement: a table kept
+         * from an earlier collection must not look fresher than it is. */
+        function oldestMeasurement() {
+            if (measured.statsAt === null) return measured.stacksAt;
+            if (measured.stacksAt === null) return measured.statsAt;
+            return Math.min(measured.statsAt, measured.stacksAt);
+        }
+
+        function showMeasuredTime(at) {
+            if (!timeEl) return "";
+            if (at === null) return timeEl.textContent;
+            timeEl.setAttribute("datetime", new Date(at).toISOString());
+            localizeTime(timeEl);
+            return timeEl.textContent;
+        }
+
         function clearTimer() {
             if (timer) {
                 clearTimeout(timer);
@@ -794,15 +818,25 @@
                 })
                 .then(function (payload) {
                     if (!payload) return;
-                    applyServer(payload);
-                    lastSuccess = new Date().toLocaleTimeString();
-                    setStatus("Live · updated " + lastSuccess);
+                    applyServer(payload, measured);
+                    var label = showMeasuredTime(oldestMeasurement());
+                    lastMeasured = label;
+                    var partial =
+                        missing(payload.statsHtml) ||
+                        missing(payload.stacksHtml) ||
+                        missing(payload.attentionHtml) ||
+                        missing(payload.exitedHtml);
+                    if (partial) {
+                        setStatus(label ? "Live · partial update · measurements from " + label : "Live · partial update");
+                    } else {
+                        setStatus(label ? "Live · updated " + label : "Live · updated");
+                    }
                     schedule();
                 })
                 .catch(function (error) {
                     if (error && error.name === "AbortError") return;
-                    // Keep the last successful values visible, clearly marked as old.
-                    setStatus(lastSuccess ? "Live update failed · last successful refresh " + lastSuccess : "Live update failed.");
+                    // Keep the last good values visible, clearly marked as old.
+                    setStatus(lastMeasured ? "Live update failed · measurements from " + lastMeasured : "Live update failed.");
                     schedule();
                 });
         }

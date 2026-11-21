@@ -26,11 +26,14 @@ routing only (and two transitive packages) and does not address rendering.
    assigns them to the existing container element with `innerHTML`. There is no
    second DOM builder in `public/app.js`.
 
-2. **A collection failure never erases displayed data.** A null zone means
-   "not obtained" and the browser keeps the last successful rows. Counters
-   (`runningContainers`, attention and exited counts) are separate so an
-   unavailable table still lets the page report what it could read. This
-   preserves the honest-null rule of ADR 0015 in the browser as well.
+2. **A collection failure never erases displayed data, and never dates it as
+   fresh.** A null zone means "not obtained" and the browser keeps the last
+   successful rows. Counters (`runningContainers`, attention and exited counts)
+   are separate so an unavailable table still lets the page report what it could
+   read. The displayed measurement time only advances when the stats or stacks
+   zone is actually refreshed; a partial collection is announced, and repeated
+   failures cannot make old CPU and memory values look current. This preserves
+   the honest-null rule of ADR 0015 in the browser as well.
 
 3. **A fragment endpoint answers 401, never a login redirect.** Once the
    session ends, a redirect would put the sign-in page inside a statistics

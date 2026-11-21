@@ -197,16 +197,21 @@ describe("server live refresh (public/app.js)", () => {
             expect(doc.getElementById("live-exited-rows")!.innerHTML).toBe(PAYLOAD.exitedHtml);
             expect(doc.getElementById("live-exited-count")!.textContent).toBe("1");
             expect(doc.getElementById("live-exited")!.getAttribute("hidden")).toBeNull();
-            expect(status.textContent).toContain("updated");
+            const measuredAt = doc.getElementById("live-read-at")!.getAttribute("datetime");
+            expect(measuredAt).toBe(new Date(PAYLOAD.readAt).toISOString());
+            const fullStatus = status.textContent;
+            expect(fullStatus.length).toBeGreaterThan(0);
 
             // Sequential scheduling: a second fetch happens after the interval.
             await wait(1200);
             expect(calls).toBe(2);
 
             // A transient stats failure keeps the last rows visible while the
-            // counters that could still be read are updated.
+            // counters that could still be read are updated. The rows are from
+            // the earlier collection, so the page must not date them as fresh.
             payload = {
                 ...PAYLOAD,
+                readAt: PAYLOAD.readAt + 3_600_000,
                 runningContainers: 4,
                 statsHtml: null,
                 stacksHtml: null,
@@ -219,6 +224,14 @@ describe("server live refresh (public/app.js)", () => {
             expect(doc.getElementById("live-running")!.textContent).toBe("4");
             expect(doc.getElementById("live-stats")!.innerHTML).toBe(PAYLOAD.statsHtml);
             expect(doc.getElementById("live-exited-count")!.textContent).toBe("1");
+            expect(doc.getElementById("live-read-at")!.getAttribute("datetime")).toBe(measuredAt);
+            const partialStatus = status.textContent;
+            expect(partialStatus).not.toBe(fullStatus);
+
+            // A repeated partial failure still does not move the measurement time.
+            await wait(1200);
+            expect(calls).toBe(4);
+            expect(doc.getElementById("live-read-at")!.getAttribute("datetime")).toBe(measuredAt);
 
             // Hidden: polling pauses, no new request.
             doc.hidden = true;
@@ -227,11 +240,16 @@ describe("server live refresh (public/app.js)", () => {
             await wait(1200);
             expect(calls).toBe(afterHide);
 
-            // Visible again: an immediate fetch resumes.
+            // Visible again: an immediate fetch resumes and a full collection
+            // dates the measurements again.
+            const freshReadAt = PAYLOAD.readAt + 7_200_000;
+            payload = { ...PAYLOAD, readAt: freshReadAt };
             doc.hidden = false;
             doc.dispatch("visibilitychange");
             await wait(20);
             expect(calls).toBe(afterHide + 1);
+            expect(doc.getElementById("live-read-at")!.getAttribute("datetime")).toBe(new Date(freshReadAt).toISOString());
+            expect(status.textContent).not.toBe(partialStatus);
 
             // Deactivation stops the loop.
             toggle.checked = false;

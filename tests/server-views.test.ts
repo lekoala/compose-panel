@@ -92,9 +92,10 @@ test("an unavailable section stays null so the browser keeps the last rows", () 
 
 test("an empty section renders its empty-state row, never a missing zone", () => {
     const live = serverLiveView(insights({ stats: [], stacks: [], attention: [], exited: [] }), null);
-    expect(live.statsHtml).toContain("No running containers.");
-    expect(live.stacksHtml).toContain("No managed running containers.");
-    expect(live.attentionHtml).toContain("No current issues.");
+    // Structural, not copy: one row whose single cell covers every column.
+    expect(live.statsHtml).toMatch(/^<tr><td colspan="8" class="muted">[^<]*<\/td><\/tr>$/);
+    expect(live.stacksHtml).toMatch(/^<tr><td colspan="4" class="muted">[^<]*<\/td><\/tr>$/);
+    expect(live.attentionHtml).toMatch(/^<tr><td colspan="3" class="muted">[^<]*<\/td><\/tr>$/);
     expect(live.exitedHtml).toBe("");
     expect(live.exitedCount).toBe(0);
     expect(live.attentionCount).toBe(0);
