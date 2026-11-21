@@ -37,6 +37,10 @@ ARG VERSION=dev
 ARG REVISION=unknown
 # Docker CLI + Compose plugin from Docker's official apt repository so the
 # exact engine the panel shells out to is present and verifiable in the image.
+# Git is the only executable the managed-site deploy adds (ADR 0043): the panel
+# runs it with fixed arguments and a neutralised environment, never a shell.
+# Like ca-certificates and curl, it is intentionally unpinned; the Docker
+# packages stay pinned because the panel's argv depends on their exact version.
 # (Build-time shell only; the panel itself never uses a shell at runtime.)
 # No gnupg: apt reads the ASCII-armored key named by signed-by directly, and
 # gnupg would only add unused packages (and their CVEs) to the image.
@@ -44,7 +48,7 @@ ARG REVISION=unknown
 # Install before curl or Docker repository access so downloads use fixed apt.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends apt=3.0.4 libapt-pkg7.0=3.0.4 zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
@@ -54,7 +58,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && docker --version \
     && docker compose version \
-    && docker buildx version
+    && docker buildx version \
+    && git --version
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock ./

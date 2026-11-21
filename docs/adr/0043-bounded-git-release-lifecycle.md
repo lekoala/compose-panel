@@ -96,16 +96,21 @@ explicit project, working directory and files.
 
 ### Release preparation
 
-- The staged tree is completed in `site/staging/<attempt-id>`: `public/` is
-  present, the panel-written `/.compose-panel/revision.php` outside `public/`
-  emits the full SHA, and completed-release metadata is written under
-  `site/private/`. A staged tree without `public/`, or with a symlink or a
-  submodule, is refused before publication.
+- The staged tree is completed in `site/staging/<attempt-id>`: `public/` and
+  `public/index.php` are present, the panel-written
+  `/.compose-panel/revision.php` sits outside `public/` and emits the full SHA,
+  and completed-release metadata (`version`, `siteId`, `release`, `status:
+  "complete"`) is written under `site/private/releases/<sha>.json`. A staged
+  tree without the front controller, or with a symlink, a gitlink/submodule, a
+  `.git` entry or a repository-supplied `.compose-panel`, is refused before
+  publication. Symlinks and submodules are refused from the `ls-tree` object
+  before any checkout, so a filesystem that materialises them differently
+  cannot hide one.
 - Publication is one exclusive rename to `site/runtime/releases/<sha>`. A
-  release directory is never overwritten or republished. An existing complete
-  release for the same SHA may be activated again — for example after a
-  rollback — after its metadata is revalidated; a directory that exists but is
-  not marked complete for that SHA refuses.
+  release directory is never overwritten or republished: an existing non-empty
+  directory cannot be replaced by rename, and an existing release for the same
+  SHA is only revalidated against its metadata and revision script. A directory
+  that exists but is not marked complete for that SHA refuses.
 - No Composer, npm or build step in this increment. A fixed, disposable,
   unprivileged preparation container is a later increment with its own
   isolation contract: only the staging path writable, no Docker socket, no
