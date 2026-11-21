@@ -207,7 +207,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
     let image: string | undefined;
     if (runtime.image !== undefined) {
         const candidate = asString(runtime.image);
-        if (!candidate || !isExplicitImage(candidate)) {
+        if (!candidate || !isExplicitImageReference(candidate)) {
             return { ok: false, reason: "runtime.image must be an explicit image reference with a tag or a digest." };
         }
         image = candidate;
@@ -300,7 +300,7 @@ function isComposeServiceNameSafe(value: string): boolean {
 }
 
 /** An image reference that is not a bare repository: it carries a tag or digest. */
-function isExplicitImage(value: string): boolean {
+export function isExplicitImageReference(value: string): boolean {
     if (!/^[a-z0-9][a-z0-9._/:@-]{0,254}$/i.test(value)) return false;
     const [reference, digest] = value.split("@");
     if (digest !== undefined) return /^sha256:[0-9a-f]{64}$/.test(digest);
