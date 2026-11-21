@@ -72,7 +72,7 @@ v1 fields (all bounded):
 | `runtime.profile` | always | `"php-front-controller"` only; a later profile is a new accepted value, not a free-form string |
 | `runtime.image` | `managed` only | explicit reference from an allow-listed channel; in `opt-in` mode the Compose file owns the image |
 | `deploy.kind` | always | `"bind-mount"` only |
-| `deploy.git.url` | always | HTTPS URL, fully qualified, no credentials in the URL |
+| `deploy.git.url` | always | Fully qualified public HTTPS or private SSH URL (ADR 0044), no password or token in the URL |
 | `deploy.git.ref` | always | fully qualified ref (`refs/heads/...`), never a short name or a wildcard |
 | `paths` | `managed` only | declared persistent roots, each relative, contained in `shared/`, no `..`, unique, bounded count |
 | `generation` | `managed` only | generator version; see *Generated artifacts* |

@@ -805,9 +805,9 @@ with downtime; the panel never switches back by itself.
 requests, and a second scenario where the candidate exits before becoming
 healthy. It is opt-in and never runs in unattended CI.
 
-## Optional managed-site deploy (ADR 0042, ADR 0043)
+## Optional managed-site deploy (ADR 0042, ADR 0043, ADR 0044)
 
-This pilot deploys one public HTTPS Git branch into an immutable release and
+This pilot deploys one public HTTPS or private SSH Git branch into an immutable release and
 verifies the revision the gateway actually serves. It is off by default and
 does not change ordinary stacks.
 
@@ -818,7 +818,7 @@ does not change ordinary stacks.
 COMPOSE_PANEL_MANAGED_SITES_ENABLED=true
 ```
 
-The panel image installs the `git` executable this feature uses. With the flag
+The panel image installs Git and the OpenSSH client. With the flag
 off there is no deploy route, no site section and no manifest read.
 
 ### Prepare the stack by hand
@@ -888,6 +888,45 @@ A minimal `compose-panel-site.json` for a hand-written stack:
 The manifest is administrator input: the browser never supplies a URL, ref,
 path or command.
 
+### Use a private Git repository
+
+Set `deploy.git.url` to an explicit SSH URL such as
+`ssh://git@git.example.com:2222/acme/shop.git` and retain the fully qualified
+`deploy.git.ref`. Use a DNS hostname or IPv4 literal and simple path segments.
+On the Git server, register a dedicated key with **read-only** access to this
+repository. Use a key without a passphrase for the non-interactive fetch.
+
+Install the private key and a separately verified host key on the panel host.
+For the default root-owned panel deployment, run these as root:
+
+```bash
+site=/opt/stacks/acme-shop/site
+install -d -m 0700 "$site/private/ssh"
+install -m 0600 /secure/input/acme-shop-deploy-key "$site/private/ssh/identity"
+install -m 0600 /secure/input/acme-shop-known-hosts "$site/private/ssh/known_hosts"
+```
+
+Use a standard OpenSSH `known_hosts` entry for the exact destination.
+For port 22 use `git.example.com`, and for the example port use
+`[git.example.com]:2222` as the host field. Verify the server key fingerprint
+with the Git host administrator or another independent trusted source before
+installing the file. An unknown or changed key blocks the fetch. Rotate either
+file between deployments and revoke the old deploy key at the Git server.
+
+The panel UID must own `site/staging`, `site/private`, `site/private/ssh`
+and both files. Keep those directories at `0700`, the files at `0600` and the
+stack and `site/` directories writable by their owner only. The two credential
+files must be regular, single-linked files of at most 64 KiB. Keep `site/private`
+outside service mounts. A source installation requires Linux, `/usr/bin/ssh`
+and an executable `src/scripts/git-ssh.sh` in the checkout.
+
+If an SSH fetch is refused, check those files and their ownership, the
+destination and branch, and the server-side key registration. On a disposable
+stack, verify a deploy with the correct key pair, then repeat with an unrelated
+deploy key and with a deliberately wrong host pin. Each refusal should leave
+the current SHA and gateway serving the same release. SSH fetch output stays
+out of the operation view and audit log.
+
 ### What a deploy does
 
 The stack page shows **Deploy refs/heads/main** only when the flag is on and the
@@ -897,7 +936,7 @@ manifest is valid. One click, then the operation streams its phases:
    check the profile, the mounts, the networks and the runtime image identity.
 2. Prove the baseline: `current`, its completed metadata, its revision script
    and the `/.compose-panel/revision` probe must agree on one full SHA.
-3. Fetch the configured branch (depth 1, HTTPS only) into
+3. Fetch the configured branch (depth 1) into
    `site/staging/<attempt-id>`, resolve the full SHA, verify the tree and
    publish `site/runtime/releases/<sha>` by one rename. The transfer is capped
    while it runs; a repository that downloads too many bytes is stopped and the
@@ -962,7 +1001,10 @@ deployment suite (`bun run test:managed-sites-e2e:wsl`) drives the real deploy
 code against a real Git repository and Compose project: two commits, a proven
 no-op, a return to the previous release, two refusals before any mutation, and
 two SIGKILLs (after the gateway stop and after the pointer switch) followed by
-an inspection of the marker, pointer, containers and probe. It is opt-in and
+an inspection of the marker, pointer, containers and probe. The disposable SSH
+fixture (`bash scripts/test-git-ssh.sh`) drives the real Git adapter against
+OpenSSH on loopback and exercises the correct key pair, wrong client key and
+wrong host key. These suites are opt-in and
 never runs in unattended CI; do not treat a production host as its test bed.
 
 ## Backups and rollback

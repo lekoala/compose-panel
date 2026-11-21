@@ -37,9 +37,8 @@ ARG VERSION=dev
 ARG REVISION=unknown
 # Docker CLI + Compose plugin from Docker's official apt repository so the
 # exact engine the panel shells out to is present and verifiable in the image.
-# Git is the only executable the managed-site deploy adds (ADR 0043): the panel
-# runs it with fixed arguments and a neutralised environment, never a shell.
-# Like ca-certificates and curl, it is intentionally unpinned; the Docker
+# Managed-site deploy needs Git (ADR 0043) and OpenSSH client for the private
+# transport (ADR 0044). Like ca-certificates and curl, these are unpinned; the Docker
 # packages stay pinned because the panel's argv depends on their exact version.
 # (Build-time shell only; the panel itself never uses a shell at runtime.)
 # No gnupg: apt reads the ASCII-armored key named by signed-by directly, and
@@ -48,7 +47,7 @@ ARG REVISION=unknown
 # Install before curl or Docker repository access so downloads use fixed apt.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends apt=3.0.4 libapt-pkg7.0=3.0.4 zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
-    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
@@ -59,11 +58,13 @@ RUN apt-get update \
     && docker --version \
     && docker compose version \
     && docker buildx version \
-    && git --version
+    && git --version \
+    && /usr/bin/ssh -V
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock ./
 COPY src ./src
+COPY --chmod=0755 src/scripts/git-ssh.sh ./src/scripts/git-ssh.sh
 RUN bun -e 'await Bun.write("src/build-info.json", JSON.stringify({ version: process.env.VERSION ?? "dev", revision: process.env.REVISION ?? "unknown" }))'
 COPY public ./public
 # The panel always binds 127.0.0.1 (see src/server.ts); reach it via the host

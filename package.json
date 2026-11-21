@@ -17,6 +17,7 @@
     "test:docker-lab:wsl": "wsl -- bash scripts/docker-lab/run.sh",
     "test:managed-sites:wsl": "wsl -- bash scripts/managed-sites-lab/run.sh",
     "test:managed-sites-e2e:wsl": "wsl -- bash scripts/managed-sites-e2e/run.sh",
+    "test:git-ssh:wsl": "wsl -- bash scripts/test-git-ssh.sh",
     "preview": "bun scripts/preview.ts",
     "docs:build": "bun scripts/build-docs.ts",
     "docs:preview": "bun scripts/build-docs.ts --serve",

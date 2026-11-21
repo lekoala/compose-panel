@@ -165,14 +165,18 @@ projects `config --format json` onto the allow-listed mount, network, port and
 image facts and checks every service against the profile. `src/git-release.ts`
 owns the fetch/publish adapter: fixed `git` executable, explicit argv, an
 environment built from an allow-list (no inherited config, hooks, credential
-helper, prompt, redirect or protocol beyond HTTPS), depth-1 fetch, full-SHA
+helper, prompt or redirect), depth-1 fetch, full-SHA
 resolution, `ls-tree` refusal of symlinks and gitlinks before checkout, a
 bounded staged-tree walk and one rename into `site/runtime/releases/<sha>`.
 `src/managed-site-deploy.ts` owns the phase machine and the rollback decision
 table; `src/managed-site-probe.ts` is the fixed loopback probe. The Git adapter
 caps the transfer while it runs (object-store polling and a process abort) and
 preflights free space before the fetch and the checkout, not only the final
-tree.
+tree. An HTTPS fetch allows only HTTPS. For an SSH URL, the fetch alone
+allows SSH and selects the fixed OpenSSH wrapper using `GIT_SSH`. The wrapper
+opens the pre-provisioned files in `site/private/ssh` from the staging repo's
+working directory. The remaining Git commands use the base environment.
+See [ADR 0044](adr/0044-private-git-over-ssh.md).
 
 The route is `POST /stacks/<name>/deploy`, exposed only when
 `COMPOSE_PANEL_MANAGED_SITES_ENABLED=true` **and** the manifest is valid

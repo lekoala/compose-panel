@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandResult, RunOptions } from "../src/docker.ts";
@@ -18,6 +18,7 @@ import {
 const SHA = "a".repeat(40);
 const URL = "https://github.com/acme/shop.git";
 const REF = "refs/heads/main";
+const SSH_URL = "ssh://git@example.com:2222/acme/shop.git";
 
 function result(overrides: Partial<CommandResult> = {}): CommandResult {
     return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false, ...overrides };
@@ -176,6 +177,83 @@ describe("gitEnvironment", () => {
         expect(env.XDG_CONFIG_HOME).toBe(join("/opt/stacks/acme/site/private/git", "xdg"));
         expect(env.GIT_DIR).toBeUndefined();
         expect(env.GIT_WORK_TREE).toBeUndefined();
+    });
+});
+
+describe.skipIf(process.platform !== "linux")("SSH fetch admission", () => {
+    async function provision(stack: string): Promise<string> {
+        const ssh = join(stack, "site", "private", "ssh");
+        await mkdir(ssh, { mode: 0o700 });
+        await writeFile(join(ssh, "identity"), "key fixture", { mode: 0o600 });
+        await writeFile(join(ssh, "known_hosts"), "host fixture", { mode: 0o600 });
+        return ssh;
+    }
+
+    test("refuses missing, exposed, linked and oversized credentials before Git", async () => {
+        const stack = await makeStack();
+        const attempts: string[][] = [];
+        const runner: GitRunner = async (args) => {
+            attempts.push(args);
+            return result();
+        };
+        try {
+            expect((await deploy(stack, runner, { url: SSH_URL })).ok).toBe(false);
+            const ssh = await provision(stack);
+            const key = join(ssh, "identity");
+            const hosts = join(ssh, "known_hosts");
+            await chmod(key, 0o644);
+            expect((await deploy(stack, runner, { url: SSH_URL })).ok).toBe(false);
+            await chmod(key, 0o600);
+            await link(key, join(ssh, "second-link"));
+            expect((await deploy(stack, runner, { url: SSH_URL })).ok).toBe(false);
+            await rm(join(ssh, "second-link"));
+            await rm(hosts);
+            await symlink(key, hosts);
+            expect((await deploy(stack, runner, { url: SSH_URL })).ok).toBe(false);
+            await rm(hosts);
+            await writeFile(hosts, Buffer.alloc(64 * 1024 + 1), { mode: 0o600 });
+            expect((await deploy(stack, runner, { url: SSH_URL })).ok).toBe(false);
+            expect(attempts).toEqual([]);
+        } finally {
+            await rm(stack, { recursive: true });
+        }
+    });
+
+    test("uses the fixed SSH wrapper only for fetch and suppresses remote output", async () => {
+        const stack = await makeStack();
+        const optionsByCommand = new Map<string, RunOptions>();
+        const base = fakeRunner();
+        const runner: GitRunner = async (args, options) => {
+            const command = ["init", "fetch", "rev-parse", "ls-tree", "checkout"].find((name) => args.includes(name))!;
+            optionsByCommand.set(command, options);
+            return base(args, options);
+        };
+        try {
+            await provision(stack);
+            expect((await deploy(stack, runner, { url: SSH_URL })).ok).toBe(true);
+            for (const [command, options] of optionsByCommand) {
+                expect(options.env?.GIT_ALLOW_PROTOCOL).toBe(command === "fetch" ? "ssh" : "https");
+                expect(options.env?.GIT_SSH_VARIANT).toBe(command === "fetch" ? "ssh" : undefined);
+                if (command === "fetch") expect(options.env?.GIT_SSH).toEndWith("/src/scripts/git-ssh.sh");
+                else expect(options.env?.GIT_SSH).toBeUndefined();
+            }
+            expect(optionsByCommand.size).toBe(5);
+            const chunks: string[] = [];
+            const refused = await deploy(
+                stack,
+                (args, options) => {
+                    if (!args.includes("fetch")) return base(args, options);
+                    options.onChunk?.("remote diagnostics");
+                    return Promise.resolve(result({ code: 128, stderr: "remote diagnostics" }));
+                },
+                { url: SSH_URL, onOutput: (chunk) => chunks.push(chunk) },
+            );
+            expect(refused.ok).toBe(false);
+            if (!refused.ok) expect(refused.detail).toBeUndefined();
+            expect(chunks).toEqual([]);
+        } finally {
+            await rm(stack, { recursive: true });
+        }
     });
 });
 
@@ -382,6 +460,9 @@ describe("fetchAndPublishGitRelease", () => {
         if (outcome.ok) return;
         expect(outcome.unconfirmed).toBe(true);
         expect(outcome.phase).toBe("fetch");
+        expect(outcome.cleanup).toBe("kept");
+        expect(await readdir(join(stack, "site", "staging"))).toEqual(["attempt0001"]);
+        await rm(stack, { recursive: true });
     });
 
     test("refuses to reuse a staging directory that already exists", async () => {

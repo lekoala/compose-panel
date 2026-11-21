@@ -80,8 +80,8 @@ After V1 the direction is to understand the host the stacks run on, not only the
 ## Managed sites and Git deployment
 Opt-in and default-off (`COMPOSE_PANEL_MANAGED_SITES_ENABLED`). The pilot
 contracts are accepted ([ADR 0042](adr/0042-managed-site-ownership.md),
-[ADR 0043](adr/0043-bounded-git-release-lifecycle.md)) and the manual deploy is
-implemented for an opted-in stack; everything after it still needs its own ADR:
+[ADR 0043](adr/0043-bounded-git-release-lifecycle.md)). Manual deploy is
+implemented for an opted-in stack.
 
 - **Managed site ownership.** A versioned `compose-panel-site.json` next to the
   Compose file, either opting a hand-written stack into one bind-mount release
@@ -90,7 +90,7 @@ implemented for an opted-in stack; everything after it still needs its own ADR:
   validated paths and no second orchestration engine. The directory stays a
   Compose project the CLI can run. The manifest parser, the effective-profile
   check and the layout exist; generation does not.
-- **Manual Git deploy.** Implemented behind the flag: one configured HTTPS ref
+- **Manual Git deploy.** Implemented behind the flag: one configured Git ref
   fetched into an immutable release, an atomic `current` switch, a forced
   runtime recreation, a verified serving SHA on the actual loopback binding and
   a probed code rollback, with an attempt marker when the outcome is ambiguous.
@@ -98,8 +98,10 @@ implemented for an opted-in stack; everything after it still needs its own ADR:
   build or migration. Proven by unit tests, the mount lab and a disposable
   two-commit suite that drives the real code, refuses profile drift and kills
   the deploy before and after the switch.
-- **Next increments, each with its own ADR or vertical PR:** private SSH and a
-  disposable Composer preparation container; the creation form with generated
+- **Private Git.** Implemented under the same flag ([ADR 0044](adr/0044-private-git-over-ssh.md)).
+  One dedicated read-only key and one independently pinned host key per site.
+- **Next increments, each with its own ADR or vertical PR:** a disposable
+  Composer preparation container; the creation form with generated
   Compose/gateway files, a stable loopback port and the existing Caddy attach;
   the Silverstripe profile with an existing MariaDB; offsite backup and restore;
   CI triggers; host timers and retention; production cutover and cloning.

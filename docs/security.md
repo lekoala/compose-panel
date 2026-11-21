@@ -130,7 +130,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - `src/git-release.ts` runs a fixed `git` executable with an explicit argument
   array, never a shell, and an environment built from an allow-list: no
   inherited system/global config, hooks, credential helper, askpass, terminal
-  prompt, redirects or protocol beyond HTTPS. The fetch is depth-1 and
+  prompt, redirects or protocols beyond the selected transport. The fetch is depth-1 and
   non-recursive; time, output, files and bytes are bounded. The transfer itself
   is capped: the Git object store is polled while the fetch runs and the process
   group is aborted when the downloaded bytes exceed the limit. A free-space
@@ -140,7 +140,15 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   `.git` entries and a repository-supplied `.compose-panel` are refused.
   Publication is one rename into an immutable release; only the attempt's own
   staging directory is removed, after comparing the inode created by the
-  attempt.
+  attempt. An unconfirmed process keeps the staging directory for inspection.
+- Private Git ([ADR 0044](adr/0044-private-git-over-ssh.md)) requires an
+  operator-provisioned, repository-scoped read-only key and independently
+  pinned host key in `site/private/ssh`. Only the fetch receives the fixed SSH
+  wrapper and SSH transport. The files and private directories are checked
+  for ownership, permissions and links before use. OpenSSH uses batch public
+  key authentication, strict host key checking, no inherited config or agent
+  and no forwarding. Credentials stay outside the checkout and all service
+  mounts. SSH fetch output is excluded from the operation view and audit.
 - The probe is one bounded `GET http://127.0.0.1:<published>/.compose-panel/revision`
   with no redirects, no DNS and no TLS; it must answer HTTP 200 with exactly 40
   lowercase hex characters and one newline. The port is the validated loopback

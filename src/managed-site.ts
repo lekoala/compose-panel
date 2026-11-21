@@ -57,7 +57,7 @@ export interface ManagedSiteManifest {
     deploy: {
         kind: typeof MANAGED_SITE_DEPLOY_KIND;
         git: {
-            /** Public HTTPS URL; no credentials, query or fragment. */
+            /** Public HTTPS or private SSH URL. Credentials live outside the manifest. */
             url: string;
             /** Fully qualified branch, `refs/heads/...`. */
             ref: string;
@@ -126,23 +126,34 @@ export function isValidDeployRef(value: string): boolean {
     return branch.split("/").every((segment) => segment.length > 0 && !segment.startsWith(".") && !segment.endsWith(".lock"));
 }
 
-/**
- * A public HTTPS repository URL: no credentials, no query, no fragment, and no
- * whitespace or control character that could be read as another Git argument.
- */
-export function isValidDeployGitUrl(value: string): boolean {
-    if (value.length === 0 || value.length > MANAGED_SITE_GIT_URL_MAX) return false;
-    if (CONTROL.test(value) || /\s/.test(value)) return false;
+/** Validate the literal URL that Git will receive and select its only allowed transport. */
+export function deployGitTransport(value: string): "https" | "ssh" | null {
+    if (value.length === 0 || value.length > MANAGED_SITE_GIT_URL_MAX || CONTROL.test(value) || /\s/.test(value)) return null;
+    if (value.startsWith("ssh://")) {
+        // Match the original string: URL normalization could hide traversal,
+        // encoded delimiters or an ambiguous SSH destination from validation.
+        const match = /^ssh:\/\/([a-z0-9_][a-z0-9_.-]*)@([a-z0-9.-]+)(?::([0-9]{1,5}))?((?:\/[a-z0-9_.-]+)+)$/i.exec(value);
+        if (!match) return null;
+        const [, , host, port, path] = match;
+        if (!host || host.length > 253 || !host.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))) {
+            return null;
+        }
+        if (port !== undefined && (Number(port) < 1 || Number(port) > 65535)) return null;
+        if (!path || path.split("/").some((segment) => segment === "." || segment === "..")) return null;
+        return "ssh";
+    }
     let url: URL;
     try {
         url = new URL(value);
     } catch {
-        return false;
+        return null;
     }
-    if (url.protocol !== "https:") return false;
-    if (url.username !== "" || url.password !== "") return false;
-    if (url.search !== "" || url.hash !== "") return false;
-    return url.hostname.length > 0;
+    if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return null;
+    return url.hostname.length > 0 ? "https" : null;
+}
+
+export function isValidDeployGitUrl(value: string): boolean {
+    return deployGitTransport(value) !== null;
 }
 
 /**
@@ -241,7 +252,10 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
     if (gitUnknown) return gitUnknown;
     const url = asString(git.url);
     if (!url || !isValidDeployGitUrl(url)) {
-        return { ok: false, reason: "deploy.git.url must be a public HTTPS URL without credentials, query or fragment." };
+        return {
+            ok: false,
+            reason: "deploy.git.url must be a public HTTPS URL or an ssh://user@host/repository URL without a password, query or fragment.",
+        };
     }
     const ref = asString(git.ref);
     if (!ref || !isValidDeployRef(ref)) {

@@ -2,6 +2,8 @@
 
 Status: Accepted (pilot scope)
 
+[ADR 0044](0044-private-git-over-ssh.md) adds private SSH to the HTTPS pilot.
+
 ## Context
 
 Some stacks run code that lives on the host and is bind-mounted into a

@@ -1,6 +1,6 @@
 /**
- * Bounded Git release adapter (ADR 0043): fetch one operator-configured public
- * HTTPS branch, resolve it to a full commit SHA, verify the staged tree, write
+ * Bounded Git release adapter (ADRs 0043 and 0044): fetch one operator-configured
+ * Git branch, resolve it to a full commit SHA, verify the staged tree, write
  * the fixed revision script and publish the release by one rename.
  *
  * Everything here is a fixed command with an explicit argument array. The URL
@@ -25,7 +25,7 @@ import {
 } from "./fs-safe.ts";
 import {
     isManagedSiteReleaseId,
-    isValidDeployGitUrl,
+    deployGitTransport,
     isValidDeployRef,
     isManagedSiteAttemptId,
     MANAGED_SITE_PATHS,
@@ -112,6 +112,7 @@ export type GitReleaseResult = GitReleaseSuccess | GitReleaseFailure;
 const COMMIT = /^[0-9a-f]{40}$/;
 const REVISION_BYTES_MAX = 1024;
 const METADATA_BYTES_MAX = 4096;
+const SSH_CREDENTIALS_MAX_BYTES = 64 * 1024;
 
 /**
  * Neutralised Git environment. Built from an allow-list, never inherited: an
@@ -283,7 +284,8 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
     if (!isManagedSiteAttemptId(request.attemptId)) {
         return { ok: false, phase: "layout", reason: "The attempt identifier is not valid.", unconfirmed: false, cleanup: "none" };
     }
-    if (!isValidDeployGitUrl(request.url) || !isValidDeployRef(request.ref)) {
+    const transport = deployGitTransport(request.url);
+    if (!transport || !isValidDeployRef(request.ref)) {
         return {
             ok: false,
             phase: "layout",
@@ -305,7 +307,9 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
         if (published && !publishedComplete) {
             await removeProvenDirectory(published.path, published.identity);
         }
-        if (attemptDir) {
+        if (attemptDir && unconfirmed) {
+            cleanup = "kept";
+        } else if (attemptDir) {
             // The directory was created here exclusively, so it is ours. A
             // failed identity capture is retried instead of deleting blindly.
             if (!attemptIdentity) attemptIdentity = await dirIdentity(attemptDir).catch(() => null);
@@ -324,6 +328,11 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
         const layout = await checkLayout(stackDir);
         if (!layout.ok) return fail(layout.reason);
         const { staging, releases, metadataRoot, gitRoot } = layout;
+        if (transport === "ssh") {
+            phase = "fetch";
+            await checkSshCredentials(stackDir);
+            phase = "layout";
+        }
 
         // Panel-owned private Git home: config, HOME, XDG, tmp and an empty
         // hooks directory. None of it is mounted into a container.
@@ -334,19 +343,24 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
         await ensureEmptyFile(gitConfig);
         const hooks = join(gitRoot, "hooks");
 
-        attemptDir = join(staging, request.attemptId);
+        const newAttempt = join(staging, request.attemptId);
         try {
-            await mkdir(attemptDir, { mode: 0o700 });
+            await mkdir(newAttempt, { mode: 0o700 });
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-                attemptDir = null;
                 return fail("A staging directory already exists for this attempt; nothing was fetched.");
             }
             throw error;
         }
+        attemptDir = newAttempt;
         await setMode(attemptDir, 0o700);
         attemptIdentity = await dirIdentity(attemptDir);
         const env = gitEnvironment(gitRoot, attemptDir);
+        // GIT_ALLOW_PROTOCOL overrides the base config for this command only.
+        const fetchEnv =
+            transport === "ssh"
+                ? { ...env, GIT_ALLOW_PROTOCOL: "ssh", GIT_SSH: join(import.meta.dir, "scripts", "git-ssh.sh"), GIT_SSH_VARIANT: "ssh" }
+                : env;
 
         const repo = join(attemptDir, "repo");
         const tree = join(attemptDir, "tree");
@@ -361,6 +375,7 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
             maxBytes: limits.maxOutputBytes,
             signal: request.signal,
         });
+        unconfirmed ||= init.terminationUnconfirmed === true;
         if (!commandSucceeded(init)) return fail("The staging repository could not be created.", diagnostic(init));
 
         const freeBeforeFetch = await availableBytes(staging);
@@ -373,6 +388,7 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
         const transfer = new AbortController();
         const forwardAbort = () => transfer.abort();
         request.signal?.addEventListener("abort", forwardAbort, { once: true });
+        if (request.signal?.aborted) forwardAbort();
         let downloadExceeded = false;
         const monitor = startTransferMonitor(
             gitDir,
@@ -403,11 +419,12 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
                 ],
                 {
                     cwd: attemptDir,
-                    env,
+                    env: fetchEnv,
                     timeoutMs: limits.fetchTimeoutMs,
                     maxBytes: limits.maxOutputBytes,
-                    onChunk: request.onOutput,
+                    onChunk: transport === "https" ? request.onOutput : undefined,
                     signal: transfer.signal,
+                    stopOnOutputLimit: true,
                 },
             );
         } finally {
@@ -415,12 +432,21 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
             request.signal?.removeEventListener("abort", forwardAbort);
         }
         unconfirmed ||= fetched.terminationUnconfirmed === true;
+        const fetchDiagnostic = transport === "https" ? diagnostic(fetched) : undefined;
         if (downloadExceeded) {
-            return fail("The download exceeded the pilot's byte limit; the attempt was stopped.", diagnostic(fetched));
+            return fail("The download exceeded the pilot's byte limit; the attempt was stopped.", fetchDiagnostic);
         }
-        if (fetched.timedOut) return fail("The fetch timed out; nothing was published.", diagnostic(fetched));
+        if (fetched.timedOut) return fail("The fetch timed out; nothing was published.", fetchDiagnostic);
         if (fetched.terminationUnconfirmed === true) return fail("The Git fetch could not be confirmed to have exited.");
-        if (fetched.code !== 0) return fail("The configured branch could not be fetched.", diagnostic(fetched));
+        if (fetched.truncated) return fail("Git exceeded the fetch output limit; nothing was published.");
+        if (fetched.code !== 0) {
+            return fail(
+                transport === "ssh"
+                    ? "SSH fetch failed. Check the deploy key, pinned host key and repository access."
+                    : "The configured branch could not be fetched.",
+                fetchDiagnostic,
+            );
+        }
 
         phase = "resolve";
         const resolved = await runGit(runner, [...config, "-C", repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}"], {
@@ -517,6 +543,34 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
 
 const PRIVATE_DIR_MESSAGE =
     "The site layout is missing or unsafe: site/staging, site/runtime/releases and site/private must be real directories below the stack.";
+
+async function checkSshCredentials(stackDir: string): Promise<void> {
+    if (process.platform !== "linux") throw new FileSafetyError("Private Git over SSH requires a Linux panel.");
+    const message = "Provision site/private/ssh/identity and known_hosts as private regular files owned by the panel user.";
+    const sshDir = await checkManagedDir(stackDir, ["site", "private", "ssh"], message);
+    if (!sshDir) throw new FileSafetyError(message);
+
+    // OpenSSH reads these paths itself. The private directories must be
+    // controlled by the panel UID so another user cannot swap a checked file.
+    const uid = process.geteuid!();
+    for (const path of [join(stackDir, MANAGED_SITE_PATHS.staging), join(stackDir, MANAGED_SITE_PATHS.private), sshDir]) {
+        const info = await lstat(path);
+        if (!info.isDirectory() || info.uid !== uid || (info.mode & 0o077) !== 0) throw new FileSafetyError(message);
+    }
+    for (const path of [stackDir, join(stackDir, "site")]) {
+        const info = await lstat(path);
+        if (!info.isDirectory() || (info.mode & 0o022) !== 0) {
+            throw new FileSafetyError(
+                "The stack and site directories must be real directories writable only by their owner for SSH deploys.",
+            );
+        }
+    }
+    for (const name of ["identity", "known_hosts"]) {
+        const info = await lstatOrNull(join(sshDir, name));
+        if (!info?.isFile() || info.nlink !== 1 || info.uid !== uid || (info.mode & 0o077) !== 0) throw new FileSafetyError(message);
+        if (info.size === 0 || info.size > SSH_CREDENTIALS_MAX_BYTES) throw new FileSafetyError(message);
+    }
+}
 
 async function checkLayout(
     stackDir: string,

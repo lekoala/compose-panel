@@ -189,15 +189,36 @@ describe("parseManagedSiteManifest", () => {
         expect(rejected(optIn({ deploy: { kind: "bind-mount", git: { ref: "refs/heads/main" } } }))).toBe(true);
     });
 
-    test("refuses a Git URL that is not public HTTPS without credentials or extras", () => {
+    test("refuses HTTPS credentials, queries and fragments", () => {
         const withUrl = (url: string) => optIn({ deploy: { kind: "bind-mount", git: { url, ref: "refs/heads/main" } } });
         expect(rejected(withUrl("http://github.com/acme/shop.git"))).toBe(true);
-        expect(rejected(withUrl("ssh://git@github.com/acme/shop.git"))).toBe(true);
         expect(rejected(withUrl("https://user:token@github.com/acme/shop.git"))).toBe(true);
         expect(rejected(withUrl("https://github.com/acme/shop.git?ref=main"))).toBe(true);
         expect(rejected(withUrl("https://github.com/acme/shop.git#main"))).toBe(true);
         expect(rejected(withUrl("https://github.com/acme/shop.git\n"))).toBe(true);
         expect(rejected(withUrl("not a url"))).toBe(true);
+    });
+
+    test("accepts explicit SSH destinations and refuses ambiguous URLs", () => {
+        const withUrl = (url: string) => optIn({ deploy: { kind: "bind-mount", git: { url, ref: "refs/heads/main" } } });
+        for (const url of ["ssh://git@github.com/acme/shop.git", "ssh://deploy@127.0.0.1:2222/acme/shop.git"]) {
+            const result = parseManagedSiteManifest(JSON.stringify(withUrl(url)));
+            expect(result.ok && result.manifest.deploy.git.url).toBe(url);
+        }
+        for (const url of [
+            "git@github.com:acme/shop.git",
+            "ssh://github.com/acme/shop.git",
+            "ssh://git:password@github.com/acme/shop.git",
+            "ssh://git@-host/acme/shop.git",
+            "ssh://git@host:65536/acme/shop.git",
+            "ssh://git@host:0/acme/shop.git",
+            "ssh://git@host/acme/../shop.git",
+            "ssh://git@host/acme%2Fshop.git",
+            "ssh://git@host/acme/shop.git?ref=main",
+            "ssh://git@host/acme/shop.git#main",
+        ]) {
+            expect(rejected(withUrl(url))).toBe(true);
+        }
     });
 
     test("refuses a short, wildcarded or malformed ref", () => {
