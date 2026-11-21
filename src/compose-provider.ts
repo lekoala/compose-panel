@@ -225,6 +225,21 @@ export interface ComposeProvider {
         },
     ): Promise<CommandResult>;
     /**
+     * Stop or start exactly one service of a project addressed by its exact
+     * files: `stop -- <service>` / `start -- <service>`. Used only by the
+     * managed-site deploy (ADR 0043), which stops the gateway before the
+     * pointer switch and starts it after the runtime recreation. The service
+     * name is validated against the Compose grammar and always passed after
+     * `--`, so it can never be read as an option. Neither call touches another
+     * service or another project.
+     */
+    stopService(
+        input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void },
+    ): Promise<CommandResult>;
+    startService(
+        input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void },
+    ): Promise<CommandResult>;
+    /**
      * One-shot history read: `compose logs --tail N --timestamps --no-color`,
      * bounded by the runner timeout and output cap and without following.
      * A short read, never a subscription (see `followLogs`).
@@ -600,6 +615,31 @@ class DockerComposeProvider implements ComposeProvider {
         if (input.force === true) args.push("--force-recreate");
         args.push("--", input.service);
         return this.runner(args, { cwd: input.cwd, timeoutMs: input.timeoutMs, onChunk: input.onOutput });
+    }
+
+    stopService(
+        input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void },
+    ): Promise<CommandResult> {
+        return this.runServiceScoped(input, "stop");
+    }
+
+    startService(
+        input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void },
+    ): Promise<CommandResult> {
+        return this.runServiceScoped(input, "start");
+    }
+
+    /** `stop`/`start` of one validated service, always after `--`. */
+    private runServiceScoped(
+        input: ComposeProjectFiles & { service: string; timeoutMs?: number; onOutput?: (chunk: string) => void },
+        command: "stop" | "start",
+    ): Promise<CommandResult> {
+        if (!isComposeServiceName(input.service)) return Promise.reject(new Error("Invalid service name."));
+        return this.runner([...this.projectArgs(input), command, "--", input.service], {
+            cwd: input.cwd,
+            timeoutMs: input.timeoutMs,
+            onChunk: input.onOutput,
+        });
     }
 
     readLogs(target: ComposeTarget & { tailLines?: number }): Promise<CommandResult> {

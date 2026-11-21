@@ -51,6 +51,8 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         down: async () => ok,
         serviceImage: async () => null,
         recreateService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        stopService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        startService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
         followLogs: (followTarget, onChunk, signal) =>
             new Promise((resolve) => {
                 calls.push({ target: followTarget, onChunk, signal });
@@ -108,6 +110,8 @@ function deferredProvider(): {
         down: async () => ok,
         serviceImage: async () => null,
         recreateService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        stopService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        startService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
         followLogs: (followTarget, onChunk, signal) =>
             new Promise((resolve) => {
                 calls.push({ target: followTarget, onChunk, signal });
@@ -380,6 +384,8 @@ test("shutdown stays bounded when a follow never settles", async () => {
         down: async () => ok,
         serviceImage: async () => null,
         recreateService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        stopService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        startService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
         followLogs: () => new Promise(() => {}),
     };
     const logs = manager(stuck, { timeoutMs: 60_000 });

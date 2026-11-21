@@ -50,6 +50,8 @@ function fakeProvider(
         down: run("down"),
         serviceImage: async () => null,
         recreateService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        stopService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        startService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
         followLogs: async () => ({ code: 0, timedOut: false }),
     };
 }

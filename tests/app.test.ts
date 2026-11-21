@@ -148,6 +148,8 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         down: async () => empty,
         serviceImage: async () => null,
         recreateService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        stopService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
+        startService: async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, truncated: false }),
         followLogs: (followTarget, onChunk, signal) =>
             new Promise((resolve) => {
                 calls.push({ target: followTarget, onChunk, signal });
@@ -4611,6 +4613,8 @@ describe("service rollout (ADR 0035)", () => {
             down: async () => okResult,
             serviceImage: async () => "app:1.2.3",
             recreateService: async () => okResult,
+            stopService: async () => okResult,
+            startService: async () => okResult,
             followLogs: async () => ({ code: 0, timedOut: false }),
         };
         const inspector: ContainerInspector = {

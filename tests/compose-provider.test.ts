@@ -583,3 +583,44 @@ describe("recreateService", () => {
         expect(calls[0]!.args[calls[0]!.args.indexOf("--pull") + 1]).toBe("never");
     });
 });
+
+describe("service-scoped stop and start", () => {
+    const base = {
+        project: "site",
+        cwd: "/srv/site",
+        composeFiles: ["/srv/site/compose.yaml"],
+        envFiles: ["/srv/site/.env"],
+    };
+
+    test("stops exactly one service in the explicit project context", async () => {
+        const { runner, calls } = recording();
+        await createComposeProvider({ runner }).stopService({ ...base, service: "web" });
+        expect(calls[0]!.args).toEqual([
+            "compose",
+            "-p",
+            "site",
+            "--env-file",
+            "/srv/site/.env",
+            "--project-directory",
+            "/srv/site",
+            "-f",
+            "/srv/site/compose.yaml",
+            "stop",
+            "--",
+            "web",
+        ]);
+    });
+
+    test("starts exactly one service, again after --", async () => {
+        const { runner, calls } = recording();
+        await createComposeProvider({ runner }).startService({ ...base, service: "web" });
+        expect(calls[0]!.args.slice(-3)).toEqual(["start", "--", "web"]);
+    });
+
+    test("refuses a service name that is not a Compose service", async () => {
+        const { runner } = recording();
+        const provider = createComposeProvider({ runner });
+        await expect(provider.stopService({ ...base, service: "--all" })).rejects.toThrow(/Invalid service name/);
+        await expect(provider.startService({ ...base, service: "web --all" })).rejects.toThrow(/Invalid service name/);
+    });
+});

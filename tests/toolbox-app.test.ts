@@ -124,6 +124,8 @@ async function harness(options: { audit?: boolean } = {}): Promise<Harness> {
         down: async () => ok,
         serviceImage: async () => null,
         recreateService: async () => ok,
+        stopService: async () => ok,
+        startService: async () => ok,
         followLogs: async (_target: ComposeTarget & { tailLines?: number }) => ({ code: 0, timedOut: false }),
     } as ComposeProvider;
 
