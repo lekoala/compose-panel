@@ -61,6 +61,14 @@ export interface OperationManagerOptions {
     onBegin?: (stack: string) => void;
     /** Called once when an operation reaches its final status (e.g. for the audit log). */
     onFinish?: (operation: OperationView) => void;
+    /**
+     * Authoritative admission check, run after the per-stack lock and project
+     * reservation are held and before any command or app closure. A non-null
+     * reason refuses the operation. This closes the race where a route-level
+     * check passes, the request awaits Docker, and a deploy leaves a pending
+     * marker before the lock is acquired.
+     */
+    admit?: (stack: string) => Promise<string | null>;
 }
 
 /**
@@ -206,6 +214,15 @@ export class OperationManager {
         return this.shuttingDown;
     }
 
+    private async admissionRefusal(stack: string): Promise<string | null> {
+        if (!this.options.admit) return null;
+        try {
+            return await this.options.admit(stack);
+        } catch {
+            return "The pending state of this stack could not be checked, so nothing was run.";
+        }
+    }
+
     /**
      * Run one managed-site deploy (ADR 0043). The lock, project reservation,
      * streaming and finalize semantics are the same as any other operation; the
@@ -305,6 +322,21 @@ export class OperationManager {
     }
 
     private async execute(operation: OperationView, action: OperationAction, target: ComposeTarget, release: () => void): Promise<void> {
+        // The route-level check cannot see a marker that appears while the
+        // request awaits Docker; this one runs under the lock. Without a
+        // configured hook the command starts exactly as before (no extra tick).
+        if (this.options.admit) {
+            const admission = await this.admissionRefusal(operation.stack);
+            if (admission) {
+                operation.status = "refused";
+                operation.endedAt = Date.now();
+                this.appendText(operation, admission);
+                this.emit(operation);
+                if (target.project) this.projects.delete(target.project);
+                release();
+                return;
+            }
+        }
         // Live pipe chunks land here while the command runs. When any flowed
         // for a call, the retained output is already complete and the bulk
         // append for that call is skipped (it would duplicate). Buffered
@@ -388,6 +420,16 @@ export class OperationManager {
             if (detail.revision) operation.revision = detail.revision;
         };
         try {
+            if (this.options.admit) {
+                const admission = await this.admissionRefusal(operation.stack);
+                if (admission) {
+                    operation.status = "refused";
+                    operation.endedAt = Date.now();
+                    this.appendText(operation, admission);
+                    this.emit(operation);
+                    return;
+                }
+            }
             const outcome = await run({ onOutput, record });
             if ("refused" in outcome) {
                 // Nothing ran: the locked revalidation found a changed declaration.

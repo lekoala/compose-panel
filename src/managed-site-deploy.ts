@@ -17,7 +17,13 @@ import { parseImageInspect } from "./compose-state.ts";
 import { randomSuffix, readFileSafe } from "./fs-safe.ts";
 import { parseReleaseMetadata, revisionScript, type GitReleaseResult } from "./git-release.ts";
 import type { ManagedSiteComposeFacts } from "./managed-site-profile.ts";
-import { MANAGED_SITE_PATHS, type ManagedSiteManifest, type ManagedSiteManifestResult } from "./managed-site.ts";
+import {
+    MANAGED_SITE_PATHS,
+    isManagedSiteAttemptId,
+    isManagedSiteReleaseId,
+    type ManagedSiteManifest,
+    type ManagedSiteManifestResult,
+} from "./managed-site.ts";
 
 export const MANAGED_SITE_ATTEMPT_FILE = "deploy-attempt.json";
 export const MANAGED_SITE_PROBE_PATH = "/.compose-panel/revision";
@@ -25,9 +31,23 @@ export const MANAGED_SITE_PROBE_DEADLINE_MS = 5000;
 const PROBE_INTERVAL_MS = 250;
 const METADATA_BYTES_MAX = 4096;
 const REVISION_BYTES_MAX = 1024;
+const ATTEMPT_BYTES_MAX = 4096;
 
-export type ManagedSiteDeployPhase =
-    "validate" | "baseline" | "fetch" | "publish" | "stop" | "switch" | "recreate" | "start" | "probe" | "rollback";
+export const MANAGED_SITE_DEPLOY_PHASES = [
+    "validate",
+    "baseline",
+    "fetch",
+    "publish",
+    "stop",
+    "switch",
+    "recreate",
+    "start",
+    "probe",
+    "rollback",
+] as const;
+export type ManagedSiteDeployPhase = (typeof MANAGED_SITE_DEPLOY_PHASES)[number];
+export const MANAGED_SITE_DEPLOY_OUTCOMES = ["pending", "deployed", "rolled-back", "intervention"] as const;
+export type ManagedSiteDeployOutcome = (typeof MANAGED_SITE_DEPLOY_OUTCOMES)[number];
 
 export interface ManagedSiteDeployAttempt {
     version: 1;
@@ -36,7 +56,7 @@ export interface ManagedSiteDeployAttempt {
     release: string;
     prior: string;
     phase: ManagedSiteDeployPhase;
-    outcome: "pending" | "deployed" | "rolled-back" | "intervention";
+    outcome: ManagedSiteDeployOutcome;
 }
 
 /** The narrow provider surface the deploy uses; the real provider fits it. */
@@ -147,6 +167,61 @@ export async function pendingDeployAttempt(stackDir: string): Promise<boolean> {
     }
 }
 
+/** Strict parse of the bounded attempt record; anything unexpected is `null`. */
+export function parseDeployAttempt(source: string): ManagedSiteDeployAttempt | null {
+    if (Buffer.byteLength(source, "utf8") > ATTEMPT_BYTES_MAX) return null;
+    let value: unknown;
+    try {
+        value = JSON.parse(source);
+    } catch {
+        return null;
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (Object.keys(record).sort().join(",") !== "attemptId,outcome,phase,prior,release,siteId,version") return null;
+    if (record.version !== 1) return null;
+    const { siteId, attemptId, release, prior, phase, outcome } = record;
+    if (typeof siteId !== "string" || siteId.length === 0 || siteId.length > 64) return null;
+    if (typeof attemptId !== "string" || !isManagedSiteAttemptId(attemptId)) return null;
+    if (typeof release !== "string" || !isManagedSiteReleaseId(release)) return null;
+    if (typeof prior !== "string" || !isManagedSiteReleaseId(prior)) return null;
+    if (typeof phase !== "string" || !(MANAGED_SITE_DEPLOY_PHASES as readonly string[]).includes(phase)) return null;
+    if (typeof outcome !== "string" || !(MANAGED_SITE_DEPLOY_OUTCOMES as readonly string[]).includes(outcome)) return null;
+    return {
+        version: 1,
+        siteId,
+        attemptId,
+        release,
+        prior,
+        phase: phase as ManagedSiteDeployPhase,
+        outcome: outcome as ManagedSiteDeployOutcome,
+    };
+}
+
+export type PendingDeployAttemptRead = { kind: "none" } | { kind: "unreadable" } | { kind: "pending"; attempt: ManagedSiteDeployAttempt };
+
+/**
+ * Read the marker for display and acknowledgement. A marker that cannot be
+ * parsed is still present: it blocks mutations and is reported as unreadable,
+ * never silently ignored.
+ */
+export async function readPendingDeployAttempt(stackDir: string): Promise<PendingDeployAttemptRead> {
+    const path = managedSiteAttemptPath(stackDir);
+    try {
+        await lstat(path);
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "none" } : { kind: "unreadable" };
+    }
+    try {
+        const file = await readFileSafe(path, ATTEMPT_BYTES_MAX);
+        if (!file) return { kind: "unreadable" };
+        const attempt = parseDeployAttempt(file.source);
+        return attempt ? { kind: "pending", attempt } : { kind: "unreadable" };
+    } catch {
+        return { kind: "unreadable" };
+    }
+}
+
 /**
  * Verify the active pointer, its release directory, its completed metadata and
  * its revision script. The served SHA is proven separately by the probe.
@@ -249,15 +324,34 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
         releaseId: string | null;
         prior: string | null;
         markerWritten: boolean;
-        servingChanged: boolean;
+        /** `current` now points at the release this deploy intended. */
+        pointerChanged: boolean;
+        /** The stop command was attempted: the site may be down. */
+        gatewayStopAttempted: boolean;
     } = {
         phase: "validate",
         siteId: null,
         releaseId: null,
         prior: null,
         markerWritten: false,
-        servingChanged: false,
+        pointerChanged: false,
+        gatewayStopAttempted: false,
     };
+
+    /** Immutable facts captured once the baseline is proven. */
+    let plan: {
+        manifest: ManagedSiteManifest;
+        files: ComposeProjectFiles;
+        target: DeployTarget;
+        port: number;
+        declaredImage: string;
+        runtime: ServiceIdentity;
+        gatewayId: string;
+        baselineRelease: string;
+        runtimeDir: string;
+    } | null = null;
+    /** The runtime container created by the activation, for the rollback check. */
+    let activatedRuntimeId: string | null = null;
 
     const record = (outcome: ManagedSiteDeployAttempt["outcome"]): ManagedSiteDeployAttempt => ({
         version: 1,
@@ -282,9 +376,95 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
         unconfirmed
             ? { kind: "unknown", reason, phase: state.phase, ...(state.releaseId ? { releaseId: state.releaseId } : {}) }
             : { kind: "failed", reason, phase: state.phase };
+    /**
+     * From the first stop attempt, the marker is evidence of a site that may be
+     * down or split between the pointer and the PHP process. It is kept until
+     * the service is confirmed back and probed, or the operator intervenes.
+     */
     const intervene = async (reason: string): Promise<ManagedSiteDeployResult> => {
-        if (state.servingChanged) await writeMarker("intervention").catch(() => {});
+        if (state.gatewayStopAttempted || state.pointerChanged) await writeMarker("intervention").catch(() => {});
         return { kind: "intervention", reason, phase: state.phase, ...(state.releaseId ? { releaseId: state.releaseId } : {}) };
+    };
+
+    /** Stop the gateway; `running` is Docker's answer after the command. */
+    const stopGateway = async (): Promise<{ ok: true } | { ok: false; unconfirmed: boolean; running: string[] | null }> => {
+        if (!plan) return { ok: false, unconfirmed: false, running: null };
+        state.gatewayStopAttempted = true;
+        try {
+            const stopped = await deps.provider.stopService({
+                ...plan.files,
+                service: plan.manifest.services.gateway,
+                timeoutMs: deps.commandTimeoutMs,
+                onOutput,
+            });
+            if (stopped.terminationUnconfirmed) return { ok: false, unconfirmed: true, running: null };
+            const running = await deps.provider
+                .runningContainerIds({ ...plan.target, service: plan.manifest.services.gateway })
+                .catch(() => null);
+            if (stopped.code !== 0 || stopped.timedOut) return { ok: false, unconfirmed: false, running };
+            if (running === null || running.length > 0) return { ok: false, unconfirmed: false, running };
+            return { ok: true };
+        } catch {
+            return { ok: false, unconfirmed: false, running: null };
+        }
+    };
+
+    /** The gateway is running its original container and serves the baseline. */
+    const confirmBaselineServing = async (): Promise<boolean> => {
+        if (!plan) return false;
+        const gateway = await serviceIdentity(deps, plan.target, plan.manifest.services.gateway);
+        if (!gateway || gateway.containerId !== plan.gatewayId) return false;
+        return (await probeFor(deps, plan.port)) === plan.baselineRelease;
+    };
+
+    /** Start the gateway (idempotent) and confirm its original container is back. */
+    const startGateway = async (): Promise<"started" | "unconfirmed" | "failed"> => {
+        if (!plan) return "failed";
+        try {
+            const started = await deps.provider.startService({
+                ...plan.files,
+                service: plan.manifest.services.gateway,
+                timeoutMs: deps.commandTimeoutMs,
+                onOutput,
+            });
+            if (started.terminationUnconfirmed) return "unconfirmed";
+            if (started.code !== 0 || started.timedOut) return "failed";
+            const gateway = await serviceIdentity(deps, plan.target, plan.manifest.services.gateway);
+            if (!gateway || gateway.containerId !== plan.gatewayId) return "failed";
+            return "started";
+        } catch {
+            return "failed";
+        }
+    };
+
+    /**
+     * The pointer is still the baseline but the gateway may be stopped: restore
+     * the service, prove the baseline revision, then report a failure.
+     */
+    const restoreBaseline = async (reason: string): Promise<ManagedSiteDeployResult> => {
+        if (!plan) return intervene(reason);
+        const started = await startGateway();
+        if (started === "unconfirmed") return fail("The gateway start could not be confirmed to have exited.", true);
+        if (started === "failed") return intervene(`${reason} The gateway could not be restarted; the site needs inspection.`);
+        const served = await probeFor(deps, plan.port);
+        if (served === plan.baselineRelease) {
+            await clearMarker(state, marker);
+            return { kind: "failed", reason: `${reason} The gateway is serving the verified baseline again.`, phase: state.phase };
+        }
+        return intervene(`${reason} The gateway did not confirm the baseline revision${served ? ` (it serves ${served})` : ""}.`);
+    };
+
+    /**
+     * The pointer is new but the runtime may not be: start the gateway so the
+     * site is not left down, then report an intervention. Never claim success.
+     */
+    const startAfterPointerChange = async (reason: string): Promise<ManagedSiteDeployResult> => {
+        if (!plan) return intervene(reason);
+        const started = await startGateway();
+        if (started === "unconfirmed") return fail("The gateway start could not be confirmed to have exited.", true);
+        const served = started === "started" ? await probeFor(deps, plan.port) : null;
+        if (started === "failed") return intervene(`${reason} The gateway could not be restarted.`);
+        return intervene(`${reason} The gateway is running, but the served revision is ${served ?? "unavailable"}.`);
     };
 
     try {
@@ -355,6 +535,18 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
                 reason: `${MANAGED_SITE_PATHS.current} points at ${baseline.releaseId} but the probe serves ${servedBaseline}; the baseline is not provable.`,
             };
         }
+        const runtimeDir = join(deps.stackDir, ...MANAGED_SITE_PATHS.runtime.split("/"));
+        plan = {
+            manifest,
+            files,
+            target,
+            port,
+            declaredImage,
+            runtime,
+            gatewayId: gateway.containerId,
+            baselineRelease: baseline.releaseId,
+            runtimeDir,
+        };
 
         // ---- fetch and publish (the active release is untouched until stop) ----
         state.phase = "fetch";
@@ -365,19 +557,19 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
         }
         state.releaseId = fetched.releaseId;
 
-        if (fetched.releaseId === baseline.releaseId) {
-            onOutput(`The probe already serves ${fetched.releaseId}; nothing to change.\n`);
-            return { kind: "noop", releaseId: fetched.releaseId };
-        }
-
         // The fetch can be long: re-prove the pointer and the probe so a
-        // concurrent external switch can never be overwritten blindly.
+        // concurrent external switch can never be overwritten blindly. A repeat
+        // of the served SHA is a no-op only after this proof, never before it.
         const recheck = await readActive(deps.stackDir, manifest.siteId);
         if (!recheck.ok || recheck.releaseId !== baseline.releaseId) {
             return { kind: "refused", reason: "The active pointer changed while the release was being fetched; nothing was stopped." };
         }
         if ((await probeFor(deps, port)) !== baseline.releaseId) {
             return { kind: "refused", reason: "The served revision changed while the release was being fetched; nothing was stopped." };
+        }
+        if (fetched.releaseId === baseline.releaseId) {
+            onOutput(`The probe already serves ${fetched.releaseId}; nothing to change.\n`);
+            return { kind: "noop", releaseId: fetched.releaseId };
         }
         if (deps.isShuttingDown()) return fail("The panel is shutting down; nothing was stopped.");
 
@@ -389,42 +581,41 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
 
         // ---- stop the gateway and confirm ----
         state.phase = "stop";
-        const stopped = await deps.provider.stopService({
-            ...files,
-            service: manifest.services.gateway,
-            timeoutMs: deps.commandTimeoutMs,
-            onOutput,
-        });
-        if (stopped.terminationUnconfirmed) return fail("The gateway stop could not be confirmed to have exited.", true);
-        if (stopped.code !== 0 || stopped.timedOut) return intervene("The gateway could not be stopped; nothing was switched.");
-        const stillRunning = await deps.provider.runningContainerIds({ ...target, service: manifest.services.gateway });
-        if (stillRunning === null || stillRunning.length > 0) {
-            return intervene("The gateway stop could not be confirmed by Docker; nothing was switched.");
+        const stopped = await stopGateway();
+        if (!stopped.ok) {
+            if (stopped.unconfirmed) return fail("The gateway stop could not be confirmed to have exited.", true);
+            if (stopped.running !== null && stopped.running.length === 0) {
+                // The command failed after the stop: the site is down.
+                return restoreBaseline("The gateway stop failed after the service stopped.");
+            }
+            if (await confirmBaselineServing()) {
+                await clearMarker(state, marker);
+                return fail("The gateway could not be stopped; it is still serving the verified baseline.");
+            }
+            return intervene("The gateway could not be stopped; the site needs inspection.");
         }
 
         // ---- atomic pointer switch ----
         state.phase = "switch";
-        const runtimeDir = join(deps.stackDir, ...MANAGED_SITE_PATHS.runtime.split("/"));
         const switched = await switchPointer(runtimeDir, fetched.releaseId);
         if (!switched.ok) {
             const actual = await readPointerTarget(runtimeDir);
-            if (actual === `releases/${baseline.releaseId}`) {
-                await clearMarker(state, marker);
-                return fail(`${switched.reason} The previous release is still current.`);
-            }
-            state.servingChanged = true;
-            return intervene(`${switched.reason} The pointer must be inspected.`);
+            // The gateway is stopped. If the pointer is still the baseline, put
+            // the site back; if it is new, start it and require inspection.
+            if (actual === `releases/${baseline.releaseId}`) return restoreBaseline(switched.reason);
+            state.pointerChanged = true;
+            return startAfterPointerChange(`${switched.reason} The pointer must be inspected.`);
         }
-        state.servingChanged = true;
+        state.pointerChanged = true;
 
-        // ---- force-recreate the runtime, then start the gateway ----
+        // ---- force-recreate the runtime ----
         state.phase = "recreate";
-        // A long fetch happened since the eligibility check. If the tag moved
-        // in the meantime, a forced recreation would silently apply another
+        // The fetch and the switch happened since the eligibility check. If the
+        // tag moved, a forced recreation would silently apply another
         // already-pulled image under the same tag: refuse instead.
         const imageBeforeRecreate = await localImageId(deps.provider, declaredImage);
         if (!imageBeforeRecreate || imageBeforeRecreate !== runtime.details.imageId) {
-            return intervene("The runtime image reference changed during the deploy; the runtime was not recreated.");
+            return startAfterPointerChange("The runtime image reference changed during the deploy; the runtime was not recreated.");
         }
         const recreated = await deps.provider.recreateService({
             ...files,
@@ -434,13 +625,21 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
             onOutput,
         });
         if (recreated.terminationUnconfirmed) return fail("The runtime recreation could not be confirmed to have exited.", true);
-        if (recreated.code !== 0 || recreated.timedOut)
-            return intervene("The runtime was not recreated; the pointer is new and needs inspection.");
-        const runtimeAfter = await serviceIdentity(deps, target, manifest.services.runtime);
-        if (!runtimeAfter || runtimeAfter.containerId === runtime.containerId) {
-            return intervene("The runtime container identity did not change after recreation.");
+        if (recreated.code !== 0 || recreated.timedOut) {
+            return startAfterPointerChange("The runtime was not recreated; the pointer is new.");
         }
+        const runtimeAfter = await serviceIdentity(deps, target, manifest.services.runtime);
+        if (
+            !runtimeAfter ||
+            runtimeAfter.containerId === runtime.containerId ||
+            runtimeAfter.details.imageId !== runtime.details.imageId ||
+            runtimeAfter.details.image !== declaredImage
+        ) {
+            return startAfterPointerChange("The runtime container identity or image did not match after recreation.");
+        }
+        activatedRuntimeId = runtimeAfter.containerId;
 
+        // ---- start the gateway and confirm its identity ----
         state.phase = "start";
         const started = await deps.provider.startService({
             ...files,
@@ -463,13 +662,28 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
             return { kind: "deployed", releaseId: fetched.releaseId, priorReleaseId: baseline.releaseId };
         }
 
-        // ---- probed rollback to the verified baseline ----
+        // ---- probed rollback: repeat the full activation sequence ----
         state.phase = "rollback";
-        const restored = await switchPointer(runtimeDir, baseline.releaseId);
-        if (!restored.ok) return intervene(`${restored.reason} The served revision is unknown.`);
+        // The gateway is open on the new release. Never switch the pointer
+        // underneath live traffic: stop it, switch, recreate the runtime, start
+        // it, then probe, exactly like the activation.
         const imageBeforeRollback = await localImageId(deps.provider, declaredImage);
         if (!imageBeforeRollback || imageBeforeRollback !== runtime.details.imageId) {
-            return intervene("The runtime image reference changed before the rollback; the runtime was not recreated.");
+            return intervene("The runtime image reference changed before the rollback; nothing was switched.");
+        }
+        const rollbackStop = await stopGateway();
+        if (!rollbackStop.ok) {
+            if (rollbackStop.unconfirmed) return fail("The rollback gateway stop could not be confirmed to have exited.", true);
+            return startAfterPointerChange("The rollback could not stop the gateway; the site is still on the new release.");
+        }
+        const restored = await switchPointer(runtimeDir, baseline.releaseId);
+        const pointerAfterRollback = await readPointerTarget(runtimeDir);
+        if (!restored.ok && pointerAfterRollback !== `releases/${baseline.releaseId}`) {
+            return startAfterPointerChange(`${restored.reason} The pointer could not be returned to the baseline.`);
+        }
+        const imageBeforeRollbackRecreate = await localImageId(deps.provider, declaredImage);
+        if (!imageBeforeRollbackRecreate || imageBeforeRollbackRecreate !== runtime.details.imageId) {
+            return startAfterPointerChange("The runtime image reference changed during the rollback; the runtime was not recreated.");
         }
         const recreatedBack = await deps.provider.recreateService({
             ...files,
@@ -479,7 +693,19 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
             onOutput,
         });
         if (recreatedBack.terminationUnconfirmed) return fail("The rollback recreation could not be confirmed to have exited.", true);
-        if (recreatedBack.code !== 0 || recreatedBack.timedOut) return intervene("The rollback could not recreate the runtime.");
+        if (recreatedBack.code !== 0 || recreatedBack.timedOut) {
+            return startAfterPointerChange("The rollback could not recreate the runtime.");
+        }
+        const runtimeBack = await serviceIdentity(deps, target, manifest.services.runtime);
+        const previousRuntimeId = activatedRuntimeId ?? runtime.containerId;
+        if (
+            !runtimeBack ||
+            runtimeBack.containerId === previousRuntimeId ||
+            runtimeBack.details.imageId !== runtime.details.imageId ||
+            runtimeBack.details.image !== declaredImage
+        ) {
+            return startAfterPointerChange("The runtime container identity or image did not match after the rollback recreation.");
+        }
         const startedBack = await deps.provider.startService({
             ...files,
             service: manifest.services.gateway,
@@ -488,6 +714,10 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
         });
         if (startedBack.terminationUnconfirmed) return fail("The rollback gateway start could not be confirmed to have exited.", true);
         if (startedBack.code !== 0 || startedBack.timedOut) return intervene("The rollback could not start the gateway.");
+        const gatewayBack = await serviceIdentity(deps, target, manifest.services.gateway);
+        if (!gatewayBack || gatewayBack.containerId !== gateway.containerId) {
+            return intervene("The gateway container identity changed during the rollback.");
+        }
         const servedBaselineAgain = await probeFor(deps, port);
         if (servedBaselineAgain === baseline.releaseId) {
             await clearMarker(state, marker);
@@ -501,12 +731,25 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
         return intervene(`The probe did not confirm the rolled-back release ${baseline.releaseId}.`);
     } catch (error) {
         const reason = error instanceof Error ? error.message : "The deploy failed unexpectedly.";
-        if (state.servingChanged) {
+        // From the first stop attempt the site may be down or split between the
+        // pointer and the PHP process. Restore the baseline when it is still the
+        // target; otherwise start what there is and require inspection. The
+        // marker is never cleared by an exception.
+        try {
+            if (state.gatewayStopAttempted && plan) {
+                const actual = await readPointerTarget(plan.runtimeDir);
+                if (actual === `releases/${plan.baselineRelease}`) return await restoreBaseline(reason);
+                return await startAfterPointerChange(reason);
+            }
+        } catch {
+            /* fall through to the marker-preserving result */
+        }
+        if (state.gatewayStopAttempted || state.pointerChanged) {
             await writeMarker("intervention").catch(() => {});
             return { kind: "intervention", reason, phase: state.phase, ...(state.releaseId ? { releaseId: state.releaseId } : {}) };
         }
-        // Nothing was switched: the attempt marker, if any, is not evidence of
-        // an ambiguous serving state and is removed.
+        // Nothing was stopped or switched: the attempt marker, if any, is not
+        // evidence of an ambiguous serving state and is removed.
         await clearMarker(state, marker);
         return { kind: "failed", reason, phase: state.phase };
     }

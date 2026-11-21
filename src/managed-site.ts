@@ -20,6 +20,8 @@ export const MANAGED_SITE_PATH_MAX = 255;
 export const MANAGED_SITE_GIT_URL_MAX = 2048;
 export const MANAGED_SITE_GIT_REF_MAX = 255;
 export const MANAGED_SITE_GENERATION_MAX = 32;
+/** Attempt ids name a staging directory and a pending deploy marker. */
+export const MANAGED_SITE_ATTEMPT_ID = /^[a-z0-9]{8,40}$/;
 export const MANAGED_SITE_OWNERS = ["opt-in", "managed"] as const;
 export type ManagedSiteOwner = (typeof MANAGED_SITE_OWNERS)[number];
 
@@ -82,6 +84,11 @@ const JSON_MAX_DEPTH = 16;
  */
 export function isManagedSiteReleaseId(value: string): boolean {
     return RELEASE_ID.test(value);
+}
+
+/** A bounded attempt id: lowercase letters and digits, 8-40 characters. */
+export function isManagedSiteAttemptId(value: string): boolean {
+    return MANAGED_SITE_ATTEMPT_ID.test(value);
 }
 
 /** Relative directory of one published release below the stack directory. */

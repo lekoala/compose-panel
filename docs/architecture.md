@@ -145,7 +145,10 @@ helper, prompt, redirect or protocol beyond HTTPS), depth-1 fetch, full-SHA
 resolution, `ls-tree` refusal of symlinks and gitlinks before checkout, a
 bounded staged-tree walk and one rename into `site/runtime/releases/<sha>`.
 `src/managed-site-deploy.ts` owns the phase machine and the rollback decision
-table; `src/managed-site-probe.ts` is the fixed loopback probe.
+table; `src/managed-site-probe.ts` is the fixed loopback probe. The Git adapter
+caps the transfer while it runs (object-store polling and a process abort) and
+preflights free space before the fetch and the checkout, not only the final
+tree.
 
 The route is `POST /stacks/<name>/deploy`, exposed only when
 `COMPOSE_PANEL_MANAGED_SITES_ENABLED=true` **and** the manifest is valid
@@ -159,16 +162,22 @@ completed metadata, revision script and probe agree) before fetching anything.
 
 A deploy stops the gateway, switches `current` by one rename, force-recreates
 the runtime service and starts the gateway. It verifies that the runtime
-container ID changed and the gateway container ID did not, then probes
-`/.compose-panel/revision` until one 41-byte body names the intended SHA. A
-failed verification returns the pointer to the verified baseline, recreates the
-runtime, starts the gateway and probes again; it reports `rolled back` only when
-that probe succeeds. The attempt marker under `site/private/` is written before
-the first stop and removed on a confirmed terminal outcome. While it exists,
-Up, Down, Start, Stop, Restart, rollout, app actions, raw save and a new deploy
-are refused; reads, logs and the probe remain available, and only an explicit
-acknowledgement clears it. There is no queue, no replay and no automatic
-retry.
+container ID changed, that its image ID is still the running one, and that the
+gateway container ID did not. It then probes `/.compose-panel/revision` until
+one 41-byte body names the intended SHA. A failed verification repeats the whole
+sequence in reverse: stop and confirm the gateway, return the pointer, recreate
+the runtime, start the gateway and probe the baseline. It reports `rolled back`
+only when that probe succeeds. The attempt marker under `site/private/` is
+written before the first stop and removed only when the gateway is confirmed
+running on the release it must serve; an exception after the stop restarts the
+gateway and proves the baseline or reports an intervention, never a silent
+success. While the marker exists, Up, Down, Start, Stop, Restart, rollout, app
+actions, raw save and a new deploy are refused. The admission hook runs under
+the per-stack lock, so a request that passed an earlier check cannot slip in
+after an incident; the acknowledgement also takes the lock and is bound to the
+attempt ID the page displayed. Reads, logs and the probe remain available, and
+only that explicit acknowledgement clears the marker. There is no queue, no
+replay and no automatic retry.
 
 ## Restart semantics
 - Browser disconnect ≠ cancellation.

@@ -131,24 +131,41 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   array, never a shell, and an environment built from an allow-list: no
   inherited system/global config, hooks, credential helper, askpass, terminal
   prompt, redirects or protocol beyond HTTPS. The fetch is depth-1 and
-  non-recursive; time, output, files and bytes are bounded. The checkout is
-  content: it is never executed, sourced, mounted into the panel or read as
-  Compose/env input. Symlinks, gitlinks/submodules, `.git` entries and a
-  repository-supplied `.compose-panel` are refused. Publication is one rename
-  into an immutable release; only the attempt's own staging directory is
-  removed, after comparing the inode created by the attempt.
+  non-recursive; time, output, files and bytes are bounded. The transfer itself
+  is capped: the Git object store is polled while the fetch runs and the process
+  group is aborted when the downloaded bytes exceed the limit. A free-space
+  preflight runs before the fetch and again before the checkout with the exact
+  tree size. The checkout is content: it is never executed, sourced, mounted
+  into the panel or read as Compose/env input. Symlinks, gitlinks/submodules,
+  `.git` entries and a repository-supplied `.compose-panel` are refused.
+  Publication is one rename into an immutable release; only the attempt's own
+  staging directory is removed, after comparing the inode created by the
+  attempt.
 - The probe is one bounded `GET http://127.0.0.1:<published>/.compose-panel/revision`
   with no redirects, no DNS and no TLS; it must answer HTTP 200 with exactly 40
   lowercase hex characters and one newline. The port is the validated loopback
   binding of the gateway container, never a request value.
 - The pointer switch is one rename. The runtime is always force-recreated after
-  a switch; the gateway container must keep its identity. A failed probe rolls
-  back only when service identity and process state are certain, and the
+  a switch; the gateway container must keep its identity, the runtime container
+  ID must change, and its image ID must still be the running one. A failed probe
+  rolls back only when service identity and process state are certain, and the
+  rollback repeats the whole activation sequence: stop and confirm the gateway,
+  switch the pointer, recreate the runtime, start the gateway and probe. The
+  same container and image checks apply after the rollback recreation, and the
   rollback is probed before it is reported.
+- From the first stop attempt, the attempt marker is kept until the gateway is
+  running again and the probe confirms the release it must serve. A failure
+  before the switch restarts the gateway and proves the baseline before a plain
+  failure is reported; otherwise the result is an intervention. An exception
+  after the stop follows the same rule and never clears the marker while the
+  site may be down.
 - An unconfirmed command is `unknown` and keeps the lock. A crash may leave a
   staging directory, a release, a switched pointer or an attempt marker. The
-  marker makes every modifying operation on that stack refuse until an explicit
-  operator acknowledgement; nothing is resumed, replayed or retried.
+  marker is checked again under the stack lock before every modifying operation,
+  so a request that passed an earlier check cannot slip in after an incident.
+  The acknowledgement takes the same lock, re-reads the marker and is bound to
+  the attempt ID the page displayed; a mismatch refuses. Nothing is resumed,
+  replayed or retried.
 - The disposable two-commit deployment suite on its own daemon is the
   integration gate; it never runs against a host daemon or in unattended CI.
 

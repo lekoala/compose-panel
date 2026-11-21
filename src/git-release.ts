@@ -9,7 +9,7 @@
  * never mounted into the panel.
  */
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, rename, rm, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, rename, rm, statfs, unlink } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import { isAbsolute, join, normalize, sep } from "node:path";
 import { runCommand, type CommandResult, type RunOptions } from "./docker.ts";
@@ -23,7 +23,13 @@ import {
     FileSafetyError,
     type DirIdentity,
 } from "./fs-safe.ts";
-import { isManagedSiteReleaseId, isValidDeployGitUrl, isValidDeployRef, MANAGED_SITE_PATHS } from "./managed-site.ts";
+import {
+    isManagedSiteReleaseId,
+    isValidDeployGitUrl,
+    isValidDeployRef,
+    isManagedSiteAttemptId,
+    MANAGED_SITE_PATHS,
+} from "./managed-site.ts";
 
 export const GIT_RELEASE_PHASES = ["layout", "fetch", "resolve", "inspect", "checkout", "prepare", "publish"] as const;
 export type GitReleasePhase = (typeof GIT_RELEASE_PHASES)[number];
@@ -35,6 +41,10 @@ export interface GitReleaseLimits {
     commandTimeoutMs: number;
     /** Captured Git diagnostics; the operation view never receives the tree. */
     maxOutputBytes: number;
+    /** Bytes allowed in the fetched pack/objects while the transfer runs. */
+    maxDownloadBytes: number;
+    /** Poll interval of the transfer monitor; tests use a short one. */
+    monitorIntervalMs: number;
     /** Files allowed in one release. */
     maxFiles: number;
     /** Total bytes allowed in one release. */
@@ -47,10 +57,15 @@ export const DEFAULT_GIT_RELEASE_LIMITS: GitReleaseLimits = {
     fetchTimeoutMs: 120_000,
     commandTimeoutMs: 30_000,
     maxOutputBytes: 64 * 1024,
+    maxDownloadBytes: 128 * 1024 * 1024,
+    monitorIntervalMs: 200,
     maxFiles: 20_000,
     maxTreeBytes: 256 * 1024 * 1024,
     maxDepth: 64,
 };
+
+/** Free space kept beyond a bounded transfer or checkout. */
+const FREE_SPACE_HEADROOM = 64 * 1024 * 1024;
 
 export type GitRunner = (args: string[], options: RunOptions) => Promise<CommandResult>;
 
@@ -94,7 +109,6 @@ export type GitReleaseFailure = {
 
 export type GitReleaseResult = GitReleaseSuccess | GitReleaseFailure;
 
-const ATTEMPT_ID = /^[a-z0-9]{8,40}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const REVISION_BYTES_MAX = 1024;
 const METADATA_BYTES_MAX = 4096;
@@ -266,7 +280,7 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
             cleanup: "none",
         };
     }
-    if (!ATTEMPT_ID.test(request.attemptId)) {
+    if (!isManagedSiteAttemptId(request.attemptId)) {
         return { ok: false, phase: "layout", reason: "The attempt identifier is not valid.", unconfirmed: false, cleanup: "none" };
     }
     if (!isValidDeployGitUrl(request.url) || !isValidDeployRef(request.ref)) {
@@ -349,32 +363,61 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
         });
         if (!commandSucceeded(init)) return fail("The staging repository could not be created.", diagnostic(init));
 
-        const fetched = await runGit(
-            runner,
-            [
-                ...config,
-                "-C",
-                repo,
-                "fetch",
-                "--quiet",
-                "--depth",
-                "1",
-                "--no-tags",
-                "--no-recurse-submodules",
-                "--",
-                request.url,
-                request.ref,
-            ],
-            {
-                cwd: attemptDir,
-                env,
-                timeoutMs: limits.fetchTimeoutMs,
-                maxBytes: limits.maxOutputBytes,
-                onChunk: request.onOutput,
-                signal: request.signal,
+        const freeBeforeFetch = await availableBytes(staging);
+        if (freeBeforeFetch !== null && freeBeforeFetch < limits.maxDownloadBytes + FREE_SPACE_HEADROOM) {
+            return fail("The release filesystem does not have enough free space for a bounded fetch.");
+        }
+
+        // Bound the transfer itself, not only the final tree: the pack can fill
+        // the staging directory long before the checkout is inspected.
+        const transfer = new AbortController();
+        const forwardAbort = () => transfer.abort();
+        request.signal?.addEventListener("abort", forwardAbort, { once: true });
+        let downloadExceeded = false;
+        const monitor = startTransferMonitor(
+            gitDir,
+            limits.maxDownloadBytes,
+            () => {
+                downloadExceeded = true;
+                transfer.abort();
             },
+            limits.monitorIntervalMs,
         );
+        let fetched: CommandResult;
+        try {
+            fetched = await runGit(
+                runner,
+                [
+                    ...config,
+                    "-C",
+                    repo,
+                    "fetch",
+                    "--quiet",
+                    "--depth",
+                    "1",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    "--",
+                    request.url,
+                    request.ref,
+                ],
+                {
+                    cwd: attemptDir,
+                    env,
+                    timeoutMs: limits.fetchTimeoutMs,
+                    maxBytes: limits.maxOutputBytes,
+                    onChunk: request.onOutput,
+                    signal: transfer.signal,
+                },
+            );
+        } finally {
+            monitor.stop();
+            request.signal?.removeEventListener("abort", forwardAbort);
+        }
         unconfirmed ||= fetched.terminationUnconfirmed === true;
+        if (downloadExceeded) {
+            return fail("The download exceeded the pilot's byte limit; the attempt was stopped.", diagnostic(fetched));
+        }
         if (fetched.timedOut) return fail("The fetch timed out; nothing was published.", diagnostic(fetched));
         if (fetched.terminationUnconfirmed === true) return fail("The Git fetch could not be confirmed to have exited.");
         if (fetched.code !== 0) return fail("The configured branch could not be fetched.", diagnostic(fetched));
@@ -419,6 +462,10 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
         if (!treeFacts.ok) return fail(treeFacts.reason);
 
         phase = "checkout";
+        const freeBeforeCheckout = await availableBytes(staging);
+        if (freeBeforeCheckout !== null && freeBeforeCheckout < treeFacts.bytes + FREE_SPACE_HEADROOM) {
+            return fail("The release filesystem does not have enough free space for the checked-out tree.");
+        }
         await mkdir(tree, { mode: 0o755 });
         const checkedOut = await runGit(
             runner,
@@ -518,6 +565,10 @@ function gitConfiguration(hooks: string): string[] {
         "advice.detachedHead=false",
         "-c",
         "fetch.recurseSubmodules=false",
+        "-c",
+        "fetch.unpackLimit=1",
+        "-c",
+        "transfer.unpackLimit=1",
         "-c",
         "submodule.recurse=false",
         "-c",
@@ -709,6 +760,80 @@ async function setMode(path: string, mode: number): Promise<void> {
         if (process.platform !== "linux") return;
         throw error;
     }
+}
+
+/** Free bytes on the filesystem holding `path`, or null when unavailable. */
+async function availableBytes(path: string): Promise<number | null> {
+    try {
+        const stats = await statfs(path);
+        return stats.bavail * stats.bsize;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Poll the Git directory during a transfer. Once the bytes exceed the cap, the
+ * controller is aborted and `runCommand` kills the process group. The walk is
+ * bounded and only touches `.git`, so it stays cheap.
+ */
+function startTransferMonitor(root: string, maxBytes: number, onExceed: () => void, intervalMs: number): { stop: () => void } {
+    let stopped = false;
+    let running = false;
+    const check = async () => {
+        if (stopped || running) return;
+        running = true;
+        try {
+            const size = await directoryBytes(root, maxBytes);
+            if (size > maxBytes) {
+                stopped = true;
+                onExceed();
+            }
+        } catch {
+            /* a transient read error is retried on the next tick */
+        } finally {
+            running = false;
+        }
+    };
+    const timer = setInterval(() => void check(), Math.max(10, intervalMs));
+    void check();
+    return {
+        stop() {
+            stopped = true;
+            clearInterval(timer);
+        },
+    };
+}
+
+/** Recursive size, stopping as soon as the cap is exceeded. */
+async function directoryBytes(root: string, limit: number): Promise<number> {
+    let total = 0;
+    let visited = 0;
+    const pending = [root];
+    while (pending.length > 0) {
+        const dir = pending.pop()!;
+        let entries;
+        try {
+            entries = await readdir(dir, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+        for (const entry of entries) {
+            const full = join(dir, entry.name);
+            const info = await lstat(full).catch(() => null);
+            if (!info) continue;
+            if (info.isDirectory()) {
+                pending.push(full);
+                continue;
+            }
+            if (!info.isFile()) continue;
+            total += info.size;
+            if (total > limit) return total;
+        }
+        visited++;
+        if (visited > 10_000) return total;
+    }
+    return total;
 }
 
 function isCanonicalAbsolute(value: string): boolean {

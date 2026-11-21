@@ -334,6 +334,47 @@ describe("fetchAndPublishGitRelease", () => {
         expect(await readdir(join(stack, "site", "runtime", "releases"))).toEqual([]);
     });
 
+    test("stops a transfer that exceeds the download cap and cleans up", async () => {
+        const stack = await makeStack();
+        let aborted = false;
+        const base = fakeRunner();
+        const runner: GitRunner = async (args, options) => {
+            if (args.includes("fetch")) {
+                const index = args.indexOf("-C");
+                const repo = args[index + 1]!;
+                await mkdir(join(repo, ".git", "objects", "pack"), { recursive: true });
+                await writeFile(join(repo, ".git", "objects", "pack", "tmp.pack"), Buffer.alloc(4096));
+                await new Promise<void>((resolve) => {
+                    const signal = options?.signal;
+                    if (signal?.aborted) {
+                        aborted = true;
+                        resolve();
+                        return;
+                    }
+                    signal?.addEventListener(
+                        "abort",
+                        () => {
+                            aborted = true;
+                            resolve();
+                        },
+                        { once: true },
+                    );
+                });
+                return result({ code: -1, timedOut: true });
+            }
+            return base(args, options);
+        };
+        const outcome = await deploy(stack, runner, { limits: { maxDownloadBytes: 1024, monitorIntervalMs: 10 } });
+        expect(outcome.ok).toBe(false);
+        if (outcome.ok) return;
+        expect(outcome.phase).toBe("fetch");
+        expect(outcome.reason).toContain("byte limit");
+        expect(aborted).toBe(true);
+        expect(outcome.cleanup).toBe("removed");
+        expect(await readdir(join(stack, "site", "staging"))).toEqual([]);
+        expect(await readdir(join(stack, "site", "runtime", "releases"))).toEqual([]);
+    });
+
     test("reports an unconfirmed fetch instead of a plain failure", async () => {
         const stack = await makeStack();
         const outcome = await deploy(stack, fakeRunner({ fetch: result({ code: -1, timedOut: true, terminationUnconfirmed: true }) }));
@@ -407,6 +448,8 @@ describe("fetchAndPublishGitRelease", () => {
         expect(fetch.args).toContain("--depth");
         expect(fetch.args).toContain("1");
         expect(fetch.args).toContain("--no-recurse-submodules");
+        expect(fetch.args).toContain("fetch.unpackLimit=1");
+        expect(fetch.args).toContain("transfer.unpackLimit=1");
         expect(fetch.args.slice(-2)).toEqual([URL, REF]);
         expect(fetch.args).toContain("protocol.allow=never");
         expect(fetch.args).toContain("protocol.https.allow=always");

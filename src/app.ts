@@ -97,6 +97,7 @@ import { AuditLog, AuditError } from "./audit.ts";
 import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
 import { createComposeProvider, COMPOSE_LOG_TAIL_OPTIONS, isComposeServiceName, type ComposeProvider } from "./compose-provider.ts";
 import {
+    isManagedSiteAttemptId,
     MANAGED_SITE_MANIFEST_FILE,
     MANAGED_SITE_MANIFEST_MAX_BYTES,
     parseManagedSiteManifest,
@@ -105,7 +106,14 @@ import {
 } from "./managed-site.ts";
 import { checkManagedSiteProfile } from "./managed-site-profile.ts";
 import { fetchAndPublishGitRelease } from "./git-release.ts";
-import { managedSiteAttemptPath, pendingDeployAttempt, runManagedSiteDeploy, type ManagedSiteDeployResult } from "./managed-site-deploy.ts";
+import {
+    managedSiteAttemptPath,
+    pendingDeployAttempt,
+    readPendingDeployAttempt,
+    runManagedSiteDeploy,
+    type ManagedSiteDeployResult,
+    type PendingDeployAttemptRead,
+} from "./managed-site-deploy.ts";
 import { createManagedSiteProbe } from "./managed-site-probe.ts";
 import { buildAccessReport, type Access } from "./access.ts";
 import type { DockerRunner } from "./docker.ts";
@@ -432,6 +440,17 @@ export function createApp(options: AppOptions): App {
         // image store: a verdict recorded before it cannot describe any stack
         // afterwards (a tag can be shared, ADR 0041).
         onBegin: () => imageCheck.imagesChanged(),
+        // Authoritative pending-deploy check, under the lock. The route-level
+        // check cannot see a marker that appears while the request awaits Docker.
+        admit: async (stack) => {
+            if (!config.managedSitesEnabled) return null;
+            try {
+                const stackDir = await managedSiteStackDir(stack);
+                return (await pendingDeployAttempt(stackDir)) ? MANAGED_SITE_PENDING_MESSAGE : null;
+            } catch {
+                return "The pending deploy state of this stack could not be checked, so nothing was run.";
+            }
+        },
         // The outcome is recorded when the action ends, even if nobody watches it.
         onFinish: (operation) => {
             imageCheck.imagesChanged();
@@ -3280,47 +3299,93 @@ export function createApp(options: AppOptions): App {
         if (form === null) return tooLarge(csrf, back);
         if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
         if (!sessions.isActive(session.id)) return sessionEnded();
-        if (operations.isRunning(name)) {
+        const attempt = (form.get("attempt") ?? "").trim();
+        if (!isManagedSiteAttemptId(attempt)) {
             return renderStackDetail(
                 name,
                 csrf,
                 {
                     kind: "error",
-                    text: "An operation is still running for this stack. Wait for it to finish before acknowledging a deploy.",
+                    text: "This page is out of date. Reload it, inspect the pending deploy and acknowledge the attempt it shows.",
                 },
                 409,
             );
         }
-        const marker = managedSiteAttemptPath(await managedSiteStackDir(name));
-        let info;
+        const stackDir = await managedSiteStackDir(name);
+        const marker = managedSiteAttemptPath(stackDir);
         try {
-            info = await lstat(marker);
+            // The acknowledgement takes the same lock as every mutation and is
+            // bound to the attempt id the operator saw.
+            const task = locks.run(name, async () => {
+                if (shuttingDown) throw new OperationsDisabledError();
+                if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                const before = await lstat(marker).catch((error: unknown) => {
+                    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+                    throw error;
+                });
+                if (!before) return "none" as const;
+                if (before.isDirectory()) throw new StackError("The deploy marker is not a file. Inspect it on the host instead.", 409);
+                const read = await readPendingDeployAttempt(stackDir);
+                if (read.kind === "none") return "none" as const;
+                if (read.kind === "unreadable") {
+                    throw new StackError("The deploy marker cannot be read as a regular file. Inspect it on the host.", 409);
+                }
+                if (read.attempt.attemptId !== attempt) {
+                    throw new StackError(
+                        "The pending deploy attempt changed since this page was rendered. Reload it and inspect the attempt before acknowledging it.",
+                        409,
+                    );
+                }
+                const after = await lstat(marker).catch(() => null);
+                if (!after || after.dev !== before.dev || after.ino !== before.ino) {
+                    throw new StackError("The deploy marker changed while it was being read. Inspect it on the host.", 409);
+                }
+                await unlink(marker);
+                return "cleared" as const;
+            });
+            saves.add(task);
+            let state: "none" | "cleared";
+            try {
+                state = await task;
+            } finally {
+                saves.delete(task);
+            }
+            if (state === "cleared") {
+                await recordAudit({
+                    event: "deploy",
+                    result: "acknowledged",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    action: "deploy",
+                    detail: `operator cleared attempt ${attempt} after inspection`,
+                });
+            }
+            return redirect(back, 303);
         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") return redirect(back, 303);
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({
+                    event: "deploy",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    action: "deploy",
+                    detail: error.message,
+                });
+                return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was changed.` }, 409);
+            }
             throw error;
         }
-        if (info.isDirectory()) throw new StackError("The deploy marker is not a file. Inspect it on the host instead.", 409);
-        await unlink(marker);
-        await recordAudit({
-            event: "deploy",
-            result: "acknowledged",
-            actor: clientKey(request, config),
-            stack: name,
-            action: "deploy",
-            detail: "operator cleared the pending attempt marker after inspection",
-        });
-        return redirect(back, 303);
     }
 
-    type ManagedSiteCard = { manifest: ManagedSiteManifest; pending: boolean } | { reason: string; pending: boolean };
+    type ManagedSiteCard = { manifest?: ManagedSiteManifest; reason?: string; pending: PendingDeployAttemptRead };
 
     async function managedSiteCard(name: string): Promise<ManagedSiteCard | null> {
         try {
             const stackDir = await managedSiteStackDir(name);
-            // An ordinary stack has no manifest: no site card, no warning.
+            const pending = await readPendingDeployAttempt(stackDir);
+            // An ordinary stack has no manifest and no marker: no card at all.
             const file = await readFileSafe(join(stackDir, MANAGED_SITE_MANIFEST_FILE), MANAGED_SITE_MANIFEST_MAX_BYTES);
-            if (!file) return null;
-            const pending = await pendingDeployAttempt(stackDir);
+            if (!file) return pending.kind === "none" ? null : { reason: "This stack has no site manifest.", pending };
             const manifest = parseManagedSiteManifest(file.source);
             return manifest.ok ? { manifest: manifest.manifest, pending } : { reason: manifest.reason, pending };
         } catch {
@@ -3331,16 +3396,22 @@ export function createApp(options: AppOptions): App {
     function managedSiteSection(card: ManagedSiteCard | null, name: string, csrf: string, busy: boolean): string {
         if (!card) return "";
         const href = `/stacks/${encodeURIComponent(name)}`;
-        if (card.pending) {
+        if (card.pending.kind === "unreadable") {
+            return `<section class="card"><h2>Managed site</h2>${note(
+                "warn",
+                `${MANAGED_SITE_PENDING_MESSAGE} The marker itself could not be read; inspect it on the host before changing anything.`,
+            )}</section>`;
+        }
+        if (card.pending.kind === "pending") {
             return (
                 `<section class="card"><h2>Managed site</h2>` +
                 note("warn", MANAGED_SITE_PENDING_MESSAGE) +
-                `<form method="post" action="${href}/deploy/acknowledge"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit">Acknowledge and clear the marker</button></form>` +
+                `<form method="post" action="${href}/deploy/acknowledge"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="attempt" value="${escapeHtml(card.pending.attempt.attemptId)}"><button class="btn" type="submit">Acknowledge attempt ${escapeHtml(card.pending.attempt.attemptId)}</button></form>` +
                 `</section>`
             );
         }
-        if (!("manifest" in card)) {
-            return `<section class="card"><h2>Managed site</h2>${note("warn", `The site manifest cannot be used: ${card.reason}`)}</section>`;
+        if (!card.manifest) {
+            return `<section class="card"><h2>Managed site</h2>${note("warn", `The site manifest cannot be used: ${card.reason ?? "unknown reason"}`)}</section>`;
         }
         const manifest = card.manifest;
         return (

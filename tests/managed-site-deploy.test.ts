@@ -9,11 +9,14 @@ import { revisionScript } from "../src/git-release.ts";
 import {
     MANAGED_SITE_PROBE_PATH,
     managedSiteAttemptPath,
+    parseDeployAttempt,
     parseProbeAnswer,
     pendingDeployAttempt,
     readBaseline,
+    readPendingDeployAttempt,
     runManagedSiteDeploy,
     switchCurrent,
+    type ManagedSiteDeployAttempt,
     type ManagedSiteDeployDependencies,
     type ManagedSiteDeployResult,
     type ManagedSiteProbe,
@@ -28,6 +31,7 @@ const OTHER = "c".repeat(40);
 const WEB = "1".repeat(64);
 const PHP = "2".repeat(64);
 const PHP2 = "3".repeat(64);
+const PHP3 = "4".repeat(64);
 const IMAGE_ID = `sha256:${"a".repeat(64)}`;
 const IMAGE_REF = "php:8.3-fpm-alpine";
 
@@ -95,6 +99,7 @@ interface HarnessOptions {
     recreate?: CommandResult;
     localImageId?: string | null;
     recreateChangesId?: boolean;
+    recreatedImageId?: string;
     probeFor?: (target: string) => string | null;
     probeDown?: boolean;
     profileRefused?: string;
@@ -102,6 +107,7 @@ interface HarnessOptions {
     fetch?: (input: { manifest: ManagedSiteManifest; attemptId: string; onOutput: (chunk: string) => void }) => Promise<GitReleaseResult>;
     shutdown?: () => boolean;
     withPort?: boolean;
+    switchPointer?: (runtimeDir: string, releaseId: string) => Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
 interface Harness {
@@ -109,6 +115,7 @@ interface Harness {
     deps: ManagedSiteDeployDependencies;
     calls: string[];
     fetchCount: () => number;
+    switchedWhileRunning: () => boolean;
 }
 
 async function makeStack(): Promise<string> {
@@ -162,9 +169,12 @@ function makeHarness(stack: string, options: HarnessOptions = {}): Harness {
     const details = new Map<string, string>([
         [WEB, containerJson(WEB, "nginx:alpine", "sha256:" + "1".repeat(64), options.withPort !== false)],
         [PHP, containerJson(PHP, IMAGE_REF, IMAGE_ID)],
-        [PHP2, containerJson(PHP2, IMAGE_REF, IMAGE_ID)],
+        [PHP2, containerJson(PHP2, IMAGE_REF, options.recreatedImageId ?? IMAGE_ID)],
+        [PHP3, containerJson(PHP3, IMAGE_REF, options.recreatedImageId ?? IMAGE_ID)],
     ]);
     let fetchCount = 0;
+    let recreateCount = 0;
+    let switchedWhileRunning = false;
 
     const provider = {
         async runningContainerIds(input: { service: string }) {
@@ -192,7 +202,12 @@ function makeHarness(stack: string, options: HarnessOptions = {}): Harness {
             calls.push(`recreate:${input.service}:${input.force === true ? "force" : "plain"}`);
             const result = options.recreate ?? ok();
             if (result.code === 0 && !result.timedOut) {
-                running.set(input.service, options.recreateChangesId === false ? [PHP] : [PHP2]);
+                if (options.recreateChangesId === false) {
+                    running.set(input.service, [PHP]);
+                } else {
+                    recreateCount++;
+                    running.set(input.service, [recreateCount === 1 ? PHP2 : PHP3]);
+                }
             }
             return result;
         },
@@ -259,12 +274,15 @@ function makeHarness(stack: string, options: HarnessOptions = {}): Harness {
                 : { ok: false, reason: "The release is missing." };
         },
         switchPointer: async (_runtimeDir, releaseId) => {
+            calls.push(`switch:${releaseId}`);
+            if ((running.get("web") ?? []).length > 0) switchedWhileRunning = true;
+            if (options.switchPointer) return options.switchPointer(_runtimeDir, releaseId);
             await writePointer(stack, releaseId);
             return { ok: true };
         },
         readPointerTarget: async () => `releases/${await readPointer(stack)}`,
     };
-    return { stack, deps, calls, fetchCount: () => fetchCount };
+    return { stack, deps, calls, fetchCount: () => fetchCount, switchedWhileRunning: () => switchedWhileRunning };
 }
 
 async function currentTarget(stack: string): Promise<string> {
@@ -363,6 +381,48 @@ describe("pendingDeployAttempt", () => {
     });
 });
 
+describe("parseDeployAttempt", () => {
+    const valid: ManagedSiteDeployAttempt = {
+        version: 1,
+        siteId: "acme-shop",
+        attemptId: "attempt0001",
+        release: PRIOR,
+        prior: NEW,
+        phase: "switch",
+        outcome: "pending",
+    };
+
+    test("accepts the bounded attempt record", () => {
+        expect(parseDeployAttempt(JSON.stringify(valid))).toEqual(valid);
+    });
+
+    test("refuses a wrong version, phase, outcome, id or extra field", () => {
+        for (const value of [
+            { ...valid, version: 2 },
+            { ...valid, phase: "unknown" },
+            { ...valid, outcome: "done" },
+            { ...valid, attemptId: "short" },
+            { ...valid, release: "abc" },
+            { ...valid, prior: NEW.toUpperCase() },
+            { ...valid, siteId: "" },
+            { ...valid, extra: true },
+        ]) {
+            expect(parseDeployAttempt(JSON.stringify(value))).toBeNull();
+        }
+        expect(parseDeployAttempt("not json")).toBeNull();
+    });
+
+    test("distinguishes none, pending and unreadable markers", async () => {
+        const stack = await makeStack();
+        expect(await readPendingDeployAttempt(stack)).toEqual({ kind: "none" });
+        const marker = managedSiteAttemptPath(stack);
+        await writeFile(marker, JSON.stringify(valid));
+        expect(await readPendingDeployAttempt(stack)).toEqual({ kind: "pending", attempt: valid });
+        await writeFile(marker, "not json");
+        expect((await readPendingDeployAttempt(stack)).kind).toBe("unreadable");
+    });
+});
+
 describe("runManagedSiteDeploy", () => {
     test("deploys a new SHA in the documented order and removes the attempt marker", async () => {
         const harness = makeHarness(await makeStack());
@@ -372,7 +432,7 @@ describe("runManagedSiteDeploy", () => {
         const actions = harness.calls.filter(
             (call) => !call.startsWith("ps:") && !call.startsWith("inspect:") && !call.startsWith("image:") && !call.startsWith("probe:"),
         );
-        expect(actions).toEqual(["stop:web", "recreate:php:force", "start:web"]);
+        expect(actions).toEqual(["stop:web", `switch:${NEW}`, "recreate:php:force", "start:web"]);
         expect(await currentTarget(harness.stack)).toBe(`releases/${NEW}`);
         expect(await pendingDeployAttempt(harness.stack)).toBe(false);
     });
@@ -446,8 +506,32 @@ describe("runManagedSiteDeploy", () => {
         expect(result.kind).toBe("unknown");
     });
 
-    test("keeps the marker and does not switch when the gateway cannot be stopped", async () => {
+    test("clears the marker when a failed stop left the gateway serving the baseline", async () => {
         const harness = makeHarness(await makeStack(), { stop: ok({ code: 1 }) });
+        const result = await deploy(harness);
+        expect(result.kind).toBe("failed");
+        expect(await currentTarget(harness.stack)).toBe(`releases/${PRIOR}`);
+        expect(await pendingDeployAttempt(harness.stack)).toBe(false);
+    });
+
+    test("restores the gateway and clears the marker when the switch fails with the baseline still current", async () => {
+        const harness = makeHarness(await makeStack(), {
+            switchPointer: async () => ({ ok: false, reason: "The pointer switch failed." }),
+        });
+        const result = await deploy(harness);
+        expect(result.kind).toBe("failed");
+        expect(await currentTarget(harness.stack)).toBe(`releases/${PRIOR}`);
+        expect(harness.calls).toContain("start:web");
+        expect(await pendingDeployAttempt(harness.stack)).toBe(false);
+    });
+
+    test("keeps the marker when an exception after the stop leaves the gateway down", async () => {
+        const harness = makeHarness(await makeStack(), {
+            switchPointer: async () => {
+                throw new Error("unexpected pointer failure");
+            },
+            start: ok({ code: 1 }),
+        });
         const result = await deploy(harness);
         expect(result.kind).toBe("intervention");
         expect(await currentTarget(harness.stack)).toBe(`releases/${PRIOR}`);
@@ -472,9 +556,9 @@ describe("runManagedSiteDeploy", () => {
             return original(input);
         };
         const result = await deploy(harness);
-        expect(result.kind).toBe("intervention");
+        expect(result.kind).toBe("failed");
         expect(await currentTarget(stack)).toBe(`releases/${PRIOR}`);
-        expect(await pendingDeployAttempt(stack)).toBe(true);
+        expect(await pendingDeployAttempt(stack)).toBe(false);
     });
 
     test("keeps the new pointer and requires inspection when the runtime is not recreated", async () => {
@@ -494,6 +578,28 @@ describe("runManagedSiteDeploy", () => {
         expect(result.kind).toBe("intervention");
         expect(harness.calls.some((call) => call.startsWith("recreate:"))).toBe(false);
         expect(await currentTarget(harness.stack)).toBe(`releases/${NEW}`);
+        expect(await pendingDeployAttempt(harness.stack)).toBe(true);
+    });
+
+    test("does not treat a repeated SHA as a no-op when the pointer changed during the fetch", async () => {
+        const harness = makeHarness(await makeStack(), {
+            fetch: async () => ({ ok: true, releaseId: PRIOR, releasePath: "", metadataPath: "", reused: true }),
+        });
+        let reads = 0;
+        harness.deps.readBaseline = async () => {
+            reads++;
+            const releaseId = reads === 1 ? PRIOR : OTHER;
+            return { ok: true, releaseId, releasePath: join(harness.stack, "site", "runtime", "releases", releaseId) };
+        };
+        const result = await deploy(harness);
+        expect(result.kind).toBe("refused");
+        expect(harness.calls.some((call) => call.startsWith("stop:"))).toBe(false);
+    });
+
+    test("requires inspection when the recreated runtime image ID changed", async () => {
+        const harness = makeHarness(await makeStack(), { recreatedImageId: `sha256:${"b".repeat(64)}` });
+        const result = await deploy(harness);
+        expect(result.kind).toBe("intervention");
         expect(await pendingDeployAttempt(harness.stack)).toBe(true);
     });
 
@@ -521,6 +627,8 @@ describe("runManagedSiteDeploy", () => {
         expect(result).toEqual({ kind: "rolled-back", releaseId: NEW, priorReleaseId: PRIOR, servedReleaseId: PRIOR });
         expect(await currentTarget(harness.stack)).toBe(`releases/${PRIOR}`);
         expect(harness.calls.filter((call) => call === "recreate:php:force")).toHaveLength(2);
+        expect(harness.calls.filter((call) => call === "stop:web")).toHaveLength(2);
+        expect(harness.switchedWhileRunning()).toBe(false);
         expect(await pendingDeployAttempt(harness.stack)).toBe(false);
     });
 

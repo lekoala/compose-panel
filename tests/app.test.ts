@@ -4804,6 +4804,17 @@ describe("managed-site deploy gate", () => {
         deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
     });
 
+    const ATTEMPT = "attempt0001";
+    const VALID_MARKER = `${JSON.stringify({
+        version: 1,
+        siteId: "acme-shop",
+        attemptId: ATTEMPT,
+        release: "a".repeat(40),
+        prior: "b".repeat(40),
+        phase: "switch",
+        outcome: "pending",
+    })}\n`;
+
     async function managedRoot(): Promise<string> {
         const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-managed-")));
         const stack = join(dir, "demo");
@@ -4834,7 +4845,7 @@ describe("managed-site deploy gate", () => {
     test("refuses a deploy while an unacknowledged attempt marker exists", async () => {
         const dir = await managedRoot();
         await mkdir(join(dir, "demo", "site", "private"), { recursive: true });
-        await writeFile(join(dir, "demo", "site", "private", "deploy-attempt.json"), '{"phase":"switch"}\n');
+        await writeFile(join(dir, "demo", "site", "private", "deploy-attempt.json"), VALID_MARKER);
         const { provider, calls } = controllableProvider();
         const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir);
         const session = await login(app);
@@ -4862,12 +4873,40 @@ describe("managed-site deploy gate", () => {
         expect(await page.text()).toContain('action="/stacks/demo/deploy"');
 
         await mkdir(join(dir, "demo", "site", "private"), { recursive: true });
-        await writeFile(join(dir, "demo", "site", "private", "deploy-attempt.json"), '{"phase":"switch"}\n');
+        await writeFile(join(dir, "demo", "site", "private", "deploy-attempt.json"), VALID_MARKER);
         const pendingPage = await authed(app, "/stacks/demo", session);
         expect(pendingPage.status).toBe(200);
         const html = await pendingPage.text();
         expect(html).toContain('action="/stacks/demo/deploy/acknowledge"');
+        expect(html).toContain(`name="attempt" value="${ATTEMPT}"`);
         expect(html).not.toContain('action="/stacks/demo/deploy"');
+        await app.beginShutdown(100);
+    });
+
+    test("acknowledges only the attempt id shown on the page", async () => {
+        const dir = await managedRoot();
+        const privateDir = join(dir, "demo", "site", "private");
+        const marker = join(privateDir, "deploy-attempt.json");
+        await mkdir(privateDir, { recursive: true });
+        await writeFile(marker, VALID_MARKER);
+        const { provider } = controllableProvider();
+        const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const post = (fields: Record<string, string>) =>
+            authed(app, "/stacks/demo/deploy/acknowledge", session, {
+                method: "POST",
+                headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams(fields).toString(),
+            });
+
+        const wrong = await post({ csrf, attempt: "attempt9999" });
+        expect(wrong.status).toBe(409);
+        expect(await Bun.file(marker).exists()).toBe(true);
+
+        const cleared = await post({ csrf, attempt: ATTEMPT });
+        expect(cleared.status).toBe(303);
+        expect(await Bun.file(marker).exists()).toBe(false);
         await app.beginShutdown(100);
     });
 

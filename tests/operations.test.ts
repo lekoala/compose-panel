@@ -103,6 +103,53 @@ test("treats a timeout as unknown, never as success", async () => {
     expect(operation.timedOut).toBe(true);
 });
 
+test("refuses a mutation under the lock when admission reports a pending deploy", async () => {
+    let called = false;
+    const provider = fakeProvider({
+        up: async () => {
+            called = true;
+            return ok;
+        },
+    });
+    const manager = new OperationManager(new StackLocks(), provider, {
+        timeoutMs: 1000,
+        maxBytes: 10_000,
+        admit: async () => "A deploy attempt needs inspection.",
+    });
+    manager.start({ stack: "demo", action: "up", target });
+    await settle(manager);
+    const operation = manager.forStack("demo")!;
+    expect(called).toBe(false);
+    expect(operation.status).toBe("refused");
+    expect(operation.output).toContain("inspection");
+});
+
+test("refuses an app action under the lock when admission cannot check the stack", async () => {
+    let called = false;
+    const manager = new OperationManager(new StackLocks(), fakeProvider(), {
+        timeoutMs: 1000,
+        maxBytes: 10_000,
+        admit: async () => {
+            throw new Error("unreadable");
+        },
+    });
+    manager.startApp({
+        stack: "demo",
+        source: "toolbox",
+        script: "run",
+        label: "Run",
+        run: async () => {
+            called = true;
+            return ok;
+        },
+    });
+    await settle(manager);
+    const operation = manager.forStack("demo")!;
+    expect(called).toBe(false);
+    expect(operation.status).toBe("refused");
+    expect(operation.output).toContain("could not be checked");
+});
+
 test("rejects a second concurrent operation on the same stack", async () => {
     let release!: () => void;
     const gate = new Promise<CommandResult>((resolve) => {

@@ -86,7 +86,11 @@ explicit project, working directory and files.
   following, no submodule recursion, and a protocol allow-list limited to the
   declared transport. `HOME`, `XDG_CONFIG_HOME` and any Git cache point into a
   panel-owned private directory.
-- Time, downloaded bytes, disk use and output capture are bounded. Exhaustion
+- Time, downloaded bytes, disk use and output capture are bounded. The transfer
+  itself is capped, not only the final tree: the panel polls the Git object
+  store while the fetch runs and aborts the process group when the downloaded
+  bytes exceed the limit. A free-space preflight runs before the fetch and again
+  before the checkout (using the exact tree size from `ls-tree`). Exhaustion
   cleans up only the attempt's staging directory, after proving it belongs to
   the attempt.
 - The checkout is content, never configuration: it is not mounted into the
@@ -146,6 +150,12 @@ lock the stack, reserve the project
 - Stopping the gateway, switching the pointer and force-recreating the runtime
   is a brief serving interruption. It is documented, not hidden: the site is
   unavailable between stop and start.
+- From the first stop attempt, the attempt marker is kept until the gateway is
+  running again and the probe confirms the release it must serve. A failure
+  before the switch restarts the gateway and proves the baseline before the
+  operation reports a plain failure; if that cannot be confirmed, it reports an
+  intervention and keeps the marker. An exception after the stop follows the
+  same rule: it never clears the marker while the site may be down.
 - The pointer switch is one rename on the same filesystem. It is atomic; the
   running containers follow it because `runtime/` — not `current` — is mounted
   (ADR 0042).
@@ -166,10 +176,11 @@ lock the stack, reserve the project
 | Baseline disagreement (pointer, metadata or probe) | refuse before any fetch or stop; nothing changes |
 | Fetch, SHA resolution, bounds | clean up only the proven attempt; active release untouched |
 | Staging or publication | clean up only the proven attempt; active release untouched |
-| Gateway fails to stop, or its state is unconfirmed | `unknown`; keep the attempt marker; do not switch; require inspection |
-| Pointer rename | atomic: either the old or the new target; an unconfirmed rename is `unknown` |
-| Runtime recreation or gateway start | report the phase; the pointer may already be new, so the site is reported as requiring inspection, never as deployed |
-| Probe mismatch or failure | return the pointer to the verified baseline, force-recreate the runtime, start the gateway, probe the baseline SHA; report `rolled back` only when that probe succeeds |
+| Gateway fails to stop, or its state is unconfirmed | If the gateway still serves the baseline, confirm it and report a failure; otherwise `intervention` (or `unknown` when the command exit is unconfirmed). The marker is kept. |
+| Pointer rename | atomic: either the old or the new target; an unconfirmed rename is `unknown`. With the old target still current, restart the gateway and probe the baseline; otherwise start it and require inspection. |
+| Runtime recreation or gateway start | report the phase; the pointer may already be new, so the site is reported as requiring inspection, never as deployed. The gateway is restarted when the runtime could not be replaced, and the marker is kept. |
+| Probe mismatch or failure | repeat the full activation sequence in reverse: stop and confirm the gateway, return the pointer, force-recreate the runtime, start the gateway and probe the baseline. Report `rolled back` only when that probe succeeds; otherwise `intervention`. |
+| Runtime container identity or image ID after a recreation | the container ID must change and the image ID must still be the running one; otherwise restart the gateway and report an intervention. |
 | Any command whose exit cannot be confirmed | `unknown`; keep the stack lock; never retry automatically |
 | Panel crash at any point | `unknown`; no replay; the operator inspects |
 
@@ -190,10 +201,13 @@ reports them separately. An attempt record without a terminal outcome means
 automatically, and the stack lock is not assumed to be held by a dead process.
 While that marker exists, every modifying operation on the stack is refused —
 deploy, Up/Down/Start/Stop/Restart, raw save and application actions — while
-reads, logs and the probe remain available. An explicit operator
-acknowledgement after inspection clears the marker; a restart, a timer or a new
-request never does. Bounded attempt records are evidence, never a durable queue
-(ADR 0002, ADR 0006).
+reads, logs and the probe remain available. The admission check runs under the
+stack lock, so a request that passed an earlier check cannot slip in after a
+deploy left an incident. An explicit operator acknowledgement also takes the
+lock, re-reads the marker and is bound to the attempt ID the page displayed; a
+mismatch refuses. A restart, a timer or a new request never clears the marker.
+Bounded attempt records are evidence, never a durable queue (ADR 0002,
+ADR 0006).
 
 ### Boundaries
 
@@ -274,12 +288,15 @@ request never does. Bounded attempt records are evidence, never a durable queue
 ## Verification
 
 Unit tests: ref/SHA validation, full-SHA requirement, path containment and
-symlink/submodule refusal, staging layout, attempt-record bounds, probe parsing
+symlink/submodule refusal, staging layout, the transfer byte cap (process abort
+and cleanup), attempt-record bounds and strict parsing, probe parsing
 (status, exact 41-byte body, lowercase hex, timeout) and the rollback decision
 table (no-op only when proven active, rollback only when identity and state are
-certain). Provider tests cover the forced versus non-forced recreation argv and
-the service-scoped stop and start. Profile tests cover every service, not just
-the declared pair: parent binds, release aliases, `tmpfs` overlays,
+certain, rollback repeats stop/switch/recreate/start/probe, marker kept from the
+first stop until restoration is probed, acknowledgement bound to the attempt
+ID). Provider tests cover the forced versus non-forced recreation argv and the
+service-scoped stop and start. Profile tests cover every service, not just the
+declared pair: parent binds, release aliases, `tmpfs` overlays,
 `volumes_from`, non-canonical paths, external networks and the shared project
 network.
 

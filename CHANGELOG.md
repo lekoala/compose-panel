@@ -23,9 +23,16 @@
   baseline, an atomic pointer switch, a forced runtime recreation, a fixed
   41-byte revision probe, a probed rollback, an attempt marker that blocks
   modifying operations until acknowledged, and a loopback-only route behind
-  `COMPOSE_PANEL_MANAGED_SITES_ENABLED` (default off). The disposable
-  two-commit deployment suite on a real daemon is still the gate before the
-  pilot is called done.
+  `COMPOSE_PANEL_MANAGED_SITES_ENABLED` (default off). The Git adapter caps the
+  transfer while it runs (object-store polling and a process abort) and
+  preflights free space before the fetch and the checkout. The marker is kept
+  from the first stop until the gateway is confirmed serving the expected
+  release; a failure before the switch restarts it and proves the baseline, and
+  the rollback repeats stop/switch/recreate/start/probe with both the container
+  ID and image ID checked. Admission and acknowledgement run under the stack
+  lock, and the acknowledgement is bound to the displayed attempt ID. The
+  disposable two-commit deployment suite on a real daemon is still the gate
+  before the pilot is called done.
 
 - Targeted pull (ADR 0041): `Pull` accepts one validated service from the
   Services table, so a corrected runtime image can be downloaded on its own and

@@ -899,12 +899,16 @@ manifest is valid. One click, then the operation streams its phases:
    and the `/.compose-panel/revision` probe must agree on one full SHA.
 3. Fetch the configured branch (depth 1, HTTPS only) into
    `site/staging/<attempt-id>`, resolve the full SHA, verify the tree and
-   publish `site/runtime/releases/<sha>` by one rename.
+   publish `site/runtime/releases/<sha>` by one rename. The transfer is capped
+   while it runs; a repository that downloads too many bytes is stopped and the
+   attempt's staging directory is removed.
 4. Briefly stop the gateway, switch `current`, force-recreate the runtime,
-   start the gateway and probe until the body is exactly the intended SHA.
-5. On a failed probe, return to the baseline, recreate the runtime, start the
-   gateway and probe again. The result says **rolled back** only when that probe
-   succeeds.
+   start the gateway and probe until the body is exactly the intended SHA. The
+   runtime container ID must change, its image ID must still be the running one,
+   and the gateway container must keep its identity.
+5. On a failed probe, repeat the same sequence in reverse: stop and confirm the
+   gateway, return the pointer, recreate the runtime, start the gateway and
+   probe again. The result says **rolled back** only when that probe succeeds.
 
 A deployment of the SHA already served is a no-op only when the pointer,
 metadata and probe all agree. The site is unavailable between the gateway stop
@@ -913,11 +917,14 @@ and start; this is part of the pilot contract, not hidden.
 ### Failures and recovery
 
 The panel writes `site/private/deploy-attempt.json` before the first stop and
-removes it only on a confirmed terminal outcome. If it remains (crash, timeout,
-unconfirmed command), the stack page reports an unconfirmed outcome and
-**refuses Up, Down, Start, Stop, Restart, rollout, app actions, raw save and a
-new deploy** until you inspect the host and acknowledge it. Reads, logs and the
-probe stay available. Nothing is resumed or retried automatically.
+removes it only when the gateway is confirmed running on the release it must
+serve. If it remains (crash, timeout, unconfirmed command, failed restoration),
+the stack page reports an unconfirmed outcome and **refuses Up, Down, Start,
+Stop, Restart, rollout, app actions, raw save and a new deploy** until you
+inspect the host and acknowledge it. The refusal is checked again under the
+stack lock, so a request that passed an earlier check cannot slip in after the
+incident. Reads, logs and the probe stay available. Nothing is resumed or
+retried automatically.
 
 Inspect the three facts separately:
 
@@ -940,8 +947,10 @@ curl -fsS http://127.0.0.1:<port>/.compose-panel/revision
 ```
 
 When the pointer, Docker state and probe are what you intend, use
-**Acknowledge and clear the marker** on the stack page. Deleting the marker
-without inspecting the site only removes the guard.
+**Acknowledge attempt <id>** on the stack page. The form is bound to the attempt
+ID it displayed, takes the stack lock and re-reads the marker; a mismatch
+refuses. Deleting the marker without inspecting the site only removes the
+guard.
 
 ### Verification status
 
