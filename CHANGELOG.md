@@ -10,6 +10,11 @@
   refreshed even when the service declares `pull_policy: missing` (or `never`),
   which previously made the action succeed without downloading anything.
 
+- Lab: seed the disposable daemon from the outer Docker cache (`alpine:3.20`,
+  `registry:2`) and pull that base image only when it is missing. The lifecycle
+  suite no longer fails on a Docker Hub rate limit, and the pull scenarios use
+  images built inside the lab and served from a lab-local registry.
+
 - Docker maintenance (ADR 0040): the Server page can prune the build cache,
   dangling images or unused images older than a week, in three fixed scopes. No
   feature flag: the card is always available, but nothing runs without a

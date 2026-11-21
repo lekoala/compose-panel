@@ -89,6 +89,22 @@ for _ in $(seq 1 40); do docker info >/dev/null 2>&1 && break; sleep 0.5; done
 echo "Lab daemon: $(docker info --format '{{.Name}} {{.ServerVersion}} {{json .Labels}}')"
 if [ -n "$(docker ps -aq)" ]; then echo "The lab daemon is not empty; refusing." >&2; exit 1; fi
 
+# Seed the lab daemon from the outer daemon's cache. A suite that only needs
+# these base images must not fail because Docker Hub is rate-limiting an
+# unrelated pull, and `docker pull` revalidates against the registry even when
+# the image is already there — so the images have to be present before the
+# suites run. Best effort: a cold machine still pulls them at test time.
+seed_from_cache() {
+    for image in "$@"; do
+        if outer_docker image inspect "$image" >/dev/null 2>&1; then
+            if outer_docker save "$image" | docker load >/dev/null 2>&1; then
+                echo "Seeded from the outer cache: $image"
+            fi
+        fi
+    done
+}
+seed_from_cache "${COMPOSE_PANEL_LAB_BASE_IMAGE:-alpine:3.20}" "${COMPOSE_PANEL_LAB_REGISTRY_IMAGE:-registry:2}"
+
 # Copy the working tree into the Linux file system (/mnt/* is not one).
 mkdir "$LAB/app"
 rsync -a --exclude node_modules --exclude .git --exclude private "$SRC/" "$LAB/app/"

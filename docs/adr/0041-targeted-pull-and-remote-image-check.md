@@ -309,5 +309,10 @@ the contract is known before implementation.
   6. an htpasswd registry read through `DOCKER_CONFIG`, and `not found`, `401`
      and a forced timeout all reported as `unknown`; a `build:` service and a
      digest-pinned reference making no call.
+
+  The pull scenarios build their images inside the lab and serve them from a
+  lab-local registry, so a Docker Hub rate limit cannot fail them; the lab
+  daemon is seeded from the outer cache and the shared base image is pulled only
+  when missing.
 - Rollback: revert the change. No data migration, no Docker resource is created
   by the check, and the only persistent effect of Part A is a pulled image.
