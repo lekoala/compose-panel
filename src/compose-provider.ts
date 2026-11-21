@@ -1,3 +1,6 @@
+import { mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { compactComposeProgress } from "./compose-progress.ts";
 import { composeEnvironment, runCommand, type CommandResult, type DockerRunner } from "./docker.ts";
 import { projectMetadata, type DeclaredMetadata } from "./deployment.ts";
@@ -57,6 +60,16 @@ export interface ComposeProjectFiles {
     composeFiles: string[];
     /** Absolute interpolation files, in their original order. */
     envFiles: string[];
+}
+
+/**
+ * Allow-listed projection of one service from `config --format json`: only the
+ * image reference and whether the service is built. The interpolated
+ * configuration never leaves the provider.
+ */
+export interface ServiceImageFact {
+    image: string | null;
+    build: boolean;
 }
 
 /**
@@ -129,6 +142,28 @@ export interface ComposeProvider {
      * reference or ID are dropped, never passed to the CLI.
      */
     inspectImages(refs: string[]): Promise<CommandResult>;
+    /**
+     * Read-only: what the effective configuration declares per service, as an
+     * allow-listed projection (`image`, `build`), for the remote image check
+     * (ADR 0041). Compose already leaves inactive `profiles:` services out of
+     * its effective config; a service that is listed but still carries a
+     * `profiles:` entry is active and is kept. `null` on any failure or
+     * unexpected shape: the check refuses rather than guess.
+     */
+    serviceImageFacts(input: {
+        project?: string;
+        composeFile: string;
+        cwd: string;
+        envFile?: string;
+    }): Promise<Map<string, ServiceImageFact> | null>;
+    /**
+     * Read-only: the top-level digest a mutable tag resolves to in its
+     * registry, through `docker buildx imagetools inspect --format
+     * '{{json .Manifest}}'` (ADR 0041). No builder is needed for a registry
+     * read. The reference is validated and passed after the fixed arguments,
+     * so it can never be read as a flag; raw output stays with the caller.
+     */
+    inspectRemoteManifest(ref: string, options?: { timeoutMs?: number }): Promise<CommandResult>;
     /**
      * Read-only: `container inspect` of containers named by `compose ps`. Used
      * only when a running container's image can no longer be inspected (the
@@ -261,10 +296,11 @@ class DockerComposeProvider implements ComposeProvider {
     }
 
     private readProject(
-        input: { project: string; composeFile: string; cwd: string; envFile?: string },
+        input: { project?: string; composeFile: string; cwd: string; envFile?: string },
         command: string[],
     ): Promise<CommandResult> {
-        const args = ["compose", "-p", input.project];
+        const args = ["compose"];
+        if (input.project) args.push("-p", input.project);
         if (input.envFile) args.push("--env-file", input.envFile);
         args.push("--project-directory", input.cwd, "-f", input.composeFile, ...command);
         return this.runner(args, {
@@ -348,6 +384,50 @@ class DockerComposeProvider implements ComposeProvider {
         const safe = [...new Set(names)].filter(isContainerName);
         if (safe.length === 0) return Promise.resolve({ code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false });
         return this.runner(["container", "inspect", "--", ...safe]);
+    }
+
+    async inspectRemoteManifest(ref: string, options: { timeoutMs?: number } = {}): Promise<CommandResult> {
+        // A mutable tag only: a digest-pinned reference is never checked.
+        if (!isImageReference(ref) || ref.includes("@")) {
+            return { code: -1, stdout: "", stderr: "", timedOut: false, truncated: false };
+        }
+        // Buildx initialises its own state (and takes a lock) under
+        // BUILDX_CONFIG or $DOCKER_CONFIG/buildx. The documented private
+        // registry setup mounts DOCKER_CONFIG read-only so Pull can
+        // authenticate; without a writable BUILDX_CONFIG the check would then
+        // fail before reading any credential. Fall back to a panel-owned
+        // ephemeral directory, and leave an operator-provided value untouched.
+        const env = composeEnvironment();
+        if (!env.BUILDX_CONFIG) {
+            const dir = join(tmpdir(), "compose-panel", "buildx");
+            try {
+                await mkdir(dir, { recursive: true, mode: 0o700 });
+                env.BUILDX_CONFIG = dir;
+            } catch {
+                // Let buildx report the failure as a normal unknown result.
+            }
+        }
+        // Fixed arguments; the validated reference comes last, so it can never
+        // be parsed as a flag (`isImageReference` requires a leading letter or
+        // digit). The manifest object is small: the cap is just a guard.
+        return this.runner(["buildx", "imagetools", "inspect", "--format", "{{json .Manifest}}", ref], {
+            timeoutMs: options.timeoutMs,
+            maxBytes: 64 * 1024,
+            env,
+        });
+    }
+
+    async serviceImageFacts(input: {
+        project?: string;
+        composeFile: string;
+        cwd: string;
+        envFile?: string;
+    }): Promise<Map<string, ServiceImageFact> | null> {
+        if (!this.caps.operations.config) return null;
+        const result = await this.readProject(input, ["config", "--format", "json"]);
+        // stderr may echo interpolated values: it is never read.
+        if (result.code !== 0 || result.timedOut || result.truncated) return null;
+        return parseServiceImageFacts(result.stdout);
     }
 
     async serviceConfigHashes(input: {
@@ -643,6 +723,39 @@ export function parseConfigHashes(stdout: string): Map<string, string> | null {
         hashes.set(match[1]!, match[2]!);
     }
     return hashes;
+}
+
+/**
+ * Project `config --format json` onto the two facts the remote image check
+ * needs. Only service names, image references and the presence of `build:`
+ * leave this function; the interpolated config is never retained. Compose
+ * already omits inactive `profiles:` services; an entry that is listed with a
+ * `profiles:` value is active and must stay tracked. Any unexpected shape makes
+ * the whole answer unusable.
+ */
+export function parseServiceImageFacts(stdout: string): Map<string, ServiceImageFact> | null {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(stdout);
+    } catch {
+        return null;
+    }
+    const root = record(parsed);
+    const services = record(root?.services);
+    if (!services) return null;
+    const facts = new Map<string, ServiceImageFact>();
+    for (const [name, rawService] of Object.entries(services)) {
+        if (!isComposeServiceName(name)) return null;
+        const service = record(rawService);
+        if (!service) return null;
+        const image = service.image;
+        if (image !== undefined && image !== null && typeof image !== "string") return null;
+        facts.set(name, {
+            image: typeof image === "string" && image.length > 0 ? image : null,
+            build: service.build !== undefined && service.build !== null,
+        });
+    }
+    return facts;
 }
 
 /**

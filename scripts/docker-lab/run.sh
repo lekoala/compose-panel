@@ -64,7 +64,12 @@ mkdir -m 700 "$LAB/socket"
 
 # `dind` prepares cgroups for a nested daemon, then runs dockerd as given. The
 # id printed by `docker run -d` is the only thing ever removed again.
+# The remote image check (ADR 0041) runs the buildx client in this process, not
+# in the lab daemon, so the lab registry must also be reachable on this host's
+# loopback. The suite publishes the registry itself on 5030 inside the lab; this
+# mapping carries it out, keeping one reference valid on both sides.
 LAB_ID="$(outer_docker run -d --name "$NAME" --privileged \
+    -p "127.0.0.1:5030:5030" \
     -v "$LAB/socket:/lab" \
     -v "$SHARED:$SHARED" \
     --entrypoint dind "$IMAGE" \

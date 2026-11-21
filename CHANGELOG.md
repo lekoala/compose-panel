@@ -10,10 +10,29 @@
   refreshed even when the service declares `pull_policy: missing` (or `never`),
   which previously made the action succeed without downloading anything.
 
+- Remote image check (ADR 0041, part B): the Services card has a **Check**
+  button that asks each tracked registry whether its tag still resolves to the
+  digest Docker recorded locally, through `docker buildx imagetools inspect`
+  (pinned in the image, with a writable Buildx state directory so a read-only
+  `DOCKER_CONFIG` credentials mount keeps working). Explicit, one check at a
+  time for the whole panel, a 30-second budget and the last result in memory
+  only. `build:`, digest-pinned and image-ID references are not checked; active
+  profile services are included; every uncertainty keeps a reason (no local
+  digest, ambiguous local digest, not found, unauthorized, rate limited,
+  timeout, unsupported). On the classic store a single `RepoDigests` entry is
+  only used when the reference is the image's only tag of that repository. A
+  result is published only when the generations, references and local digests
+  are unchanged; otherwise it is discarded, and any started mutation drops every
+  stored result because a tag can be shared by several stacks. When the container
+  still runs the previous image, the row keeps **Update ready** and never claims
+  **Up to date**. No cache, no credential UI, no scheduler, no CVE claim.
+
 - Lab: seed the disposable daemon from the outer Docker cache (`alpine:3.20`,
   `registry:2`) and pull that base image only when it is missing. The lifecycle
   suite no longer fails on a Docker Hub rate limit, and the pull scenarios use
-  images built inside the lab and served from a lab-local registry.
+  images built inside the lab and served from a lab-local registry. The
+  multi-platform digest assertion refreshes the base tag explicitly, because a
+  cached tag can predate the registry's current one.
 
 - Docker maintenance (ADR 0040): the Server page can prune the build cache,
   dangling images or unused images older than a week, in three fixed scopes. No

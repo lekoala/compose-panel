@@ -129,6 +129,8 @@ function controllableProvider(): { provider: ComposeProvider; calls: FollowCall[
         stackMetadata: async () => ({}),
         inspectImages: async () => empty,
         inspectContainers: async () => empty,
+        serviceImageFacts: async () => null,
+        inspectRemoteManifest: async () => empty,
         serviceConfigHashes: async () => null,
         validateConfig: async () => empty,
         listServices: async () => [],
@@ -2033,6 +2035,177 @@ describe("stack backups", () => {
         expect(await (await authed(app, "/stacks/demo/edit", session)).text()).not.toContain("/stacks/demo/backups/purge");
         await plantBackup();
         expect(await (await authed(app, "/stacks/demo/edit", session)).text()).toContain('action="/stacks/demo/backups/purge"');
+    });
+});
+
+describe("remote image check route (ADR 0041)", () => {
+    const LOCAL_ID = `sha256:${"1".repeat(64)}`;
+    const LOCAL_DIGEST = `sha256:${"a".repeat(64)}`;
+    const REMOTE_DIGEST = `sha256:${"b".repeat(64)}`;
+    const reply = (stdout: string, code = 0): CommandResult => ({ code, stdout, stderr: "", timedOut: false, truncated: false });
+    const manifest = (digest: string): CommandResult =>
+        reply(JSON.stringify({ mediaType: "application/vnd.oci.image.index.v1+json", digest }));
+
+    function imageRunner(options: { project?: boolean; remote?: () => Promise<CommandResult> } = {}) {
+        const calls: string[][] = [];
+        const composeFile = join(root, "demo", "compose.yaml");
+        const runner: DockerRunner = async (args) => {
+            calls.push(args);
+            if (args[0] === "compose" && args.includes("ls")) {
+                return options.project === false
+                    ? reply("[]")
+                    : reply(JSON.stringify([{ Name: "demo-proj", Status: "running(1)", ConfigFiles: composeFile }]));
+            }
+            if (args[0] === "compose" && args.includes("ps")) {
+                return reply(
+                    JSON.stringify([
+                        { Service: "web", Name: "demo-proj-web-1", Image: "app:1", State: "running", Health: "", ExitCode: 0 },
+                    ]),
+                );
+            }
+            if (args[0] === "compose" && args.includes("images")) {
+                return reply(JSON.stringify([{ ContainerName: "demo-proj-web-1", ID: LOCAL_ID }]));
+            }
+            if (args[0] === "compose" && args.includes("config")) {
+                if (args.includes("--services")) return reply("web\n");
+                if (args.includes("--hash")) return reply("");
+                return reply(JSON.stringify({ name: "demo-proj", services: { web: { image: "app:1" } } }));
+            }
+            if (args[0] === "image" && args[1] === "inspect") {
+                return reply(
+                    JSON.stringify([
+                        {
+                            Id: LOCAL_ID,
+                            RepoTags: ["app:1"],
+                            RepoDigests: [`app@${LOCAL_DIGEST}`],
+                            Created: "2026-01-01T00:00:00Z",
+                            Config: { Labels: {} },
+                        },
+                    ]),
+                );
+            }
+            if (args[0] === "buildx") return options.remote ? await options.remote() : manifest(REMOTE_DIGEST);
+            return reply("");
+        };
+        return { runner, calls, composeFile };
+    }
+
+    async function csrfOf(app: App, session: string): Promise<string> {
+        return /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/", session)).text())![1]!;
+    }
+
+    function postCheck(app: App, session: string, csrf: string, origin = ORIGIN) {
+        return authed(app, "/stacks/demo/image-check", session, {
+            method: "POST",
+            headers: { origin, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf }).toString(),
+        });
+    }
+
+    async function settled(app: App): Promise<void> {
+        for (let i = 0; i < 500 && app.images.isRunning(); i += 1) await Bun.sleep(1);
+        for (let i = 0; i < 500 && app.images.forStack("demo")?.status !== "done"; i += 1) await Bun.sleep(1);
+    }
+
+    test("refuses a missing or foreign origin, a stale CSRF token and a GET", async () => {
+        const { runner, calls } = imageRunner();
+        const app = makeApp({}, runner);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await postCheck(app, session, csrf, "https://elsewhere.example")).status).toBe(403);
+        expect((await postCheck(app, session, "wrong")).status).toBe(403);
+        expect((await authed(app, "/stacks/demo/image-check", session)).status).toBe(405);
+        expect(calls.some((args) => args[0] === "buildx")).toBe(false);
+    });
+
+    test("runs in the background, records the audit event and shows the verdict", async () => {
+        const dir = await mkdtemp(join(tmpdir(), "compose-panel-check-"));
+        try {
+            const audit = new AuditLog({ dir });
+            const { runner } = imageRunner();
+            const app = makeApp({}, runner, undefined, audit);
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+            expect((await postCheck(app, session, csrf)).status).toBe(303);
+            await settled(app);
+            const view = app.images.forStack("demo")!;
+            expect(view.discarded).toBe(false);
+            expect(view.services[0]!.verdict).toMatchObject({ kind: "update-available", remoteDigest: REMOTE_DIGEST });
+
+            const html = await (await authed(app, "/stacks/demo", session)).text();
+            expect(html).toContain('data-remote="update-available"');
+            expect(html).toContain('action="/stacks/demo/image-check"');
+            const raw = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
+            expect(raw).toContain('"event":"image-check"');
+            expect(raw).toContain('"result":"started"');
+            // The finish event is written asynchronously after the verdict is stored.
+            for (let i = 0; i < 100; i += 1) {
+                const text = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
+                if (text.includes('"result":"success"')) break;
+                await Bun.sleep(10);
+            }
+            const finished = (await Promise.all((await readdir(dir)).map((name) => readFile(join(dir, name), "utf8")))).join("");
+            expect(finished).toContain('"result":"success"');
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("one check at a time for the whole panel", async () => {
+        let release!: () => void;
+        const blocked = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const { runner } = imageRunner({
+            remote: async () => {
+                await blocked;
+                return manifest(REMOTE_DIGEST);
+            },
+        });
+        const app = makeApp({}, runner);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await postCheck(app, session, csrf)).status).toBe(303);
+        const busy = await postCheck(app, session, csrf);
+        expect(busy.status).toBe(409);
+        // A page render while the check runs asks the browser to reload itself.
+        const html = await (await authed(app, "/stacks/demo", session)).text();
+        expect(html).toContain('http-equiv="refresh"');
+        release();
+        await settled(app);
+        expect(app.images.isRunning()).toBe(false);
+    }, 20_000);
+
+    test("refuses a stack that is not deployed, without any registry call", async () => {
+        const { runner, calls } = imageRunner({ project: false });
+        const app = makeApp({}, runner);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await postCheck(app, session, csrf)).status).toBe(409);
+        expect(calls.some((args) => args[0] === "buildx")).toBe(false);
+        expect(app.images.forStack("demo")).toBeNull();
+    });
+
+    test("a started mutation drops the stored verdict", async () => {
+        const { runner } = imageRunner();
+        const app = makeApp({}, runner);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await postCheck(app, session, csrf)).status).toBe(303);
+        await settled(app);
+        expect(app.images.forStack("demo")).not.toBeNull();
+        expect(
+            (
+                await authed(app, "/stacks/demo/operations", session, {
+                    method: "POST",
+                    headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+                    body: new URLSearchParams({ csrf, action: "pull" }).toString(),
+                })
+            ).status,
+        ).toBe(303);
+        // Accepted synchronously: the verdict no longer describes the stack.
+        expect(app.images.forStack("demo")).toBeNull();
+        for (let i = 0; i < 500 && app.operations.activeCount() > 0; i += 1) await Bun.sleep(1);
     });
 });
 
@@ -4412,6 +4585,8 @@ describe("service rollout (ADR 0035)", () => {
             stackMetadata: async () => ({}),
             inspectImages: async () => ({ ...okResult, stdout: JSON.stringify([{ Id: IMAGE }]) }),
             inspectContainers: async () => okResult,
+            serviceImageFacts: async () => null,
+            inspectRemoteManifest: async () => okResult,
             serviceConfigHashes: async () => null,
             validateConfig: async () => okResult,
             listServices: async () => (options.names === undefined ? ["web"] : options.names),

@@ -4,6 +4,7 @@ import {
     findProjectForStack,
     parseComposeLs,
     parseComposePs,
+    parseImageInspect,
     summarizeProjectStatus,
     summarizeServices,
     type ComposeProject,
@@ -31,6 +32,34 @@ describe("parseComposeLs", () => {
     test("treats empty output as no projects", () => expect(parseComposeLs("")).toEqual([]));
 
     test("rejects malformed output", () => expect(() => parseComposeLs("{not json")).toThrow(ComposeStateError));
+});
+
+describe("parseImageInspect", () => {
+    test("keeps the per-reference descriptor of the containerd image store", () => {
+        const details = parseImageInspect(
+            JSON.stringify([
+                {
+                    Id: "sha256:index",
+                    RepoTags: ["app:1"],
+                    RepoDigests: ["app@sha256:index"],
+                    Descriptor: { digest: "sha256:index", mediaType: "application/vnd.oci.image.index.v1+json", size: 10 },
+                },
+                { Id: "sha256:classic" },
+            ]),
+        );
+        expect(details[0]!.descriptor).toEqual({ digest: "sha256:index", mediaType: "application/vnd.oci.image.index.v1+json" });
+        expect(details[1]!.descriptor).toBeNull();
+    });
+
+    test("ignores a malformed descriptor instead of guessing", () => {
+        const details = parseImageInspect(
+            JSON.stringify([
+                { Id: "sha256:a", Descriptor: { digest: 42, mediaType: "text/plain" } },
+                { Id: "sha256:b", Descriptor: "not an object" },
+            ]),
+        );
+        expect(details.map((entry) => entry.descriptor)).toEqual([null, null]);
+    });
 });
 
 describe("parseComposePs", () => {

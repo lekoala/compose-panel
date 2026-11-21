@@ -47,6 +47,7 @@ const PROJECTS = [
     "cp-qa-panel",
     "cp-qa-metadata",
     "cp-qa-recreate",
+    "cp-qa-check",
 ];
 // A PID 1 that exits on SIGTERM, so `down` does not wait for the kill timeout.
 const SERVICE = (name: string) => `  ${name}:\n    image: ${IMAGE}\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]\n`;
@@ -291,6 +292,18 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
                 `  web:\n    image: ${IMAGE}\n    depends_on: [db]\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
                 "",
             ].join("\n"),
+            "check/compose.yaml": [
+                "name: cp-qa-check",
+                "services:",
+                `  stable:\n    image: localhost:5030/check-stable:1\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                `  moved:\n    image: localhost:5030/check-moved:1\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                `  gone:\n    image: localhost:5030/check-gone:1\n    command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]`,
+                "  built:",
+                "    image: cp-qa-check-built:local",
+                "    build: .",
+                "",
+            ].join("\n"),
+            "check/Dockerfile": `FROM ${IMAGE}\nCMD ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]\n`,
         };
         for (const [path, content] of Object.entries(files)) {
             await mkdir(join(stacks, path, ".."), { recursive: true });
@@ -326,8 +339,13 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
         // One lab registry for the suite, seeded with images built here. The
         // pull tests below then need neither Docker Hub nor a public tag, so a
         // registry rate limit cannot fail them. `registry:2` is preloaded by
-        // scripts/docker-lab/run.sh.
-        await dockerOk(["run", "-d", "--name", "cp-qa-lab-registry", "-p", "127.0.0.1:5030:5000", "registry:2"], 180_000);
+        // scripts/docker-lab/run.sh. It binds all interfaces *inside* the lab so
+        // the outer loopback mapping added by that script can reach it: the
+        // remote image check runs the buildx client in this process.
+        await dockerOk(
+            ["run", "-d", "--name", "cp-qa-lab-registry", "-p", "5030:5000", "-e", "REGISTRY_STORAGE_DELETE_ENABLED=true", "registry:2"],
+            180_000,
+        );
         for (const name of ["extra", "extra2"]) {
             const dir = join(lab, "registry-seed", name);
             await mkdir(dir, { recursive: true });
@@ -342,8 +360,68 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             // real to download.
             await docker(["rmi", ref]);
         }
+        // Images for the remote image check: one that stays put, one whose tag
+        // is republished, one whose tag is deleted, and one built locally.
+        // Publishing then pulling from the registry makes the recorded local
+        // digest real, which is what the check compares against.
+        const seedCheckImage = async (name: string, marker: string): Promise<string> => {
+            const dir = join(lab, "check-seed", name, marker);
+            await mkdir(dir, { recursive: true });
+            await writeFile(join(dir, "marker"), `${marker}\n`);
+            await writeFile(join(dir, "Dockerfile"), `FROM ${IMAGE}\nCOPY marker /built-marker\n`);
+            const ref = `localhost:5030/${name}:1`;
+            await dockerOk(["build", "-q", "-t", ref, dir], 180_000);
+            await waitFor(async () => (await docker(["push", "-q", ref])).code === 0, 60_000, "the lab registry to accept a push");
+            await docker(["rmi", ref]);
+            await dockerOk(["pull", "-q", ref], 120_000);
+            return ref;
+        };
+        await seedCheckImage("check-stable", "stable");
+        await seedCheckImage("check-gone", "gone");
+        const moved = await seedCheckImage("check-moved", "old");
+        const oldMovedId = (await dockerOk(["image", "inspect", moved, "--format", "{{.Id}}"])).trim();
+        // Republish the same tag with different content. The new build carries
+        // another local repository tag, so the local `check-moved:1` tag can be
+        // put back on the old image afterwards: the registry moves, the local
+        // tag does not, which is exactly the state the check must detect.
+        const movedNext = "localhost:5030/check-moved-v2:1";
+        const movedDir = join(lab, "check-seed", "check-moved", "new");
+        await mkdir(movedDir, { recursive: true });
+        await writeFile(join(movedDir, "marker"), "new\n");
+        await writeFile(join(movedDir, "Dockerfile"), `FROM ${IMAGE}\nCOPY marker /built-marker\n`);
+        await dockerOk(["build", "-q", "-t", movedNext, movedDir], 180_000);
+        await waitFor(async () => (await docker(["push", "-q", movedNext])).code === 0, 60_000, "the lab registry to accept the new image");
+        await dockerOk(["tag", movedNext, moved]);
+        await waitFor(
+            async () => (await docker(["push", "-q", moved])).code === 0,
+            60_000,
+            "the lab registry to accept the republished tag",
+        );
+        await dockerOk(["tag", oldMovedId, moved]);
+        await docker(["rmi", movedNext]);
+        // Delete the registry tag of `check-gone`, keeping the local image: the
+        // check must report `unknown` (not found), not an invented verdict.
+        const goneDigest = JSON.parse(
+            (await dockerOk(["image", "inspect", "--format", "{{json .RepoDigests}}", "localhost:5030/check-gone:1"])).trim(),
+        ) as string[];
+        const goneManifest = goneDigest.find((entry) => entry.startsWith("localhost:5030/check-gone@"))?.split("@")[1];
+        if (!goneManifest) throw new Error("The lab registry did not record a digest for check-gone.");
+        await waitFor(
+            async () =>
+                (
+                    await fetch(`http://127.0.0.1:5030/v2/check-gone/manifests/${goneManifest}`, {
+                        method: "DELETE",
+                        headers: {
+                            Accept: "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json",
+                        },
+                    })
+                ).ok,
+            30_000,
+            "the lab registry to delete the check-gone tag",
+        );
         // The owner project exists before the panel starts, created by the CLI.
         await dockerOk(["compose", "-f", join(stacks, "owner/compose.yaml"), "up", "-d"]);
+        await dockerOk(["compose", "-p", "cp-qa-check", "-f", join(stacks, "check/compose.yaml"), "up", "-d", "--build"], 180_000);
 
         const port = await freePort();
         const proc = Bun.spawn([process.execPath, "src/server.ts"], {
@@ -455,6 +533,10 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
     test("pulling by tag records the multi-platform index digest in RepoDigests (ADR 0018)", async () => {
         // The release publishes the index digest; the panel compares it with
         // RepoDigests, never with the local image ID. IMAGE is multi-platform.
+        // `scripts/docker-lab/run.sh` may seed this tag from the outer cache, and
+        // a cached tag can predate the registry's current one, so pull it again:
+        // the recorded digest must describe the registry state it was read from.
+        await dockerOk(["pull", "-q", IMAGE], 180_000);
         const index = JSON.parse(
             (await dockerOk(["buildx", "imagetools", "inspect", IMAGE, "--format", "{{json .Manifest.Digest}}"], 60_000)).trim(),
         ) as string;
@@ -801,6 +883,67 @@ describe.skipIf(!enabled)("Docker lifecycle on a disposable lab daemon", () => {
             expect(await p.operationResult("pullpolicy", 120_000)).toBe("succeeded");
             expect(await imageId(ref)).not.toBe(first);
         }
+    }, 300_000);
+
+    test("Check compares the registry digest with the recorded local one, without pulling (ADR 0041)", async () => {
+        const p = panel!;
+        const check = async (): Promise<Response> => {
+            const page = await p.get("/stacks/check");
+            expect(page.status).toBe(200);
+            const csrf = /name="csrf" value="([^"]+)"/.exec(await page.text())![1]!;
+            return p.post("/stacks/check/image-check", { csrf });
+        };
+        const html = async (): Promise<string> => (await p.get("/stacks/check")).text();
+        const count = (text: string, kind: string): number => (text.match(new RegExp(`data-remote="${kind}"`, "g")) ?? []).length;
+        const imageId = async (ref: string) => (await dockerOk(["image", "inspect", ref, "--format", "{{.Id}}"])).trim();
+
+        const before = await imageId("localhost:5030/check-moved:1");
+        expect((await check()).status).toBe(303);
+        // The check runs in the background; the page reloads until the verdict
+        // is stored.
+        await waitFor(async () => count(await html(), "update-available") === 1, 90_000, "the stored check result");
+        const first = await html();
+        expect(count(first, "up-to-date")).toBe(1);
+        expect(count(first, "update-available")).toBe(1);
+        expect(count(first, "not-tracked")).toBe(1);
+        expect(count(first, "unknown")).toBe(1);
+        // Nothing was downloaded: the moved tag still runs its old image.
+        expect(await imageId("localhost:5030/check-moved:1")).toBe(before);
+
+        // Pull the moved tag outside the panel, then check again: the recorded
+        // local digest changed, so the same registry state is now up to date.
+        // The containerd store drops the old tag when it moves, so the row would
+        // show a bare image ID; a scoped Up recreates the container from the
+        // current image and the tag is displayed again for the association check.
+        await dockerOk(["pull", "-q", "localhost:5030/check-moved:1"], 120_000);
+        expect(await imageId("localhost:5030/check-moved:1")).not.toBe(before);
+        expect((await p.action("check", "up", { service: "moved" })).status).toBe(303);
+        expect(await p.operationResult("check", 120_000)).toBe("succeeded");
+        expect((await check()).status).toBe(303);
+        await waitFor(
+            async () => {
+                const text = await html();
+                return count(text, "up-to-date") === 2 && count(text, "update-available") === 0;
+            },
+            90_000,
+            "the second check result",
+        );
+
+        // A started mutation drops the stored verdict: the next page render
+        // shows no remote result at all.
+        expect((await p.action("check", "restart")).status).toBe(303);
+        expect(await p.operationResult("check", 120_000)).toBe("succeeded");
+        const afterMutation = await html();
+        expect(count(afterMutation, "up-to-date")).toBe(0);
+        expect(count(afterMutation, "update-available")).toBe(0);
+        expect(count(afterMutation, "unknown")).toBe(0);
+        // The services were only restarted, never recreated by a check.
+        expect(
+            (await dockerOk(["ps", "--filter", "label=com.docker.compose.project=cp-qa-check", "--format", "{{.Names}}"]))
+                .trim()
+                .split("\n")
+                .sort(),
+        ).toEqual(["cp-qa-check-built-1", "cp-qa-check-gone-1", "cp-qa-check-moved-1", "cp-qa-check-stable-1"]);
     }, 300_000);
 
     test("pull skips locally built services, including image + build (ADR 0022)", async () => {

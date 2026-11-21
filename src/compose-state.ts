@@ -38,6 +38,18 @@ export interface ImageDetails {
     repoDigests: string[];
     created: string | null;
     labels: Record<string, string>;
+    /**
+     * Per-reference descriptor, present on the containerd image store: the
+     * digest and media type of the index (or manifest) the reference resolves
+     * to. Absent on the classic store and for an image recovered from a
+     * container (see `parseContainerImages`).
+     */
+    descriptor?: ImageDescriptor | null;
+}
+
+export interface ImageDescriptor {
+    digest: string;
+    mediaType: string;
 }
 
 /** Honest status vocabulary. "unknown" is never silently turned into "stopped". */
@@ -147,9 +159,18 @@ export function parseImageInspect(stdout: string): ImageDetails[] {
             repoDigests: strings(record.RepoDigests),
             created: typeof record.Created === "string" ? record.Created : null,
             labels,
+            descriptor: parseDescriptor(record.Descriptor),
         });
     }
     return details;
+}
+
+/** The containerd store's per-reference descriptor; anything malformed is ignored. */
+function parseDescriptor(value: unknown): ImageDescriptor | null {
+    if (!value || typeof value !== "object") return null;
+    const record = value as Record<string, unknown>;
+    if (typeof record.digest !== "string" || typeof record.mediaType !== "string") return null;
+    return { digest: record.digest, mediaType: record.mediaType };
 }
 
 /** What a container still knows about an image that is gone. */

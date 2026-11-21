@@ -13,7 +13,7 @@ A trusted technical administrator. No multi-tenancy, no access for untrusted use
 - Read/edit the raw Compose file and `.env`, without automatic rewriting of comments.
 - Validate a change against the effective directory, files and project identity.
 - Save with concurrent-change detection and the ability to return to the previous state.
-- Start, stop, restart, pull images on their own (for the whole stack or one service) or followed by an up (predefined, explicit actions), and see which services have an update ready, from which version to which, before applying it ([ADR 0011](adr/0011-pull-and-update-ready.md), [ADR 0041](adr/0041-targeted-pull-and-remote-image-check.md)).
+- Start, stop, restart, pull images on their own (for the whole stack or one service) or followed by an up (predefined, explicit actions), and see which services have an update ready, from which version to which, before applying it ([ADR 0011](adr/0011-pull-and-update-ready.md), [ADR 0041](adr/0041-targeted-pull-and-remote-image-check.md)). A manual **Check** reads each registry to tell whether a tag moved upstream before anything is downloaded; anything it cannot prove is shown as unknown with a reason, never as a verdict.
 - Follow progress via SSE and review the real state after an interruption.
 - View Compose logs, without an interactive console.
 - Show read-only Docker diagnostics: engine facts, per-container and per-stack CPU/memory, and Docker-managed disk usage, with no history and no host agent ([ADR 0015](adr/0015-readonly-engine-insights.md)).

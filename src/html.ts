@@ -2,6 +2,8 @@ import type { ComposeService, StackState } from "./compose-state.ts";
 import type { OperationAction, OperationView } from "./operations.ts";
 import type { AuditEntry } from "./audit.ts";
 import type { ImageVersion, ServiceUpdate } from "./updates.ts";
+import { normalizeReference } from "./updates.ts";
+import type { ImageCheckView, NotTrackedReason, RemoteCheckReason, ServiceRemoteCheck } from "./image-check.ts";
 import { metadataUrl, type DeclaredMetadata, type DeployedImage } from "./deployment.ts";
 import type { AccessReport, AccessStatus } from "./access.ts";
 import {
@@ -113,6 +115,12 @@ export interface DocumentOptions {
     bare?: boolean;
     /** When set, renders the authenticated navigation sidebar. */
     nav?: NavigationOptions;
+    /**
+     * Reload the page after this many seconds. Used while a background image
+     * check runs, so the result is shown without JavaScript; the server keeps
+     * the refresh off every other page.
+     */
+    refreshSeconds?: number;
 }
 
 const NAV_SECTIONS: readonly [NavSection, string, string][] = [
@@ -168,6 +176,10 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
         .map((src) => `<script src="${escapeHtml(src)}" defer></script>`)
         .join("");
     const timezone = options.timezone ? ` data-timezone="${escapeHtml(options.timezone)}"` : "";
+    const refresh =
+        options.refreshSeconds && options.refreshSeconds > 0
+            ? `<meta http-equiv="refresh" content="${Math.min(Math.floor(options.refreshSeconds), 60)}">`
+            : "";
     const content = options.nav
         ? `<div class="layout"><aside class="sidebar-wrap">${renderSidebar(options.nav)}</aside><main>${body}</main></div>`
         : `<main>${body}</main>`;
@@ -178,6 +190,7 @@ export function documentHtml(title: string, body: string, options: DocumentOptio
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F4F4F2">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0E0E10">
+  ${refresh}
   <title>${escapeHtml(title)} · Compose Panel</title>
   <link rel="stylesheet" href="/styles.css">
   <link id="favicon-svg" rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -616,6 +629,119 @@ function imageCell(service: ComposeService, update: ServiceUpdate | undefined): 
     return `${image}<div class="update"><span class="state state-update">Update ready</span> <span><span class="version">${escapeHtml(updateSides(update)[0])}</span> → <span class="version">${escapeHtml(updateSides(update)[1])}</span></span>${link}</div>`;
 }
 
+/** One sentence per unknown reason; raw registry output is never shown. */
+const REMOTE_REASON_TEXT: Record<RemoteCheckReason, string> = {
+    "not-found": "the registry has no such tag",
+    unauthorized: "the registry refused access; check the Docker client configuration",
+    "rate-limited": "the registry is rate limiting requests",
+    timeout: "the registry did not answer in time",
+    "invalid-output": "Docker returned an unexpected answer",
+    unsupported: "this Docker installation cannot read registries",
+    "no-local-digest": "no local digest is recorded for this tag yet; use Pull first",
+    "ambiguous-local-digest": "several local digests are recorded for this repository, so the tag cannot be identified",
+};
+
+const NOT_TRACKED_TEXT: Record<NotTrackedReason, string> = {
+    build: "built from a Dockerfile; a rebuild, not a pull, updates it",
+    "digest-pinned": "pinned by digest, which never moves",
+    "image-id": "referenced by image ID, which has no tag to compare",
+    "no-image": "declares no image",
+};
+
+/** What the remote check adds under the image of one service (ADR 0041). */
+function remoteCell(view: ImageCheckView | null, service: string, displayed: string | null, localPending: boolean): string {
+    if (!view || view.status !== "done" || view.discarded) return "";
+    const entry: ServiceRemoteCheck | undefined = view.services.find((item) => item.service === service);
+    if (!entry) return "";
+    // A registry verdict belongs to the reference the check verified. A service
+    // whose displayed image is a different reference (the Compose file was
+    // edited, the container still runs the previous one, or the tag was lost)
+    // must not inherit it: an association by service name alone would mislabel
+    // the row. "Not checked" describes the service itself, so it needs no tag.
+    if (entry.verdict.kind !== "not-tracked") {
+        if (!entry.reference || !displayed) return "";
+        if (normalizeReference(entry.reference) !== normalizeReference(displayed)) return "";
+    }
+    const verdict = entry.verdict;
+    switch (verdict.kind) {
+        case "up-to-date":
+            // "Up to date" means the running image, the local tag and the
+            // registry all agree. When the container still runs the previous
+            // image, the row already says "Update ready"; asserting both would
+            // merge two different facts into a contradictory verdict.
+            if (localPending) {
+                return `<div class="update" data-remote="same-as-local"><span class="muted">the registry resolves this tag to the local digest</span></div>`;
+            }
+            return `<div class="update" data-remote="up-to-date"><span class="state state-done">Up to date</span> <span class="muted">the registry resolves this tag to the digest recorded locally (${escapeHtml(shortDigest(verdict.remoteDigest))})</span></div>`;
+        case "update-available":
+            return `<div class="update" data-remote="update-available"><span class="state state-update">Update available</span> <span class="muted">the registry now resolves this tag to ${escapeHtml(shortDigest(verdict.remoteDigest))}; locally ${escapeHtml(shortDigest(verdict.localDigest))}</span></div>`;
+        case "unknown":
+            return `<div class="update" data-remote="unknown"><span class="state state-unknown">Unknown</span> <span class="muted">${escapeHtml(REMOTE_REASON_TEXT[verdict.reason])}</span></div>`;
+        case "not-tracked":
+            return `<div class="update" data-remote="not-tracked"><span class="state">Not checked</span> <span class="muted">${escapeHtml(NOT_TRACKED_TEXT[verdict.reason])}</span></div>`;
+    }
+}
+
+function shortDigest(digest: string): string {
+    return digest.length > 19 ? `${digest.slice(0, 19)}…` : digest;
+}
+
+export interface RemoteCheckOptions {
+    /** The last stored result for this stack, or null before the first check. */
+    view: ImageCheckView | null;
+    /** A check is running for the whole panel (single-flight). */
+    running: boolean;
+    /** This stack page may offer a check (deployed, verified project). */
+    enabled: boolean;
+    /** A mutation is running for this stack; a check started now would be discarded. */
+    mutationRunning: boolean;
+}
+
+/** The explicit Check button and an honest status for the last result. */
+function remoteCheckCard(actions: { name: string; csrf: string; busy: boolean }, options: RemoteCheckOptions): string {
+    const view = options.view;
+    const disabledReason = options.mutationRunning
+        ? "Wait for the running action to finish."
+        : options.running
+          ? "A check is already running."
+          : !options.enabled
+            ? "Available once this stack is deployed."
+            : "";
+    const disabled = disabledReason !== "";
+    const form = `<form method="post" action="/stacks/${encodeURIComponent(actions.name)}/image-check" class="toolbar"><input type="hidden" name="csrf" value="${escapeHtml(actions.csrf)}"><button type="submit" class="btn"${disabled ? " disabled" : ""}${disabledReason ? ` title="${escapeHtml(disabledReason)}"` : ""} data-busy-label="Checking…">Check</button>${disabledReason ? `<span class="muted">${escapeHtml(disabledReason)}</span>` : ""}</form>`;
+    let status: string;
+    if (view?.status === "running") {
+        status = note("info", "Checking the registry now. This page reloads when the result is ready. Nothing is downloaded.");
+    } else if (view?.discarded) {
+        status = note(
+            "warn",
+            "The last check was discarded because the stack changed while it ran, so no verdict was shown. Run Check again.",
+        );
+    } else if (view) {
+        const counts = view.services.reduce(
+            (total, entry) => {
+                if (entry.verdict.kind === "up-to-date" || entry.verdict.kind === "update-available") total.compared += 1;
+                if (entry.verdict.kind === "update-available") total.updates += 1;
+                if (entry.verdict.kind === "unknown") total.unknown += 1;
+                if (entry.verdict.kind === "not-tracked") total.untracked += 1;
+                return total;
+            },
+            { compared: 0, updates: 0, unknown: 0, untracked: 0 },
+        );
+        const parts = [
+            counts.updates > 0 ? `${counts.updates} update available` : "",
+            counts.compared - counts.updates > 0 ? `${counts.compared - counts.updates} matching the local digest` : "",
+            counts.unknown > 0 ? `${counts.unknown} unknown` : "",
+            counts.untracked > 0 ? `${counts.untracked} not checked` : "",
+        ].filter(Boolean);
+        const at = new Date(view.finishedAt ?? view.startedAt).toISOString();
+        status = `<p class="muted">Last check <time datetime="${escapeHtml(at)}" data-local-time>${escapeHtml(at.slice(11, 19))} UTC</time>${parts.length > 0 ? ` · ${escapeHtml(parts.join(", "))}` : ""}</p>`;
+    } else {
+        status = `<p class="muted">Check asks each registry whether its tag now resolves to a different digest. It downloads nothing and changes no container.</p>`;
+    }
+    return `<div class="remote-check">${form}${status}</div>`;
+}
+
 export function servicesSection(
     services: ComposeService[],
     state: string,
@@ -623,7 +749,9 @@ export function servicesSection(
     actions?: { name: string; csrf: string; busy: boolean },
     recreatePending: string[] = [],
     rolloutServices: string[] = [],
+    remoteCheck?: RemoteCheckOptions,
 ): string {
+    const check = actions && remoteCheck ? remoteCheckCard(actions, remoteCheck) : "";
     let content: string;
     if (services.length > 0) {
         // Scoped Restart/Up (ADR 0021), plain POST forms like the Actions card.
@@ -639,7 +767,7 @@ export function servicesSection(
                         ? `<div class="update" data-recreate-pending><span class="state state-update">Recreate pending</span>${infoTip("Up recreates this service with the current Compose file and .env. Restart keeps the existing container as it is.")}</div>`
                         : "";
                 const status = `<span class="badges">${serviceBadge(service)}${healthBadge(service.health)}</span>${pending}`;
-                return `<tr><td>${escapeHtml(service.name)}</td><td>${status}</td><td>${imageCell(service, updates[service.name])}</td>${cell}</tr>`;
+                return `<tr><td>${escapeHtml(service.name)}</td><td>${status}</td><td>${imageCell(service, updates[service.name])}${remoteCell(remoteCheck?.view ?? null, service.name, service.image, Boolean(updates[service.name]))}</td>${cell}</tr>`;
             })
             .join("");
         const actionsHead = scoped ? `<th>Actions</th>` : "";
@@ -649,7 +777,7 @@ export function servicesSection(
     } else {
         content = `<p class="muted">No container information available.</p>`;
     }
-    return `<section class="card"><h2>Services</h2>${content}</section>`;
+    return `<section class="card"><h2>Services</h2>${check}${content}</section>`;
 }
 
 /** Per-service Pull, Restart, Up and opt-in Rollout for one table row (ADR 0021, ADR 0035, ADR 0041). */

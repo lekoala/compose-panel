@@ -160,6 +160,66 @@ describe("rendering", () => {
         expect(html).not.toContain("<b>1</b>");
         expect(html).toContain('rel="noopener noreferrer"');
     });
+
+    test("shows a remote verdict only on the reference it was verified for", () => {
+        const view = {
+            stack: "demo",
+            status: "done" as const,
+            startedAt: 1,
+            finishedAt: 2,
+            discarded: false,
+            services: [
+                {
+                    service: "app",
+                    reference: "nginx:1.27",
+                    verdict: { kind: "up-to-date" as const, localDigest: OLD, remoteDigest: OLD },
+                },
+            ],
+        };
+        const check = { view, running: false, enabled: true, mutationRunning: false };
+        // Same reference, including Docker Hub's implicit normalization.
+        expect(servicesSection([service("app", "docker.io/library/nginx:1.27")], "running", {}, undefined, [], [], check)).toContain(
+            'data-remote="up-to-date"',
+        );
+        // The container still runs another reference: no verdict for that row.
+        expect(servicesSection([service("app", "nginx:1.25")], "running", {}, undefined, [], [], check)).not.toContain("data-remote=");
+        // A bare image ID (tag lost) is not the verified reference either.
+        expect(servicesSection([service("app", OLD)], "running", {}, undefined, [], [], check)).not.toContain("data-remote=");
+    });
+
+    test("Up to date is never shown next to Update ready", () => {
+        const check = {
+            view: {
+                stack: "demo",
+                status: "done" as const,
+                startedAt: 1,
+                finishedAt: 2,
+                discarded: false,
+                services: [
+                    {
+                        service: "app",
+                        reference: "nginx:1.27",
+                        verdict: { kind: "up-to-date" as const, localDigest: OLD, remoteDigest: OLD },
+                    },
+                ],
+            },
+            running: false,
+            enabled: true,
+            mutationRunning: false,
+        };
+        const localUpdate = {
+            image: "nginx:1.27",
+            from: { version: "1.27.1", created: null, digest: null },
+            to: { version: "1.27.2", created: null, digest: null },
+            link: null,
+        };
+        const html = servicesSection([service("app", "nginx:1.27")], "running", { app: localUpdate }, undefined, [], [], check);
+        // The three states do not agree: the actionable verdict stays Update ready.
+        expect(html).toContain("Update ready");
+        expect(html).toContain('data-remote="same-as-local"');
+        expect(html).not.toContain('data-remote="up-to-date"');
+        expect(html).not.toContain("Up to date");
+    });
 });
 
 describe("references", () => {

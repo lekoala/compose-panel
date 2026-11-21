@@ -80,20 +80,28 @@ is **empty inside the container**: mounting `/var/run/docker.sock` gives access
 to the daemon, not to the credentials configured on the host. Public images work
 as they are. On a private registry without credentials, `Pull` fails with an
 authentication error and the operation is reported as failed — nothing is
-downloaded and nothing claims the image is current. A future remote check
-(ADR 0041, part B) will report such a registry as an unknown result instead.
+downloaded and nothing claims the image is current. **Check** reports such a
+registry as an unknown result (`unauthorized`) instead.
 
-To let **Pull** (and, in a later version, the remote image check) reach a private
-registry, mount a dedicated configuration file read-only and point the panel at
-it. ADR 0041 verified this path end to end: without it the registry returns 401,
-with it the same command authenticates, and Pull and the check share one
-configuration.
+To let **Pull** and the remote **Check** reach a private registry, mount a
+dedicated configuration file read-only and point the panel at it. ADR 0041
+verified this path end to end: without it the registry returns 401, with it the
+same command authenticates, and Pull and the check share one configuration.
+
+Buildx, which reads the registry for **Check**, keeps its own state and lock in
+`$BUILDX_CONFIG` (default `$DOCKER_CONFIG/buildx`) and writes there **before**
+contacting the registry. A read-only `DOCKER_CONFIG` mount is therefore not
+enough on its own: without a writable `BUILDX_CONFIG`, Pull can work while Check
+fails despite valid credentials. Set `BUILDX_CONFIG` to a writable directory, or
+leave it unset: the panel then uses a panel-owned ephemeral directory under the
+system temp dir. It never writes to `DOCKER_CONFIG`.
 
 ```yaml
 services:
   panel:
     environment:
       DOCKER_CONFIG: /etc/compose-panel/docker-config
+      BUILDX_CONFIG: /tmp/compose-panel-buildx
     volumes:
       - /etc/compose-panel/docker-config:/etc/compose-panel/docker-config:ro
 ```
@@ -1046,6 +1054,30 @@ release. Verified 2026-10-10 against image `compose-panel:local`
       `config --services` discovery and refusals work, and `pull` succeeds on a
       stack mixing registry, build-only and image+build services (the local
       ones are skipped, then built by `up`).
+- [x] Remote image check ([ADR 0041](adr/0041-targeted-pull-and-remote-image-check.md))
+      on the disposable lab daemon (`bun run test:docker-lab:wsl`,
+      2026-11-21, Docker 29.9.0, containerd image store): a tag that did not move
+      is **Up to date**, a republished tag is **Update available** and nothing is
+      downloaded by the check, a registry tag deleted after its local pull is
+      **Unknown**, a `build:` service is Not checked, a CLI pull outside the
+      panel moves the local digest so the same registry state becomes Up to
+      date on the next check (after a scoped Up recreates the row from the
+      current image), and a restart action drops the stored verdict from the
+      page. The buildx client runs on the host side and resolves the lab
+      registry through the loopback mapping added by `scripts/docker-lab/run.sh`.
+- [ ] Remote image check with a private registry through a mounted
+      `DOCKER_CONFIG` (the 401 path is covered by classification tests; the
+      authenticated read was verified in the ADR 0041 spike).
+- [x] Buildx state with read-only credentials (2026-11-21, WSL Ubuntu 24.04,
+      buildx 0.37.2): `DOCKER_CONFIG` on a read-only directory fails with
+      `mkdir <config>/buildx: permission denied` before any registry request;
+      the same command with a writable `BUILDX_CONFIG` succeeds. The panel sets
+      that variable (or an ephemeral fallback) for every check, covered by a
+      provider test.
+- [ ] Remote image check with a private registry through a mounted
+      `DOCKER_CONFIG` **and** a writable `BUILDX_CONFIG`, end to end with real
+      credentials (the 401 path is covered by classification tests; the
+      authenticated read was verified in the ADR 0041 spike).
 - [x] Real updater container on the disposable lab daemon (2026-10-12,
       Docker 29.9.0, amd64): the panel image built in the lab, deployed by
       Compose on `PORT=5199` (healthy: the image health check follows `PORT`),

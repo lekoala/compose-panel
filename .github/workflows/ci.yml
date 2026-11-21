@@ -118,7 +118,7 @@ jobs:
           sleep 5
           docker exec ci-panel curl -fsS http://127.0.0.1:5081/health/live
           docker exec ci-panel sh -c 'O=http://127.0.0.1:5081; curl -fsS -c /tmp/j -o /tmp/l.html $O/login && grep -q "name=\"csrf\"" /tmp/l.html && C=$(grep -o "name=\"csrf\" value=\"[^\"]*\"" /tmp/l.html | head -1 | cut -d"\"" -f4) && [ "$(curl -sS -o /dev/null -w "%{http_code}" -b /tmp/j -c /tmp/j -H "Origin: $O" --data-urlencode "csrf=$C" --data-urlencode "user=cioperator" --data-urlencode "password=ci-smoke-password" $O/login)" = "303" ] && curl -fsS -b /tmp/j $O/ | grep -q demo'
-          docker exec ci-panel sh -c 'docker compose version && bun --version'
+          docker exec ci-panel sh -c 'docker compose version && docker buildx version && bun --version'
           docker rm -f ci-panel
       - name: Scan image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

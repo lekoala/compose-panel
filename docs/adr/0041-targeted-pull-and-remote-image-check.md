@@ -1,8 +1,9 @@
 # ADR 0041 — Targeted pull, and a remote image check that stays honest
 
-Status: accepted (2026-11-20). **Part A** (targeted pull) ships with this ADR.
-**Part B** (remote check) is decided here and implemented in a follow-up change:
-none of its routes or provider methods exist yet.
+Status: accepted (2026-11-20). **Part A** (targeted pull) and **Part B**
+(remote image check) are both implemented. `src/image-check.ts` holds the
+capability-based comparison, the publish guard and the in-memory result;
+`ComposeProvider` owns the fixed `buildx imagetools inspect` call.
 
 ## Context
 
@@ -66,7 +67,10 @@ another:
 Verdicts: **Update available** (`remote ≠ local`), **Update ready**
 (`local ≠ running`), **Up to date** (all three equal), **Unknown** with a reason.
 A failed or unavailable check never clears a marker already derived locally: an
-unreachable registry must not hide a downloaded update.
+unreachable registry must not hide a downloaded update. When the container still
+runs an older image, **Up to date** is not shown even if remote and local agree:
+the row keeps **Update ready**, so the three facts are never merged into a
+contradictory pair of badges.
 
 ### Explicit, background, single-flight
 
@@ -80,19 +84,25 @@ unreachable registry must not hide a downloaded update.
   press of Check queries the registry again, so a just-published image is never
   answered from a stale cache.
 - A successful `Pull` invalidates the stored result, because the `local` fact
-  changed.
+  changed. More generally, **any started or completed stack mutation invalidates
+  every stored result and every in-flight check, whichever stack it belongs to**:
+  the image store is engine-wide, and two stacks can reference the same tag, so
+  a Pull in one changes the digest the other compared against. A save invalidates
+  only its own stack (its effective references may have changed).
 - **A check in flight can never publish a stale verdict.** Each check records,
-  before it queries anything, the stack's *local-state generation* (a counter
-  incremented after every completed stack mutation, including Pull) and the
-  exact set of `service → image reference` it resolved. When it finishes it
-  re-reads, for every verified reference, the local digest it started from.
-  It publishes only if all three still match: same generation, same references,
-  same local digests. A Pull, a save or a Compose edit that lands meanwhile
-  therefore discards the result instead of overwriting a fresher one, and the
-  page asks for another check. The final re-read also catches a change made
-  outside the panel that the counter cannot see. A verdict is always attached to
-  the reference that was actually verified, so it can never be displayed for a
-  service whose image changed in between.
+  before it queries anything, the stack's *local-state generation* (a per-stack
+  counter incremented by every save, plus an engine-wide counter incremented by
+  every started and completed mutation, including Pull) and the exact set of
+  `service → image reference` it resolved. When it finishes it re-reads, for
+  every verified reference, the local digest it started from. It publishes only
+  if all three still match: same generations, same references, same local
+  digests. A Pull, a save or a Compose edit that lands meanwhile therefore
+  discards the result instead of overwriting a fresher one, and the page asks for
+  another check. The final re-read also catches a change made outside the panel
+  that the counters cannot see. A verdict is always attached to the reference
+  that was actually verified, so it can never be displayed for a service whose
+  image changed in between. A change made outside the panel *after* a check is
+  not observed until the next Check; the result is timestamped.
 - Measured cost: ~3.0 s per image on a development host through Docker Desktop,
   12.9 s inside a nested `dind`. The 5 s default subprocess timeout is therefore
   too short; the check uses its own bound (30 s) and never blocks a page. It does
@@ -127,11 +137,15 @@ capability and refuses to guess:
    an image manifest. The containerd store exposes it per reference, which makes
    it the exact recorded digest for that tag.
 2. **Else a single unambiguous `RepoDigests` entry** for the same normalized
-   repository. This is the classic store's common case (one image per
-   repository).
-3. **Else `Unknown`** with the reason `ambiguous-local-digest`, when no digest is
-   recorded, when the entry is malformed or `<none>`, or when several digests of
-   that repository are recorded for the tag.
+   repository, and only when this reference is the only tag of that repository
+   recorded on the image. This is the classic store's common case (one image per
+   repository). Docker records a repository digest per image, not per tag: an
+   image pulled as `repo:a` and then retagged `repo:b` carries the digest that
+   belonged to `a`, so otherwise the tag cannot be identified.
+3. **Else `Unknown`**: `no-local-digest` when nothing usable is recorded for
+   the repository, `ambiguous-local-digest` when several digests are recorded or
+   the image carries another tag of that repository. The operator's next step
+   differs between the two; both are `unknown`.
 
 `RepoDigests` membership alone is **not** a valid test, and the spike proves it:
 two tags of the same repository resolved from two different indexes that share
@@ -177,23 +191,31 @@ store does not expose. Not attempted.
 
 ### Scope and refusals
 
-- Only `image:` references with a mutable tag are tracked. `build:` services
-  (ADR 0022), digest-pinned references and bare image IDs are `not tracked`,
-  without any network call. A `build:` service can only receive a base-image
-  fix through a rebuild, which is CI's job — the panel says so instead of
-  implying an omission.
+- Only `image:` references with a mutable tag are tracked. A service enabled by
+  an active Compose profile is tracked like any other: Compose already omits
+  inactive services from the effective configuration, so a listed `profiles:`
+  entry is not a reason to skip it. `build:` services (ADR 0022), digest-pinned
+  references and bare image IDs are `not tracked`, without any network call. A
+  `build:` service can only receive a base-image fix through a rebuild, which is
+  CI's job — the panel says so instead of implying an omission.
 - No credential storage or UI. The CLI reads its own client configuration, so an
   operator can mount a read-only `DOCKER_CONFIG` directory with least-privilege
   `auths` entries. Verified: `401 Unauthorized` without it, `not found` (auth
   accepted) with it, and a push + inspect through the same config. Pull and
   Check therefore share one configuration — a stack can never be pullable and
-  uncheckable, or the reverse. Credential helpers (`credsStore`) are absent from
-  the image and produce `unknown`, which is stated in the documentation.
+  uncheckable, or the reverse. Buildx writes its own state and lock under
+  `BUILDX_CONFIG` (default `$DOCKER_CONFIG/buildx`), so a read-only credentials
+  mount needs a writable `BUILDX_CONFIG`; the panel falls back to a panel-owned
+  ephemeral directory under the system temp dir when the variable is unset, and
+  never writes to `DOCKER_CONFIG`. Credential helpers (`credsStore`) are absent
+  from the image and produce `unknown`, which is stated in the documentation.
 - No CVE claim. A different digest proves neither a fix nor compatibility; the
   panel never says "security update". A remote version label is not displayed:
   it is not reliably present in a manifest.
 - The image reference is validated before reaching the CLI (no scheme, no
-  userinfo, bounded length) and passed after `--`. Output parsing keeps only
+  userinfo, bounded length) and passed as one positional argument. A reference
+  must start with a letter or digit, so it can never be parsed as a flag; the
+  `imagetools` argument order does not rely on `--`. Output parsing keeps only
   bounded fields. Raw registry output is never rendered or logged.
 
 ## Spike evidence

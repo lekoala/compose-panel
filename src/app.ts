@@ -78,6 +78,14 @@ import { parseContainerInspect, parseContainerLs, type ContainerPort } from "./c
 import { createDiskUsageCache, loadInsights, statDisplayName } from "./insights.ts";
 import { StackConflictError, StackPartialError, StackValidationError, readEditableStack, saveEditableStack } from "./editor.ts";
 import { OperationManager, OperationsDisabledError, isOperationAction, type OperationView } from "./operations.ts";
+import {
+    ImageCheckBusyError,
+    ImageCheckDisabledError,
+    ImageCheckManager,
+    ImageCheckRefusedError,
+    summarizeCheck,
+    type ImageCheckView,
+} from "./image-check.ts";
 import { HostMaintenance, MaintenanceDisabledError } from "./host-maintenance.ts";
 import { isMaintenanceScope } from "./maintenance.ts";
 import { MaintenanceBusyError, StackBusyError, StackLocks } from "./locks.ts";
@@ -152,6 +160,7 @@ export interface AppOptions {
 export interface App {
     fetch(request: Request): Promise<Response>;
     operations: OperationManager;
+    images: ImageCheckManager;
     logs: LogManager;
     maintenance: HostMaintenance;
     sseSubscriptions(): number;
@@ -388,11 +397,32 @@ export function createApp(options: AppOptions): App {
             maxReadLines: config.audit.maxReadLines,
             maxFileBytes: config.audit.maxFileBytes,
         });
+    const imageCheck = new ImageCheckManager(provider, {
+        // The outcome is recorded when the check ends, even if nobody watches it.
+        // Counts only: raw registry output and digests stay out of the log.
+        onFinish: (view) => {
+            const summary = summarizeCheck(view);
+            const detail = view.discarded
+                ? "the stack changed while the check ran"
+                : [
+                      `${summary.compared} compared`,
+                      `${summary.updates} update available`,
+                      `${summary.unknown} unknown`,
+                      `${summary.untracked} not tracked`,
+                  ].join(", ");
+            void audit.record({ event: "image-check", result: view.discarded ? "discarded" : "success", stack: view.stack, detail });
+        },
+    });
     const operations = new OperationManager(locks, provider, {
         timeoutMs: config.operationTimeoutMs,
         maxBytes: config.dockerMaxBytes,
+        // A mutation starts and ends with a possibly different engine-wide
+        // image store: a verdict recorded before it cannot describe any stack
+        // afterwards (a tag can be shared, ADR 0041).
+        onBegin: () => imageCheck.imagesChanged(),
         // The outcome is recorded when the action ends, even if nobody watches it.
-        onFinish: (operation) =>
+        onFinish: (operation) => {
+            imageCheck.imagesChanged();
             void audit.record({
                 event: operation.source ? "toolbox" : operation.action === "rollout" ? "rollout" : "operation",
                 result: operation.status,
@@ -412,7 +442,8 @@ export function createApp(options: AppOptions): App {
                     ]
                         .filter(Boolean)
                         .join(", ") || undefined,
-            }),
+            });
+        },
     });
     const logs = new LogManager(provider, {
         tailLines: config.logTailLines,
@@ -1124,6 +1155,7 @@ export function createApp(options: AppOptions): App {
         }
         const href = `/stacks/${encodeURIComponent(stack.name)}`;
         const operation = operations.forStack(stack.name);
+        const check = imageCheck.forStack(stack.name);
         const owner = managedBy(status.declared);
         const project = status.project ? `<span>Compose project <code>${escapeHtml(status.project)}</code></span>` : "";
         return htmlResponse(
@@ -1149,6 +1181,14 @@ export function createApp(options: AppOptions): App {
                         { name: stack.name, csrf, busy: operation?.status === "running" },
                         status.recreatePending,
                         status.rolloutDeclared,
+                        {
+                            view: check,
+                            running: imageCheck.isRunning(),
+                            // Only a supported stack page offers the check: the route
+                            // refuses an unknown, ambiguous or undeployed project.
+                            enabled: status.project !== null && (status.state === "running" || status.state === "stopped"),
+                            mutationRunning: operation?.status === "running",
+                        },
                     ) +
                     databaseExplorerSection(stack.source) +
                     (await domainsCard(
@@ -1168,7 +1208,12 @@ export function createApp(options: AppOptions): App {
                         status.services.map((service) => service.name),
                     ) +
                     `<section class="card"><details><summary>${escapeHtml(stack.filename)}</summary><pre class="output">${escapeHtml(stack.source)}</pre></details></section>`,
-                { ...pageChrome(csrf), scripts: ["/app.js"], nav: await sidebarNav("stacks", stack.name) },
+                {
+                    ...pageChrome(csrf),
+                    scripts: ["/app.js"],
+                    nav: await sidebarNav("stacks", stack.name),
+                    refreshSeconds: check?.status === "running" ? 5 : undefined,
+                },
             ),
             statusCode,
         );
@@ -1420,6 +1465,9 @@ export function createApp(options: AppOptions): App {
                 actor: clientKey(request, config),
                 stack: name,
             });
+            // The effective configuration may now reference other images: a
+            // remote verdict recorded before the save can no longer describe it.
+            if (result.changed) imageCheck.changed(name);
             return redirect(`/stacks/${encodeURIComponent(name)}?saved=${result.changed ? "1" : "0"}`, 303);
         } catch (error) {
             if (error instanceof StackValidationError) {
@@ -1632,6 +1680,68 @@ export function createApp(options: AppOptions): App {
             }
             throw error;
         }
+    }
+
+    /**
+     * Start an explicit remote image check (ADR 0041): does each tracked tag
+     * still resolve, in its registry, to the digest Docker recorded for it?
+     * Read-only and outbound; it never downloads, never touches a container and
+     * never takes the stack lock. The page reads the result on its next render.
+     */
+    async function handleImageCheck(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+        // Validates the name and rejects unknown stacks before any Docker call.
+        await locateComposeFile(stacksRoot, name);
+        const actor = clientKey(request, config);
+        const refuse = async (message: string, status = 409): Promise<Response> => {
+            await recordAudit({ event: "image-check", result: "refused", actor, stack: name, detail: message });
+            return renderStackDetail(name, csrf, { kind: "error", text: `${message} Nothing was checked.` }, status);
+        };
+        if (shuttingDown) return await refuse("The panel is shutting down.", 503);
+        if (selfUpdatePending) return await refuse(SELF_UPDATE_RUNNING);
+        // Only a deployed stack has a verified project to read the effective
+        // configuration and the local digests from.
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind === "invalid") throw new StackError(ENV_NOT_REGULAR, 409);
+        if (context.kind === "ambiguous") {
+            return await refuse("The panel cannot tell which Docker Compose project belongs to this stack.");
+        }
+        if (context.kind === "unavailable") {
+            return await refuse("Docker did not respond, so the panel could not check this stack's images.", 503);
+        }
+        if (context.kind === "absent") {
+            return await refuse("This stack is not deployed yet, so there is no project to check. Use Up or Pull + up first.");
+        }
+        // Discovery awaited Docker: re-check the session before starting anything.
+        if (!sessions.isActive(session.id)) {
+            await recordAudit({ event: "image-check", result: "refused", actor, stack: name, detail: "session ended" });
+            return sessionEnded();
+        }
+        try {
+            await imageCheck.start({
+                stack: name,
+                target: {
+                    project: context.project ?? undefined,
+                    composeFile: context.composeFile,
+                    cwd: context.cwd,
+                    envFile: context.envFile ?? undefined,
+                },
+            });
+        } catch (error) {
+            if (error instanceof ImageCheckBusyError || error instanceof ImageCheckRefusedError) {
+                return await refuse(error.message);
+            }
+            if (error instanceof ImageCheckDisabledError) return await refuse("The panel is shutting down.", 503);
+            throw error;
+        }
+        await recordAudit({ event: "image-check", result: "started", actor, stack: name });
+        return redirect(back, 303);
     }
 
     /**
@@ -3407,6 +3517,15 @@ export function createApp(options: AppOptions): App {
                 return routeError(error, session.csrf, safeName(operationsMatch[1]!));
             }
         }
+        const imageCheckMatch = /^\/stacks\/([^/]+)\/image-check$/.exec(url.pathname);
+        if (imageCheckMatch) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return await handleImageCheck(request, decodeName(imageCheckMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(imageCheckMatch[1]!));
+            }
+        }
         const rolloutMatch = /^\/stacks\/([^/]+)\/rollout$/.exec(url.pathname);
         if (rolloutMatch && method === "POST") {
             try {
@@ -3556,6 +3675,7 @@ export function createApp(options: AppOptions): App {
     return {
         fetch,
         operations,
+        images: imageCheck,
         logs,
         maintenance,
         sseSubscriptions: () => activeSse,
@@ -3566,12 +3686,18 @@ export function createApp(options: AppOptions): App {
             operations.refuseNew();
             logs.refuseNew();
             maintenance.refuseNew();
-            // One shared deadline for operations, saves and follows; unresolved work stays
+            // One shared deadline for operations, saves, checks and follows; unresolved work stays
             // unknown and is never reported as done.
             let timer: ReturnType<typeof setTimeout> | undefined;
             try {
                 await Promise.race([
-                    Promise.allSettled([logs.shutdown(graceMs), operations.shutdown(graceMs), maintenance.shutdown(graceMs), ...saves]),
+                    Promise.allSettled([
+                        logs.shutdown(graceMs),
+                        operations.shutdown(graceMs),
+                        maintenance.shutdown(graceMs),
+                        imageCheck.shutdown(graceMs),
+                        ...saves,
+                    ]),
                     new Promise<void>((resolve) => {
                         timer = setTimeout(resolve, graceMs);
                     }),

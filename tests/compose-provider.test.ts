@@ -321,6 +321,77 @@ describe("DockerComposeProvider", () => {
         }
     });
 
+    test("remote image check reads the manifest through buildx and never accepts a pinned reference (ADR 0041)", async () => {
+        const { runner, calls } = recording({
+            ...ok,
+            stdout: JSON.stringify({ mediaType: "application/vnd.oci.image.index.v1+json", digest: `sha256:${"a".repeat(64)}` }),
+        });
+        const provider = createComposeProvider({ runner });
+        await provider.inspectRemoteManifest("ghcr.io/acme/app:1.2.3", { timeoutMs: 1234 });
+        expect(calls[0]!.args).toEqual(["buildx", "imagetools", "inspect", "--format", "{{json .Manifest}}", "ghcr.io/acme/app:1.2.3"]);
+        // An option can never be read as a flag: the reference is validated first.
+        for (const ref of ["--help", `app@sha256:${"a".repeat(64)}`, "app:1/../x"]) {
+            const refused = await provider.inspectRemoteManifest(ref);
+            expect(refused.code).not.toBe(0);
+        }
+        expect(calls).toHaveLength(1);
+    });
+
+    test("gives buildx a writable state directory while keeping DOCKER_CONFIG untouched", async () => {
+        const envs: (Record<string, string> | undefined)[] = [];
+        const provider = createComposeProvider({
+            runner: async (_args, options) => {
+                envs.push(options?.env);
+                return ok;
+            },
+        });
+        const before = { buildx: process.env.BUILDX_CONFIG, docker: process.env.DOCKER_CONFIG };
+        try {
+            delete process.env.BUILDX_CONFIG;
+            // The documented private-registry mount: read-only credentials.
+            process.env.DOCKER_CONFIG = "/etc/compose-panel/docker-config";
+            await provider.inspectRemoteManifest("app:1");
+            expect(envs[0]?.DOCKER_CONFIG).toBe("/etc/compose-panel/docker-config");
+            expect(envs[0]?.BUILDX_CONFIG).toBeTruthy();
+            // An operator-provided value is never overridden.
+            process.env.BUILDX_CONFIG = "/var/tmp/buildx";
+            await provider.inspectRemoteManifest("app:1");
+            expect(envs[1]?.BUILDX_CONFIG).toBe("/var/tmp/buildx");
+        } finally {
+            if (before.buildx === undefined) delete process.env.BUILDX_CONFIG;
+            else process.env.BUILDX_CONFIG = before.buildx;
+            if (before.docker === undefined) delete process.env.DOCKER_CONFIG;
+            else process.env.DOCKER_CONFIG = before.docker;
+        }
+    });
+
+    test("projects config onto image facts, including active profiled services", async () => {
+        const { runner, calls } = recording({
+            ...ok,
+            stdout: JSON.stringify({
+                services: {
+                    web: { image: "ghcr.io/acme/app:1.2.3", environment: { TOKEN: "secret" } },
+                    built: { build: { context: "." } },
+                    both: { image: "local:1", build: "." },
+                    // Compose leaves inactive profiles out of the effective
+                    // config; a listed service with `profiles:` is active.
+                    tools: { image: "tools:1", profiles: ["tools"] },
+                },
+            }),
+        });
+        const provider = createComposeProvider({ runner });
+        const facts = await provider.serviceImageFacts({ project: "demo", composeFile: "compose.yaml", cwd: "/opt/stacks/demo" });
+        expect([...facts!]).toEqual([
+            ["web", { image: "ghcr.io/acme/app:1.2.3", build: false }],
+            ["built", { image: null, build: true }],
+            ["both", { image: "local:1", build: true }],
+            ["tools", { image: "tools:1", build: false }],
+        ]);
+        // Without a verified project the read still works and passes no `-p`.
+        await provider.serviceImageFacts({ composeFile: "compose.yaml", cwd: "/opt/stacks/demo" });
+        expect(calls[1]!.args.slice(0, 6)).toEqual(["compose", "--project-directory", "/opt/stacks/demo", "-f", "compose.yaml", "config"]);
+    });
+
     test("scopes log reads to a validated service after `--`", async () => {
         const { runner, calls } = recording();
         const provider = createComposeProvider({ runner });

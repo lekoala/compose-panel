@@ -100,13 +100,13 @@ is separate from deployed metadata; neither is stored. See [ADR 0023](adr/0023-d
 Engine-specific CLI calls are encapsulated in `src/compose-provider.ts` (see [ADR 0005](adr/0005-compose-provider-boundary.md)). The rest of the code depends on three operations — `listProjects`, `projectServices`, `validateConfig` — never on the concrete executable or its argument layout. V1 implements Docker only; Podman is rejected explicitly rather than emulated. The provider detects its capabilities at startup, and an unsupported operation fails loudly instead of producing a silently wrong result.
 
 ## Operations
-Three classes, without a generic framework:
+Four classes, without a generic framework:
 1. **Short reads**: discovery, `compose ps`, `compose config`; short timeout.
 2. **Long mutations**: allow-listed `up`/`pull`/`stop`/`start`/`restart`/`down`/`pull-up`, built by the provider (`up -d`, detached); one per stack via the lock; the operation is kept in memory and its output is consumed even without a client. Success only on exit 0, timeout reported as unknown. `up`, `restart` and `pull` take one optional validated service (`--no-deps` for the first two, `--` for the last); scoped `up` never creates. An explicit `pull` runs with `--policy always`, so a versioned tag already present is refreshed instead of skipped ([ADR 0021](adr/0021-targeted-service-operations.md), [ADR 0041](adr/0041-targeted-pull-and-remote-image-check.md)).
-3. **Subscriptions**: `logs --follow`; stop the subprocess when the last reader has left. One subprocess per (stack, service, tail) selection, two selections per stack at most.
+3. **Remote image check**: one explicit background check per panel at a time, 30-second budget, no lock. `src/image-check.ts` keeps the last result in memory per stack and publishes it only if the generation, effective references and local digests are unchanged; any started mutation drops every stored result (a tag can be shared by several stacks) and a save drops its own stack. The provider owns the fixed `buildx imagetools inspect` call and gives Buildx a writable state directory without touching `DOCKER_CONFIG`. Read-only and outbound: no download, no container change, no cache ([ADR 0041](adr/0041-targeted-pull-and-remote-image-check.md)).
+4. **Subscriptions**: `logs --follow`; stop the subprocess when the last reader has left. One subprocess per (stack, service, tail) selection, two selections per stack at most.
 
-A fourth class — declared, non-interactive application actions — runs a
-declared Composer/npm/Bun script inside a stack service ([ADR 0026](adr/0026-application-toolbox.md));
+A fifth class — declared, non-interactive application actions — runs a declared Composer/npm/Bun script inside a stack service ([ADR 0026](adr/0026-application-toolbox.md));
 see *Application actions* below.
 
 ## Service rollout (opt-in)

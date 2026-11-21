@@ -53,6 +53,12 @@ export class OperationsDisabledError extends Error {
 export interface OperationManagerOptions {
     timeoutMs: number;
     maxBytes: number;
+    /**
+     * Called when an operation is accepted and holds its stack lock, before
+     * anything runs (e.g. to drop a remote image check that can no longer
+     * describe the stack).
+     */
+    onBegin?: (stack: string) => void;
     /** Called once when an operation reaches its final status (e.g. for the audit log). */
     onFinish?: (operation: OperationView) => void;
 }
@@ -222,6 +228,12 @@ export class OperationManager {
             );
         }
         if (input.project) this.projects.add(input.project);
+
+        try {
+            this.options.onBegin?.(input.stack);
+        } catch {
+            /* a bookkeeping hook must not refuse an accepted operation */
+        }
 
         const operation: OperationView = {
             id: randomSuffix(),

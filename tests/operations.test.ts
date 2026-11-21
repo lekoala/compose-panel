@@ -31,6 +31,8 @@ function fakeProvider(
         stackMetadata: async () => ({}),
         inspectImages: async () => ok,
         inspectContainers: async () => ok,
+        serviceImageFacts: async () => null,
+        inspectRemoteManifest: async () => ok,
         serviceConfigHashes: async () => null,
         validateConfig: async () => ok,
         listServices: async () => [],
