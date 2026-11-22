@@ -122,6 +122,36 @@ export function sameDirIdentity(a: DirIdentity, b: DirIdentity): boolean {
     return a.dev === b.dev && a.ino === b.ino;
 }
 
+export interface AnchoredDir {
+    /** Canonical path, or `/proc/self/fd/<fd>` on Linux. */
+    path: string;
+    close: () => Promise<void>;
+}
+
+/**
+ * Open a directory without following a final symlink and return a path whose
+ * parent cannot be swapped between the check and the file operation. On Linux
+ * the handle is held for the whole operation, so a `generated` directory
+ * replaced by a symlink cannot redirect reads or atomic writes. Elsewhere the
+ * canonical path is returned after the lstat check (managed sites are Linux-
+ * only creations, but reads may happen in a Windows test process).
+ */
+export async function anchorDir(path: string, message: string): Promise<AnchoredDir> {
+    const info = await lstat(path);
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new FileSafetyError(message);
+    if (process.platform !== "linux") return { path, close: async () => {} };
+    const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0));
+    try {
+        const opened = await handle.stat();
+        if (!opened.isDirectory() || !sameDirIdentity(opened, info))
+            throw new FileSafetyError("This folder changed while it was being opened, so the panel will not use it.");
+    } catch (error) {
+        await handle.close();
+        throw error;
+    }
+    return { path: `/proc/self/fd/${handle.fd}`, close: () => handle.close() };
+}
+
 /**
  * Walk `components` below `root`, lstat-checking each one: a symlink or a
  * non-directory throws `message`, so a managed tree cannot be redirected

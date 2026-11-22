@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readlink, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readlink, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCommand } from "../src/docker.ts";
-import { fetchAndPublishGitRelease } from "../src/git-release.ts";
+import { fetchAndPublishGitRelease, revisionScript } from "../src/git-release.ts";
+import { buildManagedSite } from "../src/managed-site-generate.ts";
 import { MANAGED_SITE_PATHS, parseManagedSiteManifest, type ManagedSiteManifest } from "../src/managed-site.ts";
 import {
     managedSiteAttemptPath,
@@ -72,11 +73,11 @@ async function git(args: string[], cwd: string): Promise<string> {
     return result.stdout.trim();
 }
 
-async function waitForRevision(probe: ManagedSiteProbe, expected: string, deadlineMs = 60_000): Promise<void> {
+async function waitForRevision(probe: ManagedSiteProbe, expected: string, deadlineMs = 60_000, probePort = port): Promise<void> {
     const deadline = Date.now() + deadlineMs;
     let last: string | null = null;
     for (;;) {
-        const answer = await probe(port);
+        const answer = await probe(probePort);
         last = answer ? parseProbeAnswer(answer.status, answer.body) : null;
         if (last === expected) return;
         if (Date.now() > deadline) throw new Error(`revision ${expected} was never served; last answer ${last ?? "none"}`);
@@ -84,8 +85,8 @@ async function waitForRevision(probe: ManagedSiteProbe, expected: string, deadli
     }
 }
 
-async function fetchInLab(path: string): Promise<string | null> {
-    const result = await runCommand("docker", ["exec", labContainer, "wget", "-q", "-O", "-", `http://127.0.0.1:${port}${path}`], {
+async function fetchInLab(path: string, targetPort = port): Promise<string | null> {
+    const result = await runCommand("docker", ["exec", labContainer, "wget", "-q", "-O", "-", `http://127.0.0.1:${targetPort}${path}`], {
         env: outerDockerEnv(labOuterContext),
         timeoutMs: 4000,
         maxBytes: 4096,
@@ -458,4 +459,135 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
             await rm(root, { recursive: true, force: true });
         }
     }, 600_000);
+
+    test("the generated gateway follows a runtime IP change without recreating the gateway", async () => {
+        requireEnv();
+        const testPort = 41000 + (port % 900);
+        const root = await mkdtemp(join(realpathSync(shared), "managed-site-ip-"));
+        const stackDir = join(root, "stack");
+        const project = `cp-ip-${process.pid}`;
+        const sha = "e".repeat(40);
+        const runtimeDir = join(stackDir, MANAGED_SITE_PATHS.runtime);
+        const currentPath = join(runtimeDir, "current");
+        const composeFile = join(stackDir, "compose.yaml");
+        const probe = createLabProbe({ labContainer, labOuterContext });
+        const compose = async (...args: string[]): Promise<string> => {
+            const result = await runCommand("docker", ["compose", "-p", project, "-f", composeFile, ...args], {
+                cwd: stackDir,
+                timeoutMs: 180_000,
+                maxBytes: 8 * 1024 * 1024,
+            });
+            if (result.code !== 0 || result.timedOut) {
+                throw new Error(
+                    `docker compose ${args.join(" ")} failed (${result.code}): ${result.stderr.trim() || result.stdout.trim()}`,
+                );
+            }
+            return result.stdout.trim();
+        };
+        try {
+            await chmod(root, 0o755);
+            await mkdir(stackDir, { recursive: true });
+            const built = buildManagedSite({
+                stackDir,
+                siteId: `cp-ip-${process.pid}`,
+                project,
+                port: testPort,
+                gitUrl: GIT_URL,
+                gitRef: GIT_REF,
+                channel: "php-8.3",
+            });
+            if (!built.ok) throw new Error(built.reason);
+            await writeFile(composeFile, built.artifacts.compose);
+            await writeFile(join(stackDir, "compose-panel-site.json"), built.manifestSource);
+            await mkdir(join(stackDir, "generated"), { recursive: true });
+            await writeFile(join(stackDir, "generated", "nginx-site.conf"), built.artifacts.gateway);
+            await writeFile(join(stackDir, "generated", "opcache.ini"), built.artifacts.opcache);
+            const release = join(runtimeDir, "releases", sha);
+            await mkdir(join(release, ".compose-panel"), { recursive: true });
+            await mkdir(join(release, "public"), { recursive: true });
+            await writeFile(join(release, "public", "index.php"), `<?php require dirname(__DIR__) . '/.compose-panel/revision.php';\n`);
+            await writeFile(join(release, ".compose-panel", "revision.php"), revisionScript(sha));
+            await mkdir(join(stackDir, "site", "private", "releases"), { recursive: true });
+            await writeFile(
+                join(stackDir, "site", "private", "releases", `${sha}.json`),
+                `${JSON.stringify({ version: 1, siteId: built.manifest.siteId, release: sha, status: "complete" })}\n`,
+            );
+            await symlink(`releases/${sha}`, currentPath);
+
+            await compose("up", "-d", "--pull", "never");
+            try {
+                await waitForRevision(probe, sha, 60_000, testPort);
+            } catch (error) {
+                console.error("gateway ps:", await compose("ps"));
+                console.error("gateway logs:", await compose("logs", "gateway"));
+                console.error("runtime logs:", await compose("logs", "runtime"));
+                throw error;
+            }
+            const gatewayId = await compose("ps", "-q", "gateway");
+            const runtimeBefore = await compose("ps", "-q", "runtime");
+            const ipBefore = await dockerOk(["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", runtimeBefore]);
+
+            await compose("up", "-d", "--no-deps", "--no-build", "--pull", "never", "--force-recreate", "runtime");
+            const runtimeAfter = await compose("ps", "-q", "runtime");
+            expect(runtimeAfter).not.toBe(runtimeBefore);
+            expect(await compose("ps", "-q", "gateway")).toBe(gatewayId);
+            let ipAfter = await dockerOk(["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", runtimeAfter]);
+            if (ipAfter === ipBefore) {
+                // Docker may reuse the freed address. Move the runtime to another
+                // address on its own network while keeping the same containers.
+                const network = `${project}_site`;
+                const subnet = await dockerOk(["network", "inspect", "-f", "{{range .IPAM.Config}}{{.Subnet}}{{end}}", network]);
+                const prefix = subnet.split("/")[0]!.split(".").slice(0, 3).join(".");
+                const gatewayIp = await dockerOk(["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", gatewayId]);
+                let moved = false;
+                for (const last of [250, 251, 249, 248, 247, 246]) {
+                    const candidate = `${prefix}.${last}`;
+                    if (candidate === ipBefore || candidate === gatewayIp) continue;
+                    const disconnected = await runCommand("docker", ["network", "disconnect", network, runtimeAfter], {
+                        timeoutMs: 30_000,
+                        maxBytes: 1024 * 1024,
+                    });
+                    if (disconnected.code !== 0) continue;
+                    const connected = await runCommand(
+                        "docker",
+                        ["network", "connect", "--ip", candidate, "--alias", "runtime", network, runtimeAfter],
+                        {
+                            timeoutMs: 30_000,
+                            maxBytes: 1024 * 1024,
+                        },
+                    );
+                    if (connected.code === 0) {
+                        ipAfter = candidate;
+                        moved = true;
+                        break;
+                    }
+                    await runCommand("docker", ["network", "connect", "--alias", "runtime", network, runtimeAfter], {
+                        timeoutMs: 30_000,
+                        maxBytes: 1024 * 1024,
+                    }).catch(() => {});
+                }
+                expect(moved).toBe(true);
+            }
+            expect(ipAfter).not.toBe(ipBefore);
+            expect(await compose("ps", "-q", "gateway")).toBe(gatewayId);
+
+            // The generated config resolves `runtime` through Docker DNS on
+            // every request. The old static upstream would keep the previous IP
+            // until the config was reloaded or the gateway recreated.
+            try {
+                await waitForRevision(probe, sha, 30_000, testPort);
+            } catch (error) {
+                console.error("gateway logs after IP change:", await compose("logs", "gateway"));
+                console.error("runtime logs after IP change:", await compose("logs", "runtime"));
+                throw error;
+            }
+            expect(await fetchInLab("/", testPort)).toBe(`${sha}\n`);
+        } finally {
+            await runCommand("docker", ["compose", "-p", project, "-f", composeFile, "down", "-v", "--remove-orphans"], {
+                cwd: stackDir,
+                timeoutMs: 120_000,
+            }).catch(() => {});
+            await rm(root, { recursive: true, force: true });
+        }
+    }, 300_000);
 });

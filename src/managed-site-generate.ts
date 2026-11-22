@@ -14,6 +14,7 @@ import {
     MANAGED_SITE_GENERATION,
     MANAGED_SITE_PATHS,
     managedSiteChannel,
+    managedSitePersistentPath,
     parseManagedSiteManifest,
     type ManagedSiteManifest,
 } from "./managed-site.ts";
@@ -105,7 +106,7 @@ export function renderManagedSiteArtifacts(
     const pathMounts = paths
         .map(
             (path) =>
-                `      - type: bind\n        source: ${posix.join(stackDir, path)}\n        target: ${posix.join(stackDir, path)}\n        read_only: false`,
+                `      - type: bind\n        source: ${yamlString(managedSitePersistentPath(stackDir, path))}\n        target: ${yamlString(managedSitePersistentPath(stackDir, path))}\n        read_only: false`,
         )
         .join("\n");
     const compose = `name: ${manifest.project}
@@ -120,11 +121,11 @@ services:
       - "127.0.0.1:${manifest.gateway.port}:80"
     volumes:
       - type: bind
-        source: ${runtimeDir}
-        target: ${runtimeDir}
+        source: ${yamlString(runtimeDir)}
+        target: ${yamlString(runtimeDir)}
         read_only: true
       - type: bind
-        source: ${posix.join(generatedDir, "nginx-site.conf")}
+        source: ${yamlString(posix.join(generatedDir, "nginx-site.conf"))}
         target: /etc/nginx/conf.d/default.conf
         read_only: true
     networks:
@@ -135,11 +136,11 @@ services:
     restart: unless-stopped
     volumes:
       - type: bind
-        source: ${runtimeDir}
-        target: ${runtimeDir}
+        source: ${yamlString(runtimeDir)}
+        target: ${yamlString(runtimeDir)}
         read_only: true
       - type: bind
-        source: ${posix.join(generatedDir, "opcache.ini")}
+        source: ${yamlString(posix.join(generatedDir, "opcache.ini"))}
         target: /usr/local/etc/php/conf.d/zz-opcache.ini
         read_only: true
 ${pathMounts ? `${pathMounts}\n` : ""}    networks:
@@ -156,13 +157,19 @@ server {
 \tlisten 80;
 \tserver_name _;
 
+\t# Docker's embedded DNS. The upstream is resolved per request through a
+\t# variable, so recreating the runtime service with a new IP cannot leave the
+\t# kept gateway dialing a stale address. valid=10s bounds the stale window.
+\tresolver 127.0.0.11 valid=10s ipv6=off;
+\tset $php_fpm runtime:9000;
+
 \troot ${runtimeDir}/current/${manifest.publicRoot};
 \tindex index.php;
 
 \tlocation = /.compose-panel/revision {
 \t\tinclude fastcgi_params;
 \t\tfastcgi_param SCRIPT_FILENAME ${runtimeDir}/current/.compose-panel/revision.php;
-\t\tfastcgi_pass runtime:9000;
+\t\tfastcgi_pass $php_fpm;
 \t}
 
 \tlocation ^~ /.compose-panel/ {
@@ -181,7 +188,7 @@ server {
 \t\tinclude fastcgi_params;
 \t\tfastcgi_param SCRIPT_FILENAME $document_root/index.php;
 \t\tfastcgi_param SCRIPT_NAME /index.php;
-\t\tfastcgi_pass runtime:9000;
+\t\tfastcgi_pass $php_fpm;
 \t}
 
 \tlocation ~ \\.php$ {
@@ -232,6 +239,24 @@ function isCanonicalAbsolute(value: string): boolean {
     // managed stack path is restricted to a conservative character set.
     if (!/^\/(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+$/.test(value)) return false;
     return posix.normalize(value) === value;
+}
+
+/** YAML single-quoted scalar: literal characters, with `'` doubled. */
+function yamlString(value: string): string {
+    return `'${value.replaceAll("'", "''")}'`;
+}
+
+/**
+ * The loopback port declared by a Compose file produced by this generator.
+ * `null` when the file does not carry the exact generated line: the caller then
+ * treats the port as unknown and refuses a port change while a domain is
+ * attached.
+ */
+export function generatedGatewayPort(source: string): number | null {
+    const match = /^\s*-\s*"127\.0\.0\.1:(\d{1,5}):80"\s*$/m.exec(source);
+    if (!match) return null;
+    const port = Number(match[1]);
+    return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
 }
 
 export type ManagedSiteDraft = {

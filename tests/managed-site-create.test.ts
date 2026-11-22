@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandResult } from "../src/docker.ts";
@@ -31,7 +31,7 @@ async function site(stackName = "acme-shop") {
         gitUrl: "https://github.com/acme/shop.git",
         gitRef: "refs/heads/main",
         channel: "php-8.3",
-        paths: ["shared/uploads"],
+        paths: ["shared/uploads/avatars"],
     });
     if (!built.ok) throw new Error(built.reason);
     await createManagedSite(root, { stackName, manifestSource: built.manifestSource, artifacts: built.artifacts }, provider(), 1024 * 1024);
@@ -96,12 +96,14 @@ describe.skipIf(process.platform !== "linux")("createManagedSite", () => {
             expect(manifest.manifest.owner).toBe("managed");
             expect(manifest.manifest.gateway).toEqual({ port: 41001 });
             expect(await readFile(join(stackDir, "compose.yaml"), "utf8")).toContain('"127.0.0.1:41001:80"');
+            expect(await readFile(join(stackDir, "compose.yaml"), "utf8")).toContain(`source: '${stackDir}/site/shared/uploads/avatars'`);
             expect(await readFile(join(stackDir, "generated", "nginx-site.conf"), "utf8")).toContain(
                 `root ${stackDir}/site/runtime/current/public;`,
             );
             expect((await stat(join(stackDir, "site", "staging"))).mode & 0o777).toBe(0o700);
             expect((await stat(join(stackDir, "site", "private"))).mode & 0o777).toBe(0o700);
             expect((await stat(join(stackDir, "site", "runtime", "releases"))).mode & 0o777).toBe(0o755);
+            expect((await stat(join(stackDir, "site", "shared", "uploads", "avatars"))).mode & 0o777).toBe(0o755);
             expect((await stat(stackDir)).mode & 0o777).toBe(0o755);
         } finally {
             await rm(root, { recursive: true, force: true });
@@ -113,8 +115,8 @@ describe.skipIf(process.platform !== "linux")("createManagedSite", () => {
         try {
             const built = buildManagedSite({
                 stackDir,
-                siteId: "other",
-                project: "other",
+                siteId: "acme-shop",
+                project: "acme-shop",
                 port: 41002,
                 gitUrl: "https://github.com/acme/other.git",
                 gitRef: "refs/heads/main",
@@ -130,6 +132,43 @@ describe.skipIf(process.platform !== "linux")("createManagedSite", () => {
                 ),
             ).rejects.toThrow();
             expect(await readFile(join(stackDir, "compose-panel-site.json"), "utf8")).toContain('"siteId": "acme-shop"');
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("publishes nothing when creation is interrupted before the rename", async () => {
+        const root = await mkdtemp(join(tmpdir(), "compose-panel-create-interrupt-"));
+        try {
+            const stackDir = join(root, "acme-shop");
+            const built = buildManagedSite({
+                stackDir,
+                siteId: "acme-shop",
+                project: "acme-shop",
+                port: 41001,
+                gitUrl: "https://github.com/acme/shop.git",
+                gitRef: "refs/heads/main",
+                channel: "php-8.3",
+            });
+            if (!built.ok) throw new Error(built.reason);
+            let finalWasAbsent = false;
+            await expect(
+                createManagedSite(
+                    root,
+                    { stackName: "acme-shop", manifestSource: built.manifestSource, artifacts: built.artifacts },
+                    provider(),
+                    1024 * 1024,
+                    {
+                        beforePublish: async () => {
+                            finalWasAbsent = !(await Bun.file(join(stackDir, "compose.yaml")).exists());
+                            throw new Error("interrupted");
+                        },
+                    },
+                ),
+            ).rejects.toThrow("interrupted");
+            expect(finalWasAbsent).toBe(true);
+            expect(await Bun.file(join(stackDir, "compose.yaml")).exists()).toBe(false);
+            expect((await readdir(root)).filter((entry) => entry.startsWith(".cp-site-"))).toEqual([]);
         } finally {
             await rm(root, { recursive: true, force: true });
         }

@@ -140,6 +140,31 @@ describe("checkManagedSiteProfile", () => {
         expect(check(baseConfig())).toEqual({ ok: true });
     });
 
+    test("accepts a declared persistent path under site/shared on the runtime only", () => {
+        const declared = `${stackDir}/site/shared/uploads`;
+        const config = mutated((value) => {
+            value.services.php!.volumes = [
+                { type: "bind", source: runtimeDir, target: runtimeDir, read_only: true },
+                { type: "bind", source: declared, target: declared, read_only: false },
+            ];
+        });
+        const facts = factsOf(config);
+        if (!facts) throw new Error("fixture did not project");
+        const result = checkManagedSiteProfile({
+            manifest: {
+                ...manifest,
+                owner: "managed",
+                gateway: { port: 18431 },
+                runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+                generation: "1",
+                paths: ["shared/uploads"],
+            },
+            stackDir,
+            facts,
+        });
+        expect(result).toEqual({ ok: true });
+    });
+
     test("refuses another or a missing effective project name", () => {
         expect(refused(mutated((config) => (config.name = "other")))).toBe(true);
         expect(refused(mutated((config) => delete config.name))).toBe(true);

@@ -68,7 +68,7 @@ export interface OperationManagerOptions {
      * check passes, the request awaits Docker, and a deploy leaves a pending
      * marker before the lock is acquired.
      */
-    admit?: (stack: string) => Promise<string | null>;
+    admit?: (stack: string, action: string) => Promise<string | null>;
 }
 
 /**
@@ -214,10 +214,10 @@ export class OperationManager {
         return this.shuttingDown;
     }
 
-    private async admissionRefusal(stack: string): Promise<string | null> {
+    private async admissionRefusal(stack: string, action: string): Promise<string | null> {
         if (!this.options.admit) return null;
         try {
-            return await this.options.admit(stack);
+            return await this.options.admit(stack, action);
         } catch {
             return "The pending state of this stack could not be checked, so nothing was run.";
         }
@@ -351,7 +351,7 @@ export class OperationManager {
         // request awaits Docker; this one runs under the lock. Without a
         // configured hook the command starts exactly as before (no extra tick).
         if (this.options.admit) {
-            const admission = await this.admissionRefusal(operation.stack);
+            const admission = await this.admissionRefusal(operation.stack, action);
             if (admission) {
                 operation.status = "refused";
                 operation.endedAt = Date.now();
@@ -446,7 +446,7 @@ export class OperationManager {
         };
         try {
             if (this.options.admit) {
-                const admission = await this.admissionRefusal(operation.stack);
+                const admission = await this.admissionRefusal(operation.stack, operation.action);
                 if (admission) {
                     operation.status = "refused";
                     operation.endedAt = Date.now();

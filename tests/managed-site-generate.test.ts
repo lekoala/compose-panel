@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildManagedSite, parseManagedSiteDraft, renderManagedSiteArtifacts } from "../src/managed-site-generate.ts";
+import { buildManagedSite, generatedGatewayPort, parseManagedSiteDraft, renderManagedSiteArtifacts } from "../src/managed-site-generate.ts";
 import { parseManagedSiteManifest } from "../src/managed-site.ts";
 
 const STACK = "/opt/stacks/acme-shop";
@@ -88,17 +88,41 @@ describe("buildManagedSite", () => {
 
         expect(first.artifacts.compose).toContain('"127.0.0.1:41001:80"');
         expect(first.artifacts.compose).toContain(
-            `source: ${STACK}/site/runtime\n        target: ${STACK}/site/runtime\n        read_only: true`,
+            `source: '${STACK}/site/runtime'\n        target: '${STACK}/site/runtime'\n        read_only: true`,
         );
-        expect(first.artifacts.compose).toContain(`source: ${STACK}/shared/uploads`);
+        expect(first.artifacts.compose).toContain(`source: '${STACK}/site/shared/uploads'`);
         expect(first.artifacts.compose).toContain("image: php:8.3-fpm-alpine");
         expect(first.artifacts.compose).not.toContain("build:");
+        expect(generatedGatewayPort(first.artifacts.compose)).toBe(41001);
+        expect(generatedGatewayPort(first.artifacts.compose.replace("127.0.0.1:41001", "127.0.0.1:9999"))).toBe(9999);
+        expect(generatedGatewayPort("services:\n  gateway:\n    image: nginx\n")).toBeNull();
         expect(first.artifacts.gateway).toContain(`root ${STACK}/site/runtime/current/public;`);
         expect(first.artifacts.gateway).toContain(`SCRIPT_FILENAME ${STACK}/site/runtime/current/.compose-panel/revision.php;`);
+        expect(first.artifacts.gateway).toContain("resolver 127.0.0.11 valid=10s ipv6=off;");
+        expect(first.artifacts.gateway).toContain("set $php_fpm runtime:9000;");
+        expect(first.artifacts.gateway).toContain("fastcgi_pass $php_fpm;");
+        expect(first.artifacts.gateway).not.toContain("fastcgi_pass runtime:9000;");
         expect(first.artifacts.gateway).toContain("location = /index.php");
         expect(first.artifacts.gateway).toContain("location ~ \\.php$ {\n\t\tdeny all;");
         expect(first.artifacts.gateway).not.toContain("$document_root/profile.php");
         expect(first.artifacts.opcache).toContain("opcache.validate_timestamps=0");
+    });
+
+    test("quotes persistent mount paths as YAML single-quoted scalars", () => {
+        const built = buildManagedSite({
+            stackDir: STACK,
+            siteId: "acme-shop",
+            project: "acme-shop",
+            port: 41001,
+            gitUrl: "https://github.com/acme/shop.git",
+            gitRef: "refs/heads/main",
+            channel: "php-8.3",
+            paths: ["shared/a#b", "shared/it's"],
+        });
+        expect(built.ok).toBe(true);
+        if (!built.ok) return;
+        expect(built.artifacts.compose).toContain(`source: '${STACK}/site/shared/a#b'`);
+        expect(built.artifacts.compose).toContain(`source: '${STACK}/site/shared/it''s'`);
     });
 
     test("refuses another channel, a non-canonical path and an unknown generation", () => {

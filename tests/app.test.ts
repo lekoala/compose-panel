@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp, type App } from "../src/app.ts";
@@ -13,6 +13,9 @@ import type { ContainerInspector } from "../src/containers.ts";
 import type { ContainerMutator } from "../src/container-mutations.ts";
 import type { ServiceRolloutFacts } from "../src/rollout.ts";
 import { resolveRoot } from "../src/stacks.ts";
+import { revisionScript } from "../src/git-release.ts";
+import type { ManagedSiteComposeFacts } from "../src/managed-site-profile.ts";
+import { MANAGED_SITE_PATHS } from "../src/managed-site.ts";
 import type { SelfUpdater } from "../src/self-update.ts";
 import {
     IMAGE_REF,
@@ -4961,7 +4964,10 @@ describe.skipIf(process.platform === "win32")("managed-site creation flow", () =
         const base = controllableProvider().provider;
         return {
             ...base,
-            projectName: async () => "acme-shop",
+            projectName: async ({ composeFile }) => {
+                const source = await readFile(composeFile, "utf8");
+                return /^name: (.+)$/m.exec(source)?.[1]?.trim() ?? null;
+            },
             listProjects: async () => ({ ...empty, stdout: "[]" }),
             up: async () => {
                 calls.push("up");
@@ -4997,6 +5003,20 @@ describe.skipIf(process.platform === "win32")("managed-site creation flow", () =
         paths: "",
         ...overrides,
     });
+
+    async function writeBaseline(stackDir: string, siteId: string, sha = "d".repeat(40)): Promise<void> {
+        const release = join(stackDir, "site", "runtime", "releases", sha);
+        await mkdir(join(release, ".compose-panel"), { recursive: true });
+        await mkdir(join(release, "public"), { recursive: true });
+        await writeFile(join(release, "public", "index.php"), "<?php echo 'ok';\n");
+        await writeFile(join(release, ".compose-panel", "revision.php"), revisionScript(sha));
+        await mkdir(join(stackDir, "site", "private", "releases"), { recursive: true });
+        await writeFile(
+            join(stackDir, "site", "private", "releases", `${sha}.json`),
+            `${JSON.stringify({ version: 1, siteId, release: sha, status: "complete" })}\n`,
+        );
+        await symlink(`releases/${sha}`, join(stackDir, "site", "runtime", "current"));
+    }
 
     test("previews the exact generated files without writing anything", async () => {
         const dir = await emptyRoot();
@@ -5067,6 +5087,7 @@ describe.skipIf(process.platform === "win32")("managed-site creation flow", () =
         const session = await login(app);
         const csrf = await csrfOf(app, session);
         expect((await post(app, session, "/new-site", { csrf, ...fields() })).status).toBe(303);
+        await writeBaseline(join(dir, "acme-shop"), "acme-shop");
         await writeFile(join(dir, "acme-shop", "generated", "nginx-site.conf"), "server { listen 80; }\n");
 
         const response = await post(app, session, "/stacks/acme-shop/operations", { csrf, action: "up" });
@@ -5090,6 +5111,238 @@ describe.skipIf(process.platform === "win32")("managed-site creation flow", () =
         for (let i = 0; i < 500 && app.operations.forStack("acme-shop")?.status === "running"; i += 1) await Bun.sleep(1);
         expect(app.operations.forStack("acme-shop")?.status).toBe("succeeded");
         expect(calls).toEqual(["up"]);
+        await app.beginShutdown(100);
+    });
+
+    test("refuses Up before a baseline exists", async () => {
+        const dir = await emptyRoot();
+        const calls: string[] = [];
+        const app = makeApp({ managedSitesEnabled: true }, undefined, siteProvider(calls), undefined, dir, inspector());
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await post(app, session, "/new-site", { csrf, ...fields() })).status).toBe(303);
+
+        const response = await post(app, session, "/stacks/acme-shop/operations", { csrf, action: "up" });
+        expect(response.status).toBe(303);
+        for (let i = 0; i < 500 && app.operations.forStack("acme-shop")?.status === "running"; i += 1) await Bun.sleep(1);
+        const operation = app.operations.forStack("acme-shop");
+        expect(operation?.status).toBe("refused");
+        expect(operation?.output).toContain("baseline");
+        expect(calls).toEqual([]);
+        await app.beginShutdown(100);
+    });
+
+    test("refuses a baseline while the site is running", async () => {
+        const dir = await emptyRoot();
+        const calls: string[] = [];
+        const creation = makeApp({ managedSitesEnabled: true }, undefined, siteProvider(calls), undefined, dir, inspector());
+        const creationSession = await login(creation);
+        const csrf = await csrfOf(creation, creationSession);
+        expect((await post(creation, creationSession, "/new-site", { csrf, ...fields() })).status).toBe(303);
+        await creation.beginShutdown(100);
+
+        const stackDir = join(dir, "acme-shop");
+        const runtime = join(stackDir, MANAGED_SITE_PATHS.runtime);
+        const facts: ManagedSiteComposeFacts = {
+            name: "acme-shop",
+            externalNetworks: [],
+            services: new Map([
+                [
+                    "gateway",
+                    {
+                        image: "nginx:1.27-alpine",
+                        build: false,
+                        networkMode: null,
+                        ports: [{ hostIp: "127.0.0.1", published: 41001, target: 80, protocol: "tcp" }],
+                        mounts: [{ type: "bind", source: runtime, target: runtime, readOnly: true }],
+                        tmpfs: [],
+                        volumesFrom: [],
+                        networks: ["site"],
+                    },
+                ],
+                [
+                    "runtime",
+                    {
+                        image: "php:8.3-fpm-alpine",
+                        build: false,
+                        networkMode: null,
+                        ports: [],
+                        mounts: [{ type: "bind", source: runtime, target: runtime, readOnly: true }],
+                        tmpfs: [],
+                        volumesFrom: [],
+                        networks: ["site"],
+                    },
+                ],
+            ]),
+        };
+        const base = siteProvider(calls);
+        const provider: ComposeProvider = {
+            ...base,
+            listProjects: async () => ({
+                ...empty,
+                stdout: JSON.stringify([{ Name: "acme-shop", Status: "running(1)", ConfigFiles: join(stackDir, "compose.yaml") }]),
+            }),
+            managedSiteFacts: async () => facts,
+            projectServices: async () => ({ ...empty, stdout: '{"Service":"gateway","State":"running"}\n' }),
+        };
+        const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, inspector());
+        const session = await login(app);
+        const appCsrf = await csrfOf(app, session);
+        const response = await post(app, session, "/stacks/acme-shop/baseline", { csrf: appCsrf });
+        expect(response.status).toBe(303);
+        for (let i = 0; i < 500 && app.operations.forStack("acme-shop")?.status === "running"; i += 1) await Bun.sleep(1);
+        const operation = app.operations.forStack("acme-shop");
+        expect(operation?.status).toBe("refused");
+        expect(operation?.output).toContain("Stop the site");
+        await app.beginShutdown(100);
+    });
+
+    test("refuses a regenerated port that another site already reserves", async () => {
+        const dir = await emptyRoot();
+        const calls: string[] = [];
+        const app = makeApp({ managedSitesEnabled: true }, undefined, siteProvider(calls), undefined, dir, inspector());
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await post(app, session, "/new-site", { csrf, ...fields() })).status).toBe(303);
+        expect(
+            (
+                await post(app, session, "/new-site", {
+                    csrf,
+                    ...fields({ name: "beta-shop", siteId: "beta-shop", project: "beta-shop", port: "41002" }),
+                })
+            ).status,
+        ).toBe(303);
+        const manifestFile = join(dir, "acme-shop", "compose-panel-site.json");
+        const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+        manifest.gateway.port = 41002;
+        await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+        const before = await readFile(join(dir, "acme-shop", "compose.yaml"), "utf8");
+
+        const response = await post(app, session, "/stacks/acme-shop/regenerate", { csrf });
+        expect(response.status).toBe(409);
+        expect(await response.text()).toContain("already reserved");
+        expect(await readFile(join(dir, "acme-shop", "compose.yaml"), "utf8")).toBe(before);
+        await app.beginShutdown(100);
+    });
+
+    test("refuses a port change and Down while a Caddy domain is attached", async () => {
+        const dir = await emptyRoot();
+        const calls: string[] = [];
+        const caddyDir = await mkdtemp(join(tmpdir(), "compose-panel-site-caddy-"));
+        const socketPath = join(caddyDir, "helper.sock");
+        const pending = new Map<object, number[]>();
+        const server = Bun.listen({
+            unix: socketPath,
+            socket: {
+                open(socket) {
+                    pending.set(socket, []);
+                },
+                data(socket, data) {
+                    const seen = pending.get(socket) ?? [];
+                    for (const byte of data) seen.push(byte);
+                    pending.set(socket, seen);
+                    const text = Buffer.from(seen).toString("utf8");
+                    if (!text.includes("\n")) return;
+                    pending.delete(socket);
+                    const line = text.slice(0, text.indexOf("\n"));
+                    let response: unknown;
+                    try {
+                        const request = JSON.parse(line) as { action?: string };
+                        response =
+                            request.action === "status"
+                                ? {
+                                      ok: true,
+                                      action: "status",
+                                      sites: [{ domain: "shop.example.com", stack: "acme-shop", service: "gateway", port: 41001 }],
+                                      unparseable: [],
+                                      importConfigured: true,
+                                  }
+                                : { ok: false, error: "Unexpected action.", code: "invalid" };
+                    } catch {
+                        response = { ok: false, error: "Bad request.", code: "invalid" };
+                    }
+                    try {
+                        socket.write(`${JSON.stringify(response)}\n`);
+                        socket.end();
+                    } catch {
+                        /* already gone */
+                    }
+                },
+                close(socket) {
+                    pending.delete(socket);
+                },
+            },
+        });
+        try {
+            const base = siteProvider(calls);
+            const provider: ComposeProvider = {
+                ...base,
+                listProjects: async () => {
+                    const exists = await Bun.file(join(dir, "acme-shop", "compose.yaml")).exists();
+                    return {
+                        ...empty,
+                        stdout: exists
+                            ? JSON.stringify([
+                                  { Name: "acme-shop", Status: "exited(0)", ConfigFiles: join(dir, "acme-shop", "compose.yaml") },
+                              ])
+                            : "[]",
+                    };
+                },
+            };
+            const app = makeApp(
+                { managedSitesEnabled: true, caddyEnabled: true, caddySocketPath: socketPath },
+                undefined,
+                provider,
+                undefined,
+                dir,
+                inspector(),
+            );
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+            expect((await post(app, session, "/new-site", { csrf, ...fields() })).status).toBe(303);
+
+            const down = await post(app, session, "/stacks/acme-shop/operations", { csrf, action: "down" });
+            expect(down.status).toBe(303);
+            for (let i = 0; i < 500 && app.operations.forStack("acme-shop")?.status === "running"; i += 1) await Bun.sleep(1);
+            const downOperation = app.operations.forStack("acme-shop");
+            expect(downOperation?.status).toBe("refused");
+            expect(downOperation?.output).toContain("Detach the domains");
+
+            const manifestFile = join(dir, "acme-shop", "compose-panel-site.json");
+            const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+            manifest.gateway.port = 41002;
+            await writeFile(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+            const before = await readFile(join(dir, "acme-shop", "compose.yaml"), "utf8");
+
+            const regenerate = await post(app, session, "/stacks/acme-shop/regenerate", { csrf });
+            expect(regenerate.status).toBe(409);
+            expect(await regenerate.text()).toContain("Detach the domains");
+            expect(await readFile(join(dir, "acme-shop", "compose.yaml"), "utf8")).toBe(before);
+            await app.beginShutdown(100);
+        } finally {
+            server.stop(true);
+            await rm(caddyDir, { recursive: true, force: true });
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses to regenerate through a symlinked generated folder", async () => {
+        const dir = await emptyRoot();
+        const calls: string[] = [];
+        const app = makeApp({ managedSitesEnabled: true }, undefined, siteProvider(calls), undefined, dir, inspector());
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await post(app, session, "/new-site", { csrf, ...fields() })).status).toBe(303);
+
+        const outside = join(dir, "outside-generated");
+        await rename(join(dir, "acme-shop", "generated"), outside);
+        await symlink(outside, join(dir, "acme-shop", "generated"));
+        const sentinel = "server { listen 9999; }\n";
+        await writeFile(join(outside, "nginx-site.conf"), sentinel);
+
+        const response = await post(app, session, "/stacks/acme-shop/regenerate", { csrf });
+        expect(response.status).toBe(409);
+        expect(await readFile(join(outside, "nginx-site.conf"), "utf8")).toBe(sentinel);
         await app.beginShutdown(100);
     });
 });

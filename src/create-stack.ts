@@ -31,6 +31,24 @@ export interface CreateStackOptions {
     linker?: typeof link;
 }
 
+/**
+ * Refuse a Compose project Docker already knows. Shared by raw creation and
+ * generated-site creation so both check the same authoritative listing.
+ */
+export async function assertProjectAvailable(provider: ComposeProvider, project: string): Promise<void> {
+    const result = await provider.listProjects();
+    if (result.code !== 0 || result.timedOut || result.truncated)
+        throw new StackError("Docker project ownership could not be checked. Try again when Docker is available.", 503);
+    let projects;
+    try {
+        projects = parseComposeLs(result.stdout);
+    } catch {
+        throw new StackError("Docker project ownership could not be checked.", 503);
+    }
+    if (projects.some((item) => item.name === project))
+        throw new StackError("The resolved Compose project already exists in Docker. Choose another project name.", 409);
+}
+
 /** Raw-file creation only. The caller holds the shared stack lock. */
 export async function createStack(
     root: string,
@@ -104,19 +122,7 @@ export async function createStack(
         }
         owned.set(destination, owned.get(source)!);
     };
-    const checkProjects = async (project: string) => {
-        const result = await provider.listProjects();
-        if (result.code !== 0 || result.timedOut || result.truncated)
-            throw new StackError("Docker project ownership could not be checked. Try again when Docker is available.", 503);
-        let projects;
-        try {
-            projects = parseComposeLs(result.stdout);
-        } catch {
-            throw new StackError("Docker project ownership could not be checked.", 503);
-        }
-        if (projects.some((item) => item.name === project))
-            throw new StackError("The resolved Compose project already exists in Docker. Choose another project name.", 409);
-    };
+    const checkProjects = (project: string) => assertProjectAvailable(provider, project);
     try {
         rootInfo = rootHandle ? await rootHandle.stat() : await lstat(root);
         if (!sameDirIdentity(rootInfo, rootIdentity)) throw new StackError("The stacks folder changed.", 409);

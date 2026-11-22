@@ -162,21 +162,30 @@ compatible with this rollout.
 `src/managed-site-generate.ts` renders the manifest, `compose.yaml`,
 `generated/nginx-site.conf` and `generated/opcache.ini` from bounded form
 fields: fixed service names, one pinned runtime channel image, one reserved
-127.0.0.1 port and only declared paths below `shared/`. Re-rendering the same
-manifest yields identical bytes. `GET /new-site` and `POST /new-site/preview`
-are preview-only; `POST /new-site` calls `src/create-managed-site.ts`, which
-reuses the ordinary creation path to validate the generated Compose file in its
-final folder and to refuse a known project, creates the release layout, writes
-the generated files and publishes the manifest last. It does not fetch, pull or
-start anything. A failed write leaves an inspectable ordinary or owned folder,
-never a silently adopted one.
+127.0.0.1 port and only declared paths below `shared/`. Declared paths resolve
+to `<stack>/site/shared/...` through one shared helper, exactly as the profile
+check does, and are YAML-quoted. Re-rendering the same manifest yields identical
+bytes. The generated gateway resolves the runtime through Docker's embedded DNS
+at request time (`resolver` plus a variable `fastcgi_pass`), so a runtime
+recreation with a new IP does not leave the kept gateway dialing the old one.
+`GET /new-site` and `POST /new-site/preview` are preview-only; `POST /new-site`
+calls `src/create-managed-site.ts`, which writes the whole tree in a hidden
+`.cp-site-<random>` draft, validates the generated Compose file there, refuses a
+known project, and publishes it with one rename. The draft is never a discovered
+stack, so an interrupted creation cannot be selected by an action or a save. It
+does not fetch, pull or start anything. A failed write leaves no final folder.
 
 `POST /stacks/<name>/baseline` runs under the stack lock and the existing
-operation view. It fetches the configured ref into the first immutable release
-and switches `current`, without stopping or recreating a container; it refuses
-when a pointer already exists. `POST /stacks/<name>/regenerate` is the only
-writer that replaces generated files from an existing manifest, after a
-pending-deploy refusal and under the lock.
+operation view. It re-checks the effective project and profile, refuses while
+Docker reports a running (or unprovable) service, fetches the configured ref
+into the first immutable release and switches `current`, without stopping or
+recreating a container; it refuses when a pointer already exists. For a managed
+site, Up, Start, Restart and Pull + up are refused until a baseline is provable.
+`POST /stacks/<name>/regenerate` is the only writer that replaces generated
+files from an existing manifest, after a pending-deploy refusal and under the
+lock. Before a port change it checks the reserved port and refuses while a Caddy
+domain still routes to the site; it anchors the stack and `generated/`
+directories with no-follow handles. Down is refused while a domain is attached.
 
 Generation drift is checked in the operation admission hook, which runs under
 the stack lock for every Compose action, deploy, baseline, rollout and app

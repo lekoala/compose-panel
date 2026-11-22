@@ -75,7 +75,7 @@ v1 fields (all bounded):
 | `deploy.kind` | always | `"bind-mount"` only |
 | `deploy.git.url` | always | Fully qualified public HTTPS or private SSH URL (ADR 0044), no password or token in the URL |
 | `deploy.git.ref` | always | fully qualified ref (`refs/heads/...`), never a short name or a wildcard |
-| `paths` | `managed` only | declared persistent roots, each relative, contained in `shared/`, no `..`, unique, bounded count |
+| `paths` | `managed` only | declared persistent roots under `site/shared`, each written relative (`shared/...`), contained, no `..`, unique, bounded count |
 | `generation` | `managed` only | generator version; see *Generated artifacts* |
 
 Database attachment, backups, health commands and hooks get their own fields
@@ -118,12 +118,17 @@ implicitly for a deployment: a missing directory or an invalid `current`
 refuses the operation and names the path.
 
 For `owner: managed`, the creation form writes the same layout (directories,
-generated Compose and gateway files, trusted manifest) but publishes no
-release and starts no container. One explicit **Publish baseline** action then
-fetches the configured branch into the first immutable release and points
-`current` at it. It is retryable and never touches a container, so a Git or SSH
-failure does not require recreating the stack folder. A deployment still
-requires a provable baseline (ADR 0043).
+generated Compose and gateway files, trusted manifest) in a hidden
+`.cp-site-<random>` draft under the stacks root, then publishes it with one
+rename. The draft is never a discovered stack, so an interrupted creation is
+not pilotable and a crash leaves either no visible folder or a complete one.
+Creation publishes no release and starts no container. One explicit **Publish
+baseline** action then fetches the configured branch into the first immutable
+release and points `current` at it. It requires the site to be stopped, checks
+the effective profile and Docker service state under the stack lock, never
+touches a container and refuses once a pointer exists. It is retryable, so a
+Git or SSH failure does not require recreating the stack folder. A deployment
+still requires a provable baseline (ADR 0043).
 
 ### Mounts and the runtime shape
 
@@ -145,6 +150,11 @@ requires a provable baseline (ADR 0043).
   container path containing `..`, `//` or a trailing slash is refused rather
   than normalized. A stack whose editor changed one of these mounts is refused
   before any stop, even when the names and the port still match.
+- The gateway resolves the runtime service through Docker's embedded DNS at
+  request time (a resolver plus a variable upstream), not once at configuration
+  load: a runtime recreation can change its IP while the gateway container is
+  deliberately kept. The generated profile does this; an `opt-in` gateway that
+  pins a static upstream address is not deployable.
 - The gateway has read-only access to `public/`. The runtime service reads the
   release read-only and writes only declared `shared/` paths. Protected assets
   and secrets stay invisible to the gateway.
@@ -194,9 +204,16 @@ numeric facts, not on shared groups:
   bytes.
 - The creation form is the only writer of a new managed site. It renders from
   the submitted bounded identifiers (never a URL, ref, path, command or image
-  supplied outside the allow-list), validates the generated Compose file in its
-  final directory through the existing provider, and publishes the manifest
-  last. Until the manifest exists the folder is only an ordinary stack.
+  supplied outside the allow-list), validates the generated Compose file in a
+  hidden draft through the existing provider, and publishes the complete tree
+  with one rename. Until that rename the folder is not a discovered stack.
+- Generated mount paths are YAML single-quoted scalars, and a declared
+  persistent root is resolved through one shared function as
+  `<stack>/site/shared/...` for both the generator and the effective-profile
+  check. The panel creates the directory but never chowns it.
+- Every foreign scalar embedded in generated YAML or Nginx directives is
+  validated first: the stack path is restricted to simple ASCII segments and
+  declared paths stay under `shared/`.
 - The generator version is stored in the manifest. A panel that does not know
   the version refuses every managed mutation with an actionable message instead
   of rewriting anything.
@@ -204,11 +221,15 @@ numeric facts, not on shared groups:
   Start, Stop or Restart — the panel re-renders and compares byte-for-byte with
   what is on disk. Any difference is drift: the mutation is refused server-side
   (`409`), the affected artifact is named, and only an explicit regeneration
-  rewrites it. Drift is never silently repaired.
+  rewrites it. Drift is never silently repaired. Reads and writes anchor the
+  `generated/` directory with a no-follow handle, so a symlinked directory
+  cannot redirect either.
 - Regeneration takes the stack lock, refuses a pending deploy, renders from the
   manifest and replaces only `compose.yaml` and `generated/*` atomically,
-  preserving each file's mode and owner. It does not touch a release, the
-  pointer or a container.
+  preserving each file's mode and owner. Before a gateway-port change it
+  refuses a port reserved by another managed site or published by another
+  container, and refuses while any Caddy domain still routes to the site. It
+  does not touch a release, the pointer or a container.
 - Raw save is refused for `owner: managed`, and whenever a manifest exists but
   cannot be used. It points to the manifest. `opt-in` stacks keep the editor for
   their own Compose file; a deploy revalidates the profile and fails closed if

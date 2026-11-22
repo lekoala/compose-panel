@@ -64,7 +64,7 @@ import {
     type RolloutInspect,
 } from "./rollout.ts";
 import { runRollout, type RolloutDependencies, type RolloutPreparation } from "./rollout-run.ts";
-import { parseImageInspect } from "./compose-state.ts";
+import { parseImageInspect, parseComposePs, summarizeServices } from "./compose-state.ts";
 import { actionArgv, buildCatalog, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
 import { buildExplorerUrl, parseDatabaseExplorer } from "./database.ts";
 import {
@@ -94,7 +94,7 @@ import { HostMaintenance, MaintenanceDisabledError } from "./host-maintenance.ts
 import { isMaintenanceScope } from "./maintenance.ts";
 import { MaintenanceBusyError, StackBusyError, StackLocks } from "./locks.ts";
 import { listBackups, pruneBackups } from "./backups.ts";
-import { FileSafetyError, randomSuffix, readFileSafe, writeFileAtomic } from "./fs-safe.ts";
+import { anchorDir, FileSafetyError, randomSuffix, readFileSafe, writeFileAtomic } from "./fs-safe.ts";
 import { LogManager, stripAnsi } from "./logs.ts";
 import { AuditLog, AuditError } from "./audit.ts";
 import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
@@ -104,12 +104,14 @@ import {
     MANAGED_SITE_CHANNELS,
     MANAGED_SITE_MANIFEST_FILE,
     MANAGED_SITE_MANIFEST_MAX_BYTES,
+    MANAGED_SITE_PATHS,
     parseManagedSiteManifest,
     type ManagedSiteManifest,
     type ManagedSiteManifestResult,
 } from "./managed-site.ts";
 import {
     buildManagedSite,
+    generatedGatewayPort,
     parseManagedSiteDraft,
     renderManagedSiteArtifacts,
     MANAGED_SITE_GATEWAY_CONFIG,
@@ -466,14 +468,19 @@ export function createApp(options: AppOptions): App {
         // image store: a verdict recorded before it cannot describe any stack
         // afterwards (a tag can be shared, ADR 0041).
         onBegin: () => imageCheck.imagesChanged(),
-        // Authoritative pending-deploy check, under the lock. The route-level
-        // check cannot see a marker that appears while the request awaits Docker.
-        admit: async (stack) => {
+        // Authoritative pending-deploy, drift, baseline and domain check, under
+        // the lock. The route-level check cannot see a marker or a domain that
+        // appears while the request awaits Docker.
+        admit: async (stack, action) => {
             if (!config.managedSitesEnabled) return null;
             try {
-                return await managedSiteAdmission(stack);
+                const admission = await managedSiteAdmission(stack);
+                if (admission) return admission;
+                if (action === "down") return await managedDownDomainAdmission(stack);
+                if (["up", "pull-up", "start", "restart"].includes(action)) return await managedBaselineAdmission(stack);
+                return null;
             } catch {
-                return "The pending deploy and generated-file state of this stack could not be checked, so nothing was run.";
+                return "The pending deploy, generated-file and domain state of this stack could not be checked, so nothing was run.";
             }
         },
         // The outcome is recorded when the action ends, even if nobody watches it.
@@ -1538,8 +1545,12 @@ export function createApp(options: AppOptions): App {
     }
 
     /** Refuse a port another managed site declares or a running container publishes. */
-    async function requireSitePortFree(port: number): Promise<void> {
-        const declared = await findManagedSitePortOwner(stacksRoot, port, null);
+    async function requireSitePortFree(
+        port: number,
+        exceptStack: string | null = null,
+        exceptProject: string | null = null,
+    ): Promise<void> {
+        const declared = await findManagedSitePortOwner(stacksRoot, port, exceptStack);
         if (declared.kind === "used") {
             throw new StackError(`Port ${port} is already reserved by the managed site "${declared.stack}".`, 409);
         }
@@ -1560,6 +1571,7 @@ export function createApp(options: AppOptions): App {
             throw new StackError("Docker gave an unexpected answer, so the gateway port could not be checked. Nothing was created.", 503);
         }
         const conflict = containers.find((container) => {
+            if (exceptProject !== null && container.project === exceptProject) return false;
             for (const match of container.ports.matchAll(/:(\d+)->/g)) {
                 if (Number(match[1]) === port) return true;
             }
@@ -1601,7 +1613,7 @@ export function createApp(options: AppOptions): App {
                     provider,
                     config.maxEditBytes,
                     {
-                        beforeCommit: () => {
+                        beforePublish: () => {
                             if (!sessions.isActive(session.id)) throw new SessionEndedError();
                         },
                     },
@@ -1685,6 +1697,8 @@ export function createApp(options: AppOptions): App {
                     const currentDir = await managedSiteStackDir(name);
                     const current = await readManagedSiteManifest(currentDir);
                     if (!current.ok) return { refused: current.reason };
+                    const refusal = await baselineRefusal(name, current.manifest);
+                    if (refusal) return { refused: refusal };
                     const result = await publishManagedSiteBaseline({
                         stackDir: currentDir,
                         manifest: current.manifest,
@@ -1771,24 +1785,75 @@ export function createApp(options: AppOptions): App {
                 if (shuttingDown) throw new OperationsDisabledError();
                 if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
                 if (!sessions.isActive(session.id)) throw new SessionEndedError();
-                const rendered = renderManagedSiteArtifacts(stackDir, manifest.manifest);
+                if (await pendingDeployAttempt(stackDir)) throw new StackError(MANAGED_SITE_PENDING_MESSAGE, 409);
+                const currentManifest = await readManagedSiteManifest(stackDir);
+                if (!currentManifest.ok || currentManifest.manifest.owner !== "managed") {
+                    throw new StackError(currentManifest.ok ? "This stack is not a managed site." : currentManifest.reason, 409);
+                }
+                const rendered = renderManagedSiteArtifacts(stackDir, currentManifest.manifest);
                 if (!rendered.ok) throw new StackError(rendered.reason, 409);
-                const files: [string, string][] = [
-                    ["compose.yaml", rendered.artifacts.compose],
-                    [MANAGED_SITE_GATEWAY_CONFIG, rendered.artifacts.gateway],
-                    [MANAGED_SITE_OPCACHE_CONFIG, rendered.artifacts.opcache],
-                ];
-                const directory = await lstat(stackDir);
-                for (const [path, content] of files) {
-                    let attributes = { mode: 0o644, uid: directory.uid, gid: directory.gid };
-                    try {
-                        const current = await readFileSafe(join(stackDir, path), Math.max(config.maxEditBytes, 64 * 1024));
-                        if (current) attributes = { mode: current.mode, uid: current.uid, gid: current.gid };
-                    } catch (error) {
-                        if (error instanceof FileSafetyError) throw new StackError(`${path} cannot be replaced: ${error.message}`, 409);
-                        throw error;
+                const nextPort = currentManifest.manifest.gateway?.port;
+                if (nextPort === undefined) throw new StackError("The managed site has no gateway port.", 409);
+
+                let stackAnchor;
+                let generatedAnchor;
+                try {
+                    stackAnchor = await anchorDir(stackDir, "The stack folder is not a real directory. Nothing was rewritten.");
+                    generatedAnchor = await anchorDir(
+                        join(stackDir, MANAGED_SITE_PATHS.generated),
+                        "The generated folder is a symbolic link or not a folder. Nothing was rewritten.",
+                    );
+                    const currentCompose = await readFileSafe(join(stackAnchor.path, "compose.yaml"), config.maxEditBytes);
+                    if (!currentCompose) throw new StackError("The Compose file is missing. Nothing was rewritten.", 409);
+                    const currentPort = generatedGatewayPort(currentCompose.source);
+                    const portChanged = currentPort !== nextPort;
+                    if (portChanged) {
+                        // A port is a shared resource even while this site is
+                        // stopped: another manifest may already reserve it.
+                        await requireSitePortFree(nextPort, name, manifest.manifest.project);
+                        const domains = await readManagedSiteDomains(name);
+                        if (domains.kind === "unavailable") {
+                            throw new StackError(
+                                `${domains.reason} The gateway port cannot be proven detached from a domain, so nothing was rewritten.`,
+                                503,
+                            );
+                        }
+                        if (domains.kind === "attached") {
+                            const list = domains.sites.map((site) => `${site.domain} (127.0.0.1:${site.port})`).join(", ");
+                            throw new StackError(
+                                `Detach the domains routed to this site before changing its gateway port: ${list}. Nothing was rewritten.`,
+                                409,
+                            );
+                        }
                     }
-                    await writeFileAtomic(join(stackDir, path), content, attributes);
+
+                    const directory = await lstat(stackDir);
+                    const files: [string, string][] = [
+                        ["compose.yaml", rendered.artifacts.compose],
+                        [MANAGED_SITE_GATEWAY_CONFIG, rendered.artifacts.gateway],
+                        [MANAGED_SITE_OPCACHE_CONFIG, rendered.artifacts.opcache],
+                    ];
+                    const generatedPrefix = `${MANAGED_SITE_PATHS.generated}/`;
+                    for (const [path, content] of files) {
+                        const base = path.startsWith(generatedPrefix) ? generatedAnchor.path : stackAnchor.path;
+                        const relative = path.startsWith(generatedPrefix) ? path.slice(generatedPrefix.length) : path;
+                        const anchored = join(base, relative);
+                        let attributes = { mode: 0o644, uid: directory.uid, gid: directory.gid };
+                        try {
+                            const current = await readFileSafe(anchored, Math.max(config.maxEditBytes, 64 * 1024));
+                            if (current) attributes = { mode: current.mode, uid: current.uid, gid: current.gid };
+                        } catch (error) {
+                            if (error instanceof FileSafetyError) throw new StackError(`${path} cannot be replaced: ${error.message}`, 409);
+                            throw error;
+                        }
+                        await writeFileAtomic(anchored, content, attributes);
+                    }
+                } catch (error) {
+                    if (error instanceof FileSafetyError) throw new StackError(error.message, 409);
+                    throw error;
+                } finally {
+                    await generatedAnchor?.close();
+                    await stackAnchor?.close();
                 }
             });
             saves.add(task);
@@ -3509,35 +3574,105 @@ export function createApp(options: AppOptions): App {
      * "generated files still match".
      */
     async function managedSiteDriftReason(stackDir: string): Promise<string | null> {
-        let source: string;
+        let stackAnchor;
+        let generatedAnchor;
         try {
-            const file = await readFileSafe(join(stackDir, MANAGED_SITE_MANIFEST_FILE), MANAGED_SITE_MANIFEST_MAX_BYTES);
-            if (!file) return null;
-            source = file.source;
-        } catch {
-            return "The site manifest cannot be read as a regular file. The managed site was left unchanged.";
-        }
-        const parsed = parseManagedSiteManifest(source);
-        if (!parsed.ok) return `The site manifest cannot be used: ${parsed.reason}`;
-        if (parsed.manifest.owner !== "managed") return null;
-        const rendered = renderManagedSiteArtifacts(stackDir, parsed.manifest);
-        if (!rendered.ok) return rendered.reason;
-        const expected: [string, string][] = [
-            ["compose.yaml", rendered.artifacts.compose],
-            [MANAGED_SITE_GATEWAY_CONFIG, rendered.artifacts.gateway],
-            [MANAGED_SITE_OPCACHE_CONFIG, rendered.artifacts.opcache],
-        ];
-        for (const [path, content] of expected) {
-            let actual;
+            stackAnchor = await anchorDir(stackDir, "The stack folder is not a real directory. Nothing was changed.");
+            let source: string;
             try {
-                actual = await readFileSafe(join(stackDir, path), Math.max(config.maxEditBytes, 64 * 1024));
+                const file = await readFileSafe(join(stackAnchor.path, MANAGED_SITE_MANIFEST_FILE), MANAGED_SITE_MANIFEST_MAX_BYTES);
+                if (!file) return null;
+                source = file.source;
             } catch {
-                return `The generated file "${path}" cannot be read as a regular file. The managed site was left unchanged.`;
+                return "The site manifest cannot be read as a regular file. The managed site was left unchanged.";
             }
-            if (!actual) return `The generated file "${path}" is missing. The managed site was left unchanged.`;
-            if (actual.source !== content) {
-                return `The generated file "${path}" does not match compose-panel-site.json. Drift refuses this action; inspect it on the host and regenerate the site files explicitly.`;
+            const parsed = parseManagedSiteManifest(source);
+            if (!parsed.ok) return `The site manifest cannot be used: ${parsed.reason}`;
+            if (parsed.manifest.owner !== "managed") return null;
+            const rendered = renderManagedSiteArtifacts(stackDir, parsed.manifest);
+            if (!rendered.ok) return rendered.reason;
+            try {
+                generatedAnchor = await anchorDir(
+                    join(stackDir, MANAGED_SITE_PATHS.generated),
+                    "The generated folder is a symbolic link or not a folder. The managed site was left unchanged.",
+                );
+            } catch {
+                return "The generated folder is a symbolic link or not a folder. The managed site was left unchanged.";
             }
+            const expected: [string, string][] = [
+                ["compose.yaml", rendered.artifacts.compose],
+                [MANAGED_SITE_GATEWAY_CONFIG, rendered.artifacts.gateway],
+                [MANAGED_SITE_OPCACHE_CONFIG, rendered.artifacts.opcache],
+            ];
+            const generatedPrefix = `${MANAGED_SITE_PATHS.generated}/`;
+            for (const [path, content] of expected) {
+                const anchored = path.startsWith(generatedPrefix)
+                    ? join(generatedAnchor.path, path.slice(generatedPrefix.length))
+                    : join(stackAnchor.path, path);
+                let actual;
+                try {
+                    actual = await readFileSafe(anchored, Math.max(config.maxEditBytes, 64 * 1024));
+                } catch {
+                    return `The generated file "${path}" cannot be read as a regular file. The managed site was left unchanged.`;
+                }
+                if (!actual) return `The generated file "${path}" is missing. The managed site was left unchanged.`;
+                if (actual.source !== content) {
+                    return `The generated file "${path}" does not match compose-panel-site.json. Drift refuses this action; inspect it on the host and regenerate the site files explicitly.`;
+                }
+            }
+            return null;
+        } finally {
+            await generatedAnchor?.close();
+            await stackAnchor?.close();
+        }
+    }
+
+    /**
+     * Baseline eligibility checked under the stack lock. Publishing changes
+     * what `runtime/current` resolves to, and the runtime directory is already
+     * mounted by any container the operator started early. The site must be
+     * stopped, its identity/profile must still match and Docker must confirm
+     * the state instead of guessing.
+     */
+    async function baselineRefusal(name: string, manifest: ManagedSiteManifest): Promise<string | null> {
+        const context = await resolveProjectContext(stacksRoot, name, provider);
+        if (context.kind === "invalid") return "The stack environment file cannot be read safely.";
+        if (context.kind === "ambiguous") return "The Compose project identity is ambiguous, so nothing was published.";
+        if (context.kind === "unavailable")
+            return "Docker did not respond, so the project identity could not be checked. Nothing was published.";
+        if (context.project !== null && context.project !== manifest.project) {
+            return `The deployed project is "${context.project}", not the declared project "${manifest.project}". Nothing was published.`;
+        }
+        const facts = await provider.managedSiteFacts({
+            composeFile: context.composeFile,
+            cwd: context.cwd,
+            envFile: context.envFile ?? undefined,
+        });
+        if (!facts) return "Docker did not return the effective Compose configuration. Nothing was published.";
+        if (facts.name !== manifest.project) {
+            return `The effective Compose project is "${facts.name}", not "${manifest.project}". Nothing was published.`;
+        }
+        const profile = checkManagedSiteProfile({ manifest, stackDir: context.cwd, facts });
+        if (!profile.ok) return `${profile.reason} Nothing was published.`;
+
+        const servicesResult = await provider.projectServices({
+            project: context.project ?? manifest.project,
+            composeFile: context.composeFile,
+            cwd: context.cwd,
+            envFile: context.envFile ?? undefined,
+        });
+        if (servicesResult.code !== 0 || servicesResult.timedOut || servicesResult.truncated) {
+            return "Docker did not give a complete service state, so the site may be running. Nothing was published.";
+        }
+        let services;
+        try {
+            services = parseComposePs(servicesResult.stdout);
+        } catch {
+            return "Docker gave an unexpected service state, so nothing was published.";
+        }
+        const state = summarizeServices(services);
+        if (state === "running" || (state === "unknown" && services.length > 0)) {
+            return "Stop the site before publishing a baseline: running containers would start serving the new release without verification.";
         }
         return null;
     }
@@ -3548,6 +3683,53 @@ export function createApp(options: AppOptions): App {
         const stackDir = await managedSiteStackDir(stack);
         if (await pendingDeployAttempt(stackDir)) return MANAGED_SITE_PENDING_MESSAGE;
         return managedSiteDriftReason(stackDir);
+    }
+
+    /** Down must not leave a live Caddy route pointing at a removed port. */
+    async function managedDownDomainAdmission(stack: string): Promise<string | null> {
+        const site = await readManagedSiteManifest(await managedSiteStackDir(stack));
+        if (!site.ok) return null;
+        const domains = await readManagedSiteDomains(stack);
+        if (domains.kind === "unavailable") {
+            return `${domains.reason} The panel cannot prove that no domain still routes to this site, so nothing was run.`;
+        }
+        if (domains.kind === "attached") {
+            const list = domains.sites.map((site) => `${site.domain} (127.0.0.1:${site.port})`).join(", ");
+            return `Detach the domains routed to this site before Down: ${list}. Nothing was run.`;
+        }
+        return null;
+    }
+
+    /** A generated site needs a provable release before anything starts. */
+    async function managedBaselineAdmission(stack: string): Promise<string | null> {
+        const stackDir = await managedSiteStackDir(stack);
+        const site = await readManagedSiteManifest(stackDir);
+        if (!site.ok || site.manifest.owner !== "managed") return null;
+        const baseline = await readBaseline(stackDir, site.manifest.siteId);
+        return baseline.ok ? null : `${baseline.reason} Publish a baseline release before starting this site. Nothing was run.`;
+    }
+
+    type ManagedSiteDomains =
+        | { kind: "none"; sites: [] }
+        | { kind: "attached"; sites: { domain: string; port: number }[] }
+        | { kind: "unavailable"; reason: string };
+
+    /** Domains the Caddy helper currently routes to this stack. Read-only. */
+    async function readManagedSiteDomains(name: string): Promise<ManagedSiteDomains> {
+        if (!config.caddyEnabled || !config.caddySocketPath) return { kind: "none", sites: [] };
+        try {
+            const response = await callCaddyHelper(config.caddySocketPath, { action: "status" }, { timeoutMs: config.dockerTimeoutMs });
+            if (!response.ok || response.action !== "status") {
+                return { kind: "unavailable", reason: "The Caddy helper did not return its domain list." };
+            }
+            if (response.unparseable.length > 0) {
+                return { kind: "unavailable", reason: "Some Caddy managed files cannot be read." };
+            }
+            const sites = response.sites.filter((site) => site.stack === name).map((site) => ({ domain: site.domain, port: site.port }));
+            return sites.length > 0 ? { kind: "attached", sites } : { kind: "none", sites: [] };
+        } catch {
+            return { kind: "unavailable", reason: "The Caddy helper did not answer." };
+        }
     }
 
     /**

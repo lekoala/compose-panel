@@ -139,6 +139,16 @@ export function isManagedSitePath(value: string): boolean {
 }
 
 /**
+ * Host path of a declared persistent root. The manifest stores paths relative
+ * to `site/` (`shared/uploads`), and the layout keeps them under
+ * `<stack>/site/shared`; generator and profile must use this one function.
+ */
+export function managedSitePersistentPath(stackDir: string, path: string): string {
+    if (!isManagedSitePath(path)) throw new Error("The persistent path is not valid.");
+    return `${stackDir}/${MANAGED_SITE_PATHS.shared}/${path.slice("shared/".length)}`;
+}
+
+/**
  * A fully qualified branch: `refs/heads/...`, no wildcard, no ambiguous short
  * name, nothing `git check-ref-format` would refuse.
  */

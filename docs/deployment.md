@@ -832,19 +832,31 @@ and `generated/opcache.ini`; nothing is written. **Create site** re-validates
 everything server-side, validates the Compose file in its final folder and
 writes the same bytes.
 
-Creation does not pull an image, fetch code or start a container. The gateway
-publishes `127.0.0.1:<port>` and has no domain yet. The stack page then shows
-**Publish baseline**: it fetches the configured branch into the first immutable
-release and points `current` at it. It is retryable, never touches a container
-and refuses once a pointer exists. After that, **Up** starts the site and a
-domain can be attached as described under Caddy.
+Creation does not pull an image, fetch code or start a container. It builds the
+complete tree in a hidden draft and publishes it with one rename, so an
+interrupted creation never leaves a half-managed stack that the panel can
+operate. The gateway publishes `127.0.0.1:<port>` and has no domain yet. The
+stack page then shows **Publish baseline**: it refuses while the site is
+running, fetches the configured branch into the first immutable release and
+points `current` at it. It is retryable, never touches a container and refuses
+once a pointer exists. **Up**, **Start**, **Restart** and **Pull + up** are
+refused until that baseline is provable. After that, **Up** starts the site and a
+domain can be attached as described under Caddy. **Down** is refused while a
+domain is attached.
+
+The generated gateway resolves `runtime` through Docker's embedded DNS on every
+request. Recreating the runtime can change its IP while the gateway container is
+kept; a static upstream would keep dialing the old address and return 502.
 
 The generated files are owned by the panel. Editing `compose.yaml` or
 `generated/*` by hand is drift: every action is refused and names the file. Edit
 `compose-panel-site.json` on the host, then use **Regenerate generated files**
-on the stack page. Raw **Edit files** saving is refused for any stack with a
-site manifest. Declared persistent paths are not chowned by the panel; prepare
-their ownership for the PHP image's user before relying on writes.
+on the stack page. A port change is refused while another managed site reserves
+it, another container publishes it, or a Caddy domain still routes to this site.
+Raw **Edit files** saving is refused for a generated site (and for any manifest
+that cannot be used). Declared persistent paths resolve to
+`<stack>/site/shared/...`; they are not chowned by the panel, so prepare their
+ownership for the PHP image's user before relying on writes.
 
 ```bash
 cd /opt/stacks/acme-shop
@@ -1031,7 +1043,11 @@ modes, the reserved port and project refusal, the baseline action, raw-save
 refusal, drift in the admission hook and explicit regeneration. The generated
 gateway policy was also exercised by hand on a disposable Docker daemon: the
 probe and front controller served the same SHA, while the probe's `.php` name,
-an uploaded `.php` file and the manifest were not served. The
+an uploaded `.php` file and the manifest were not served. The disposable
+deployment suite now also starts a site from the generated files, force-recreates
+the runtime, proves its IP changed while the gateway container ID stayed the
+same, and checks that the gateway recovers the probe and front controller
+through Docker DNS. The
 disposable layout lab (`bun run test:managed-sites:wsl`) proves the mount,
 switch, forced-recreation and probe contract without the panel. The disposable
 deployment suite (`bun run test:managed-sites-e2e:wsl`) drives the real deploy

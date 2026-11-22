@@ -165,6 +165,10 @@ lock the stack, reserve the project
   looks identical: a pointer switch changes neither the image nor the Compose
   configuration, and a long-lived PHP process caches the resolved script path
   and compiled code. Only a new process is guaranteed to serve the new release.
+- Recreating the runtime can change its IP while the gateway container is kept,
+  so the gateway must resolve the runtime name at request time through Docker's
+  embedded DNS. A fixed upstream address is refused: it would keep dialing the
+  old container after the switch or the rollback.
 - Retrying a SHA is a no-op **only** when the pointer, the release metadata and
   the probe all agree on it. Otherwise it is an ordinary deployment.
 - An attempt record that cannot be written stops the deployment before any

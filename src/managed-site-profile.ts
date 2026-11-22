@@ -9,7 +9,7 @@
  * paths leave the projection: the interpolated configuration never does.
  */
 import { posix } from "node:path";
-import { isExplicitImageReference, MANAGED_SITE_PATHS, type ManagedSiteManifest } from "./managed-site.ts";
+import { isExplicitImageReference, MANAGED_SITE_PATHS, managedSitePersistentPath, type ManagedSiteManifest } from "./managed-site.ts";
 
 export interface ManagedSitePortFact {
     hostIp: string | null;
@@ -142,7 +142,7 @@ export function checkManagedSiteProfile(input: {
     const siteTree = posix.join(input.stackDir, "site");
     const runtimeDir = posix.join(input.stackDir, MANAGED_SITE_PATHS.runtime);
     const sharedDir = posix.join(input.stackDir, MANAGED_SITE_PATHS.shared);
-    const declaredPaths = (manifest.paths ?? []).map((path) => posix.join(input.stackDir, path));
+    const declaredPaths = (manifest.paths ?? []).map((path) => managedSitePersistentPath(input.stackDir, path));
     // Control files stay outside every container: the manifest, the Compose
     // file and the interpolation file are panel input, not application data.
     const forbiddenFiles = [

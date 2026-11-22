@@ -36,7 +36,7 @@ lab_start
 # Seed from the outer daemon's cache so a rate-limited registry cannot fail a
 # suite that is not about pulling.
 lab_seed_from_cache "${COMPOSE_PANEL_LAB_BASE_IMAGE:-alpine:3.20}" "${COMPOSE_PANEL_E2E_WEB_IMAGE:-nginx:alpine}" \
-    "${COMPOSE_PANEL_E2E_RUNTIME_IMAGE:-php:8.3-fpm-alpine}"
+    "nginx:1.27-alpine" "${COMPOSE_PANEL_E2E_RUNTIME_IMAGE:-php:8.3-fpm-alpine}"
 
 # Copy the working tree into the Linux file system (/mnt/* is not one).
 mkdir "$LAB_DIR/app"
