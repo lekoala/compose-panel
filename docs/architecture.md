@@ -181,11 +181,15 @@ Docker reports a running (or unprovable) service, fetches the configured ref
 into the first immutable release and switches `current`, without stopping or
 recreating a container; it refuses when a pointer already exists. A site whose
 manifest declares `build: { kind: "composer" }` is prepared by
-`src/managed-site-build.ts` in the same `prepare` phase as a deploy: one
-disposable `composer:2.8` container with only the staging tree writable, a
-fixed `composer install --no-scripts --no-plugins` argv, a required
-`composer.lock` and a `config.platform.php` matching the site's PHP channel, and
-a proven container removal before publication (ADR 0045). For a managed site,
+`src/managed-site-build.ts` in the same `prepare` phase as a deploy: an offline,
+read-only `composer validate` refuses a stale lock, then one disposable
+`composer:2.10.3` container runs `composer install --no-scripts --no-plugins`
+with only the staging tree mounted. The repository must commit `composer.lock`
+(not `vendor/`) and both `composer.json` and the lock's `platform-overrides.php`
+must match the site's PHP channel, because that is what install verifies.
+Composer's home and cache stay on a bounded tmpfs, the tree is size-monitored
+while installing, and a proven container removal is required before publication
+(ADR 0045). For a managed site,
 Up, Start, Restart and Pull + up are refused until a baseline is provable.
 `POST /stacks/<name>/regenerate` is the only writer that replaces generated
 files from an existing manifest, after a pending-deploy refusal and under the

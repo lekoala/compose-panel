@@ -3,12 +3,7 @@ import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandResult, RunOptions } from "../src/docker.ts";
-import {
-    MANAGED_SITE_BUILD_IMAGE,
-    MANAGED_SITE_BUILD_SCRATCH,
-    composerPreparation,
-    runComposerPreparation,
-} from "../src/managed-site-build.ts";
+import { MANAGED_SITE_BUILD_IMAGE, composerPreparation, runComposerPreparation } from "../src/managed-site-build.ts";
 import { parseManagedSiteManifest, type ManagedSiteManifest } from "../src/managed-site.ts";
 
 const ATTEMPT = "attempt0001";
@@ -22,14 +17,28 @@ interface FakeDocker {
     runner: (args: string[], options: RunOptions) => Promise<CommandResult>;
 }
 
-/** Answers the fixed `docker run`, `docker rm` and `docker ps` commands. */
-function fakeDocker(options: { run?: (args: string[]) => Promise<CommandResult> | CommandResult; rm?: CommandResult } = {}): FakeDocker {
+/**
+ * Answers the fixed `docker run`, `docker rm` and `docker ps` commands. The
+ * first run is the offline lock check; the second is the install.
+ */
+function fakeDocker(
+    options: {
+        validate?: (args: string[]) => Promise<CommandResult> | CommandResult;
+        install?: (args: string[], runOptions: RunOptions) => Promise<CommandResult> | CommandResult;
+        rm?: CommandResult;
+    } = {},
+): FakeDocker {
     const calls: string[][] = [];
+    let runs = 0;
     return {
         calls,
-        runner: async (args) => {
+        runner: async (args, runOptions) => {
             calls.push(args);
-            if (args[0] === "run") return options.run ? options.run(args) : result();
+            if (args[0] === "run") {
+                runs += 1;
+                if (runs === 1) return options.validate ? options.validate(args) : result();
+                return options.install ? options.install(args, runOptions) : result();
+            }
             if (args[0] === "rm") return options.rm ?? result();
             if (args[0] === "ps") return result({ stdout: "" });
             return result();
@@ -37,13 +46,16 @@ function fakeDocker(options: { run?: (args: string[]) => Promise<CommandResult> 
     };
 }
 
-async function makeTree(composerJson = '{"config":{"platform":{"php":"8.3.0"}}}'): Promise<{ stack: string; tree: string }> {
+async function makeTree(
+    composerJson = '{"name":"acme/root","require":{},"config":{"platform":{"php":"8.3.0"}}}',
+    lockJson = '{"platform-overrides":{"php":"8.3.0"},"packages":[]}',
+): Promise<{ stack: string; tree: string }> {
     const stack = await mkdtemp(join(tmpdir(), "cp-build-"));
     const tree = join(stack, "site", "staging", ATTEMPT, "tree");
     await mkdir(join(tree, "public"), { recursive: true });
     await writeFile(join(tree, "public", "index.php"), "<?php echo 'ok';\n");
     await writeFile(join(tree, "composer.json"), composerJson);
-    await writeFile(join(tree, "composer.lock"), '{"packages":[]}\n');
+    await writeFile(join(tree, "composer.lock"), lockJson);
     return { stack, tree };
 }
 
@@ -58,59 +70,76 @@ function request(stack: string, tree: string, runner: FakeDocker["runner"], over
     });
 }
 
+function runCalls(docker: FakeDocker): string[][] {
+    return docker.calls.filter((args) => args[0] === "run");
+}
+
 describe("runComposerPreparation", () => {
-    test("builds in one unprivileged, read-only container with a single writable mount", async () => {
+    test("checks the lock offline, then installs in one unprivileged container", async () => {
         const { stack, tree } = await makeTree();
         try {
             const docker = fakeDocker({
-                run: async () => {
+                install: async () => {
                     await mkdir(join(tree, "vendor"), { recursive: true });
                     await writeFile(join(tree, "vendor", "autoload.php"), "<?php\n");
-                    await mkdir(join(tree, MANAGED_SITE_BUILD_SCRATCH, "home"), { recursive: true });
                     return result();
                 },
             });
             const outcome = await request(stack, tree, docker.runner);
             expect(outcome).toEqual({ ok: true, image: MANAGED_SITE_BUILD_IMAGE });
 
-            const run = docker.calls.find((args) => args[0] === "run")!;
-            expect(run).toContain("--rm");
-            expect(run).toContain("--read-only");
-            expect(run).toContain("--cap-drop");
-            expect(run).toContain("ALL");
-            expect(run).toContain("--security-opt");
-            expect(run).toContain("no-new-privileges");
-            expect(run).toContain("--network");
-            expect(run).toContain("bridge");
-            expect(run).toContain("--pids-limit");
-            expect(run).toContain("--memory");
-            expect(run).toContain("--cpus");
-            expect(run).toContain(`${tree}:/build`);
-            expect(run.filter((value) => value === "-v")).toHaveLength(1);
-            expect(run.join(" ")).not.toContain("docker.sock");
-            expect(run.join(" ")).not.toContain("/site/private");
-            expect(run.join(" ")).not.toContain("/site/runtime");
-            expect(run).toContain(MANAGED_SITE_BUILD_IMAGE);
-            expect(run.slice(run.indexOf(MANAGED_SITE_BUILD_IMAGE) + 1)).toEqual([
-                "install",
+            const runs = runCalls(docker);
+            expect(runs).toHaveLength(2);
+            const [validate, install] = runs as [string[], string[]];
+
+            // The lock check is offline and reads the tree read-only.
+            expect(validate).toContain("--network");
+            expect(validate[validate.indexOf("--network") + 1]).toBe("none");
+            expect(validate).toContain(`${tree}:/src:ro`);
+            expect(validate).toContain("validate");
+            expect(validate).toContain("--no-check-publish");
+            expect(validate).toContain("--no-check-all");
+            expect(validate).toContain(MANAGED_SITE_BUILD_IMAGE);
+
+            // The install is unprivileged, read-only, and only the tree is writable.
+            expect(install).toContain("--read-only");
+            expect(install).toContain("--cap-drop");
+            expect(install).toContain("ALL");
+            expect(install).toContain("--security-opt");
+            expect(install).toContain("no-new-privileges");
+            expect(install).toContain("--network");
+            expect(install[install.indexOf("--network") + 1]).toBe("bridge");
+            expect(install).toContain("--pids-limit");
+            expect(install).toContain("--memory");
+            expect(install).toContain("--cpus");
+            expect(install).toContain(`${tree}:/src`);
+            expect(install.filter((value) => value === "-v")).toHaveLength(1);
+            // The cache and home are on a bounded tmpfs, not in the tree.
+            expect(install).toContain("/composer:rw,noexec,nosuid,nodev,size=256m,mode=1777");
+            expect(install).toContain("COMPOSER_HOME=/composer/home");
+            expect(install).toContain("COMPOSER_CACHE_DIR=/composer/cache");
+            expect(install.join(" ")).not.toContain("docker.sock");
+            expect(install.join(" ")).not.toContain("/site/private");
+            expect(install.join(" ")).not.toContain("/site/runtime");
+            expect(install).toContain(MANAGED_SITE_BUILD_IMAGE);
+            expect(install.slice(install.indexOf(MANAGED_SITE_BUILD_IMAGE) + 1)).toEqual([
+                "--no-plugins",
                 "--no-interaction",
+                "install",
                 "--no-dev",
                 "--no-progress",
                 "--prefer-dist",
                 "--no-scripts",
-                "--no-plugins",
-                "--optimize-autoloader",
                 "--no-ansi",
             ]);
-            // The scratch cache and home never reach the published release.
             expect(await readFile(join(tree, "vendor", "autoload.php"), "utf8")).toBe("<?php\n");
-            await expect(lstat(join(tree, MANAGED_SITE_BUILD_SCRATCH))).rejects.toThrow();
+            await expect(lstat(join(tree, ".compose-panel-build"))).rejects.toThrow();
         } finally {
             await rm(stack, { recursive: true, force: true });
         }
     });
 
-    test("refuses a missing lock file, a mismatched platform and a symlinked composer.json before Docker", async () => {
+    test("refuses a missing or wrong lock platform, a stale composer platform and reserved paths before Docker", async () => {
         const { stack, tree } = await makeTree();
         try {
             const docker = fakeDocker();
@@ -119,18 +148,41 @@ describe("runComposerPreparation", () => {
             expect(missing.ok).toBe(false);
             if (!missing.ok) expect(missing.reason).toContain("composer.lock");
 
-            await writeFile(join(tree, "composer.lock"), '{"packages":[]}\n');
+            await writeFile(join(tree, "composer.lock"), '{"packages":[]}');
+            const noOverrides = await request(stack, tree, docker.runner);
+            expect(noOverrides.ok).toBe(false);
+            if (!noOverrides.ok) expect(noOverrides.reason).toContain("platform-overrides.php");
+
+            await writeFile(join(tree, "composer.lock"), '{"platform-overrides":{"php":"8.4.0"},"packages":[]}');
+            const wrongLock = await request(stack, tree, docker.runner);
+            expect(wrongLock.ok).toBe(false);
+            if (!wrongLock.ok) expect(wrongLock.reason).toContain("PHP 8.3");
+
+            await writeFile(join(tree, "composer.lock"), '{"platform-overrides":{"php":"8.3.0"},"packages":[]}');
             await writeFile(join(tree, "composer.json"), '{"config":{"platform":{"php":"8.4.0"}}}');
-            const mismatch = await request(stack, tree, docker.runner);
-            expect(mismatch.ok).toBe(false);
-            if (!mismatch.ok) expect(mismatch.reason).toContain("PHP 8.3");
+            const wrongJson = await request(stack, tree, docker.runner);
+            expect(wrongJson.ok).toBe(false);
+            if (!wrongJson.ok) expect(wrongJson.reason).toContain("PHP 8.3");
 
             await writeFile(join(tree, "composer.json"), '{"require":{}}');
             const undeclared = await request(stack, tree, docker.runner);
             expect(undeclared.ok).toBe(false);
             if (!undeclared.ok) expect(undeclared.reason).toContain("config.platform.php");
 
+            await writeFile(join(tree, "composer.json"), '{"config":{"platform":{"php":"8.3.0"}}}');
+            await mkdir(join(tree, ".compose-panel-build"));
+            const reserved = await request(stack, tree, docker.runner);
+            expect(reserved.ok).toBe(false);
+            if (!reserved.ok) expect(reserved.reason).toContain(".compose-panel-build");
+            await rm(join(tree, ".compose-panel-build"), { recursive: true });
+
+            await mkdir(join(tree, "vendor"));
+            const committedVendor = await request(stack, tree, docker.runner);
+            expect(committedVendor.ok).toBe(false);
+            if (!committedVendor.ok) expect(committedVendor.reason).toContain("must not commit vendor/");
+
             if (process.platform !== "win32") {
+                await rm(join(tree, "vendor"), { recursive: true });
                 await rm(join(tree, "composer.json"));
                 await symlink(join(stack, "outside.json"), join(tree, "composer.json"));
                 const linked = await request(stack, tree, docker.runner);
@@ -162,10 +214,27 @@ describe("runComposerPreparation", () => {
         }
     });
 
-    test("keeps the attempt when the container removal cannot be proven", async () => {
+    test("stops after a stale or invalid lock and never installs", async () => {
         const { stack, tree } = await makeTree();
         try {
-            const docker = fakeDocker({ run: () => result({ code: 1 }), rm: result({ terminationUnconfirmed: true }) });
+            const docker = fakeDocker({ validate: () => result({ code: 2, stdout: "The lock file is not up to date" }) });
+            const outcome = await request(stack, tree, docker.runner);
+            expect(outcome.ok).toBe(false);
+            if (!outcome.ok) {
+                expect(outcome.reason).toContain("composer update");
+                expect(outcome.reason).not.toContain("not up to date");
+            }
+            expect(runCalls(docker)).toHaveLength(1);
+            expect(docker.calls.some((args) => args[0] === "rm")).toBe(true);
+        } finally {
+            await rm(stack, { recursive: true, force: true });
+        }
+    });
+
+    test("keeps the attempt when a container removal cannot be proven", async () => {
+        const { stack, tree } = await makeTree();
+        try {
+            const docker = fakeDocker({ validate: () => result({ code: 1 }), rm: result({ terminationUnconfirmed: true }) });
             const outcome = await request(stack, tree, docker.runner);
             expect(outcome).toMatchObject({ ok: false, unconfirmed: true });
         } finally {
@@ -173,16 +242,85 @@ describe("runComposerPreparation", () => {
         }
     });
 
-    test("reports a failed Composer run without echoing its output", async () => {
+    test("reports a failed install without echoing its output", async () => {
         const { stack, tree } = await makeTree();
         try {
-            const docker = fakeDocker({ run: () => result({ code: 1, stderr: "COMPOSER_AUTH=secret-token" }) });
+            const docker = fakeDocker({ install: () => result({ code: 1, stderr: "COMPOSER_AUTH=secret-token" }) });
             const outcome = await request(stack, tree, docker.runner);
             expect(outcome.ok).toBe(false);
             if (!outcome.ok) {
                 expect(outcome.reason).not.toContain("secret-token");
                 expect(outcome.unconfirmed).toBe(false);
             }
+        } finally {
+            await rm(stack, { recursive: true, force: true });
+        }
+    });
+
+    test("stops an install that exceeds the release size cap", async () => {
+        const { stack, tree } = await makeTree();
+        try {
+            const docker = fakeDocker({
+                install: async (_args, runOptions) => {
+                    await writeFile(join(tree, "big.bin"), Buffer.alloc(4096));
+                    await new Promise<void>((resolve) => {
+                        if (runOptions.signal?.aborted) return resolve();
+                        runOptions.signal?.addEventListener("abort", () => resolve(), { once: true });
+                    });
+                    return result({ timedOut: true });
+                },
+            });
+            const outcome = await request(stack, tree, docker.runner, { maxTreeBytes: 1024, monitorIntervalMs: 10 });
+            expect(outcome.ok).toBe(false);
+            if (!outcome.ok) expect(outcome.reason).toContain("size cap");
+        } finally {
+            await rm(stack, { recursive: true, force: true });
+        }
+    });
+
+    test("stops an install that creates too many files", async () => {
+        const { stack, tree } = await makeTree();
+        try {
+            const docker = fakeDocker({
+                install: async (_args, runOptions) => {
+                    for (let i = 0; i < 5; i += 1) await writeFile(join(tree, `f${i}.txt`), "x");
+                    await new Promise<void>((resolve) => {
+                        if (runOptions.signal?.aborted) return resolve();
+                        runOptions.signal?.addEventListener("abort", () => resolve(), { once: true });
+                    });
+                    return result({ timedOut: true });
+                },
+            });
+            const outcome = await request(stack, tree, docker.runner, { maxFiles: 2, monitorIntervalMs: 10 });
+            expect(outcome.ok).toBe(false);
+            if (!outcome.ok) expect(outcome.reason).toContain("size cap");
+        } finally {
+            await rm(stack, { recursive: true, force: true });
+        }
+    });
+
+    test("cancels a running install and proves its container removed", async () => {
+        const { stack, tree } = await makeTree();
+        try {
+            const controller = new AbortController();
+            const docker = fakeDocker({
+                install: async (_args, runOptions) => {
+                    await new Promise<void>((resolve) => {
+                        if (runOptions.signal?.aborted) return resolve();
+                        runOptions.signal?.addEventListener("abort", () => resolve(), { once: true });
+                    });
+                    return result({ timedOut: true });
+                },
+            });
+            const pending = request(stack, tree, docker.runner, { signal: controller.signal });
+            controller.abort();
+            const outcome = await pending;
+            expect(outcome.ok).toBe(false);
+            if (!outcome.ok) {
+                expect(outcome.reason).toContain("cancelled");
+                expect(outcome.unconfirmed).toBe(false);
+            }
+            expect(docker.calls.some((args) => args[0] === "rm")).toBe(true);
         } finally {
             await rm(stack, { recursive: true, force: true });
         }

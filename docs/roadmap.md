@@ -109,9 +109,10 @@ implemented for an opted-in stack.
   One dedicated read-only key and one independently pinned host key per site.
 - **Composer preparation.** Implemented under the same flag
   ([ADR 0045](adr/0045-disposable-composer-preparation.md)): a managed site may
-  declare `build: { kind: "composer" }`, and each release is prepared in one
-  disposable `composer:2.8` container with only the staging tree writable, a
-  required lock file and `config.platform.php` for the channel, and no scripts,
+  declare `build: { kind: "composer" }`, and each release is prepared by an
+  offline lock check and one disposable `composer:2.10.3` container with only
+  the staging tree mounted, a required `composer.lock` (no committed `vendor/`)
+  and a matching `platform-overrides.php` for the channel, and no scripts,
   plugins, secrets or Docker socket.
 - **Next increments, each with its own ADR or vertical PR:** the Silverstripe
   profile with an existing MariaDB; offsite backup and restore; CI triggers;

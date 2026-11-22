@@ -444,6 +444,30 @@ describe("fetchAndPublishGitRelease", () => {
         expect(await readdir(join(stack, "site", "runtime", "releases"))).toEqual([]);
     });
 
+    test("refuses the reserved build scratch path before any preparation", async () => {
+        const stack = await makeStack();
+        let prepared = false;
+        const outcome = await deploy(
+            stack,
+            fakeRunner({
+                populate: async (tree) => {
+                    await populateDefault(tree);
+                    await mkdir(join(tree, ".compose-panel-build"), { recursive: true });
+                },
+            }),
+            {
+                prepare: async () => {
+                    prepared = true;
+                    return { ok: true };
+                },
+            },
+        );
+        expect(outcome.ok).toBe(false);
+        if (!outcome.ok) expect(outcome.reason).toContain(".compose-panel-build");
+        expect(prepared).toBe(false);
+        expect(await readdir(join(stack, "site", "runtime", "releases"))).toEqual([]);
+    });
+
     test("refuses an oversized tree before checkout", async () => {
         const stack = await makeStack();
         const outcome = await deploy(stack, fakeRunner(), { limits: { maxFiles: 1 } });

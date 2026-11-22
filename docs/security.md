@@ -193,22 +193,29 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   and no forwarding. Credentials stay outside the checkout and all service
   mounts. SSH fetch output is excluded from the operation view and audit.
 - The optional Composer preparation ([ADR 0045](adr/0045-disposable-composer-preparation.md))
-  runs one disposable `composer:2.8` container per attempt with only the staging
-  tree mounted writable. It is unprivileged and read-only, with a bounded tmpfs,
-  no capabilities, `no-new-privileges`, and bounded memory, CPU, PIDs, time and
-  output. It receives no Docker socket, panel environment, secret file,
-  production mount or database. `--no-scripts --no-plugins` keeps repository
-  code from executing; `COMPOSER_BIN_COMPAT=proxy` avoids symlinks in the
-  release. `composer.lock` is required and `config.platform.php` must match the
-  site's PHP channel, so the lock is verified for the runtime rather than the
-  Composer image. A failure removes only the attempt; if the container removal
-  cannot be proven, the attempt is kept and the operation reports an unknown
-  outcome. A free-space preflight refuses before creating the container when the
-  release filesystem cannot hold the bounded result. Registry credentials and
-  private packages are out of scope, and the
-  container reaches package registries through the daemon's default bridge: a
-  host that needs stricter egress must constrain the daemon or provide a proxy,
-  since the panel does not manage networks.
+  runs two disposable containers per attempt with the pinned `composer:2.10.3`
+  image (the first 2.10 release fixing CVE-2026-59944). The first is an offline,
+  read-only `composer validate` with `--network none`; the second is the
+  unprivileged install. Both use `--read-only`, `--cap-drop ALL`,
+  `no-new-privileges` and bounded memory, CPU, PIDs, time and output. The
+  install mounts only the staging tree; `COMPOSER_HOME` and the cache live on a
+  bounded tmpfs and never touch the release filesystem. It receives no Docker
+  socket, panel environment, secret file, production mount or database.
+  `--no-scripts --no-plugins` keeps repository code from executing;
+  `COMPOSER_BIN_COMPAT=proxy` avoids symlinks in the release. The repository
+  must commit `composer.lock`, must not commit `vendor/`, and both
+  `composer.json` and the lock's `platform-overrides.php` must match the site's
+  PHP channel, because `composer install` verifies the lock against the lock's
+  overrides, not `composer.json`. A stale lock is refused by the offline check,
+  not accepted with a warning. A 250 ms byte and file-count monitor aborts a
+  runaway install, and the post-build inspection enforces the exact cap. A
+  failure removes only the attempt; if a container removal cannot be proven,
+  the attempt is kept and the operation reports an unknown outcome. SIGTERM
+  aborts the build before the operation drain and the cleanup fits inside the
+  shutdown grace. Registry credentials and private packages are out of scope.
+  The container reaches package registries through the daemon's default bridge:
+  a host that needs stricter egress must constrain the daemon or provide a
+  proxy, since the panel does not manage networks.
 - The probe is one bounded `GET http://127.0.0.1:<published>/.compose-panel/revision`
   with no redirects, no DNS and no TLS; it must answer HTTP 200 with exactly 40
   lowercase hex characters and one newline. The port is the validated loopback

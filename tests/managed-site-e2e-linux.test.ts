@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { runCommand } from "../src/docker.ts";
 import { fetchAndPublishGitRelease, revisionScript } from "../src/git-release.ts";
 import { buildManagedSite } from "../src/managed-site-generate.ts";
-import { MANAGED_SITE_BUILD_IMAGE, MANAGED_SITE_BUILD_SCRATCH, runComposerPreparation } from "../src/managed-site-build.ts";
+import { MANAGED_SITE_BUILD_IMAGE, runComposerPreparation } from "../src/managed-site-build.ts";
 import { MANAGED_SITE_PATHS, parseManagedSiteManifest, type ManagedSiteManifest } from "../src/managed-site.ts";
 import {
     managedSiteAttemptPath,
@@ -595,7 +595,44 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
         }
     }, 300_000);
 
-    test("prepares Composer dependencies in one disposable container on the lab daemon", async () => {
+    /** Generate a fresh lock with the real Composer image, as a developer would commit it. */
+    async function composerUpdate(tree: string, extra: string[] = []): Promise<void> {
+        const uid = process.getuid?.() ?? 0;
+        const gid = process.getgid?.() ?? 0;
+        const update = await runCommand(
+            "docker",
+            [
+                "run",
+                "--rm",
+                "--user",
+                `${uid}:${gid}`,
+                "-v",
+                `${tree}:/src`,
+                "-w",
+                "/src",
+                MANAGED_SITE_BUILD_IMAGE,
+                "--no-plugins",
+                "--no-interaction",
+                "update",
+                "--no-install",
+                "--no-scripts",
+                "--no-audit",
+                "--no-security-blocking",
+                "--no-ansi",
+                ...extra,
+            ],
+            { timeoutMs: 120_000, maxBytes: 4 * 1024 * 1024 },
+        );
+        if (update.code !== 0 || update.timedOut) {
+            throw new Error(`composer update failed (${update.code}): ${update.stderr.trim() || update.stdout.trim()}`);
+        }
+    }
+
+    async function noManagedContainers(): Promise<string> {
+        return dockerOk(["ps", "-a", "--filter", "name=compose-panel-", "--format", "{{.Names}}"]);
+    }
+
+    test("prepares Composer dependencies with a fresh lock on the lab daemon", async () => {
         requireEnv();
         const root = await mkdtemp(join(realpathSync(shared), "managed-site-build-"));
         const stackDir = join(root, "stack");
@@ -609,27 +646,7 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
                 join(tree, "composer.json"),
                 `${JSON.stringify({ name: "acme/shop", type: "project", require: {}, config: { platform: { php: "8.3.0" } } }, null, 2)}\n`,
             );
-            await writeFile(
-                join(tree, "composer.lock"),
-                `${JSON.stringify(
-                    {
-                        _readme: ["Local fixture with no dependency"],
-                        "content-hash": "0".repeat(40),
-                        packages: [],
-                        "packages-dev": [],
-                        aliases: [],
-                        "minimum-stability": "stable",
-                        "stability-flags": [],
-                        "prefer-stable": false,
-                        "prefer-lowest": false,
-                        platform: {},
-                        "platform-dev": [],
-                        "plugin-api-version": "2.6.0",
-                    },
-                    null,
-                    2,
-                )}\n`,
-            );
+            await composerUpdate(tree);
 
             const outcome = await runComposerPreparation({
                 stackDir,
@@ -640,10 +657,155 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
             });
             expect(outcome).toEqual({ ok: true, image: MANAGED_SITE_BUILD_IMAGE });
             expect(await readFile(join(tree, "vendor", "autoload.php"), "utf8")).toContain("Composer");
-            expect(await lstat(join(tree, MANAGED_SITE_BUILD_SCRATCH)).catch(() => null)).toBeNull();
-            const leftovers = await dockerOk(["ps", "-a", "--filter", "name=compose-panel-build-", "--format", "{{.Names}}"]);
-            expect(leftovers).toBe("");
+            expect(await noManagedContainers()).toBe("");
         } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    }, 300_000);
+
+    test("refuses a lock whose dependencies need another PHP channel", async () => {
+        requireEnv();
+        const root = await mkdtemp(join(realpathSync(shared), "managed-site-build-php-"));
+        const stackDir = join(root, "stack");
+        const attemptId = "build0002";
+        const tree = join(stackDir, "site", "staging", attemptId, "tree");
+        try {
+            await chmod(root, 0o755);
+            await mkdir(join(tree, "public"), { recursive: true });
+            await writeFile(join(tree, "public", "index.php"), "<?php echo 'ok';\n");
+            await writeFile(
+                join(tree, "composer.json"),
+                `${JSON.stringify(
+                    {
+                        name: "acme/shop",
+                        type: "project",
+                        require: { "acme/needs-php-84": "1.0.0" },
+                        repositories: [
+                            {
+                                type: "package",
+                                package: {
+                                    name: "acme/needs-php-84",
+                                    version: "1.0.0",
+                                    dist: { type: "zip", url: "file:///src/package.zip" },
+                                    require: { php: ">=8.4" },
+                                },
+                            },
+                        ],
+                        config: { platform: { php: "8.3.0" } },
+                    },
+                    null,
+                    2,
+                )}\n`,
+            );
+            // The lock is generated for the site's declared platform, with the
+            // incompatible package forced in: install must still reject it.
+            await composerUpdate(tree, ["--ignore-platform-req=php"]);
+
+            const outcome = await runComposerPreparation({
+                stackDir,
+                attemptId,
+                tree,
+                phpMinor: "8.3",
+                timeoutMs: 180_000,
+            });
+            expect(outcome.ok).toBe(false);
+            if (!outcome.ok) {
+                expect(outcome.unconfirmed).toBe(false);
+                expect(outcome.reason).not.toContain("acme/needs-php-84");
+            }
+            expect(await lstat(join(tree, "vendor", "autoload.php")).catch(() => null)).toBeNull();
+            expect(await noManagedContainers()).toBe("");
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    }, 300_000);
+
+    test("stops a running Composer install on SIGTERM and removes its container", async () => {
+        requireEnv();
+        const root = await mkdtemp(join(realpathSync(shared), "managed-site-build-sigterm-"));
+        const stackDir = join(root, "stack");
+        const attemptId = "sigterm0001";
+        const tree = join(stackDir, "site", "staging", attemptId, "tree");
+        const resultPath = join(root, "result.json");
+        const configPath = join(root, "child.json");
+        let child: ReturnType<typeof Bun.spawn> | null = null;
+        try {
+            await chmod(root, 0o755);
+            await mkdir(join(tree, "public"), { recursive: true });
+            await writeFile(join(tree, "public", "index.php"), "<?php echo 'ok';\n");
+            // A file:// dist that is a FIFO: Composer blocks reading it, which
+            // gives the test a deterministic running install to interrupt.
+            await writeFile(
+                join(tree, "composer.json"),
+                `${JSON.stringify(
+                    {
+                        name: "acme/shop",
+                        type: "project",
+                        require: { "acme/hang": "1.0.0" },
+                        repositories: [
+                            {
+                                type: "package",
+                                package: {
+                                    name: "acme/hang",
+                                    version: "1.0.0",
+                                    dist: { type: "zip", url: "file:///src/hang.zip" },
+                                    require: { php: ">=8.3" },
+                                },
+                            },
+                        ],
+                        config: { platform: { php: "8.3.0" } },
+                    },
+                    null,
+                    2,
+                )}\n`,
+            );
+            await composerUpdate(tree);
+            const fifo = await runCommand("mkfifo", [join(tree, "hang.zip")], { timeoutMs: 10_000, maxBytes: 4096 });
+            expect(fifo.code).toBe(0);
+
+            await writeFile(
+                configPath,
+                `${JSON.stringify({ stackDir, attemptId, tree, phpMinor: "8.3", timeoutMs: 120_000, result: resultPath })}\n`,
+            );
+            child = Bun.spawn([process.execPath, join(import.meta.dir, "managed-site-build-e2e-child.ts"), configPath], {
+                cwd: join(import.meta.dir, ".."),
+                env: process.env,
+                stdout: "ignore",
+                stderr: "pipe",
+            });
+
+            const deadline = Date.now() + 60_000;
+            let running = "";
+            while (Date.now() < deadline) {
+                running = await dockerOk(["ps", "--filter", "name=compose-panel-build-", "--format", "{{.Names}}"]);
+                if (running.trim() !== "") break;
+                if (child.exitCode !== null) {
+                    const stream = child.stderr;
+                    const stderr = stream instanceof ReadableStream ? await new Response(stream).text() : "";
+                    throw new Error(`the build child exited before the install (${child.exitCode}): ${stderr.slice(0, 2000)}`);
+                }
+                await Bun.sleep(50);
+            }
+            expect(running.trim()).not.toBe("");
+
+            child.kill("SIGTERM");
+            const exitDeadline = Date.now() + 30_000;
+            while (child.exitCode === null && Date.now() < exitDeadline) await Bun.sleep(50);
+            expect(child.exitCode).not.toBeNull();
+
+            const outcome = JSON.parse(await readFile(resultPath, "utf8")) as { ok: boolean; unconfirmed?: boolean };
+            expect(outcome).toMatchObject({ ok: false, unconfirmed: false });
+
+            let leftovers = "pending";
+            for (let i = 0; i < 80; i += 1) {
+                leftovers = await noManagedContainers();
+                if (leftovers.trim() === "") break;
+                await Bun.sleep(250);
+            }
+            expect(leftovers.trim()).toBe("");
+        } finally {
+            if (child && child.exitCode === null) child.kill("SIGKILL");
+            if (child) await child.exited;
             await rm(root, { recursive: true, force: true });
         }
     }, 300_000);

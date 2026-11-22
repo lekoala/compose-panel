@@ -453,6 +453,23 @@ describe("runManagedSiteDeploy", () => {
         expect(await currentTarget(harness.stack)).toBe(`releases/${PRIOR}`);
     });
 
+    test("passes the shutdown signal to the fetch and stops before any serving change", async () => {
+        const harness = makeHarness(await makeStack());
+        const controller = new AbortController();
+        let observed: AbortSignal | undefined;
+        harness.deps.signal = controller.signal;
+        harness.deps.fetchRelease = async (input) => {
+            observed = input.signal;
+            controller.abort();
+            return { ok: false, phase: "fetch", reason: "The build was cancelled.", unconfirmed: false, cleanup: "removed" };
+        };
+        const result = await deploy(harness);
+        expect(observed).toBe(controller.signal);
+        expect(result.kind).toBe("failed");
+        expect(harness.calls.some((call) => call.startsWith("stop:"))).toBe(false);
+        expect(await currentTarget(harness.stack)).toBe(`releases/${PRIOR}`);
+    });
+
     test("refuses before fetching when the baseline probe disagrees", async () => {
         const harness = makeHarness(await makeStack(), { probeFor: () => OTHER });
         const result = await deploy(harness);

@@ -845,17 +845,21 @@ domain can be attached as described under Caddy. **Down** is refused while a
 domain is attached.
 
 With **Install Composer dependencies** checked, every release (the baseline and
-each deploy) is prepared in one disposable `composer:2.8` container before it is
-published. The repository must commit `composer.lock` and declare
-`config.platform.php` for the chosen channel (`8.3.x` or `8.4.x`), so the lock is
-verified for the PHP the site runs. The container sees only the staging tree,
-runs unprivileged and read-only, gets no secret, Docker socket or production
-mount, and runs `composer install --no-scripts --no-plugins`. A failed build
-removes the attempt and leaves the active release untouched; if the container
-cannot be proven removed, the operation reports an unknown outcome and the
-attempt is kept for inspection. The host must be able to pull `composer:2.8` or
-have it cached; the panel does not pull it in advance. Registry credentials and
-private packages are not supported
+each deploy) is prepared before it is published. A first read-only, offline
+container checks that `composer.lock` is fresh for `composer.json`; a second
+disposable `composer:2.10.3` container runs `composer install --no-scripts
+--no-plugins`. The repository must commit `composer.lock`, must not commit
+`vendor/`, and must declare `config.platform.php` for the chosen channel
+(`8.3.x` or `8.4.x`); the lock's `platform-overrides.php` must match, because
+that is the platform `composer install` actually verifies. The install container
+sees only the staging tree, runs unprivileged and read-only, keeps Composer's
+home and cache on a bounded tmpfs, and gets no secret, Docker socket or
+production mount. A failed or oversized build removes the attempt and leaves the
+active release untouched; if a container cannot be proven removed, the operation
+reports an unknown outcome and the attempt is kept for inspection. SIGTERM
+stops a running build before the panel drains. The host must be able to pull
+`composer:2.10.3` or have it cached; the panel does not pull it in advance.
+Registry credentials and private packages are not supported
 ([ADR 0045](adr/0045-disposable-composer-preparation.md)).
 
 The generated gateway resolves `runtime` through Docker's embedded DNS on every
@@ -1056,10 +1060,12 @@ unconfirmed outcomes. Creation
 tests cover deterministic generation, the manifest-last write and directory
 modes, the reserved port and project refusal, the baseline action, raw-save
 refusal, drift in the admission hook and explicit regeneration. The Composer
-build is exercised by unit tests (fixed argv and isolation flags, pre-Docker
-refusals, removal proof, sanitized failures) and by the disposable suite, which
-runs the real image on a zero-dependency fixture and checks the autoloader, the
-scratch cleanup and the absence of a surviving container. The generated
+build is exercised by unit tests (fixed argv and isolation flags, offline lock
+check, pre-Docker refusals, size monitor, cancellation, removal proof, sanitized
+failures) and by the disposable suite, which runs the real image on a fresh
+zero-dependency lock, refuses a lock whose dependency needs PHP 8.4 on the 8.3
+channel, and sends SIGTERM while an install is blocked to prove the container is
+removed. The generated
 gateway policy was also exercised by hand on a disposable Docker daemon: the
 probe and front controller served the same SHA, while the probe's `.php` name,
 an uploaded `.php` file and the manifest were not served. The disposable

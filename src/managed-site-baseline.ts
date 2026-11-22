@@ -19,6 +19,8 @@ export interface ManagedSiteBaselineRequest {
     manifest: ManagedSiteManifest;
     attemptId: string;
     onOutput?: (chunk: string) => void;
+    /** Panel shutdown; the fetch and any preparation must stop and clean up. */
+    signal?: AbortSignal;
     /** Fixed preparation (Composer, ADR 0045) applied before publication. */
     prepare?: GitReleasePrepare;
     releaseLimits?: { maxFiles: number; maxTreeBytes: number; maxDepth: number };
@@ -55,6 +57,7 @@ export async function publishManagedSiteBaseline(request: ManagedSiteBaselineReq
         ref: request.manifest.deploy.git.ref,
         attemptId: request.attemptId,
         ...(request.onOutput ? { onOutput: request.onOutput } : {}),
+        ...(request.signal ? { signal: request.signal } : {}),
         ...(request.prepare ? { prepare: request.prepare } : {}),
         ...(request.releaseLimits ? { releaseLimits: request.releaseLimits } : {}),
     });

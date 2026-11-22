@@ -29,6 +29,7 @@ import {
     isValidDeployRef,
     isManagedSiteAttemptId,
     MANAGED_SITE_PATHS,
+    MANAGED_SITE_RESERVED_TREE_ENTRIES,
 } from "./managed-site.ts";
 
 export const GIT_RELEASE_PHASES = ["layout", "fetch", "resolve", "inspect", "checkout", "prepare", "publish"] as const;
@@ -724,8 +725,10 @@ async function inspectStagedTree(
     tree: string,
     limits: Pick<GitReleaseLimits, "maxFiles" | "maxTreeBytes" | "maxDepth">,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    const reserved = await lstatOrNull(join(tree, ".compose-panel"));
-    if (reserved) return { ok: false, reason: "The repository contains .compose-panel, which the panel reserves." };
+    for (const entry of MANAGED_SITE_RESERVED_TREE_ENTRIES) {
+        const reserved = await lstatOrNull(join(tree, entry));
+        if (reserved) return { ok: false, reason: `The repository contains ${entry}, which the panel reserves.` };
+    }
 
     let files = 0;
     let bytes = 0;

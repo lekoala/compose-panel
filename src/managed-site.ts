@@ -74,6 +74,13 @@ export const MANAGED_SITE_PATHS = {
     private: "site/private",
 } as const;
 
+/**
+ * Tree entries the panel owns and refuses in a fetched repository. A future
+ * build scratch path stays reserved even when the build no longer uses it, so a
+ * repository can never collide with a panel-managed directory.
+ */
+export const MANAGED_SITE_RESERVED_TREE_ENTRIES = [".compose-panel", ".compose-panel-build"] as const;
+
 export interface ManagedSiteManifest {
     version: typeof MANAGED_SITE_VERSION;
     siteId: string;

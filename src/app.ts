@@ -562,6 +562,11 @@ export function createApp(options: AppOptions): App {
     const SELF_UPDATE_RUNNING = "Compose Panel is updating itself. Wait for it to restart, then try again.";
     let activeSse = 0;
     let shuttingDown = false;
+    // SIGTERM/SIGINT must reach the long-running Git fetch and Composer build,
+    // not only the operation drain: otherwise the panel can exit while a
+    // container keeps installing. Aborting first lets each operation stop and
+    // prove its cleanup inside the shutdown grace.
+    const shutdownController = new AbortController();
     const saves = new Set<Promise<unknown>>();
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
     // Open streams are bound to their session id so logout or expiry can close
@@ -1708,6 +1713,7 @@ export function createApp(options: AppOptions): App {
                         manifest: current.manifest,
                         attemptId: randomSuffix(),
                         onOutput,
+                        signal: shutdownController.signal,
                         ...(prepare ? { prepare, releaseLimits: MANAGED_SITE_RELEASE_LIMITS } : {}),
                     });
                     switch (result.kind) {
@@ -3823,6 +3829,7 @@ export function createApp(options: AppOptions): App {
         const result = await runManagedSiteDeploy({
             stackDir,
             attemptId: randomSuffix(),
+            signal: shutdownController.signal,
             loadManifest: async () => {
                 const located = await locateComposeFile(stacksRoot, input.name);
                 return readManagedSiteManifest(dirname(located.path));
@@ -4824,6 +4831,7 @@ export function createApp(options: AppOptions): App {
             // Refuse everything synchronously first: no new mutation, save or
             // follow can slip in while the drains below are awaited.
             shuttingDown = true;
+            shutdownController.abort();
             operations.refuseNew();
             logs.refuseNew();
             maintenance.refuseNew();
