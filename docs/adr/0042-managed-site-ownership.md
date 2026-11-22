@@ -190,7 +190,7 @@ numeric facts, not on shared groups:
   readable to a service.
 - A published release is never writable by a service. The pilot declares no
   writable runtime path, so `shared/` is optional and owned by the operator. The
-  first profile that needs writes (Silverstripe assets, cache) adds bounded
+  first profile that needs writes (uploaded assets, cache) adds bounded
   `runtime.uid`/`runtime.gid` manifest fields in the same version change and
   applies them to the declared path only. Nothing is chowned implicitly.
 - The revision script is an ordinary `0644` file inside the release, so it

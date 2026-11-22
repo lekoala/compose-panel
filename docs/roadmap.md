@@ -114,8 +114,9 @@ implemented for an opted-in stack.
   the staging tree mounted, a required `composer.lock` (no committed `vendor/`)
   and a matching `platform-overrides.php` for the channel, and no scripts,
   plugins, secrets or Docker socket.
-- **Next increments, each with its own ADR or vertical PR:** the Silverstripe
-  profile with an existing MariaDB; offsite backup and restore; CI triggers;
-  host timers and retention; production cutover and cloning. The creation form,
-  stable loopback binding and the existing Caddy attach are the current
-  increment.
+- **Next increments, each with its own ADR or vertical PR:** an existing
+  MariaDB attachment, validated with a disposable PHP fixture that writes a
+  record, survives a deploy and a rollback, and reads it back; offsite backup
+  and restore; CI triggers; host timers and retention; production cutover and
+  cloning. The creation form, stable loopback binding and the existing Caddy
+  attach are implemented.
