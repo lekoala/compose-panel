@@ -4878,7 +4878,7 @@ describe("managed-site deploy gate", () => {
         await app.beginShutdown(100);
     });
 
-    test("shows the deploy form and the acknowledgement form on the stack page", async () => {
+    test("shows the baseline form (no release yet) and the acknowledgement form on the stack page", async () => {
         const dir = await managedRoot();
         const { provider } = controllableProvider();
         const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir);
@@ -4886,16 +4886,18 @@ describe("managed-site deploy gate", () => {
 
         const page = await authed(app, "/stacks/demo", session);
         expect(page.status).toBe(200);
-        expect(await page.text()).toContain('action="/stacks/demo/deploy"');
+        const html = await page.text();
+        expect(html).toContain('action="/stacks/demo/baseline"');
+        expect(html).not.toContain('action="/stacks/demo/deploy"');
 
         await mkdir(join(dir, "demo", "site", "private"), { recursive: true });
         await writeFile(join(dir, "demo", "site", "private", "deploy-attempt.json"), VALID_MARKER);
         const pendingPage = await authed(app, "/stacks/demo", session);
         expect(pendingPage.status).toBe(200);
-        const html = await pendingPage.text();
-        expect(html).toContain('action="/stacks/demo/deploy/acknowledge"');
-        expect(html).toContain(`name="attempt" value="${ATTEMPT}"`);
-        expect(html).not.toContain('action="/stacks/demo/deploy"');
+        const pendingHtml = await pendingPage.text();
+        expect(pendingHtml).toContain('action="/stacks/demo/deploy/acknowledge"');
+        expect(pendingHtml).toContain(`name="attempt" value="${ATTEMPT}"`);
+        expect(pendingHtml).not.toContain('action="/stacks/demo/deploy"');
         await app.beginShutdown(100);
     });
 
@@ -4936,6 +4938,158 @@ describe("managed-site deploy gate", () => {
         const page = await authed(app, "/stacks/demo", session);
         expect(page.status).toBe(200);
         expect(await page.text()).not.toContain("Managed site");
+        await app.beginShutdown(100);
+    });
+});
+
+describe.skipIf(process.platform === "win32")("managed-site creation flow", () => {
+    const empty: CommandResult = { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+
+    function inspector(): ContainerInspector {
+        return {
+            engine: "fake",
+            list: async () => empty,
+            inspect: async () => empty,
+            logs: async () => empty,
+            info: async () => empty,
+            stats: async () => empty,
+            diskUsage: async () => empty,
+        };
+    }
+
+    function siteProvider(calls: string[]): ComposeProvider {
+        const base = controllableProvider().provider;
+        return {
+            ...base,
+            projectName: async () => "acme-shop",
+            listProjects: async () => ({ ...empty, stdout: "[]" }),
+            up: async () => {
+                calls.push("up");
+                return empty;
+            },
+        };
+    }
+
+    async function emptyRoot(): Promise<string> {
+        return resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-site-create-")));
+    }
+
+    function post(app: App, session: string, path: string, fields: Record<string, string>): Promise<Response> {
+        return authed(app, path, session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(fields).toString(),
+        });
+    }
+
+    async function csrfOf(app: App, session: string): Promise<string> {
+        return /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/about", session)).text())![1]!;
+    }
+
+    const fields = (overrides: Record<string, string> = {}) => ({
+        name: "acme-shop",
+        siteId: "acme-shop",
+        project: "acme-shop",
+        port: "41001",
+        channel: "php-8.3",
+        gitUrl: "https://github.com/acme/shop.git",
+        gitRef: "refs/heads/main",
+        paths: "",
+        ...overrides,
+    });
+
+    test("previews the exact generated files without writing anything", async () => {
+        const dir = await emptyRoot();
+        const calls: string[] = [];
+        const app = makeApp({ managedSitesEnabled: true }, undefined, siteProvider(calls), undefined, dir, inspector());
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const response = await post(app, session, "/new-site/preview", { csrf, ...fields() });
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        expect(html).toContain("compose-panel-site.json");
+        expect(html).toContain("&quot;siteId&quot;: &quot;acme-shop&quot;");
+        expect(html).toContain("&quot;127.0.0.1:41001:80&quot;");
+        expect(html).toContain("fastcgi_param SCRIPT_FILENAME");
+        expect(await Bun.file(join(dir, "acme-shop", "compose.yaml")).exists()).toBe(false);
+        expect(calls).toEqual([]);
+        await app.beginShutdown(100);
+    });
+
+    test("creates one managed site, reserves its port and refuses a second claim", async () => {
+        const dir = await emptyRoot();
+        const calls: string[] = [];
+        const app = makeApp({ managedSitesEnabled: true }, undefined, siteProvider(calls), undefined, dir, inspector());
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const created = await post(app, session, "/new-site", { csrf, ...fields() });
+        expect(created.status).toBe(303);
+        expect(created.headers.get("location")).toBe("/stacks/acme-shop?created=1");
+        expect(await Bun.file(join(dir, "acme-shop", "compose.yaml")).exists()).toBe(true);
+        expect(await Bun.file(join(dir, "acme-shop", "compose-panel-site.json")).exists()).toBe(true);
+        expect(await Bun.file(join(dir, "acme-shop", "generated", "nginx-site.conf")).exists()).toBe(true);
+        const page = await authed(app, "/stacks/acme-shop", session);
+        const html = await page.text();
+        expect(html).toContain('action="/stacks/acme-shop/baseline"');
+        expect(html).not.toContain('action="/stacks/acme-shop/deploy"');
+
+        const collision = await post(app, session, "/new-site", { csrf, ...fields({ name: "other", siteId: "other", project: "other" }) });
+        expect(collision.status).toBe(409);
+        expect(await collision.text()).toContain("already reserved");
+        expect(await Bun.file(join(dir, "other", "compose.yaml")).exists()).toBe(false);
+        await app.beginShutdown(100);
+    });
+
+    test("refuses a raw save of a generated Compose file", async () => {
+        const dir = await emptyRoot();
+        const calls: string[] = [];
+        const app = makeApp({ managedSitesEnabled: true }, undefined, siteProvider(calls), undefined, dir, inspector());
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await post(app, session, "/new-site", { csrf, ...fields() })).status).toBe(303);
+
+        const before = await readFile(join(dir, "acme-shop", "compose.yaml"), "utf8");
+        const saved = await post(app, session, "/stacks/acme-shop/edit", {
+            csrf,
+            compose: "name: acme-shop\nservices:\n  gateway:\n    image: nginx\n",
+            env: "",
+        });
+        expect(saved.status).toBe(409);
+        expect(await saved.text()).toContain("generated");
+        expect(await readFile(join(dir, "acme-shop", "compose.yaml"), "utf8")).toBe(before);
+        await app.beginShutdown(100);
+    });
+
+    test("refuses an operation when a generated file has drifted", async () => {
+        const dir = await emptyRoot();
+        const calls: string[] = [];
+        const app = makeApp({ managedSitesEnabled: true }, undefined, siteProvider(calls), undefined, dir, inspector());
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        expect((await post(app, session, "/new-site", { csrf, ...fields() })).status).toBe(303);
+        await writeFile(join(dir, "acme-shop", "generated", "nginx-site.conf"), "server { listen 80; }\n");
+
+        const response = await post(app, session, "/stacks/acme-shop/operations", { csrf, action: "up" });
+        expect(response.status).toBe(303);
+        for (let i = 0; i < 500 && app.operations.forStack("acme-shop")?.status === "running"; i += 1) await Bun.sleep(1);
+        const operation = app.operations.forStack("acme-shop");
+        expect(operation?.status).toBe("refused");
+        expect(operation?.output).toContain("does not match compose-panel-site.json");
+        expect(calls).toEqual([]);
+
+        const page = await authed(app, "/stacks/acme-shop", session);
+        expect(await page.text()).toContain('action="/stacks/acme-shop/regenerate"');
+        const regenerated = await post(app, session, "/stacks/acme-shop/regenerate", { csrf });
+        expect(regenerated.status).toBe(303);
+        expect(await readFile(join(dir, "acme-shop", "generated", "nginx-site.conf"), "utf8")).toContain(
+            `root ${join(dir, "acme-shop")}/site/runtime/current/public;`,
+        );
+
+        const retried = await post(app, session, "/stacks/acme-shop/operations", { csrf, action: "up" });
+        expect(retried.status).toBe(303);
+        for (let i = 0; i < 500 && app.operations.forStack("acme-shop")?.status === "running"; i += 1) await Bun.sleep(1);
+        expect(app.operations.forStack("acme-shop")?.status).toBe("succeeded");
+        expect(calls).toEqual(["up"]);
         await app.beginShutdown(100);
     });
 });

@@ -821,12 +821,43 @@ COMPOSE_PANEL_MANAGED_SITES_ENABLED=true
 The panel image installs Git and the OpenSSH client. With the flag
 off there is no deploy route, no site section and no manifest read.
 
-### Prepare the stack by hand
+### Create a generated site
+
+With the flag on, **New site** on the Stacks page opens `/new-site`. The form
+asks for a folder name, a site ID, a Compose project, a gateway port in
+41000–41999, one pinned PHP channel, a public HTTPS or private SSH Git URL, a
+fully qualified branch and optional persistent paths below `shared/`. **Preview
+files** shows the exact manifest, `compose.yaml`, `generated/nginx-site.conf`
+and `generated/opcache.ini`; nothing is written. **Create site** re-validates
+everything server-side, validates the Compose file in its final folder and
+writes the same bytes.
+
+Creation does not pull an image, fetch code or start a container. The gateway
+publishes `127.0.0.1:<port>` and has no domain yet. The stack page then shows
+**Publish baseline**: it fetches the configured branch into the first immutable
+release and points `current` at it. It is retryable, never touches a container
+and refuses once a pointer exists. After that, **Up** starts the site and a
+domain can be attached as described under Caddy.
+
+The generated files are owned by the panel. Editing `compose.yaml` or
+`generated/*` by hand is drift: every action is refused and names the file. Edit
+`compose-panel-site.json` on the host, then use **Regenerate generated files**
+on the stack page. Raw **Edit files** saving is refused for any stack with a
+site manifest. Declared persistent paths are not chowned by the panel; prepare
+their ownership for the PHP image's user before relying on writes.
+
+```bash
+cd /opt/stacks/acme-shop
+docker compose -p acme-shop -f compose.yaml up -d
+curl -fsS http://127.0.0.1:41001/.compose-panel/revision
+```
+
+### Prepare an opt-in stack by hand
 
 A managed site is an ordinary Compose directory with a trusted manifest next to
-the Compose file. The panel never creates the layout or a first release: the
-operator initialises both, exactly as `scripts/managed-sites-lab/run.sh`
-demonstrates.
+the Compose file. For `owner: "opt-in"` the panel never creates the layout or a
+first release: the operator initialises both, exactly as
+`scripts/managed-sites-lab/run.sh` demonstrates.
 
 ```text
 /opt/stacks/acme-shop/
@@ -994,7 +1025,13 @@ guard.
 ### Verification status
 
 Unit tests cover the manifest, the profile check, the Git adapter and the
-deploy decision table, including rollback and unconfirmed outcomes. The
+deploy decision table, including rollback and unconfirmed outcomes. Creation
+tests cover deterministic generation, the manifest-last write and directory
+modes, the reserved port and project refusal, the baseline action, raw-save
+refusal, drift in the admission hook and explicit regeneration. The generated
+gateway policy was also exercised by hand on a disposable Docker daemon: the
+probe and front controller served the same SHA, while the probe's `.php` name,
+an uploaded `.php` file and the manifest were not served. The
 disposable layout lab (`bun run test:managed-sites:wsl`) proves the mount,
 switch, forced-recreation and probe contract without the panel. The disposable
 deployment suite (`bun run test:managed-sites-e2e:wsl`) drives the real deploy

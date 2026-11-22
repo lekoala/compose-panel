@@ -71,6 +71,7 @@ v1 fields (all bounded):
 | `publicRoot` | always | `"public"` only in v1, relative to the release root |
 | `runtime.profile` | always | `"php-front-controller"` only; a later profile is a new accepted value, not a free-form string |
 | `runtime.image` | `managed` only | explicit reference from an allow-listed channel; in `opt-in` mode the Compose file owns the image |
+| `gateway.port` | `managed` only | integer in the reserved range 41000–41999; the single loopback port the generated gateway publishes |
 | `deploy.kind` | always | `"bind-mount"` only |
 | `deploy.git.url` | always | Fully qualified public HTTPS or private SSH URL (ADR 0044), no password or token in the URL |
 | `deploy.git.ref` | always | fully qualified ref (`refs/heads/...`), never a short name or a wildcard |
@@ -108,13 +109,21 @@ when their own ADRs land. Refusing unknown fields is what keeps that honest.
   release path.
 - `staging/`, `private/` and the checkout are outside every container mount.
 
-In the pilot the layout is initialised once by the administrator with the
-documented commands: the four directories, one baseline release, the `current`
-link and a gateway configuration that carries the fixed probe route. The lab
-script in *Verification* is the reference. The panel never adopts an unknown
-working tree as a release and never creates these directories implicitly for a
-deployment: a missing directory or an invalid `current` refuses the operation
-and names the path. `owner: managed` replaces this step with the creation form.
+In the pilot the layout is initialised by an explicit step: for `opt-in`
+stacks, the administrator creates the four directories, one baseline release,
+the `current` link and a gateway configuration that carries the fixed probe
+route. The lab script in *Verification* is the reference. The panel never
+adopts an unknown working tree as a release and never creates these directories
+implicitly for a deployment: a missing directory or an invalid `current`
+refuses the operation and names the path.
+
+For `owner: managed`, the creation form writes the same layout (directories,
+generated Compose and gateway files, trusted manifest) but publishes no
+release and starts no container. One explicit **Publish baseline** action then
+fetches the configured branch into the first immutable release and points
+`current` at it. It is retryable and never touches a container, so a Git or SSH
+failure does not require recreating the stack folder. A deployment still
+requires a provable baseline (ADR 0043).
 
 ### Mounts and the runtime shape
 
@@ -183,6 +192,11 @@ numeric facts, not on shared groups:
   versioned generator. Output is deterministic: declared order, no timestamps,
   no random values, no secret. Re-rendering the same manifest yields identical
   bytes.
+- The creation form is the only writer of a new managed site. It renders from
+  the submitted bounded identifiers (never a URL, ref, path, command or image
+  supplied outside the allow-list), validates the generated Compose file in its
+  final directory through the existing provider, and publishes the manifest
+  last. Until the manifest exists the folder is only an ordinary stack.
 - The generator version is stored in the manifest. A panel that does not know
   the version refuses every managed mutation with an actionable message instead
   of rewriting anything.
@@ -191,9 +205,14 @@ numeric facts, not on shared groups:
   what is on disk. Any difference is drift: the mutation is refused server-side
   (`409`), the affected artifact is named, and only an explicit regeneration
   rewrites it. Drift is never silently repaired.
-- Raw save is refused for a `managed` stack and points to the manifest.
-  `opt-in` stacks keep the editor; a deploy revalidates the profile and fails
-  closed if it no longer matches.
+- Regeneration takes the stack lock, refuses a pending deploy, renders from the
+  manifest and replaces only `compose.yaml` and `generated/*` atomically,
+  preserving each file's mode and owner. It does not touch a release, the
+  pointer or a container.
+- Raw save is refused for `owner: managed`, and whenever a manifest exists but
+  cannot be used. It points to the manifest. `opt-in` stacks keep the editor for
+  their own Compose file; a deploy revalidates the profile and fails closed if
+  it no longer matches.
 
 ### Identity, conflicts and existing boundaries
 
@@ -262,7 +281,10 @@ stays an ordinary, read-only stack.
   executed, sourced or mounted into the panel.
 - Generated files never contain a secret; secrets are provisioned by the
   operator outside the checkout, `generated/` and `public/`, with explicit
-  ownership and permissions.
+  ownership and permissions. Because the generated Compose file and gateway
+  policy embed the canonical stack path, managed creation refuses a stack path
+  whose segments are not simple ASCII letters, digits, dots, dashes or
+  underscores; this keeps YAML and Nginx syntax unambiguous.
 - Every dynamic value is escaped in HTML. Audit records the stack, site ID,
   attempt ID, SHA and outcome, never repository content or file content.
 - The panel stays loopback-bound, single-process, single-host and
@@ -310,10 +332,11 @@ stays an ordinary, read-only stack.
 ## Verification
 
 Unit tests: manifest bounds, version refusal, unknown/duplicate keys, field
-ranges, path containment, `siteId`/project validation, deterministic generation,
+ranges, path containment, `siteId`/project/gateway-port validation,
+deterministic generation, creation writes and modes, port reservation,
 drift detection on one byte, refusal of a raw save for a managed stack,
-refusal of an unknown generator version, and the provider's forced versus
-non-forced recreation arguments.
+refusal of an unknown generator version, explicit regeneration, and the
+provider's forced versus non-forced recreation arguments.
 
 Linux integration, opt-in and disposable: `scripts/managed-sites-lab/run.sh`
 (manual, never in unattended CI) starts a gateway and a PHP runtime with the

@@ -158,6 +158,34 @@ instances and stops routing to unhealthy ones is an operational prerequisite;
 the existing Caddy site integration targets a published loopback port and is not
 compatible with this rollout.
 
+## Managed-site creation and generation (opt-in)
+`src/managed-site-generate.ts` renders the manifest, `compose.yaml`,
+`generated/nginx-site.conf` and `generated/opcache.ini` from bounded form
+fields: fixed service names, one pinned runtime channel image, one reserved
+127.0.0.1 port and only declared paths below `shared/`. Re-rendering the same
+manifest yields identical bytes. `GET /new-site` and `POST /new-site/preview`
+are preview-only; `POST /new-site` calls `src/create-managed-site.ts`, which
+reuses the ordinary creation path to validate the generated Compose file in its
+final folder and to refuse a known project, creates the release layout, writes
+the generated files and publishes the manifest last. It does not fetch, pull or
+start anything. A failed write leaves an inspectable ordinary or owned folder,
+never a silently adopted one.
+
+`POST /stacks/<name>/baseline` runs under the stack lock and the existing
+operation view. It fetches the configured ref into the first immutable release
+and switches `current`, without stopping or recreating a container; it refuses
+when a pointer already exists. `POST /stacks/<name>/regenerate` is the only
+writer that replaces generated files from an existing manifest, after a
+pending-deploy refusal and under the lock.
+
+Generation drift is checked in the operation admission hook, which runs under
+the stack lock for every Compose action, deploy, baseline, rollout and app
+action. The panel re-renders, compares `compose.yaml`, `generated/nginx-site.conf`
+and `generated/opcache.ini` byte-for-byte and refuses with the affected path.
+Raw save is refused for a managed site and whenever a manifest exists but
+cannot be used; a valid `opt-in` stack keeps its editor. Regeneration is the
+explicit repair ([ADR 0042](adr/0042-managed-site-ownership.md)).
+
 ## Managed-site deploy (opt-in)
 `src/managed-site.ts` parses the trusted `compose-panel-site.json` strictly
 (bounded size, versioned, unknown/duplicate keys refused). `src/managed-site-profile.ts`
@@ -185,8 +213,9 @@ The body carries only the stack name, the CSRF token and a confirmation. Under
 the existing per-stack lock and project reservation the panel re-reads the
 manifest, resolves the effective Compose project **without** injecting `-p`,
 runs the profile check, rejects a runtime image reference that no longer
-resolves to the running container's image ID, and proves the baseline (pointer,
-completed metadata, revision script and probe agree) before fetching anything.
+resolves to the running container's image ID, refuses generated-file drift, and
+proves the baseline (pointer, completed metadata, revision script and probe
+agree) before fetching anything.
 
 A deploy stops the gateway, switches `current` by one rename, force-recreates
 the runtime service and starts the gateway. It verifies that the runtime

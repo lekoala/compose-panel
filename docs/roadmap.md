@@ -85,11 +85,18 @@ implemented for an opted-in stack.
 
 - **Managed site ownership.** A versioned `compose-panel-site.json` next to the
   Compose file, either opting a hand-written stack into one bind-mount release
-  layout (`owner: opt-in`) or, later, generating one fixed PHP profile
+  layout (`owner: opt-in`) or generating one fixed PHP profile
   (`owner: managed`). Deterministic generated files, server-side drift refusal,
   validated paths and no second orchestration engine. The directory stays a
   Compose project the CLI can run. The manifest parser, the effective-profile
-  check and the layout exist; generation does not.
+  check, the layout, the creation form with preview and the explicit
+  regeneration exist. Two pinned PHP channels are offered; the gateway image is
+  fixed.
+- **Managed-site baseline.** The creation form writes the layout and generated
+  files but starts nothing and fetches nothing. **Publish baseline** fetches the
+  configured branch into the first immutable release and points `current`; it is
+  retryable and never touches a container. A deployment still requires that
+  provable baseline.
 - **Manual Git deploy.** Implemented behind the flag: one configured Git ref
   fetched into an immutable release, an atomic `current` switch, a forced
   runtime recreation, a verified serving SHA on the actual loopback binding and
@@ -101,7 +108,7 @@ implemented for an opted-in stack.
 - **Private Git.** Implemented under the same flag ([ADR 0044](adr/0044-private-git-over-ssh.md)).
   One dedicated read-only key and one independently pinned host key per site.
 - **Next increments, each with its own ADR or vertical PR:** a disposable
-  Composer preparation container; the creation form with generated
-  Compose/gateway files, a stable loopback port and the existing Caddy attach;
-  the Silverstripe profile with an existing MariaDB; offsite backup and restore;
-  CI triggers; host timers and retention; production cutover and cloning.
+  Composer preparation container; the Silverstripe profile with an existing
+  MariaDB; offsite backup and restore; CI triggers; host timers and retention;
+  production cutover and cloning. The creation form, stable loopback binding and
+  the existing Caddy attach are the current increment.

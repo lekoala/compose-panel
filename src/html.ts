@@ -274,6 +274,134 @@ ${options.error ? note("error", options.error) : ""}
     );
 }
 
+export interface NewSiteDraft {
+    name: string;
+    siteId: string;
+    project: string;
+    port: string;
+    channel: string;
+    gitUrl: string;
+    gitRef: string;
+    paths: string;
+}
+
+export interface ManagedSiteChannel {
+    id: string;
+    label: string;
+    image: string;
+}
+
+export function newSitePage(options: {
+    csrf: string;
+    root: string;
+    channels: readonly ManagedSiteChannel[];
+    draft?: Partial<NewSiteDraft>;
+    error?: string;
+    access?: string;
+    timezone?: string;
+    nav?: NavigationOptions;
+}): string {
+    const draft = options.draft ?? {};
+    const channels = options.channels
+        .map(
+            (channel) =>
+                `<option value="${escapeHtml(channel.id)}"${channel.id === draft.channel ? " selected" : ""}>${escapeHtml(channel.label)} (${escapeHtml(channel.image)})</option>`,
+        )
+        .join("");
+    return documentHtml(
+        "New managed site",
+        `<p class="crumbs"><a href="/">← All stacks</a></p>
+<h1>New managed site</h1>
+<p class="lead">Create one PHP site under <code>${escapeHtml(options.root)}</code> from a fixed runtime profile. The panel writes a trusted <code>compose-panel-site.json</code>, a generated Compose file and an approved gateway configuration. It does not fetch code, pull an image or start a container: publish the first release, then start the site.</p>
+${options.error ? note("error", options.error) : ""}
+<form method="post" action="/new-site" class="form">
+  <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
+  <label>Folder name <span class="hint">Lowercase letters, digits, hyphens and underscores; up to 63 characters. An existing folder is never replaced.</span>
+    <input type="text" name="name" value="${escapeHtml(draft.name ?? "")}" pattern="[a-z0-9][a-z0-9_-]{0,62}" maxlength="63" autocapitalize="none" spellcheck="false" required autofocus>
+  </label>
+  <label>Site ID <span class="hint">Opaque and immutable; defaults to the folder name. Changing a domain never moves the site data.</span>
+    <input type="text" name="siteId" value="${escapeHtml(draft.siteId ?? "")}" pattern="[a-z0-9][a-z0-9-]{2,63}" maxlength="64" autocapitalize="none" spellcheck="false">
+  </label>
+  <label>Compose project <span class="hint">Exact project name; defaults to the folder name. It is never inferred later from the folder.</span>
+    <input type="text" name="project" value="${escapeHtml(draft.project ?? "")}" pattern="[a-z0-9][a-z0-9_-]{0,62}" maxlength="63" autocapitalize="none" spellcheck="false">
+  </label>
+  <label>Gateway loopback port <span class="hint">Reserved managed-site range 41000-41999. Keep it stable across releases; detach any domain before changing it.</span>
+    <input type="number" name="port" value="${escapeHtml(draft.port ?? "")}" min="41000" max="41999" step="1" inputmode="numeric" required>
+  </label>
+  <label>Runtime channel
+    <select name="channel" required><option value="">Choose a pinned channel…</option>${channels}</select>
+  </label>
+  <label>Git URL <span class="hint">Public HTTPS or a private SSH URL. No password or token in the URL.</span>
+    <input type="url" name="gitUrl" value="${escapeHtml(draft.gitUrl ?? "")}" maxlength="2048" autocapitalize="none" spellcheck="false" required>
+  </label>
+  <label>Branch <span class="hint">Fully qualified, for example refs/heads/main. A short name or a wildcard is refused.</span>
+    <input type="text" name="gitRef" value="${escapeHtml(draft.gitRef ?? "refs/heads/main")}" maxlength="255" autocapitalize="none" spellcheck="false" required>
+  </label>
+  <label>Persistent paths <span class="hint">Optional, one per line. Each path must stay below <code>shared/</code>; it is mounted writable into PHP only.</span>
+    <textarea name="paths" rows="4" spellcheck="false" autocapitalize="none">${escapeHtml(draft.paths ?? "")}</textarea>
+  </label>
+  <div class="form-actions">
+    <button type="submit" formaction="/new-site/preview" class="btn">Preview files</button>
+    <button type="submit" class="btn btn-primary" data-busy-label="Creating…">Create site</button>
+    <a href="/" class="btn">Cancel</a>
+  </div>
+</form>`,
+        { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, nav: options.nav, scripts: ["/app.js"] },
+    );
+}
+
+export function newSitePreviewPage(options: {
+    csrf: string;
+    draft: NewSiteDraft;
+    manifestSource: string;
+    compose: string;
+    gateway: string;
+    opcache: string;
+    access?: string;
+    timezone?: string;
+    nav?: NavigationOptions;
+}): string {
+    const hidden = (
+        [
+            ["name", options.draft.name],
+            ["siteId", options.draft.siteId],
+            ["project", options.draft.project],
+            ["port", options.draft.port],
+            ["channel", options.draft.channel],
+            ["gitUrl", options.draft.gitUrl],
+            ["gitRef", options.draft.gitRef],
+        ] as const
+    )
+        .map(([name, value]) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`)
+        .join("");
+    return documentHtml(
+        "Preview managed site",
+        `<p class="crumbs"><a href="/new-site">← New managed site</a></p>
+<h1>Preview managed site</h1>
+<p class="lead">Nothing has been written. Check the trusted manifest and the generated files; creating the site writes exactly these bytes and validates the Compose file in its final folder.</p>
+${note("info", "After creation, publish the first release before starting the site. The gateway is bound to 127.0.0.1 and is not exposed until you attach a domain.")}
+<dl class="meta"><dt>Folder</dt><dd><code>${escapeHtml(options.draft.name)}</code></dd><dt>Site</dt><dd><code>${escapeHtml(options.draft.siteId)}</code></dd><dt>Project</dt><dd><code>${escapeHtml(options.draft.project)}</code></dd><dt>Gateway</dt><dd><code>127.0.0.1:${escapeHtml(options.draft.port)}</code></dd></dl>
+<h2>compose-panel-site.json</h2>
+<pre class="output">${escapeHtml(options.manifestSource)}</pre>
+<h2>compose.yaml</h2>
+<pre class="output">${escapeHtml(options.compose)}</pre>
+<h2>generated/nginx-site.conf</h2>
+<pre class="output">${escapeHtml(options.gateway)}</pre>
+<h2>generated/opcache.ini</h2>
+<pre class="output">${escapeHtml(options.opcache)}</pre>
+<form method="post" action="/new-site" class="form">
+  <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
+  ${hidden}
+  <textarea name="paths" hidden>${escapeHtml(options.draft.paths)}</textarea>
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary" data-busy-label="Creating…">Create site</button>
+    <a href="/new-site" class="btn">Cancel</a>
+  </div>
+</form>`,
+        { logoutCsrf: options.csrf, access: options.access, timezone: options.timezone, nav: options.nav, scripts: ["/app.js"] },
+    );
+}
+
 function backupsSection(name: string, csrf: string, backups: EditPageOptions["backups"]): string {
     const head = `<section class="card"><h2>Backups</h2>`;
     if (backups === null)

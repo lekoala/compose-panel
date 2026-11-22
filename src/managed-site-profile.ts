@@ -196,6 +196,12 @@ export function checkManagedSiteProfile(input: {
     if (port.published === null) {
         return { ok: false, reason: "The gateway port needs an explicit loopback port number." };
     }
+    if (manifest.owner === "managed" && manifest.gateway && port.published !== manifest.gateway.port) {
+        return {
+            ok: false,
+            reason: `The gateway publishes 127.0.0.1:${port.published}, not the declared 127.0.0.1:${manifest.gateway.port}.`,
+        };
+    }
     if (runtime.ports.length > 0) {
         return { ok: false, reason: "The runtime service must not publish any port." };
     }

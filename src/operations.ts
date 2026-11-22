@@ -249,6 +249,31 @@ export class OperationManager {
         return operation;
     }
 
+    /**
+     * Publish the first release of a managed site (ADR 0042). It uses the same
+     * lock, admission and streaming rules as a deploy, but it never touches a
+     * container: there is no serving state to stop or roll back.
+     */
+    startBaseline(input: {
+        stack: string;
+        project?: string;
+        run: (context: {
+            onOutput: (chunk: string) => void;
+            record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+        }) => Promise<AppActionOutcome>;
+    }): OperationView {
+        const { operation, release } = this.begin({
+            stack: input.stack,
+            action: "baseline",
+            label: "Publish baseline",
+            project: input.project,
+        });
+        const task = this.executeApp(operation, input.run, release, input.project);
+        this.tasks.add(task);
+        void task.finally(() => this.tasks.delete(task));
+        return operation;
+    }
+
     /** Shared acquisition: per-stack lock, project reservation, operation record. */
     private begin(input: {
         stack: string;

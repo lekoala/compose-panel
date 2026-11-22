@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Managed sites (ADR 0042): the creation form. With
+  `COMPOSE_PANEL_MANAGED_SITES_ENABLED=true`, **New site** renders a trusted
+  `compose-panel-site.json`, a deterministic `compose.yaml`, an Nginx gateway
+  policy and a pinned OPcache policy from bounded fields: folder, site ID,
+  project, a port in 41000-41999, one pinned PHP channel, a Git URL/ref and
+  optional paths below `shared/`. **Preview files** writes nothing; **Create
+  site** validates the generated Compose file in its final directory, refuses a
+  known Docker project or a port declared by another managed site or published
+  by a running container, creates the `0755`/`0700` release layout and writes
+  the manifest last. No image is pulled, no code is fetched and no container is
+  started. **Publish baseline** is a separate retryable operation under the
+  stack lock: it fetches the first immutable release and switches `current`
+  without touching a container. Generated files are compared byte-for-byte in
+  the operation admission hook (under the lock); drift refuses every Compose
+  action, deploy, baseline, rollout and app action and names the file. Raw save
+  is refused for a managed site and whenever a manifest exists but cannot be
+  used; a valid opt-in stack keeps its editor. **Regenerate generated files**
+  is the only explicit repair. Declared persistent paths stay operator-owned.
+  The manifest gains the managed-only `gateway.port` field and only accepts the
+  pinned channel images.
+
 - Managed sites (ADR 0042, ADR 0043): the ownership model and the bounded Git
   release lifecycle are accepted as pilot contracts, with a disposable lab that
   proves the bind-mount release layout without the panel — two revisions, the

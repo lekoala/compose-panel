@@ -20,6 +20,35 @@ export const MANAGED_SITE_PATH_MAX = 255;
 export const MANAGED_SITE_GIT_URL_MAX = 2048;
 export const MANAGED_SITE_GIT_REF_MAX = 255;
 export const MANAGED_SITE_GENERATION_MAX = 32;
+/** Generator version this panel knows. A managed site with another version is refused. */
+export const MANAGED_SITE_GENERATION = "1";
+/** Reserved loopback range for generated site gateways. */
+export const MANAGED_SITE_GATEWAY_PORT_MIN = 41000;
+export const MANAGED_SITE_GATEWAY_PORT_MAX = 41999;
+
+/**
+ * The only runtime images a generated site may declare. A channel pins the
+ * image tag; the manifest stores the resolved reference, never the label.
+ */
+export const MANAGED_SITE_CHANNELS = [
+    { id: "php-8.3", label: "PHP 8.3", image: "php:8.3-fpm-alpine" },
+    { id: "php-8.4", label: "PHP 8.4", image: "php:8.4-fpm-alpine" },
+] as const;
+
+export type ManagedSiteChannelId = (typeof MANAGED_SITE_CHANNELS)[number]["id"];
+
+export function managedSiteChannel(id: string): (typeof MANAGED_SITE_CHANNELS)[number] | null {
+    return MANAGED_SITE_CHANNELS.find((channel) => channel.id === id) ?? null;
+}
+
+export function isManagedSiteChannelImage(value: string): boolean {
+    return MANAGED_SITE_CHANNELS.some((channel) => channel.image === value);
+}
+
+/** A gateway port is an integer in the reserved managed-site range. */
+export function isManagedSiteGatewayPort(value: number): boolean {
+    return Number.isInteger(value) && value >= MANAGED_SITE_GATEWAY_PORT_MIN && value <= MANAGED_SITE_GATEWAY_PORT_MAX;
+}
 /** Attempt ids name a staging directory and a pending deploy marker. */
 export const MANAGED_SITE_ATTEMPT_ID = /^[a-z0-9]{8,40}$/;
 export const MANAGED_SITE_OWNERS = ["opt-in", "managed"] as const;
@@ -48,6 +77,8 @@ export interface ManagedSiteManifest {
         /** Service that runs PHP and must be recreated after a pointer switch. */
         runtime: string;
     };
+    /** `managed` only: the fixed loopback port the generated gateway publishes. */
+    gateway?: { port: number };
     publicRoot: typeof MANAGED_SITE_PUBLIC_ROOT;
     runtime: {
         profile: typeof MANAGED_SITE_PROFILE;
@@ -172,7 +203,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
 
     const unknown = unknownField(
         root,
-        ["version", "siteId", "owner", "project", "services", "publicRoot", "runtime", "deploy", "paths", "generation"],
+        ["version", "siteId", "owner", "project", "services", "gateway", "publicRoot", "runtime", "deploy", "paths", "generation"],
         "",
     );
     if (unknown) return unknown;
@@ -213,6 +244,27 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         return { ok: false, reason: "services.gateway and services.runtime must name two different services." };
     }
 
+    let gatewayPort: number | undefined;
+    if (root.gateway !== undefined) {
+        if (owner !== "managed") {
+            return { ok: false, reason: 'gateway belongs to owner "managed": an opt-in stack owns its published port.' };
+        }
+        const candidate = asRecord(root.gateway);
+        if (!candidate) return { ok: false, reason: "gateway must be an object with a port." };
+        const gatewayUnknown = unknownField(candidate, ["port"], "gateway.");
+        if (gatewayUnknown) return gatewayUnknown;
+        if (!isManagedSiteGatewayPort(candidate.port as number)) {
+            return {
+                ok: false,
+                reason: `gateway.port must be a whole number between ${MANAGED_SITE_GATEWAY_PORT_MIN} and ${MANAGED_SITE_GATEWAY_PORT_MAX}.`,
+            };
+        }
+        gatewayPort = candidate.port as number;
+    }
+    if (owner === "managed" && gatewayPort === undefined) {
+        return { ok: false, reason: 'gateway.port is required for owner "managed".' };
+    }
+
     if (root.publicRoot !== MANAGED_SITE_PUBLIC_ROOT) {
         return { ok: false, reason: `publicRoot must be "${MANAGED_SITE_PUBLIC_ROOT}" in version 1.` };
     }
@@ -229,6 +281,12 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         const candidate = asString(runtime.image);
         if (!candidate || !isExplicitImageReference(candidate)) {
             return { ok: false, reason: "runtime.image must be an explicit image reference with a tag or a digest." };
+        }
+        if (owner === "managed" && !isManagedSiteChannelImage(candidate)) {
+            return {
+                ok: false,
+                reason: `runtime.image must be one of the pinned managed-site channels: ${MANAGED_SITE_CHANNELS.map((channel) => channel.image).join(", ")}.`,
+            };
         }
         image = candidate;
     }
@@ -308,6 +366,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         owner,
         project,
         services: { gateway, runtime: runtimeService },
+        ...(gatewayPort === undefined ? {} : { gateway: { port: gatewayPort } }),
         publicRoot: MANAGED_SITE_PUBLIC_ROOT,
         runtime: image === undefined ? { profile: MANAGED_SITE_PROFILE } : { profile: MANAGED_SITE_PROFILE, image },
         deploy: { kind: MANAGED_SITE_DEPLOY_KIND, git: { url, ref } },

@@ -102,6 +102,39 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - Integration tests run on a disposable lab daemon, never on a host or in
   unattended CI.
 
+## Managed-site creation (ADR 0042)
+- `/new-site`, `/new-site/preview` and `/new-site` exist only with the flag.
+  The authenticated form sends bounded identifiers: folder name, site ID,
+  project, a port in 41000–41999, a channel id, a Git URL/ref and declared paths
+  below `shared/`. It never sends a command, an image, a host path or an option.
+  Preview is write-free; creation re-validates server-side instead of trusting
+  the preview.
+- `src/managed-site-generate.ts` fixes the two service names, the gateway image
+  and the runtime image per channel. The generated Compose file is validated in
+  its final folder through `ComposeProvider`; the project must be unknown to
+  Docker. `src/create-managed-site.ts` then creates `0755` public directories,
+  `0700` staging/private directories and the generated files, and writes the
+  trusted manifest **last**. No image is pulled and no container is started.
+- Before writing, the panel refuses a port already declared by another managed
+  site or published by any running container. Docker enforces the bind at start;
+  an unrelated host listener remains outside the panel's knowledge.
+- `POST /stacks/<name>/baseline` publishes the first release under the stack
+  lock and operation view. It refuses when `current` already exists, stops and
+  recreates nothing, and fetches with the same bounded Git adapter. A failure
+  leaves the site without a pointer and can be retried; it is not a deployment.
+- For `owner: managed`, the operation admission hook (under the stack lock)
+  re-renders `compose.yaml` and `generated/*` and compares them byte-for-byte
+  with disk. Drift refuses every Compose action, deploy, baseline, rollout and
+  app action, naming the affected file. Raw save is refused for a managed site
+  and whenever a manifest exists but cannot be used; a valid `opt-in` stack
+  keeps its editor. `POST /stacks/<name>/regenerate` is the only explicit
+  repair: it takes the lock, refuses a pending deploy, renders again
+  and replaces only those files atomically while preserving mode and owner. It
+  never touches a release, the pointer or a container.
+- Declared persistent paths are mounted into PHP only. The panel creates
+  `site/shared` but never chowns a declared path or makes a release writable:
+  the operator prepares write access for the runtime image's UID (ADR 0042).
+
 ## Managed-site deploy (ADR 0042, ADR 0043)
 - The deploy route exists only with `COMPOSE_PANEL_MANAGED_SITES_ENABLED=true`
   **and** a valid manifest. The browser sends identifiers only: no URL, ref,

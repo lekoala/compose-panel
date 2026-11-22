@@ -28,7 +28,8 @@ function optIn(overrides: Json = {}): Json {
 function managed(overrides: Json = {}): Json {
     return optIn({
         owner: "managed",
-        runtime: { profile: "php-front-controller", image: "ghcr.io/acme/php:8.3" },
+        gateway: { port: 41001 },
+        runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
         generation: "1",
         paths: ["shared/uploads"],
         ...overrides,
@@ -60,9 +61,26 @@ describe("parseManagedSiteManifest", () => {
         const result = parse(managed());
         expect(result.ok).toBe(true);
         if (!result.ok) return;
-        expect(result.manifest.runtime.image).toBe("ghcr.io/acme/php:8.3");
+        expect(result.manifest.runtime.image).toBe("php:8.3-fpm-alpine");
         expect(result.manifest.paths).toEqual(["shared/uploads"]);
         expect(result.manifest.generation).toBe("1");
+        expect(result.manifest.gateway).toEqual({ port: 41001 });
+    });
+
+    test("requires a reserved gateway port for a managed site and refuses one for an opt-in stack", () => {
+        const { gateway: _drop, ...withoutGateway } = managed();
+        expect(rejected(withoutGateway)).toBe(true);
+        expect(rejected(optIn({ gateway: { port: 41001 } }))).toBe(true);
+        expect(rejected(managed({ gateway: { port: 40999 } }))).toBe(true);
+        expect(rejected(managed({ gateway: { port: 42000 } }))).toBe(true);
+        expect(rejected(managed({ gateway: { port: "41001" } }))).toBe(true);
+        expect(rejected(managed({ gateway: { port: 41001, host: "127.0.0.1" } }))).toBe(true);
+    });
+
+    test("accepts only a pinned runtime channel image in managed mode", () => {
+        expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "ghcr.io/acme/php:8.3" } }))).toBe(true);
+        const result = parse(managed({ runtime: { profile: "php-front-controller", image: "php:8.4-fpm-alpine" } }));
+        expect(result.ok).toBe(true);
     });
 
     test("refuses another version, a missing version and a string version", () => {
@@ -167,17 +185,18 @@ describe("parseManagedSiteManifest", () => {
         expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "php" } }))).toBe(true);
         expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "php:" } }))).toBe(true);
         expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "ghcr.io/acme/php:" } }))).toBe(true);
-        expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "ghcr.io/acme/php@sha256:abc" } }))).toBe(true);
+        expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "php@sha256:abc" } }))).toBe(true);
         expect(
             parse(
                 managed({
                     runtime: {
                         profile: "php-front-controller",
-                        image: `ghcr.io/acme/php@sha256:${"a".repeat(64)}`,
+                        image: `php:8.3-fpm-alpine@sha256:${"a".repeat(64)}`,
                     },
                 }),
             ).ok,
-        ).toBe(true);
+        ).toBe(false);
+        expect(parse(managed({ runtime: { profile: "php-front-controller", image: "php:8.4-fpm-alpine" } })).ok).toBe(true);
     });
 
     test("refuses a deploy block that is missing, has another kind or is not Git", () => {

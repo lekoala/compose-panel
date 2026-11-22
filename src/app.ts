@@ -20,6 +20,8 @@ import {
     containerDetailPage,
     deploymentSection,
     createStackPage,
+    newSitePage,
+    newSitePreviewPage,
     managedByBadge,
     toolboxPage,
     databaseSection,
@@ -32,6 +34,7 @@ import {
     type NavigationOptions,
     type NoteKind,
     type ToolboxSourceView,
+    type NewSiteDraft,
 } from "./html.ts";
 import { serverLiveView, serverPage } from "./features/server/views.ts";
 import { SelfUpdateError, SelfUpdater, isImageId } from "./self-update.ts";
@@ -91,24 +94,36 @@ import { HostMaintenance, MaintenanceDisabledError } from "./host-maintenance.ts
 import { isMaintenanceScope } from "./maintenance.ts";
 import { MaintenanceBusyError, StackBusyError, StackLocks } from "./locks.ts";
 import { listBackups, pruneBackups } from "./backups.ts";
-import { FileSafetyError, randomSuffix, readFileSafe } from "./fs-safe.ts";
+import { FileSafetyError, randomSuffix, readFileSafe, writeFileAtomic } from "./fs-safe.ts";
 import { LogManager, stripAnsi } from "./logs.ts";
 import { AuditLog, AuditError } from "./audit.ts";
 import { formatSseEvent, formatSseHeartbeat, sseHeaders } from "./sse.ts";
 import { createComposeProvider, COMPOSE_LOG_TAIL_OPTIONS, isComposeServiceName, type ComposeProvider } from "./compose-provider.ts";
 import {
     isManagedSiteAttemptId,
+    MANAGED_SITE_CHANNELS,
     MANAGED_SITE_MANIFEST_FILE,
     MANAGED_SITE_MANIFEST_MAX_BYTES,
     parseManagedSiteManifest,
     type ManagedSiteManifest,
     type ManagedSiteManifestResult,
 } from "./managed-site.ts";
+import {
+    buildManagedSite,
+    parseManagedSiteDraft,
+    renderManagedSiteArtifacts,
+    MANAGED_SITE_GATEWAY_CONFIG,
+    MANAGED_SITE_OPCACHE_CONFIG,
+    type ManagedSiteDraft,
+} from "./managed-site-generate.ts";
+import { createManagedSite, findManagedSitePortOwner, ManagedSiteCreationPartialError } from "./create-managed-site.ts";
+import { publishManagedSiteBaseline } from "./managed-site-baseline.ts";
 import { checkManagedSiteProfile } from "./managed-site-profile.ts";
 import { fetchAndPublishGitRelease } from "./git-release.ts";
 import {
     managedSiteAttemptPath,
     pendingDeployAttempt,
+    readBaseline,
     readPendingDeployAttempt,
     runManagedSiteDeploy,
     type ManagedSiteDeployResult,
@@ -456,10 +471,9 @@ export function createApp(options: AppOptions): App {
         admit: async (stack) => {
             if (!config.managedSitesEnabled) return null;
             try {
-                const stackDir = await managedSiteStackDir(stack);
-                return (await pendingDeployAttempt(stackDir)) ? MANAGED_SITE_PENDING_MESSAGE : null;
+                return await managedSiteAdmission(stack);
             } catch {
-                return "The pending deploy state of this stack could not be checked, so nothing was run.";
+                return "The pending deploy and generated-file state of this stack could not be checked, so nothing was run.";
             }
         },
         // The outcome is recorded when the action ends, even if nobody watches it.
@@ -470,7 +484,7 @@ export function createApp(options: AppOptions): App {
                     ? "toolbox"
                     : operation.action === "rollout"
                       ? "rollout"
-                      : operation.action === "deploy"
+                      : operation.action === "deploy" || operation.action === "baseline"
                         ? "deploy"
                         : "operation",
                 result: operation.status,
@@ -848,7 +862,7 @@ export function createApp(options: AppOptions): App {
         return htmlResponse(
             documentHtml(
                 "Stacks",
-                `<div class="page-head"><h1>Stacks</h1><a href="/new-stack" class="btn btn-primary">New stack</a></div>${intro}${warning}${content}${otherContainersSection(containers, "running", containerNote)}`,
+                `<div class="page-head"><h1>Stacks</h1><div class="actions">${config.managedSitesEnabled ? `<a href="/new-site" class="btn">New site</a>` : ""}<a href="/new-stack" class="btn btn-primary">New stack</a></div></div>${intro}${warning}${content}${otherContainersSection(containers, "running", containerNote)}`,
                 { ...pageChrome(csrf), nav: { stacks: stacks.map((stack) => stack.name), section: "stacks" } },
             ),
         );
@@ -1447,6 +1461,366 @@ export function createApp(options: AppOptions): App {
         }
     }
 
+    async function renderNewSite(csrf: string, draft?: Partial<NewSiteDraft>, error?: string, status = 200): Promise<Response> {
+        return htmlResponse(
+            newSitePage({
+                ...pageChrome(csrf),
+                csrf,
+                root: stacksRoot,
+                channels: MANAGED_SITE_CHANNELS,
+                draft,
+                error,
+                nav: await sidebarNav("stacks"),
+            }),
+            status,
+        );
+    }
+
+    function newSiteDraftFromForm(form: URLSearchParams): NewSiteDraft {
+        return {
+            name: form.get("name") ?? "",
+            siteId: form.get("siteId") ?? "",
+            project: form.get("project") ?? "",
+            port: form.get("port") ?? "",
+            channel: form.get("channel") ?? "",
+            gitUrl: form.get("gitUrl") ?? "",
+            gitRef: form.get("gitRef") ?? "",
+            paths: form.get("paths") ?? "",
+        };
+    }
+
+    function buildNewSite(stackDir: string, raw: NewSiteDraft) {
+        const parsed = parseManagedSiteDraft(raw);
+        if (!parsed.ok) return { ok: false as const, reason: parsed.reason };
+        const built = buildManagedSite({
+            stackDir,
+            siteId: parsed.draft.siteId,
+            project: parsed.draft.project,
+            port: parsed.draft.port,
+            gitUrl: parsed.draft.gitUrl,
+            gitRef: parsed.draft.gitRef,
+            channel: parsed.draft.channel,
+            paths: parsed.draft.paths,
+        });
+        return built.ok ? { ok: true as const, built, draft: parsed.draft } : { ok: false as const, reason: built.reason };
+    }
+
+    async function handlePreviewSite(request: Request, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        if (!config.managedSitesEnabled) throw new StackError("Managed sites are not enabled on this panel.", 404);
+        if (process.platform === "win32") throw new StackError("Managed site creation requires a Linux host.", 501);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, "/new-site");
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, "/new-site");
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, "/new-site");
+        if (!sessions.isActive(session.id)) return sessionEnded();
+        const raw = newSiteDraftFromForm(form);
+        const built = buildNewSite(join(stacksRoot, raw.name), raw);
+        if (!built.ok) return renderNewSite(csrf, raw, built.reason, 400);
+        return htmlResponse(
+            newSitePreviewPage({
+                ...pageChrome(csrf),
+                csrf,
+                draft: {
+                    ...raw,
+                    siteId: built.draft.siteId,
+                    project: built.draft.project,
+                    port: String(built.draft.port),
+                    paths: built.draft.paths.join("\n"),
+                },
+                manifestSource: built.built.manifestSource,
+                compose: built.built.artifacts.compose,
+                gateway: built.built.artifacts.gateway,
+                opcache: built.built.artifacts.opcache,
+                nav: await sidebarNav("stacks"),
+            }),
+        );
+    }
+
+    /** Refuse a port another managed site declares or a running container publishes. */
+    async function requireSitePortFree(port: number): Promise<void> {
+        const declared = await findManagedSitePortOwner(stacksRoot, port, null);
+        if (declared.kind === "used") {
+            throw new StackError(`Port ${port} is already reserved by the managed site "${declared.stack}".`, 409);
+        }
+        if (declared.kind === "unavailable") throw new StackError(`${declared.reason} Nothing was created.`, 503);
+        let listed;
+        try {
+            listed = await inspector.list();
+        } catch {
+            throw new StackError("Docker did not respond, so the gateway port could not be checked. Nothing was created.", 503);
+        }
+        if (listed.code !== 0 || listed.timedOut) {
+            throw new StackError("Docker did not respond, so the gateway port could not be checked. Nothing was created.", 503);
+        }
+        let containers;
+        try {
+            containers = parseContainerLs(listed.stdout);
+        } catch {
+            throw new StackError("Docker gave an unexpected answer, so the gateway port could not be checked. Nothing was created.", 503);
+        }
+        const conflict = containers.find((container) => {
+            for (const match of container.ports.matchAll(/:(\d+)->/g)) {
+                if (Number(match[1]) === port) return true;
+            }
+            return false;
+        });
+        if (conflict) {
+            throw new StackError(
+                `Port ${port} is already published by the container "${conflict.name}"${conflict.project ? ` of the project "${conflict.project}"` : ""}. Nothing was created.`,
+                409,
+            );
+        }
+    }
+
+    async function handleCreateSite(request: Request, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        if (!config.managedSitesEnabled) throw new StackError("Managed sites are not enabled on this panel.", 404);
+        if (process.platform === "win32") throw new StackError("Managed site creation requires a Linux host.", 501);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, "/new-site");
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, "/new-site");
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, "/new-site");
+        if (!sessions.isActive(session.id)) return sessionEnded();
+        const raw = newSiteDraftFromForm(form);
+        const stackDir = join(stacksRoot, raw.name);
+        const built = buildNewSite(stackDir, raw);
+        if (!built.ok) return renderNewSite(csrf, raw, built.reason, 400);
+        try {
+            // The port is the only shared resource that is not covered by the
+            // per-stack lock: serialize creations that would claim the same one.
+            const task = locks.run(`managed-site-port-${built.draft.port}`, async () => {
+                if (!sessions.isActive(session.id)) throw new SessionEndedError();
+                if (shuttingDown) throw new OperationsDisabledError();
+                if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                await requireSitePortFree(built.draft.port);
+                if (!sessions.isActive(session.id)) throw new SessionEndedError();
+                await createManagedSite(
+                    stacksRoot,
+                    { stackName: built.draft.name, manifestSource: built.built.manifestSource, artifacts: built.built.artifacts },
+                    provider,
+                    config.maxEditBytes,
+                    {
+                        beforeCommit: () => {
+                            if (!sessions.isActive(session.id)) throw new SessionEndedError();
+                        },
+                    },
+                );
+            });
+            saves.add(task);
+            try {
+                await task;
+            } finally {
+                saves.delete(task);
+            }
+            await recordAudit({
+                event: "create",
+                result: "success",
+                actor: clientKey(request, config),
+                stack: built.draft.name,
+                detail: `managed site ${built.draft.siteId}, 127.0.0.1:${built.draft.port}`,
+            });
+            return redirect(`/stacks/${encodeURIComponent(built.draft.name)}?created=1`, 303);
+        } catch (error) {
+            if (error instanceof SessionEndedError) {
+                await recordAudit({ event: "create", result: "refused", actor: clientKey(request, config) });
+                return sessionEnded();
+            }
+            const status =
+                error instanceof StackError
+                    ? error.status
+                    : error instanceof StackBusyError || error instanceof OperationsDisabledError
+                      ? 409
+                      : 500;
+            const message =
+                error instanceof StackError || error instanceof StackBusyError || error instanceof OperationsDisabledError
+                    ? error.message
+                    : "The site could not be created. Check directory permissions and Docker availability.";
+            if (error instanceof ManagedSiteCreationPartialError)
+                console.error("Managed site creation incomplete", { stack: built.draft.name });
+            await recordAudit({
+                event: "create",
+                result: error instanceof ManagedSiteCreationPartialError ? "partial" : "refused",
+                actor: clientKey(request, config),
+                stack: built.draft.name,
+            });
+            return renderNewSite(csrf, raw, message, status);
+        }
+    }
+
+    async function handleBaseline(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!config.managedSitesEnabled) throw new StackError("Managed sites are not enabled on this panel.", 404);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+
+        const stackDir = await managedSiteStackDir(name);
+        const manifestResult = await readManagedSiteManifest(stackDir);
+        if (!manifestResult.ok) {
+            await recordAudit({
+                event: "deploy",
+                result: "refused",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "baseline",
+                detail: manifestResult.reason,
+            });
+            return renderStackDetail(name, csrf, { kind: "error", text: manifestResult.reason }, 409);
+        }
+        if (await pendingDeployAttempt(stackDir)) {
+            const response = await refusePendingDeploy(request, name, csrf, "baseline");
+            if (response) return response;
+        }
+        try {
+            if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+            operations.startBaseline({
+                stack: name,
+                project: manifestResult.manifest.project,
+                run: async ({ onOutput, record }) => {
+                    if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                    const currentDir = await managedSiteStackDir(name);
+                    const current = await readManagedSiteManifest(currentDir);
+                    if (!current.ok) return { refused: current.reason };
+                    const result = await publishManagedSiteBaseline({
+                        stackDir: currentDir,
+                        manifest: current.manifest,
+                        attemptId: randomSuffix(),
+                        onOutput,
+                    });
+                    switch (result.kind) {
+                        case "published":
+                            record({ revision: result.releaseId });
+                            onOutput(
+                                `Baseline ${result.releaseId} is published${result.reused ? " (existing release reused)" : ""}. Start the site when ready.\n`,
+                            );
+                            return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+                        case "refused":
+                            return { refused: result.reason };
+                        case "failed":
+                            onOutput(`${result.reason}\n`);
+                            return { code: 1, stdout: "", stderr: "", timedOut: false, truncated: false };
+                        case "unknown":
+                            onOutput(`${result.reason}\n`);
+                            return { code: -1, stdout: "", stderr: "", timedOut: false, truncated: false, terminationUnconfirmed: true };
+                    }
+                },
+            });
+            await recordAudit({
+                event: "deploy",
+                result: "started",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "baseline",
+                detail: `site ${manifestResult.manifest.siteId}, ${manifestResult.manifest.deploy.git.ref}`,
+            });
+            return redirect(back, 303);
+        } catch (error) {
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({
+                    event: "deploy",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    action: "baseline",
+                    detail: error.message,
+                });
+                return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Explicitly rewrite the generated files from the manifest. Drift is never
+     * repaired silently: the operator asks for this action, which replaces
+     * every generated artifact with the deterministic rendering.
+     */
+    async function handleRegenerate(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!config.managedSitesEnabled) throw new StackError("Managed sites are not enabled on this panel.", 404);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+
+        const stackDir = await managedSiteStackDir(name);
+        const manifest = await readManagedSiteManifest(stackDir);
+        if (!manifest.ok) {
+            return renderStackDetail(name, csrf, { kind: "error", text: manifest.reason }, 409);
+        }
+        if (manifest.manifest.owner !== "managed") {
+            return renderStackDetail(
+                name,
+                csrf,
+                { kind: "error", text: "This stack keeps its own Compose file; there is nothing to regenerate." },
+                409,
+            );
+        }
+        if (await pendingDeployAttempt(stackDir)) {
+            const response = await refusePendingDeploy(request, name, csrf, "regenerate");
+            if (response) return response;
+        }
+        try {
+            const task = locks.run(name, async () => {
+                if (shuttingDown) throw new OperationsDisabledError();
+                if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                if (!sessions.isActive(session.id)) throw new SessionEndedError();
+                const rendered = renderManagedSiteArtifacts(stackDir, manifest.manifest);
+                if (!rendered.ok) throw new StackError(rendered.reason, 409);
+                const files: [string, string][] = [
+                    ["compose.yaml", rendered.artifacts.compose],
+                    [MANAGED_SITE_GATEWAY_CONFIG, rendered.artifacts.gateway],
+                    [MANAGED_SITE_OPCACHE_CONFIG, rendered.artifacts.opcache],
+                ];
+                const directory = await lstat(stackDir);
+                for (const [path, content] of files) {
+                    let attributes = { mode: 0o644, uid: directory.uid, gid: directory.gid };
+                    try {
+                        const current = await readFileSafe(join(stackDir, path), Math.max(config.maxEditBytes, 64 * 1024));
+                        if (current) attributes = { mode: current.mode, uid: current.uid, gid: current.gid };
+                    } catch (error) {
+                        if (error instanceof FileSafetyError) throw new StackError(`${path} cannot be replaced: ${error.message}`, 409);
+                        throw error;
+                    }
+                    await writeFileAtomic(join(stackDir, path), content, attributes);
+                }
+            });
+            saves.add(task);
+            try {
+                await task;
+            } finally {
+                saves.delete(task);
+            }
+            await recordAudit({
+                event: "save",
+                result: "success",
+                actor: clientKey(request, config),
+                stack: name,
+                detail: "regenerated the managed site files from compose-panel-site.json",
+            });
+            return redirect(back, 303);
+        } catch (error) {
+            if (error instanceof SessionEndedError) return sessionEnded();
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError || error instanceof StackError) {
+                await recordAudit({
+                    event: "save",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    detail: error.message,
+                });
+                return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was changed.` }, 409);
+            }
+            throw error;
+        }
+    }
+
     async function handleSave(request: Request, name: string, session: Session): Promise<Response> {
         const csrf = session.csrf;
         const back = `/stacks/${encodeURIComponent(name)}/edit`;
@@ -1459,6 +1833,53 @@ export function createApp(options: AppOptions): App {
 
         const pendingDeploy = await refusePendingDeploy(request, name, csrf, "save");
         if (pendingDeploy) return pendingDeploy;
+
+        // A generated Compose file is not editable: the manifest is the source
+        // of truth and a raw save would be silently reverified as drift later.
+        let siteManifest;
+        try {
+            siteManifest = await readFileSafe(
+                join(await managedSiteStackDir(name), MANAGED_SITE_MANIFEST_FILE),
+                MANAGED_SITE_MANIFEST_MAX_BYTES,
+            );
+        } catch {
+            await recordAudit({
+                event: "save",
+                result: "refused",
+                actor: clientKey(request, config),
+                stack: name,
+                detail: "the site manifest cannot be read as a regular file",
+            });
+            return renderEdit(name, csrf, {
+                error: {
+                    title: "The site manifest cannot be read.",
+                    message:
+                        "Inspect compose-panel-site.json on the host. Raw save is refused while a site manifest exists but cannot be used.",
+                },
+                status: 409,
+            });
+        }
+        if (siteManifest) {
+            const parsedSite = parseManagedSiteManifest(siteManifest.source);
+            if (!parsedSite.ok || parsedSite.manifest.owner === "managed") {
+                await recordAudit({
+                    event: "save",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    detail: "the stack carries a site manifest",
+                });
+                return renderEdit(name, csrf, {
+                    error: {
+                        title: "This stack has a site manifest.",
+                        message: parsedSite.ok
+                            ? "Its Compose file and gateway configuration come from compose-panel-site.json. Raw save is refused: edit the manifest on the host, then regenerate or recreate the files."
+                            : `The site manifest cannot be used: ${parsedSite.reason} Raw save is refused while it exists; inspect it on the host.`,
+                    },
+                    status: 409,
+                });
+            }
+        }
 
         const saveRequest = {
             composeSource: form.get("compose") ?? "",
@@ -3082,6 +3503,54 @@ export function createApp(options: AppOptions): App {
     }
 
     /**
+     * Re-render the generated files from the manifest and compare them with
+     * what is on disk. Any difference is drift: a managed mutation is refused
+     * and the affected file is named. `null` means "not a managed site" or
+     * "generated files still match".
+     */
+    async function managedSiteDriftReason(stackDir: string): Promise<string | null> {
+        let source: string;
+        try {
+            const file = await readFileSafe(join(stackDir, MANAGED_SITE_MANIFEST_FILE), MANAGED_SITE_MANIFEST_MAX_BYTES);
+            if (!file) return null;
+            source = file.source;
+        } catch {
+            return "The site manifest cannot be read as a regular file. The managed site was left unchanged.";
+        }
+        const parsed = parseManagedSiteManifest(source);
+        if (!parsed.ok) return `The site manifest cannot be used: ${parsed.reason}`;
+        if (parsed.manifest.owner !== "managed") return null;
+        const rendered = renderManagedSiteArtifacts(stackDir, parsed.manifest);
+        if (!rendered.ok) return rendered.reason;
+        const expected: [string, string][] = [
+            ["compose.yaml", rendered.artifacts.compose],
+            [MANAGED_SITE_GATEWAY_CONFIG, rendered.artifacts.gateway],
+            [MANAGED_SITE_OPCACHE_CONFIG, rendered.artifacts.opcache],
+        ];
+        for (const [path, content] of expected) {
+            let actual;
+            try {
+                actual = await readFileSafe(join(stackDir, path), Math.max(config.maxEditBytes, 64 * 1024));
+            } catch {
+                return `The generated file "${path}" cannot be read as a regular file. The managed site was left unchanged.`;
+            }
+            if (!actual) return `The generated file "${path}" is missing. The managed site was left unchanged.`;
+            if (actual.source !== content) {
+                return `The generated file "${path}" does not match compose-panel-site.json. Drift refuses this action; inspect it on the host and regenerate the site files explicitly.`;
+            }
+        }
+        return null;
+    }
+
+    /** Admission checked under the stack lock: pending deploy, then drift. */
+    async function managedSiteAdmission(stack: string): Promise<string | null> {
+        if (!config.managedSitesEnabled) return null;
+        const stackDir = await managedSiteStackDir(stack);
+        if (await pendingDeployAttempt(stackDir)) return MANAGED_SITE_PENDING_MESSAGE;
+        return managedSiteDriftReason(stackDir);
+    }
+
+    /**
      * The pending marker is evidence that a crash left an ambiguous serving
      * state. It refuses every modifying operation until the operator inspects
      * and acknowledges it; reads, logs and the probe stay available.
@@ -3365,7 +3834,13 @@ export function createApp(options: AppOptions): App {
         }
     }
 
-    type ManagedSiteCard = { manifest?: ManagedSiteManifest; reason?: string; pending: PendingDeployAttemptRead };
+    type ManagedSiteCard = {
+        manifest?: ManagedSiteManifest;
+        reason?: string;
+        pending: PendingDeployAttemptRead;
+        baseline: boolean;
+        drift?: string;
+    };
 
     async function managedSiteCard(name: string): Promise<ManagedSiteCard | null> {
         try {
@@ -3373,9 +3848,12 @@ export function createApp(options: AppOptions): App {
             const pending = await readPendingDeployAttempt(stackDir);
             // An ordinary stack has no manifest and no marker: no card at all.
             const file = await readFileSafe(join(stackDir, MANAGED_SITE_MANIFEST_FILE), MANAGED_SITE_MANIFEST_MAX_BYTES);
-            if (!file) return pending.kind === "none" ? null : { reason: "This stack has no site manifest.", pending };
+            if (!file) return pending.kind === "none" ? null : { reason: "This stack has no site manifest.", pending, baseline: false };
             const manifest = parseManagedSiteManifest(file.source);
-            return manifest.ok ? { manifest: manifest.manifest, pending } : { reason: manifest.reason, pending };
+            if (!manifest.ok) return { reason: manifest.reason, pending, baseline: false };
+            const baseline = await readBaseline(stackDir, manifest.manifest.siteId);
+            const drift = await managedSiteDriftReason(stackDir);
+            return { manifest: manifest.manifest, pending, baseline: baseline.ok, ...(drift ? { drift } : {}) };
         } catch {
             return null;
         }
@@ -3402,10 +3880,32 @@ export function createApp(options: AppOptions): App {
             return `<section class="card"><h2>Managed site</h2>${note("warn", `The site manifest cannot be used: ${card.reason ?? "unknown reason"}`)}</section>`;
         }
         const manifest = card.manifest;
+        const drift = card.drift ? note("warn", card.drift) : "";
+        const regenerate =
+            card.drift && manifest.owner === "managed"
+                ? `<form method="post" action="${href}/regenerate"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy ? " disabled" : ""}>Regenerate generated files</button></form>`
+                : "";
+        const meta = `<p class="meta"><span>Site <code>${escapeHtml(manifest.siteId)}</code></span><span>Project <code>${escapeHtml(manifest.project)}</code></span><span>Branch <code>${escapeHtml(manifest.deploy.git.ref)}</code></span>${manifest.gateway ? `<span>Gateway <code>127.0.0.1:${manifest.gateway.port}</code></span>` : ""}</p>`;
+        if (!card.baseline) {
+            return (
+                `<section class="card"><h2>Managed site</h2>` +
+                meta +
+                drift +
+                regenerate +
+                note(
+                    "info",
+                    "No release has been published yet. Publish one baseline from the configured branch before starting the site; a deployment always needs a release to return to.",
+                ) +
+                `<form method="post" action="${href}/baseline"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy || card.drift ? " disabled" : ""}>Publish baseline ${escapeHtml(manifest.deploy.git.ref)}</button></form>` +
+                `</section>`
+            );
+        }
         return (
             `<section class="card"><h2>Managed site</h2>` +
-            `<p class="meta"><span>Site <code>${escapeHtml(manifest.siteId)}</code></span><span>Project <code>${escapeHtml(manifest.project)}</code></span><span>Branch <code>${escapeHtml(manifest.deploy.git.ref)}</code></span></p>` +
-            `<form method="post" action="${href}/deploy"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy ? " disabled" : ""}>Deploy ${escapeHtml(manifest.deploy.git.ref)}</button></form>` +
+            meta +
+            drift +
+            regenerate +
+            `<form method="post" action="${href}/deploy"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy || card.drift ? " disabled" : ""}>Deploy ${escapeHtml(manifest.deploy.git.ref)}</button></form>` +
             note(
                 "info",
                 "Fetches the configured branch into an immutable release, briefly stops the gateway, switches the pointer atomically and recreates the runtime. A failed revision probe rolls back to the verified baseline.",
@@ -3881,6 +4381,25 @@ export function createApp(options: AppOptions): App {
             return response;
         }
 
+        if (url.pathname === "/new-site/preview" && config.managedSitesEnabled) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return await handlePreviewSite(request, session);
+            } catch (error) {
+                return routeError(error, session.csrf, "/new-site");
+            }
+        }
+        if (url.pathname === "/new-site" && config.managedSitesEnabled) {
+            if (method === "POST") {
+                try {
+                    return await handleCreateSite(request, session);
+                } catch (error) {
+                    return routeError(error, session.csrf, "/new-site");
+                }
+            }
+            if (method === "GET") return renderNewSite(session.csrf);
+            return methodNotAllowed("GET, POST");
+        }
         if (url.pathname === "/new-stack") {
             if (method === "POST") return handleCreate(request, session);
             if (method === "GET") return renderCreate(session.csrf);
@@ -3901,6 +4420,24 @@ export function createApp(options: AppOptions): App {
                 return await handleBackupPurge(request, decodeName(backupsMatch[1]!), session);
             } catch (error) {
                 return routeError(error, session.csrf, safeName(backupsMatch[1]!));
+            }
+        }
+        const regenerateMatch = /^\/stacks\/([^/]+)\/regenerate$/.exec(url.pathname);
+        if (regenerateMatch && config.managedSitesEnabled) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return await handleRegenerate(request, decodeName(regenerateMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(regenerateMatch[1]!));
+            }
+        }
+        const baselineMatch = /^\/stacks\/([^/]+)\/baseline$/.exec(url.pathname);
+        if (baselineMatch && config.managedSitesEnabled) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return await handleBaseline(request, decodeName(baselineMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(baselineMatch[1]!));
             }
         }
         const deployAcknowledgeMatch = /^\/stacks\/([^/]+)\/deploy\/acknowledge$/.exec(url.pathname);
