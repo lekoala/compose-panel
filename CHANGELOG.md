@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Managed sites (ADR 0045): optional Composer preparation. A managed site may
+  declare `build: { kind: "composer" }` (checkbox on **New site**), and every
+  release — the baseline and each deploy — is prepared before publication in one
+  disposable `composer:2.8` container with only the staging tree mounted
+  writable. The container is unprivileged, read-only, capability-free and
+  bounded in time, output, memory, CPU and PIDs; it receives no secret, Docker
+  socket or production mount. The repository must commit `composer.lock` and
+  declare `config.platform.php` for the channel, and Composer runs with
+  `--no-scripts --no-plugins`, so project code is not executed. A failure
+  removes only the attempt and leaves the active release untouched; an
+  unprovable container removal keeps the attempt and reports an unknown
+  outcome. Registry credentials and private packages remain out of scope.
+
 - Managed sites (ADR 0042): the creation form. With
   `COMPOSE_PANEL_MANAGED_SITES_ENABLED=true`, **New site** renders a trusted
   `compose-panel-site.json`, a deterministic `compose.yaml`, an Nginx gateway

@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readlink, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCommand } from "../src/docker.ts";
 import { fetchAndPublishGitRelease, revisionScript } from "../src/git-release.ts";
 import { buildManagedSite } from "../src/managed-site-generate.ts";
+import { MANAGED_SITE_BUILD_IMAGE, MANAGED_SITE_BUILD_SCRATCH, runComposerPreparation } from "../src/managed-site-build.ts";
 import { MANAGED_SITE_PATHS, parseManagedSiteManifest, type ManagedSiteManifest } from "../src/managed-site.ts";
 import {
     managedSiteAttemptPath,
@@ -34,7 +35,10 @@ import {
  * SHA already proven active, a return to the previous release, two refusals
  * before any mutation, and two SIGKILLs (after the gateway stop, and after the
  * pointer switch) followed by an inspection of the durable state. A second
- * Compose project is running throughout and must not change.
+ * Compose project is running throughout and must not change. A third case runs
+ * the real Composer preparation image on a local zero-dependency fixture and
+ * proves the autoloader, the scratch cleanup and the absence of a leftover
+ * container.
  *
  * The gateway publishes 127.0.0.1:<port> in the lab daemon's own network
  * namespace, so the revision probe is executed inside that namespace with
@@ -587,6 +591,59 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
                 cwd: stackDir,
                 timeoutMs: 120_000,
             }).catch(() => {});
+            await rm(root, { recursive: true, force: true });
+        }
+    }, 300_000);
+
+    test("prepares Composer dependencies in one disposable container on the lab daemon", async () => {
+        requireEnv();
+        const root = await mkdtemp(join(realpathSync(shared), "managed-site-build-"));
+        const stackDir = join(root, "stack");
+        const attemptId = "build0001";
+        const tree = join(stackDir, "site", "staging", attemptId, "tree");
+        try {
+            await chmod(root, 0o755);
+            await mkdir(join(tree, "public"), { recursive: true });
+            await writeFile(join(tree, "public", "index.php"), "<?php echo 'ok';\n");
+            await writeFile(
+                join(tree, "composer.json"),
+                `${JSON.stringify({ name: "acme/shop", type: "project", require: {}, config: { platform: { php: "8.3.0" } } }, null, 2)}\n`,
+            );
+            await writeFile(
+                join(tree, "composer.lock"),
+                `${JSON.stringify(
+                    {
+                        _readme: ["Local fixture with no dependency"],
+                        "content-hash": "0".repeat(40),
+                        packages: [],
+                        "packages-dev": [],
+                        aliases: [],
+                        "minimum-stability": "stable",
+                        "stability-flags": [],
+                        "prefer-stable": false,
+                        "prefer-lowest": false,
+                        platform: {},
+                        "platform-dev": [],
+                        "plugin-api-version": "2.6.0",
+                    },
+                    null,
+                    2,
+                )}\n`,
+            );
+
+            const outcome = await runComposerPreparation({
+                stackDir,
+                attemptId,
+                tree,
+                phpMinor: "8.3",
+                timeoutMs: 180_000,
+            });
+            expect(outcome).toEqual({ ok: true, image: MANAGED_SITE_BUILD_IMAGE });
+            expect(await readFile(join(tree, "vendor", "autoload.php"), "utf8")).toContain("Composer");
+            expect(await lstat(join(tree, MANAGED_SITE_BUILD_SCRATCH)).catch(() => null)).toBeNull();
+            const leftovers = await dockerOk(["ps", "-a", "--filter", "name=compose-panel-build-", "--format", "{{.Names}}"]);
+            expect(leftovers).toBe("");
+        } finally {
             await rm(root, { recursive: true, force: true });
         }
     }, 300_000);

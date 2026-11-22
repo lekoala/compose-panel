@@ -9,7 +9,7 @@
  */
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { fetchAndPublishGitRelease, type GitReleaseResult } from "./git-release.ts";
+import { fetchAndPublishGitRelease, type GitReleasePrepare, type GitReleaseResult } from "./git-release.ts";
 import { MANAGED_SITE_PATHS, type ManagedSiteManifest } from "./managed-site.ts";
 import { readBaseline, switchCurrent } from "./managed-site-deploy.ts";
 
@@ -19,6 +19,9 @@ export interface ManagedSiteBaselineRequest {
     manifest: ManagedSiteManifest;
     attemptId: string;
     onOutput?: (chunk: string) => void;
+    /** Fixed preparation (Composer, ADR 0045) applied before publication. */
+    prepare?: GitReleasePrepare;
+    releaseLimits?: { maxFiles: number; maxTreeBytes: number; maxDepth: number };
     /** Test seam: production always fetches into a staging directory. */
     publish?: typeof fetchAndPublishGitRelease;
 }
@@ -52,6 +55,8 @@ export async function publishManagedSiteBaseline(request: ManagedSiteBaselineReq
         ref: request.manifest.deploy.git.ref,
         attemptId: request.attemptId,
         ...(request.onOutput ? { onOutput: request.onOutput } : {}),
+        ...(request.prepare ? { prepare: request.prepare } : {}),
+        ...(request.releaseLimits ? { releaseLimits: request.releaseLimits } : {}),
     });
     if (!result.ok) {
         if (result.unconfirmed) return { kind: "unknown", reason: result.reason };

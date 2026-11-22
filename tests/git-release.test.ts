@@ -282,6 +282,60 @@ describe("fetchAndPublishGitRelease", () => {
         }
     });
 
+    test("runs the preparation on the staged tree before publishing it", async () => {
+        const stack = await makeStack();
+        const trees: string[] = [];
+        const outcome = await deploy(stack, fakeRunner(), {
+            prepare: async ({ tree }) => {
+                trees.push(tree);
+                await writeFile(join(tree, "vendor.txt"), "prepared\n");
+                return { ok: true };
+            },
+            releaseLimits: { maxFiles: 10, maxTreeBytes: 1024 * 1024, maxDepth: 8 },
+        });
+        expect(outcome.ok).toBe(true);
+        expect(trees).toHaveLength(1);
+        expect(trees[0]).toContain(join("site", "staging", "attempt0001", "tree"));
+        expect(await readFile(join(stack, "site", "runtime", "releases", SHA, "vendor.txt"), "utf8")).toBe("prepared\n");
+    });
+
+    test("keeps the active release when the preparation refuses or cannot be confirmed", async () => {
+        const stack = await makeStack();
+        const refused = await deploy(stack, fakeRunner(), {
+            prepare: async () => ({ ok: false, reason: "The release has no composer.lock." }),
+        });
+        expect(refused.ok).toBe(false);
+        if (refused.ok) return;
+        expect(refused.phase).toBe("prepare");
+        expect(refused.cleanup).toBe("removed");
+        expect(await exists(join(stack, "site", "runtime", "releases", SHA))).toBe(false);
+        expect(await exists(join(stack, "site", "staging", "attempt0001"))).toBe(false);
+
+        const unconfirmed = await deploy(stack, fakeRunner(), {
+            attemptId: "attempt0002",
+            prepare: async () => ({ ok: false, reason: "The container could not be removed.", unconfirmed: true }),
+        });
+        expect(unconfirmed.ok).toBe(false);
+        if (unconfirmed.ok) return;
+        expect(unconfirmed.unconfirmed).toBe(true);
+        expect(unconfirmed.cleanup).toBe("kept");
+        expect(await exists(join(stack, "site", "staging", "attempt0002"))).toBe(true);
+        expect(await exists(join(stack, "site", "runtime", "releases", SHA))).toBe(false);
+    });
+
+    test("does not prepare a tree the source inspection already refused", async () => {
+        const stack = await makeStack();
+        let prepared = false;
+        const outcome = await deploy(stack, fakeRunner({ populate: async (tree) => writeFile(join(tree, "README.md"), "content\n") }), {
+            prepare: async () => {
+                prepared = true;
+                return { ok: true };
+            },
+        });
+        expect(outcome.ok).toBe(false);
+        expect(prepared).toBe(false);
+    });
+
     test("revalidates an existing complete release instead of rewriting it", async () => {
         const stack = await makeStack();
         const first = await deploy(stack, fakeRunner());

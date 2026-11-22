@@ -283,6 +283,7 @@ export interface NewSiteDraft {
     gitUrl: string;
     gitRef: string;
     paths: string;
+    composer: boolean;
 }
 
 export interface ManagedSiteChannel {
@@ -340,6 +341,8 @@ ${options.error ? note("error", options.error) : ""}
   <label>Persistent paths <span class="hint">Optional, one per line. Each path must stay below <code>shared/</code>; it is mounted writable into PHP only.</span>
     <textarea name="paths" rows="4" spellcheck="false" autocapitalize="none">${escapeHtml(draft.paths ?? "")}</textarea>
   </label>
+  <p><label><input type="checkbox" name="composer" value="on"${draft.composer ? " checked" : ""}> Install Composer dependencies in each release</label></p>
+  <p class="hint">Optional. The repository must commit <code>composer.lock</code> and declare <code>config.platform.php</code> for the channel. Dependencies are installed in a disposable container with no scripts, plugins, secrets or Docker socket.</p>
   <div class="form-actions">
     <button type="submit" formaction="/new-site/preview" class="btn">Preview files</button>
     <button type="submit" class="btn btn-primary" data-busy-label="Creating…">Create site</button>
@@ -370,6 +373,7 @@ export function newSitePreviewPage(options: {
             ["channel", options.draft.channel],
             ["gitUrl", options.draft.gitUrl],
             ["gitRef", options.draft.gitRef],
+            ["composer", options.draft.composer ? "on" : ""],
         ] as const
     )
         .map(([name, value]) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`)
@@ -380,7 +384,7 @@ export function newSitePreviewPage(options: {
 <h1>Preview managed site</h1>
 <p class="lead">Nothing has been written. Check the trusted manifest and the generated files; creating the site writes exactly these bytes and validates the Compose file in its final folder.</p>
 ${note("info", "After creation, publish the first release before starting the site. The gateway is bound to 127.0.0.1 and is not exposed until you attach a domain.")}
-<dl class="meta"><dt>Folder</dt><dd><code>${escapeHtml(options.draft.name)}</code></dd><dt>Site</dt><dd><code>${escapeHtml(options.draft.siteId)}</code></dd><dt>Project</dt><dd><code>${escapeHtml(options.draft.project)}</code></dd><dt>Gateway</dt><dd><code>127.0.0.1:${escapeHtml(options.draft.port)}</code></dd></dl>
+<dl class="meta"><dt>Folder</dt><dd><code>${escapeHtml(options.draft.name)}</code></dd><dt>Site</dt><dd><code>${escapeHtml(options.draft.siteId)}</code></dd><dt>Project</dt><dd><code>${escapeHtml(options.draft.project)}</code></dd><dt>Gateway</dt><dd><code>127.0.0.1:${escapeHtml(options.draft.port)}</code></dd><dt>Composer</dt><dd>${options.draft.composer ? "installed in each release" : "not used"}</dd></dl>
 <h2>compose-panel-site.json</h2>
 <pre class="output">${escapeHtml(options.manifestSource)}</pre>
 <h2>compose.yaml</h2>

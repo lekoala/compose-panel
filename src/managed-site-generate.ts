@@ -39,6 +39,8 @@ export interface ManagedSiteBuildInput {
     gitRef: string;
     channel: string;
     paths?: string[];
+    /** Run the fixed Composer preparation in each release (ADR 0045). */
+    composer?: boolean;
 }
 
 export type ManagedSiteBuildResult =
@@ -69,6 +71,7 @@ export function buildManagedSite(input: ManagedSiteBuildInput): ManagedSiteBuild
         gateway: { port: input.port },
         publicRoot: "public",
         runtime: { profile: "php-front-controller", image: channel.image },
+        ...(input.composer ? { build: { kind: "composer" } } : {}),
         deploy: { kind: "bind-mount", git: { url: input.gitUrl, ref: input.gitRef } },
         ...(input.paths && input.paths.length > 0 ? { paths: input.paths } : {}),
         generation: MANAGED_SITE_GENERATION,
@@ -225,6 +228,7 @@ function serializeManifest(manifest: ManagedSiteManifest): Record<string, unknow
             profile: manifest.runtime.profile,
             ...(manifest.runtime.image ? { image: manifest.runtime.image } : {}),
         },
+        ...(manifest.build ? { build: { kind: manifest.build.kind } } : {}),
         deploy: { kind: manifest.deploy.kind, git: { url: manifest.deploy.git.url, ref: manifest.deploy.git.ref } },
         ...(manifest.paths && manifest.paths.length > 0 ? { paths: manifest.paths } : {}),
         ...(manifest.generation ? { generation: manifest.generation } : {}),
@@ -268,6 +272,7 @@ export type ManagedSiteDraft = {
     gitRef: string;
     channel: string;
     paths: string[];
+    composer: boolean;
 };
 
 export type ManagedSiteDraftResult = { ok: true; draft: ManagedSiteDraft } | { ok: false; reason: string };
@@ -286,6 +291,7 @@ export function parseManagedSiteDraft(form: {
     gitRef: string;
     channel: string;
     paths: string;
+    composer?: boolean;
 }): ManagedSiteDraftResult {
     const name = form.name.trim();
     if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) {
@@ -334,6 +340,7 @@ export function parseManagedSiteDraft(form: {
             gitRef: form.gitRef.trim(),
             channel: channel.id,
             paths,
+            composer: form.composer === true,
         },
     };
 }

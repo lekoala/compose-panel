@@ -108,6 +108,31 @@ describe("buildManagedSite", () => {
         expect(first.artifacts.opcache).toContain("opcache.validate_timestamps=0");
     });
 
+    test("adds the fixed Composer build to the manifest without changing the generated files", () => {
+        const base = {
+            stackDir: STACK,
+            siteId: "acme-shop",
+            project: "acme-shop",
+            port: 41001,
+            gitUrl: "https://github.com/acme/shop.git",
+            gitRef: "refs/heads/main",
+            channel: "php-8.3",
+        };
+        const plain = buildManagedSite(base);
+        const built = buildManagedSite({ ...base, composer: true });
+        expect(plain.ok && built.ok).toBe(true);
+        if (!plain.ok || !built.ok) return;
+        const parsedPlain = parseManagedSiteManifest(plain.manifestSource);
+        const parsedBuilt = parseManagedSiteManifest(built.manifestSource);
+        expect(parsedPlain.ok).toBe(true);
+        expect(parsedBuilt.ok).toBe(true);
+        if (!parsedPlain.ok || !parsedBuilt.ok) return;
+        expect(parsedPlain.manifest.build).toBeUndefined();
+        expect(parsedBuilt.manifest.build).toEqual({ kind: "composer" });
+        expect(built.artifacts).toEqual(plain.artifacts);
+        expect(built.manifestSource).toContain('"build": {\n    "kind": "composer"\n  }');
+    });
+
     test("quotes persistent mount paths as YAML single-quoted scalars", () => {
         const built = buildManagedSite({
             stackDir: STACK,

@@ -192,6 +192,23 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   key authentication, strict host key checking, no inherited config or agent
   and no forwarding. Credentials stay outside the checkout and all service
   mounts. SSH fetch output is excluded from the operation view and audit.
+- The optional Composer preparation ([ADR 0045](adr/0045-disposable-composer-preparation.md))
+  runs one disposable `composer:2.8` container per attempt with only the staging
+  tree mounted writable. It is unprivileged and read-only, with a bounded tmpfs,
+  no capabilities, `no-new-privileges`, and bounded memory, CPU, PIDs, time and
+  output. It receives no Docker socket, panel environment, secret file,
+  production mount or database. `--no-scripts --no-plugins` keeps repository
+  code from executing; `COMPOSER_BIN_COMPAT=proxy` avoids symlinks in the
+  release. `composer.lock` is required and `config.platform.php` must match the
+  site's PHP channel, so the lock is verified for the runtime rather than the
+  Composer image. A failure removes only the attempt; if the container removal
+  cannot be proven, the attempt is kept and the operation reports an unknown
+  outcome. A free-space preflight refuses before creating the container when the
+  release filesystem cannot hold the bounded result. Registry credentials and
+  private packages are out of scope, and the
+  container reaches package registries through the daemon's default bridge: a
+  host that needs stricter egress must constrain the daemon or provide a proxy,
+  since the panel does not manage networks.
 - The probe is one bounded `GET http://127.0.0.1:<published>/.compose-panel/revision`
   with no redirects, no DNS and no TLS; it must answer HTTP 200 with exactly 40
   lowercase hex characters and one newline. The port is the validated loopback

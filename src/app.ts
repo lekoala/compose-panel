@@ -121,6 +121,7 @@ import {
 import { createManagedSite, findManagedSitePortOwner, ManagedSiteCreationPartialError } from "./create-managed-site.ts";
 import { publishManagedSiteBaseline } from "./managed-site-baseline.ts";
 import { checkManagedSiteProfile } from "./managed-site-profile.ts";
+import { composerPreparation, MANAGED_SITE_RELEASE_LIMITS } from "./managed-site-build.ts";
 import { fetchAndPublishGitRelease } from "./git-release.ts";
 import {
     managedSiteAttemptPath,
@@ -1493,6 +1494,7 @@ export function createApp(options: AppOptions): App {
             gitUrl: form.get("gitUrl") ?? "",
             gitRef: form.get("gitRef") ?? "",
             paths: form.get("paths") ?? "",
+            composer: form.get("composer") === "on",
         };
     }
 
@@ -1508,6 +1510,7 @@ export function createApp(options: AppOptions): App {
             gitRef: parsed.draft.gitRef,
             channel: parsed.draft.channel,
             paths: parsed.draft.paths,
+            composer: parsed.draft.composer,
         });
         return built.ok ? { ok: true as const, built, draft: parsed.draft } : { ok: false as const, reason: built.reason };
     }
@@ -1699,11 +1702,13 @@ export function createApp(options: AppOptions): App {
                     if (!current.ok) return { refused: current.reason };
                     const refusal = await baselineRefusal(name, current.manifest);
                     if (refusal) return { refused: refusal };
+                    const prepare = composerPreparation(current.manifest);
                     const result = await publishManagedSiteBaseline({
                         stackDir: currentDir,
                         manifest: current.manifest,
                         attemptId: randomSuffix(),
                         onOutput,
+                        ...(prepare ? { prepare, releaseLimits: MANAGED_SITE_RELEASE_LIMITS } : {}),
                     });
                     switch (result.kind) {
                         case "published":
@@ -3845,15 +3850,19 @@ export function createApp(options: AppOptions): App {
                 composeFiles: [context.composeFile],
                 envFiles: context.envFile ? [context.envFile] : [],
             }),
-            fetchRelease: ({ manifest, attemptId, onOutput }) =>
-                fetchAndPublishGitRelease({
+            fetchRelease: ({ manifest, attemptId, onOutput, signal }) => {
+                const prepare = composerPreparation(manifest);
+                return fetchAndPublishGitRelease({
                     stackDir: context.cwd,
                     attemptId,
                     siteId: manifest.siteId,
                     url: manifest.deploy.git.url,
                     ref: manifest.deploy.git.ref,
                     onOutput,
-                }),
+                    ...(signal ? { signal } : {}),
+                    ...(prepare ? { prepare, releaseLimits: MANAGED_SITE_RELEASE_LIMITS } : {}),
+                });
+            },
             probe: managedSiteProbe,
             now: () => Date.now(),
             sleep,
@@ -4067,7 +4076,7 @@ export function createApp(options: AppOptions): App {
             card.drift && manifest.owner === "managed"
                 ? `<form method="post" action="${href}/regenerate"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy ? " disabled" : ""}>Regenerate generated files</button></form>`
                 : "";
-        const meta = `<p class="meta"><span>Site <code>${escapeHtml(manifest.siteId)}</code></span><span>Project <code>${escapeHtml(manifest.project)}</code></span><span>Branch <code>${escapeHtml(manifest.deploy.git.ref)}</code></span>${manifest.gateway ? `<span>Gateway <code>127.0.0.1:${manifest.gateway.port}</code></span>` : ""}</p>`;
+        const meta = `<p class="meta"><span>Site <code>${escapeHtml(manifest.siteId)}</code></span><span>Project <code>${escapeHtml(manifest.project)}</code></span><span>Branch <code>${escapeHtml(manifest.deploy.git.ref)}</code></span>${manifest.gateway ? `<span>Gateway <code>127.0.0.1:${manifest.gateway.port}</code></span>` : ""}${manifest.build ? "<span>Composer <code>installed per release</code></span>" : ""}</p>`;
         if (!card.baseline) {
             return (
                 `<section class="card"><h2>Managed site</h2>` +

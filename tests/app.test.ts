@@ -5060,6 +5060,21 @@ describe.skipIf(process.platform === "win32")("managed-site creation flow", () =
         await app.beginShutdown(100);
     });
 
+    test("writes the fixed Composer build when the form asks for it", async () => {
+        const dir = await emptyRoot();
+        const calls: string[] = [];
+        const app = makeApp({ managedSitesEnabled: true }, undefined, siteProvider(calls), undefined, dir, inspector());
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const preview = await post(app, session, "/new-site/preview", { csrf, ...fields({ composer: "on" }) });
+        expect(preview.status).toBe(200);
+        expect(await preview.text()).toContain("&quot;build&quot;: {");
+        expect((await post(app, session, "/new-site", { csrf, ...fields({ composer: "on" }) })).status).toBe(303);
+        const manifest = JSON.parse(await readFile(join(dir, "acme-shop", "compose-panel-site.json"), "utf8")) as Record<string, unknown>;
+        expect(manifest.build).toEqual({ kind: "composer" });
+        await app.beginShutdown(100);
+    });
+
     test("refuses a raw save of a generated Compose file", async () => {
         const dir = await emptyRoot();
         const calls: string[] = [];

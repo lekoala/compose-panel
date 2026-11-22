@@ -69,6 +69,21 @@ const FREE_SPACE_HEADROOM = 64 * 1024 * 1024;
 
 export type GitRunner = (args: string[], options: RunOptions) => Promise<CommandResult>;
 
+/** One bounded preparation step on the staged tree, before publication. */
+export type GitReleasePrepareContext = {
+    stackDir: string;
+    attemptId: string;
+    releaseId: string;
+    /** The checked-out tree, still inside `site/staging/<attempt-id>`. */
+    tree: string;
+    onOutput: (chunk: string) => void;
+    signal?: AbortSignal;
+};
+
+export type GitReleasePrepareResult = { ok: true } | { ok: false; reason: string; unconfirmed?: boolean };
+
+export type GitReleasePrepare = (context: GitReleasePrepareContext) => Promise<GitReleasePrepareResult>;
+
 export interface GitReleaseRequest {
     /** Canonical absolute stack directory, identical in the panel and on the host. */
     stackDir: string;
@@ -79,6 +94,13 @@ export interface GitReleaseRequest {
     url: string;
     ref: string;
     limits?: Partial<GitReleaseLimits>;
+    /**
+     * Bounds for the tree after preparation. A dependency install is larger
+     * than the fetched source, so it has its own explicit cap.
+     */
+    releaseLimits?: Pick<GitReleaseLimits, "maxFiles" | "maxTreeBytes" | "maxDepth">;
+    /** Optional fixed preparation (Composer, ADR 0045) run before publication. */
+    prepare?: GitReleasePrepare;
     /** Injectable for tests; production always uses the fixed `git` executable. */
     runner?: GitRunner;
     onOutput?: (chunk: string) => void;
@@ -512,6 +534,24 @@ export async function fetchAndPublishGitRelease(request: GitReleaseRequest): Pro
         phase = "prepare";
         const inspected = await inspectStagedTree(tree, limits);
         if (!inspected.ok) return fail(inspected.reason);
+        if (request.prepare) {
+            const prepared = await request.prepare({
+                stackDir,
+                attemptId: request.attemptId,
+                releaseId,
+                tree,
+                onOutput: request.onOutput ?? (() => {}),
+                ...(request.signal ? { signal: request.signal } : {}),
+            });
+            if (!prepared.ok) {
+                if (prepared.unconfirmed) unconfirmed = true;
+                return fail(prepared.reason);
+            }
+            // Preparation adds files (vendor/, generated assets). The release
+            // has its own cap instead of the source-tree one.
+            const released = await inspectStagedTree(tree, request.releaseLimits ?? limits);
+            if (!released.ok) return fail(released.reason);
+        }
         const prepared = await writeRevisionScript(tree, releaseId);
         if (!prepared.ok) return fail(prepared.reason);
 
@@ -680,7 +720,10 @@ async function removeProvenDirectory(path: string, identity: DirIdentity): Promi
 }
 
 /** The staged tree is content: real directories and regular files only. */
-async function inspectStagedTree(tree: string, limits: GitReleaseLimits): Promise<{ ok: true } | { ok: false; reason: string }> {
+async function inspectStagedTree(
+    tree: string,
+    limits: Pick<GitReleaseLimits, "maxFiles" | "maxTreeBytes" | "maxDepth">,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
     const reserved = await lstatOrNull(join(tree, ".compose-panel"));
     if (reserved) return { ok: false, reason: "The repository contains .compose-panel, which the panel reserves." };
 

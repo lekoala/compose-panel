@@ -31,8 +31,8 @@ export const MANAGED_SITE_GATEWAY_PORT_MAX = 41999;
  * image tag; the manifest stores the resolved reference, never the label.
  */
 export const MANAGED_SITE_CHANNELS = [
-    { id: "php-8.3", label: "PHP 8.3", image: "php:8.3-fpm-alpine" },
-    { id: "php-8.4", label: "PHP 8.4", image: "php:8.4-fpm-alpine" },
+    { id: "php-8.3", label: "PHP 8.3", image: "php:8.3-fpm-alpine", phpMinor: "8.3" },
+    { id: "php-8.4", label: "PHP 8.4", image: "php:8.4-fpm-alpine", phpMinor: "8.4" },
 ] as const;
 
 export type ManagedSiteChannelId = (typeof MANAGED_SITE_CHANNELS)[number]["id"];
@@ -41,9 +41,18 @@ export function managedSiteChannel(id: string): (typeof MANAGED_SITE_CHANNELS)[n
     return MANAGED_SITE_CHANNELS.find((channel) => channel.id === id) ?? null;
 }
 
-export function isManagedSiteChannelImage(value: string): boolean {
-    return MANAGED_SITE_CHANNELS.some((channel) => channel.image === value);
+/** The channel a pinned runtime image belongs to, or null for any other image. */
+export function managedSiteChannelForImage(image: string): (typeof MANAGED_SITE_CHANNELS)[number] | null {
+    return MANAGED_SITE_CHANNELS.find((channel) => channel.image === image) ?? null;
 }
+
+export function isManagedSiteChannelImage(value: string): boolean {
+    return managedSiteChannelForImage(value) !== null;
+}
+
+/** The only release preparation a managed site may declare (ADR 0045). */
+export const MANAGED_SITE_BUILD_KINDS = ["composer"] as const;
+export type ManagedSiteBuildKind = (typeof MANAGED_SITE_BUILD_KINDS)[number];
 
 /** A gateway port is an integer in the reserved managed-site range. */
 export function isManagedSiteGatewayPort(value: number): boolean {
@@ -94,6 +103,8 @@ export interface ManagedSiteManifest {
             ref: string;
         };
     };
+    /** `managed` only: fixed dependency preparation run in a disposable container. */
+    build?: { kind: ManagedSiteBuildKind };
     /** `managed` only: declared persistent roots, contained in `shared/`. */
     paths?: string[];
     /** `managed` only: generator version that produced the files on disk. */
@@ -213,7 +224,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
 
     const unknown = unknownField(
         root,
-        ["version", "siteId", "owner", "project", "services", "gateway", "publicRoot", "runtime", "deploy", "paths", "generation"],
+        ["version", "siteId", "owner", "project", "services", "gateway", "publicRoot", "runtime", "build", "deploy", "paths", "generation"],
         "",
     );
     if (unknown) return unknown;
@@ -307,6 +318,25 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         return { ok: false, reason: 'runtime.image is required for owner "managed".' };
     }
 
+    let build: { kind: ManagedSiteBuildKind } | undefined;
+    if (root.build !== undefined) {
+        if (owner !== "managed") {
+            return {
+                ok: false,
+                reason: 'build belongs to owner "managed": an opt-in stack keeps its own dependency preparation.',
+            };
+        }
+        const candidate = asRecord(root.build);
+        if (!candidate) return { ok: false, reason: "build must be an object with a kind." };
+        const buildUnknown = unknownField(candidate, ["kind"], "build.");
+        if (buildUnknown) return buildUnknown;
+        const kind = MANAGED_SITE_BUILD_KINDS.find((entry) => entry === candidate.kind);
+        if (!kind) {
+            return { ok: false, reason: `build.kind must be one of: ${MANAGED_SITE_BUILD_KINDS.join(", ")}.` };
+        }
+        build = { kind };
+    }
+
     const deploy = asRecord(root.deploy);
     if (!deploy) return { ok: false, reason: "deploy must be an object." };
     const deployUnknown = unknownField(deploy, ["kind", "git"], "deploy.");
@@ -379,6 +409,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         ...(gatewayPort === undefined ? {} : { gateway: { port: gatewayPort } }),
         publicRoot: MANAGED_SITE_PUBLIC_ROOT,
         runtime: image === undefined ? { profile: MANAGED_SITE_PROFILE } : { profile: MANAGED_SITE_PROFILE, image },
+        ...(build ? { build } : {}),
         deploy: { kind: MANAGED_SITE_DEPLOY_KIND, git: { url, ref } },
         ...(paths ? { paths } : {}),
         ...(generation ? { generation } : {}),

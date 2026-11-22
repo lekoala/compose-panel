@@ -114,6 +114,7 @@ export interface ManagedSiteDeployDependencies {
         manifest: ManagedSiteManifest;
         attemptId: string;
         onOutput: (chunk: string) => void;
+        signal?: AbortSignal;
     }) => Promise<GitReleaseResult>;
     probe: ManagedSiteProbe;
     now: () => number;
@@ -550,7 +551,12 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
 
         // ---- fetch and publish (the active release is untouched until stop) ----
         state.phase = "fetch";
-        const fetched = await deps.fetchRelease({ manifest, attemptId: deps.attemptId, onOutput });
+        const fetched = await deps.fetchRelease({
+            manifest,
+            attemptId: deps.attemptId,
+            onOutput,
+            ...(deps.signal ? { signal: deps.signal } : {}),
+        });
         if (!fetched.ok) {
             const detail = fetched.detail ? ` ${fetched.detail}` : "";
             return fail(`${fetched.reason}${detail}`, fetched.unconfirmed);

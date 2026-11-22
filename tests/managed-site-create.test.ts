@@ -198,6 +198,34 @@ describe.skipIf(process.platform !== "linux")("publishManagedSiteBaseline", () =
         };
     }
 
+    test("forwards the fixed release preparation to the fetch", async () => {
+        const { root, stackDir } = await site();
+        try {
+            const manifest = parseManagedSiteManifest(await readFile(join(stackDir, "compose-panel-site.json"), "utf8"));
+            if (!manifest.ok) throw new Error(manifest.reason);
+            let captured: GitReleaseRequest | undefined;
+            const prepare = async () => ({ ok: true as const });
+            const limits = { maxFiles: 10, maxTreeBytes: 1024, maxDepth: 4 };
+            const publish = async (request: GitReleaseRequest): Promise<GitReleaseResult> => {
+                captured = request;
+                return fakeRelease(request.stackDir);
+            };
+            const result = await publishManagedSiteBaseline({
+                stackDir,
+                manifest: manifest.manifest,
+                attemptId: "attempt0001",
+                publish,
+                prepare,
+                releaseLimits: limits,
+            });
+            expect(result.kind).toBe("published");
+            expect(captured?.prepare).toBe(prepare);
+            expect(captured?.releaseLimits).toEqual(limits);
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     test("publishes once, points current and proves the baseline", async () => {
         const { root, stackDir } = await site();
         try {

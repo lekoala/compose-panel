@@ -77,6 +77,18 @@ describe("parseManagedSiteManifest", () => {
         expect(rejected(managed({ gateway: { port: 41001, host: "127.0.0.1" } }))).toBe(true);
     });
 
+    test("accepts a Composer build only for a managed site with the fixed kind", () => {
+        const result = parse(managed({ build: { kind: "composer" } }));
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.manifest.build).toEqual({ kind: "composer" });
+        expect(parse(managed()).ok).toBe(true);
+        expect(rejected(optIn({ build: { kind: "composer" } }))).toBe(true);
+        expect(rejected(managed({ build: { kind: "npm" } }))).toBe(true);
+        expect(rejected(managed({ build: { kind: "composer", image: "composer:2.8" } }))).toBe(true);
+        expect(rejected(managed({ build: true }))).toBe(true);
+    });
+
     test("accepts only a pinned runtime channel image in managed mode", () => {
         expect(rejected(managed({ runtime: { profile: "php-front-controller", image: "ghcr.io/acme/php:8.3" } }))).toBe(true);
         const result = parse(managed({ runtime: { profile: "php-front-controller", image: "php:8.4-fpm-alpine" } }));

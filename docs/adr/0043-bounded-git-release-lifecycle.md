@@ -117,11 +117,12 @@ explicit project, working directory and files.
   directory cannot be replaced by rename, and an existing release for the same
   SHA is only revalidated against its metadata and revision script. A directory
   that exists but is not marked complete for that SHA refuses.
-- No Composer, npm or build step in this increment. A fixed, disposable,
-  unprivileged preparation container is a later increment with its own
-  isolation contract: only the staging path writable, no Docker socket, no
-  production credentials or database, no writable production data, bounded
-  output and resources, and a required dependency lockfile.
+- [ADR 0045](0045-disposable-composer-preparation.md) adds the one fixed
+  Composer preparation a managed site may declare, in a disposable,
+  unprivileged container with only the staging path writable, no Docker socket,
+  no production credentials or database, bounded output and resources, and a
+  required dependency lockfile. npm, asset pipelines, arbitrary scripts and
+  plugins stay out.
 
 ### Activation
 
@@ -266,8 +267,9 @@ ADR 0006).
 - The brief gateway outage is part of the contract. Zero-downtime deployment is
   not claimed; the existing rollout (ADR 0035) is incompatible with a
   loopback-port gateway and is not reused here.
-- Private repositories, Composer builds, CI triggers, migrations, workers,
-  backups and production cutover remain out of scope.
+- CI triggers, migrations, workers, backups and production cutover remain out
+  of scope for this increment. Private repositories and the fixed Composer
+  preparation are covered by ADR 0044 and ADR 0045.
 
 ## Alternatives considered
 
@@ -346,7 +348,8 @@ VM checklist:
 
 ## Out of scope
 
-CI/webhook triggers, private Git over SSH, Composer/npm builds, database
-migrations, background workers, preview environments, zero-downtime activation,
-automatic retry or replay, scheduled deployments, multi-host deployment and
-production cutover/cloning.
+CI/webhook triggers, npm and arbitrary builds, database migrations, background
+workers, preview environments, zero-downtime activation, automatic retry or
+replay, scheduled deployments, multi-host deployment and production
+cutover/cloning. Private Git is ADR 0044; the fixed Composer preparation is
+ADR 0045.
