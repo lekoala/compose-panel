@@ -22,6 +22,12 @@ export const MANAGED_SITE_BACKUP_CHECK_DATA_SUBSET = "32M";
 
 /** Restic prints this exact line, last, when the check found no errors. */
 const CONFIRMATION = "no errors were found";
+/**
+ * Restic refuses to read a repository with no objects at all. That is not
+ * damage: a freshly initialized repository and one whose data disappeared look
+ * identical, so the panel says only that there was nothing to check.
+ */
+const EMPTY_REPOSITORY = "Cannot read from a repository having size 0";
 
 export interface ManagedSiteBackupCheckRequest {
     stackDir: string;
@@ -93,7 +99,14 @@ export async function runManagedSiteBackupCheck(
         cwd: stackDir,
         ...(request.signal ? { signal: request.signal } : {}),
     });
-    if (checked.timedOut || checked.truncated || checked.code !== 0) return { ok: false, reason: checkFailure(checked) };
+    if (checked.timedOut || checked.truncated) return { ok: false, reason: checkFailure(checked) };
+    if (checked.code === 1 && checked.stderr.includes(EMPTY_REPOSITORY)) {
+        return {
+            ok: false,
+            reason: "Restic found no data in the repository, so there was nothing to check. A newly initialized repository and one whose data disappeared look the same; inspect it from the maintenance host.",
+        };
+    }
+    if (checked.code !== 0) return { ok: false, reason: checkFailure(checked) };
     if (!managedSiteBackupCheckConfirmed(checked.stdout)) {
         return {
             ok: false,

@@ -464,9 +464,11 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   ever passed, and no result, file, fact or cache is written.
 - A clean result needs exit code 0 and Restic's own `no errors were found` line.
   Exit codes 1, 10, 11 and 12 map to fixed messages for repository errors, a
-  missing repository, a held lock and a wrong password. Neither stdout nor
-  stderr is rendered: they name pack files and print repair commands the panel
-  must not run.
+  missing repository, a held lock and a wrong password. Exit code 1 carrying
+  Restic's zero-size repository message becomes a fixed "nothing to check"
+  message instead of a damage claim, because a wiped repository looks identical.
+  Neither stdout nor stderr is rendered: they name pack files and print repair
+  commands the panel must not run.
 - The operation reports exactly the structure plus a random 32 MiB data sample.
   It never claims a full data verification or a restore proof.
 

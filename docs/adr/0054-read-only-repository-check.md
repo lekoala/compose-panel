@@ -74,6 +74,10 @@ change; the real-host checklist remains.
   Neither stdout nor stderr is rendered: they name pack files and print repair
   commands the panel cannot and must not run. The panel keeps no repair command,
   no lock removal and no `unlock`.
+- An initialized repository with no objects is not reported as damaged. Restic
+  refuses to read a zero-size repository, so the panel returns a fixed "nothing
+  to check" message. A wiped repository looks identical, so the operator
+  confirms from the maintenance host rather than trusting a calm answer.
 - The result states exactly what was checked: the repository structure plus a
   random 32 MiB data sample. A full `restic check --read-data` and a real
   restore proof stay operator procedures on the maintenance host.
@@ -119,8 +123,9 @@ change; the real-host checklist remains.
 
 - Unit tests cover the fixed arguments, the absence of `forget`, `prune`,
   `--read-data`, `unlock` and any snapshot id, the success confirmation, the
-  documented exit codes, a timeout, truncated output, a zero exit without the
-  confirmation and a site without a backup block (no container).
+  documented exit codes, the empty-repository message, a timeout, truncated
+  output, a zero exit without the confirmation and a site without a backup block
+  (no container).
 - App tests cover the session and Origin checks, a stale CSRF token, a site
   without a backup block, missing credentials, a pending deploy, a pending
   backup, a successful operation, the card entry point and a failure that

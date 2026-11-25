@@ -133,6 +133,27 @@ describe("repository check command", () => {
         }
     });
 
+    test("does not call an empty repository damaged", async () => {
+        const empty = await runManagedSiteBackupCheck(
+            { stackDir: STACK, manifest },
+            {
+                docker: fakeDocker([], {
+                    code: 1,
+                    stdout: "",
+                    stderr: "using temporary cache in /tmp/x\nFatal: Cannot read from a repository having size 0\n",
+                    timedOut: false,
+                    truncated: false,
+                }),
+            },
+        );
+        expect(empty.ok).toBe(false);
+        if (!empty.ok) {
+            expect(empty.reason).toContain("nothing to check");
+            expect(empty.reason).not.toContain("errors in the repository");
+            expect(empty.reason).not.toContain("/tmp");
+        }
+    });
+
     test("refuses a timeout and truncated output without claiming a result", async () => {
         const timedOut = await runManagedSiteBackupCheck(
             { stackDir: STACK, manifest },
