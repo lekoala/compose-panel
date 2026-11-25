@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -57,6 +58,7 @@ function makeApp(
     mutator?: ContainerMutator,
     backup?: {
         docker?: DockerRunner;
+        restoreDocker?: DockerRunner;
         checkCredentials?: (stackDir: string, manifest: ManagedSiteManifest) => Promise<{ ok: true } | { ok: false; reason: string }>;
     },
 ): App {
@@ -115,6 +117,7 @@ function makeApp(
         selfUpdater,
         containerMutator: mutator,
         ...(backup?.docker ? { backupDocker: backup.docker } : {}),
+        ...(backup?.restoreDocker ? { restoreDocker: backup.restoreDocker } : {}),
         ...(backup?.checkCredentials ? { backupCheckCredentials: backup.checkCredentials } : {}),
     });
 }
@@ -5552,6 +5555,70 @@ describe("managed-site backup (ADR 0049)", () => {
             const response = await postBackup(app, session, "/stacks/demo/backup/acknowledge", { csrf, attempt: "attempt0049" });
             expect(response.status).toBe(303);
             expect(await readManagedSiteBackupAttempt(stackDir)).toEqual({ kind: "none" });
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("restores one exact snapshot into a private directory", async () => {
+        const dir = await backupRoot();
+        try {
+            const calls: string[][] = [];
+            const restoreDocker = async (args: string[]): Promise<CommandResult> => {
+                calls.push(args);
+                if (args.includes("dump")) {
+                    return commandOk(
+                        JSON.stringify({
+                            version: 1,
+                            siteId: "acme-shop",
+                            mode: "files",
+                            inventory: [
+                                {
+                                    path: "files/shared/uploads/a.txt",
+                                    type: "file",
+                                    size: 5,
+                                    sha256: createHash("sha256").update("alpha").digest("hex"),
+                                },
+                            ],
+                        }),
+                    );
+                }
+                if (args.includes("snapshots")) return commandOk(JSON.stringify([{ id: SNAPSHOT, tags: ["site:acme-shop"] }]));
+                if (args.includes("ls")) return commandOk(`${JSON.stringify({ path: "/backup/backup.json" })}\n`);
+                if (args.includes("restore")) {
+                    const mount = args.find((value) => value.endsWith(":/restore"))!;
+                    const target = mount.slice(0, -":/restore".length);
+                    await mkdir(`${target}/backup/files/shared/uploads`, { recursive: true });
+                    await writeFile(`${target}/backup/files/shared/uploads/a.txt`, "alpha");
+                    return commandOk();
+                }
+                return commandOk();
+            };
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                restoreDocker,
+                checkCredentials: async () => ({ ok: true }),
+            });
+            const session = await login(app);
+            const csrf = /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/about", session)).text())![1]!;
+
+            const page = await (await authed(app, "/stacks/demo", session)).text();
+            expect(page).toContain('action="/stacks/demo/restore"');
+
+            const invalid = await postBackup(app, session, "/stacks/demo/restore", { csrf, snapshot: "latest" });
+            expect(invalid.status).toBe(409);
+            expect(app.operations.forStack("demo")).toBeNull();
+
+            const response = await postBackup(app, session, "/stacks/demo/restore", { csrf, snapshot: SNAPSHOT });
+            expect(response.status).toBe(303);
+            for (let i = 0; i < 500 && app.operations.forStack("demo")?.status === "running"; i += 1) await Bun.sleep(1);
+            const operation = app.operations.forStack("demo");
+            expect(operation?.action).toBe("restore");
+            expect(operation?.status).toBe("succeeded");
+            expect(operation?.output).toContain("Restore verified");
+            expect(operation?.output).toContain("live site was not modified");
+            expect(calls.some((args) => args.includes("mariadb"))).toBe(false);
             await app.beginShutdown(100);
         } finally {
             await rm(dir, { recursive: true, force: true });

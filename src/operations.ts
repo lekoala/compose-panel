@@ -234,6 +234,31 @@ export class OperationManager {
         return operation;
     }
 
+    /**
+     * Run one verified restore (ADR 0049). It holds the stack lock, but it never
+     * writes to the live site: the snapshot goes to a private directory and a
+     * disposable database.
+     */
+    startRestore(input: {
+        stack: string;
+        project?: string;
+        run: (context: {
+            onOutput: (chunk: string) => void;
+            record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+        }) => Promise<AppActionOutcome>;
+    }): OperationView {
+        const { operation, release } = this.begin({
+            stack: input.stack,
+            action: "restore",
+            label: "Restore",
+            project: input.project,
+        });
+        const task = this.executeApp(operation, input.run, release, input.project);
+        this.tasks.add(task);
+        void task.finally(() => this.tasks.delete(task));
+        return operation;
+    }
+
     /** Whether shutdown has begun; a running rollout uses it between phases. */
     isShuttingDown(): boolean {
         return this.shuttingDown;

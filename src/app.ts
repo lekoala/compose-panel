@@ -131,6 +131,7 @@ import {
     type ManagedSiteBackupCheck,
 } from "./managed-site-backup.ts";
 import { runManagedSiteBackup } from "./managed-site-backup-run.ts";
+import { isManagedSiteSnapshotId, runManagedSiteRestore } from "./managed-site-restore.ts";
 import { composerPreparation, MANAGED_SITE_RELEASE_LIMITS } from "./managed-site-build.ts";
 import { fetchAndPublishGitRelease } from "./git-release.ts";
 import {
@@ -199,6 +200,8 @@ export interface AppOptions {
     containerMutator?: ContainerMutator;
     /** Test seam for the one-shot backup adapter (ADR 0049); production uses the fixed runner. */
     backupDocker?: DockerRunner;
+    /** Test seam for the verify/restore adapter (ADR 0049). */
+    restoreDocker?: DockerRunner;
     /** Test seam for the private backup credential metadata check. */
     backupCheckCredentials?: (stackDir: string, manifest: ManagedSiteManifest) => Promise<ManagedSiteBackupCheck>;
     /** Per-stack modifying-operation lock. */
@@ -493,6 +496,7 @@ export function createApp(options: AppOptions): App {
                 // A pending deploy blocks everything, including a backup.
                 if (await pendingDeployAttempt(stackDir)) return MANAGED_SITE_PENDING_MESSAGE;
                 if (action === "backup") return await managedBackupAdmission(stackDir);
+                if (action === "restore") return await managedRestoreAdmission(stackDir);
                 const drift = await managedSiteDriftReason(stackDir);
                 if (drift) return drift;
                 if (action === "down") return await managedDownDomainAdmission(stack);
@@ -517,7 +521,7 @@ export function createApp(options: AppOptions): App {
                       ? "rollout"
                       : operation.action === "deploy" || operation.action === "baseline"
                         ? "deploy"
-                        : operation.action === "backup"
+                        : operation.action === "backup" || operation.action === "restore"
                           ? "backup"
                           : "operation",
                 result: operation.status,
@@ -1903,6 +1907,120 @@ export function createApp(options: AppOptions): App {
                     actor: clientKey(request, config),
                     stack: name,
                     action: "backup",
+                    detail: error.message,
+                });
+                return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Verify one exact snapshot and restore it into a private directory, with a
+     * disposable database for a SQL snapshot. The live site is never written.
+     */
+    async function handleRestore(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!config.managedSitesEnabled) throw new StackError("Managed sites are not enabled on this panel.", 404);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+        const snapshotId = (form.get("snapshot") ?? "").trim().toLowerCase();
+        if (!isManagedSiteSnapshotId(snapshotId)) {
+            return renderStackDetail(
+                name,
+                csrf,
+                { kind: "error", text: "Select one exact 64-character hexadecimal snapshot id. latest is refused." },
+                409,
+            );
+        }
+
+        const stackDir = await managedSiteStackDir(name);
+        const manifestResult = await readManagedSiteManifest(stackDir);
+        if (!manifestResult.ok) return renderStackDetail(name, csrf, { kind: "error", text: manifestResult.reason }, 409);
+        if (manifestResult.manifest.owner !== "managed" || !manifestResult.manifest.backup) {
+            return renderStackDetail(
+                name,
+                csrf,
+                { kind: "error", text: "This site declares no backup block, so there is no repository to restore from." },
+                409,
+            );
+        }
+        if (await pendingDeployAttempt(stackDir)) {
+            const response = await refusePendingDeploy(request, name, csrf, "restore");
+            if (response) return response;
+        }
+        const marker = await readManagedSiteBackupAttempt(stackDir);
+        if (marker.kind !== "none") {
+            const text =
+                "A previous backup attempt has an unconfirmed outcome. Inspect the repository and acknowledge it before restoring.";
+            return renderStackDetail(name, csrf, { kind: "error", text }, 409);
+        }
+        try {
+            if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+            operations.startRestore({
+                stack: name,
+                project: manifestResult.manifest.project,
+                run: async ({ onOutput }) => {
+                    if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                    const currentDir = await managedSiteStackDir(name);
+                    const current = await readManagedSiteManifest(currentDir);
+                    if (!current.ok) return { refused: current.reason };
+                    if (current.manifest.owner !== "managed" || !current.manifest.backup) {
+                        return { refused: "This site no longer declares a backup block." };
+                    }
+                    if (await pendingDeployAttempt(currentDir)) return { refused: MANAGED_SITE_PENDING_MESSAGE };
+                    const pendingBackup = await readManagedSiteBackupAttempt(currentDir);
+                    if (pendingBackup.kind !== "none") {
+                        return {
+                            refused:
+                                "A previous backup attempt has an unconfirmed outcome. Inspect the repository and acknowledge it first.",
+                        };
+                    }
+                    const result = await runManagedSiteRestore(
+                        {
+                            stackDir: currentDir,
+                            manifest: current.manifest,
+                            attemptId: randomSuffix(),
+                            snapshotId,
+                            onOutput,
+                            signal: shutdownController.signal,
+                        },
+                        {
+                            ...(options.restoreDocker ? { docker: options.restoreDocker } : {}),
+                            ...(options.backupCheckCredentials ? { checkCredentials: options.backupCheckCredentials } : {}),
+                        },
+                    );
+                    if (!result.ok) {
+                        onOutput(`Restore did not complete in phase ${result.phase}: ${result.reason}\n`);
+                        return { code: 1, stdout: "", stderr: "", timedOut: false, truncated: false };
+                    }
+                    onOutput(
+                        `Restore verified: ${result.files} files (${result.bytes} bytes) from ${result.snapshotId} in ${result.restoreDir}${result.sql ? `, ${result.sql.tables} table(s) in a disposable ${result.sql.database} database` : ""}. The live site was not modified.\n`,
+                    );
+                    return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+                },
+            });
+            await recordAudit({
+                event: "backup",
+                result: "started",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "restore",
+                detail: `snapshot ${snapshotId}`,
+            });
+            return redirect(back, 303);
+        } catch (error) {
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({
+                    event: "backup",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    action: "restore",
                     detail: error.message,
                 });
                 return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
@@ -3899,6 +4017,21 @@ export function createApp(options: AppOptions): App {
         return credentials.ok ? null : `${credentials.reason} Nothing was run.`;
     }
 
+    /** A restore needs the backup contract and no unconfirmed attempt. */
+    async function managedRestoreAdmission(stackDir: string): Promise<string | null> {
+        const site = await readManagedSiteManifest(stackDir);
+        if (!site.ok) return site.reason;
+        if (site.manifest.owner !== "managed" || !site.manifest.backup) {
+            return "This site declares no backup block, so there is no repository to restore from.";
+        }
+        const marker = await readManagedSiteBackupAttempt(stackDir);
+        if (marker.kind !== "none") {
+            return "A previous backup attempt has an unconfirmed outcome. Inspect the repository and acknowledge it before restoring.";
+        }
+        const credentials = await (options.backupCheckCredentials ?? checkManagedSiteBackupCredentials)(stackDir, site.manifest);
+        return credentials.ok ? null : `${credentials.reason} Nothing was run.`;
+    }
+
     /** Down must not leave a live Caddy route pointing at a removed port. */
     async function managedDownDomainAdmission(stack: string): Promise<string | null> {
         const site = await readManagedSiteManifest(await managedSiteStackDir(stack));
@@ -4347,6 +4480,11 @@ export function createApp(options: AppOptions): App {
             note(
                 "info",
                 "Copies the declared persistent roots to a private staging tree, dumps only the declared database when one is configured, uploads with a pinned Restic container and verifies the exact snapshot. The panel never reads the credential files.",
+            ) +
+            `<form method="post" action="${href}/restore"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><label>Snapshot id <input type="text" name="snapshot" required minlength="64" maxlength="64" pattern="[0-9a-f]{64}" spellcheck="false" autocapitalize="none" placeholder="64 hexadecimal characters"></label><button class="btn" type="submit"${busy ? " disabled" : ""}>Verify and restore</button></form>` +
+            note(
+                "info",
+                "Restores one exact snapshot into a new private directory and, for a SQL snapshot, imports it into a disposable database with no production credentials, no production network and no published port. The live site is not modified.",
             )
         );
     }
@@ -4953,6 +5091,15 @@ export function createApp(options: AppOptions): App {
                 return await handleBackup(request, decodeName(backupMatch[1]!), session);
             } catch (error) {
                 return routeError(error, session.csrf, safeName(backupMatch[1]!));
+            }
+        }
+        const restoreMatch = /^\/stacks\/([^/]+)\/restore$/.exec(url.pathname);
+        if (restoreMatch && config.managedSitesEnabled) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return await handleRestore(request, decodeName(restoreMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(restoreMatch[1]!));
             }
         }
         const deployAcknowledgeMatch = /^\/stacks\/([^/]+)\/deploy\/acknowledge$/.exec(url.pathname);
