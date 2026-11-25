@@ -899,8 +899,72 @@ checks that the file is provisioned before the site starts.
 The external network is shared by design. Tenant isolation is the database's
 grants: create one database and one application account per site and verify that
 one site's credentials cannot read another's data. The panel cannot verify those
-grants. Dumps, restores, migrations and backup credentials are not part of this
-attachment and need their own ADR ([ADR 0048](adr/0048-existing-database-attachment.md)).
+grants. Dumps belong to the manual backup below; migrations and live restores are
+not part of this attachment ([ADR 0048](adr/0048-existing-database-attachment.md),
+[ADR 0049](adr/0049-offsite-backup-and-restore.md)).
+
+### Manual offsite backup
+
+A generated site may declare one Restic repository in its manifest, then the
+stack page offers **Back up now**. The panel copies only the declared persistent
+roots, optionally dumps exactly one MariaDB database, uploads with a pinned
+Restic container and verifies the returned snapshot id. It never reads the
+credential values, deletes a snapshot or starts a scheduler.
+
+1. Create one Restic repository per site on a REST endpoint, preferably
+   append-only behind TLS. Keep the repository password and an independently
+   usable recovery credential off this host.
+2. Create the fixed private directory and files, owned by the panel account:
+
+   ```bash
+   install -d -m 0700 /opt/stacks/acme-shop/site/private/backup
+   install -m 0600 /dev/null /opt/stacks/acme-shop/site/private/backup/restic-password
+   # optional REST basic auth, read by Restic through env_file:
+   install -m 0600 /dev/null /opt/stacks/acme-shop/site/private/backup/rest.env
+   ```
+
+   Write the repository password to `restic-password`. `rest.env` may hold
+   `RESTIC_REST_USERNAME` and `RESTIC_REST_PASSWORD` when the endpoint requires
+   basic auth. The directory must stay `0700` and the files `0600`, regular and
+   owned by the panel account; the panel refuses anything else.
+
+3. For a SQL backup, create a **read-only** database role, distinct from the
+   application account, and write its own client variables to
+   `site/private/backup/database.env` (mode `0600`):
+
+   ```bash
+   MYSQL_HOST=acme-db
+   MYSQL_TCP_PORT=3306
+   MYSQL_USER=acme_backup
+   MYSQL_PWD=<read-only password>
+   ```
+
+4. Edit `compose-panel-site.json` to `"version": 3` and add the block below,
+   then use **Regenerate generated files** (the backup block itself changes no
+   generated file, but the manifest change must be saved on the host). Omit
+   `sql` for a files-only backup; `sql.engine` must equal the attached
+   `database.engine`, and this slice supports MariaDB only.
+
+   ```json
+   "version": 3,
+   "backup": {
+     "kind": "restic",
+     "repository": "rest:https://backup.example.test/acme-shop",
+     "sql": { "engine": "mariadb", "database": "acme_shop" }
+   }
+   ```
+
+5. **Back up now** runs one operation under the stack lock. A pending deploy or
+   an unconfirmed backup refuses it. A proven failure clears its marker and can
+   be retried; a timeout or an unverifiable upload keeps the marker, so inspect
+   the repository and use **Acknowledge** before retrying. The panel records the
+   accepted snapshot id in the operation output and the audit log, not in a
+   recovery journal.
+
+The systemd timer, retention/prune automation and the restore proof are not
+implemented yet. Run `restic forget --dry-run` and a restore from a separate
+machine with the host credentials unavailable before treating these backups as
+operational ([ADR 0049](adr/0049-offsite-backup-and-restore.md)).
 
 The generated gateway resolves `runtime` through Docker's embedded DNS on every
 request. Recreating the runtime can change its IP while the gateway container is
@@ -1123,7 +1187,12 @@ an inspection of the marker, pointer, containers and probe. It also builds a PHP
 8.3 image with `pdo_mysql`, starts MariaDB 11 in a separate project on an
 external network, writes a record through the site, deploys the next commit,
 rolls back and reads the same record, and proves that site A's account cannot
-read or write site B's table (ADR 0048). The disposable SSH
+read or write site B's table (ADR 0048). The manual backup (ADR 0049) is covered
+by unit tests for the manifest block, credential metadata, staging walk and
+quotas, the fixed dump/Restic argument arrays, snapshot parsing, the route,
+admission and acknowledgement, with a fake runner and no host Docker access. Its
+disposable Restic fixture and restore proof are not implemented yet; no backup
+has been restored on a real endpoint. The disposable SSH
 fixture (`bash scripts/test-git-ssh.sh`) drives the real Git adapter against
 OpenSSH on loopback and exercises the correct key pair, wrong client key and
 wrong host key. These suites are opt-in and

@@ -13,9 +13,24 @@
   `0600` file owned
   by the panel account. The panel never connects to the database, runs SQL,
   stores a credential, reads the env-file values or adds a database client.
-  Dumps, restores, migrations and backup credentials remain out of scope. The
-  disposable MariaDB fixture passed (a record survives deploy and rollback, and
-  site A cannot read or write site B); the real-host checklist remains.
+  Migrations and live restores remain out of scope; the optional dump belongs to
+  the manual backup below. The disposable MariaDB fixture passed (a record
+  survives deploy and rollback, and site A cannot read or write site B); the
+  real-host checklist remains.
+
+- Managed sites: manual offsite backup (ADR 0049). A manifest v3 may declare
+  `backup: { kind: "restic", repository, sql? }` with a `rest:https` repository
+  (or `rest:http` on a loopback/single-label private host) and, optionally, one
+  MariaDB database. **Back up now** copies only the declared persistent roots
+  into a private staging tree with no-follow reads, quotas and SHA-256
+  inventory, runs one bounded `mariadb-dump` container for that database and one
+  pinned Restic container, then accepts only the snapshot id that
+  `restic snapshots` and `restic ls` read back. Credentials stay in fixed
+  `0600` files under `site/private/backup/` that the panel checks by metadata
+  and never reads. A proven failure clears its marker; a timeout or unverifiable
+  upload keeps it until the operator acknowledges it. No scheduler, retention
+  automation, snapshot deletion or live restore is added. The disposable Restic
+  fixture and the restore proof remain to be run.
 
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares

@@ -394,7 +394,7 @@ export function parseManagedSiteBackupAttempt(source: string): ManagedSiteBackup
     }
     if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
-    const allowed = ["attemptId", "outcome", "phase", "repository", "siteId", "snapshotId", "staging", "startedAt", "version"];
+    const allowed = ["attemptId", "outcome", "phase", "reason", "repository", "siteId", "snapshotId", "staging", "startedAt", "version"];
     if (Object.keys(record).some((key) => !allowed.includes(key))) return null;
     if (record.version !== 1) return null;
     const { siteId, attemptId, repository, startedAt, phase, outcome } = record;
@@ -411,8 +411,10 @@ export function parseManagedSiteBackupAttempt(source: string): ManagedSiteBackup
             !candidate ||
             typeof candidate.dev !== "number" ||
             typeof candidate.ino !== "number" ||
-            !Number.isSafeInteger(candidate.dev) ||
-            !Number.isSafeInteger(candidate.ino)
+            !Number.isInteger(candidate.dev) ||
+            !Number.isInteger(candidate.ino) ||
+            candidate.dev < 0 ||
+            candidate.ino < 0
         ) {
             return null;
         }

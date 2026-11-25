@@ -124,16 +124,18 @@ implemented for an opted-in stack.
   rollback, and site A cannot read or write site B. The real-host checklist
   remains. Dumps, restores, migrations and backup credentials stay in a
   separate ADR, with one SQL adapter per engine.
-- **Offsite backup and tested restore (proposed).**
-  [ADR 0049](adr/0049-offsite-backup-and-restore.md) proposes a manual **Backup
-  now** and a separate restore proof: one Restic REST repository per site
-  (append-only, TLS), fixed private credential files, a manifest v3 `backup`
-  block, pinned one-shot Restic and dump containers, a bounded private staging
-  copy of declared persistent roots, and one fixed MariaDB dump adapter first.
-  The panel would still run no SQL console, store no credential value and keep
-  no scheduler. It is not implemented and nothing is advertised yet; the
-  disposable Restic fixture and a restore must pass before scheduling or
-  retention work.
+- **Offsite backup (manual).** Implemented under the same flag
+  ([ADR 0049](adr/0049-offsite-backup-and-restore.md)): a manifest v3 `backup`
+  block names one Restic REST repository, and an optional `sql` block dumps
+  exactly one MariaDB database. **Back up now** copies the declared persistent
+  roots into private staging, checks the fixed `0600` credential files by
+  metadata only, uploads with a pinned Restic container and accepts only the
+  snapshot id that `restic snapshots` and `restic ls` read back. A failed
+  upload that may have completed keeps a marker until the operator acknowledges
+  it. Unit, app-route and fake-runner coverage are in place; the disposable
+  Restic fixture, the restore proof, scheduling and retention automation remain
+  to be run or built. The panel deletes no snapshot and stores no credential
+  value.
 - **Next increments, each with its own ADR or vertical PR:** CI triggers; host
   timers and retention; production cutover and cloning. The creation form,
   stable loopback binding and the existing Caddy

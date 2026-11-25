@@ -275,6 +275,41 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   added. Dumps, restores, migrations and backup credentials stay out of this
   attachment ([ADR 0048](adr/0048-existing-database-attachment.md)).
 
+## Offsite backup (ADR 0049)
+
+- **Back up now** is an authenticated, CSRF-protected mutation that holds the
+  same per-stack lock as a deploy. A pending deploy or backup marker refuses it;
+  backup does not depend on generated-file drift, because data recovery must
+  remain possible while the code view is drifted.
+- The manifest declares one `rest:https://` repository (or `rest:http://` only
+  for a loopback or single-label private host) and, optionally, one bounded
+  MariaDB database name. No credential, host path, command or free text is
+  accepted in the manifest.
+- Fixed private files live under `site/private/backup/`: `restic-password`
+  (required), `rest.env` (optional) and `database.env` (required only for SQL).
+  Each must be a regular `0600` file, one link, at most 4 KiB, owned by the panel
+  account, inside a `0700` directory outside releases, generated files and every
+  service mount. The panel checks metadata only and never reads, logs or renders
+  a value.
+- The staging copy walks only the declared persistent roots with no-follow
+  semantics, revalidates device/inode while reading, refuses symlinks, hard
+  links, special files, escape and overlapping roots, and stops at the entry and
+  byte quotas. Inventory checksums are recorded in `backup.json`.
+- The dump runs a pinned `mariadb-dump` container on the declared database
+  network with the backup credential env file and one explicit database name; it
+  cannot select all databases, run a statement or use a shell. The upload runs a
+  pinned Restic container read-only against the staging tree and accepts only the
+  exact snapshot id that `restic snapshots` and `restic ls` read back with the
+  site tag and `/backup/backup.json`.
+- A timeout or an unverifiable upload keeps a failed marker and refuses the next
+  run until the operator acknowledges it after inspecting the repository. There
+  is no automatic replay, no scheduler and no snapshot deletion from the panel;
+  retention uses a separate offsite credential.
+- The panel image gains no Restic or database client: both are one-shot
+  containers. No Docker socket, privileged mode, host network or published port
+  is used, and every invocation is a fixed executable with an explicit argument
+  array.
+
 ## Application toolbox (ADR 0026)
 
 - The panel may execute only **explicitly declared, non-interactive application

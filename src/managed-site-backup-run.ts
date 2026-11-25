@@ -40,7 +40,7 @@ export interface ManagedSiteBackupRequest {
     attemptId: string;
     /** Release the site was serving when the backup started, if known. */
     releaseId: string | null;
-    runtimeImage: { reference: string; id: string } | null;
+    runtimeImage: { reference: string; id: string | null } | null;
     onOutput?: (chunk: string) => void;
     signal?: AbortSignal;
 }
@@ -71,7 +71,7 @@ interface BackupSnapshotManifest {
     attemptId: string;
     createdAt: string;
     release: string | null;
-    runtimeImage: { reference: string; id: string } | null;
+    runtimeImage: { reference: string; id: string | null } | null;
     mode: "files" | "files+sql";
     sql: { engine: "mariadb"; database: string; clientImage: string } | null;
     sqlBytes: number | null;

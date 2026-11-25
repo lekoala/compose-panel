@@ -1,6 +1,7 @@
 # ADR 0049 — Offsite backup and tested restore
 
-Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
+Status: Accepted (managed-site pilot, 2026-11-25). Backup implemented; the
+restore slice, the disposable Restic fixture and the real-host checklist remain.
 
 ## Context
 
@@ -243,7 +244,7 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
   non-transactional tables. The recorded window and mode make that honest; a
   quiescence procedure remains an operator decision.
 - This ADR amends ADR 0042's manifest version bound (1 or 2 becomes 1, 2 or 3)
-  and adds a `backup` field, once accepted. It does not change ADR 0048's
+  and adds a `backup` field, in this slice. It does not change ADR 0048's
   attachment contract.
 
 ## Alternatives considered
@@ -270,6 +271,15 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
 
 ## Verification
 
+- Implemented and unit-tested on 2026-11-25: manifest v3 parsing, repository URL
+  and identifier bounds, the engine/`database` coupling, credential metadata,
+  no-follow staging with quotas and checksums, the attempt marker, the fixed
+  MariaDB dump and Restic argument arrays (with a fake runner), snapshot-output
+  parsing and the app route/admission/acknowledgement. The operation never
+  reads a credential value, and a refused admission runs no container.
+- Still open: the disposable Restic fixture (append-only REST endpoint, MariaDB,
+  a real upload and a restore proof) and the restore slice itself. Run the
+  fixture before calling the backup production-proven.
 - Unit tests: v3 parsing, v1/v2 compatibility, repository URL and identifier
   bounds, engine/`database` coupling, credential file metadata, no-follow
   staging walk and quota, refusal of credentials inside a declared root,

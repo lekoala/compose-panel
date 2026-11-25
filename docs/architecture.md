@@ -218,6 +218,18 @@ projection allows exactly that external network, only on the runtime, and still
 requires a shared project network. No database client, SQL call, dump, restore
 or migration exists in the panel ([ADR 0048](adr/0048-existing-database-attachment.md)).
 
+## Offsite backup (opt-in)
+`src/managed-site-backup.ts` owns the fixed private paths, the metadata-only
+credential check, the no-follow staging copy with quotas and SHA-256 inventory,
+and the bounded attempt marker. `src/managed-site-backup-run.ts` runs one
+`mariadb-dump` container (only when `backup.sql` is declared) and one pinned
+Restic container with explicit argument arrays, then verifies the exact snapshot
+id and `/backup/backup.json`. `POST /stacks/<name>/backup` starts a named
+operation under the stack lock; `POST .../backup/acknowledge` clears a marker
+after inspection. The panel never reads a credential value, deletes a snapshot,
+starts a scheduler or adds a Restic or database client to its image
+([ADR 0049](adr/0049-offsite-backup-and-restore.md)).
+
 ## Managed-site deploy (opt-in)
 `src/managed-site.ts` parses the trusted `compose-panel-site.json` strictly
 (bounded size, versioned, unknown/duplicate keys refused). `src/managed-site-profile.ts`
