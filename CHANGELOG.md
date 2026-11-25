@@ -29,8 +29,10 @@
   `0600` files under `site/private/backup/` that the panel checks by metadata
   and never reads. A proven failure clears its marker; a timeout or unverifiable
   upload keeps it until the operator acknowledges it. No scheduler, retention
-  automation, snapshot deletion or live restore is added. The disposable Restic
-  fixture and the restore proof remain to be run.
+  automation, snapshot deletion or live restore is added. The disposable
+  append-only REST fixture passed (real upload, restore of a deleted file, and a
+  prune that leaves the snapshot listed); the panel restore route and SQL import
+  remain to be built.
 
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares

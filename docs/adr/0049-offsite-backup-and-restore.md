@@ -1,7 +1,7 @@
 # ADR 0049 — Offsite backup and tested restore
 
-Status: Accepted (managed-site pilot, 2026-11-25). Backup implemented; the
-restore slice, the disposable Restic fixture and the real-host checklist remain.
+Status: Accepted (managed-site pilot, 2026-11-25). Backup implemented and proven
+on the disposable lab; the restore slice and the real-host checklist remain.
 
 ## Context
 
@@ -277,9 +277,23 @@ restore slice, the disposable Restic fixture and the real-host checklist remain.
   MariaDB dump and Restic argument arrays (with a fake runner), snapshot-output
   parsing and the app route/admission/acknowledgement. The operation never
   reads a credential value, and a refused admission runs no container.
-- Still open: the disposable Restic fixture (append-only REST endpoint, MariaDB,
-  a real upload and a restore proof) and the restore slice itself. Run the
-  fixture before calling the backup production-proven.
+- The pinned `restic/restic:0.18.0` invocation was exercised on a disposable
+  daemon with a local repository and the same flags the runner uses
+  (`--read-only`, bounded tmpfs, `RESTIC_PASSWORD_FILE`, the staging mount):
+  `init`, `backup --json`, `snapshots --json <id>` and `ls --json <id>` all
+  succeeded.
+- Disposable REST fixture passed on 2026-11-25
+  (`bun run test:managed-sites-e2e:wsl`): `restic/rest-server:0.15.0` in
+  append-only mode over HTTP on the lab host, `restic/restic:0.18.0` as the
+  client, and a managed stack with one declared root. `runManagedSiteBackup`
+  produced and verified a snapshot; the local file was deleted; a separate
+  `restic restore <id>` read it back byte for byte; and `restic forget --prune`
+  left the snapshot listed. The SQL half is covered by the fixed-argument unit
+  tests, not by this fixture. The panel's restore route and SQL import remain
+  unimplemented.
+- Still open: the restore slice (private extraction, disposable database import
+  and the bounded verification) and the real-host checklist. The backup is
+  proven on the disposable lab, not on a real endpoint or host.
 - Unit tests: v3 parsing, v1/v2 compatibility, repository URL and identifier
   bounds, engine/`database` coupling, credential file metadata, no-follow
   staging walk and quota, refusal of credentials inside a declared root,

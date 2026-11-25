@@ -1190,9 +1190,12 @@ rolls back and reads the same record, and proves that site A's account cannot
 read or write site B's table (ADR 0048). The manual backup (ADR 0049) is covered
 by unit tests for the manifest block, credential metadata, staging walk and
 quotas, the fixed dump/Restic argument arrays, snapshot parsing, the route,
-admission and acknowledgement, with a fake runner and no host Docker access. Its
-disposable Restic fixture and restore proof are not implemented yet; no backup
-has been restored on a real endpoint. The disposable SSH
+admission and acknowledgement, with a fake runner and no host Docker access. The
+disposable suite adds an append-only `restic/rest-server`, uploads a real staging
+tree, deletes the file, restores it with `restic restore <id>` and proves that a
+prune leaves the snapshot listed. The MariaDB dump is unit-tested only; the
+panel's restore route and SQL import are not implemented, and no recovery from a
+real endpoint has been claimed. The disposable SSH
 fixture (`bash scripts/test-git-ssh.sh`) drives the real Git adapter against
 OpenSSH on loopback and exercises the correct key pair, wrong client key and
 wrong host key. These suites are opt-in and

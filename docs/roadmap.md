@@ -132,10 +132,11 @@ implemented for an opted-in stack.
   metadata only, uploads with a pinned Restic container and accepts only the
   snapshot id that `restic snapshots` and `restic ls` read back. A failed
   upload that may have completed keeps a marker until the operator acknowledges
-  it. Unit, app-route and fake-runner coverage are in place; the disposable
-  Restic fixture, the restore proof, scheduling and retention automation remain
-  to be run or built. The panel deletes no snapshot and stores no credential
-  value.
+  it. Unit, app-route, fake-runner and disposable REST fixture coverage are in
+  place (an append-only repository, a real staging upload, a restore of the
+  deleted file and a refused prune); the restore slice, scheduling and retention
+  automation remain to be built. The panel deletes no snapshot and stores no
+  credential value.
 - **Next increments, each with its own ADR or vertical PR:** CI triggers; host
   timers and retention; production cutover and cloning. The creation form,
   stable loopback binding and the existing Caddy

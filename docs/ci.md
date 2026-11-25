@@ -183,7 +183,13 @@ The same suite covers the database attachment (ADR 0048): it builds a PHP 8.3
 image with `pdo_mysql`, starts MariaDB 11 in a separate project on an external
 network, writes a record through the site, deploys the next commit, rolls back
 and reads the record again, and checks that site A's account cannot read or
-write site B's table. The Git URL is mapped to a local bare repository by an
+write site B's table. It also covers the manual backup (ADR 0049): an
+append-only `restic/rest-server` on the lab host, `restic/restic` as the client,
+one managed stack and one declared root. The real backup runner uploads, the
+file is deleted, a separate `restic restore <id>` reads it back, and
+`restic forget --prune` leaves the snapshot listed. The backup fixture is
+files-only; the MariaDB dump arguments are unit-tested, and the panel restore
+route is not implemented. The Git URL is mapped to a local bare repository by an
 injected runner, which re-allows the `file` transport for the fixture; URL
 validation and the `https`-only environment stay in the unit tests. The gateway
 binds `127.0.0.1` inside the lab daemon's network namespace, so the probe runs
