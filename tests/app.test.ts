@@ -622,6 +622,78 @@ describe("access paths", () => {
     });
 });
 
+describe("login CSRF across tabs (ADR 0055)", () => {
+    const FORM = "application/x-www-form-urlencoded";
+
+    function formToken(html: string): string {
+        return /name="csrf" value="([^"]+)"/.exec(html)![1]!;
+    }
+
+    test("two sign-in tabs share one token and the older form still signs in", async () => {
+        const app = makeApp();
+        const first = await app.fetch(new Request(`${ORIGIN}/login`));
+        const cookie = cookieValue(setCookies(first), "cp_csrf")!;
+        const firstToken = formToken(await first.text());
+
+        const second = await app.fetch(new Request(`${ORIGIN}/login`, { headers: { cookie: `cp_csrf=${cookie}` } }));
+        expect(second.status).toBe(200);
+        expect(formToken(await second.text())).toBe(firstToken);
+        expect(setCookies(second).some((value) => value.startsWith("cp_csrf="))).toBe(false);
+
+        const response = await postLogin(app, cookie, firstToken, "admin", PASSWORD);
+        expect(response.status).toBe(303);
+        expect(response.headers.get("location")).toBe("/");
+        expect(cookieValue(setCookies(response), "cp_session")).toBeTruthy();
+        await app.beginShutdown(100);
+    });
+
+    test("a failed attempt keeps the token usable in the other tab", async () => {
+        const app = makeApp();
+        const { cookie, csrf } = await loginCsrf(app);
+
+        const failed = await postLogin(app, cookie, csrf, "admin", "wrong-password");
+        expect(failed.status).toBe(401);
+        expect(formToken(await failed.text())).toBe(csrf);
+        expect(setCookies(failed).some((value) => value.startsWith("cp_csrf="))).toBe(false);
+
+        const retry = await postLogin(app, cookie, csrf, "admin", PASSWORD);
+        expect(retry.status).toBe(303);
+        expect(retry.headers.get("location")).toBe("/");
+        await app.beginShutdown(100);
+    });
+
+    test("a malformed cookie is replaced and a missing one still refuses the post", async () => {
+        const app = makeApp();
+        const replaced = await app.fetch(new Request(`${ORIGIN}/login`, { headers: { cookie: "cp_csrf=short" } }));
+        const issued = cookieValue(setCookies(replaced), "cp_csrf");
+        expect(issued).toBeTruthy();
+        expect(issued).not.toBe("short");
+        expect(formToken(await replaced.text())).toBe(issued!);
+
+        const missing = await app.fetch(
+            new Request(`${ORIGIN}/login`, {
+                method: "POST",
+                headers: { "content-type": FORM, origin: ORIGIN },
+                body: new URLSearchParams({ csrf: issued!, user: "admin", password: PASSWORD }).toString(),
+            }),
+        );
+        expect(missing.status).toBe(403);
+        await app.beginShutdown(100);
+    });
+
+    test("a form token that differs from the cookie is still refused", async () => {
+        const app = makeApp();
+        const { cookie, csrf } = await loginCsrf(app);
+        const other = "z".repeat(43);
+        expect(other).not.toBe(csrf);
+
+        const response = await postLogin(app, cookie, other, "admin", PASSWORD);
+        expect(response.status).toBe(403);
+        expect(formToken(await response.text())).toBe(csrf);
+        await app.beginShutdown(100);
+    });
+});
+
 describe("auth gate", () => {
     test("redirects unauthenticated GET to the login page", async () => {
         const response = await makeApp().fetch(new Request(`${ORIGIN}/`));

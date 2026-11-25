@@ -190,6 +190,7 @@ import {
     type Session,
     clearedSessionCookie,
     csrfCookie,
+    isTokenValue,
     parseCookies,
     randomToken,
     safeEqual,
@@ -787,10 +788,21 @@ export function createApp(options: AppOptions): App {
         );
     }
 
+    /**
+     * Reuse the token already in the double-submit cookie so every open sign-in
+     * tab shares one form token (ADR 0055). Only a missing or malformed value is
+     * replaced, and `issue` says whether the caller must send the cookie.
+     */
+    function loginCsrfToken(request: Request): { csrf: string; issue: boolean } {
+        const existing = parseCookies(request.headers.get("cookie"))[CSRF_COOKIE];
+        if (isTokenValue(existing)) return { csrf: existing, issue: false };
+        return { csrf: randomToken(), issue: true };
+    }
+
     function loginFailure(request: Request, message: string | null, status: number, retryAfterSec?: number): Response {
-        const nonce = randomToken();
-        const response = htmlResponse(loginPage({ csrf: nonce, error: message }), status);
-        response.headers.append("Set-Cookie", csrfCookie(nonce, cookieSecureFor(request, config)));
+        const { csrf, issue } = loginCsrfToken(request);
+        const response = htmlResponse(loginPage({ csrf, error: message }), status);
+        if (issue) response.headers.append("Set-Cookie", csrfCookie(csrf, cookieSecureFor(request, config)));
         if (retryAfterSec !== undefined) response.headers.set("Retry-After", String(retryAfterSec));
         return response;
     }
@@ -799,10 +811,10 @@ export function createApp(options: AppOptions): App {
         const cookies = parseCookies(request.headers.get("cookie"));
         const id = cookies[SESSION_COOKIE];
         if (id && sessions.get(id)) return redirect("/", 302);
-        const nonce = randomToken();
+        const { csrf, issue } = loginCsrfToken(request);
         const blocked = new URL(request.url).searchParams.get("e") === "blocked";
-        const response = htmlResponse(loginPage({ csrf: nonce, error: blocked ? ORIGIN_BLOCKED_MESSAGE : null }));
-        response.headers.append("Set-Cookie", csrfCookie(nonce, cookieSecureFor(request, config)));
+        const response = htmlResponse(loginPage({ csrf, error: blocked ? ORIGIN_BLOCKED_MESSAGE : null }));
+        if (issue) response.headers.append("Set-Cookie", csrfCookie(csrf, cookieSecureFor(request, config)));
         return response;
     }
 

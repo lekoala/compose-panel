@@ -7,6 +7,14 @@ export function randomToken(bytes = 32): string {
     return randomBytes(bytes).toString("base64url");
 }
 
+/** 32 random bytes, base64url, no padding: the only shape this module issues. */
+const TOKEN_VALUE = /^[A-Za-z0-9_-]{43}$/;
+
+/** True only for the exact token shape issued by `randomToken()` (ADR 0055). */
+export function isTokenValue(value: string | null | undefined): value is string {
+    return typeof value === "string" && TOKEN_VALUE.test(value);
+}
+
 /** Constant-time comparison that tolerates unequal lengths without throwing. */
 export function safeEqual(a: string, b: string): boolean {
     const left = Buffer.from(a, "utf8");

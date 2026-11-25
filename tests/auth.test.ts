@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { LoginRateLimiter, SessionStore, hashPassword, parseCookies, randomToken, safeEqual, verifyPassword } from "../src/auth.ts";
+import {
+    LoginRateLimiter,
+    SessionStore,
+    hashPassword,
+    isTokenValue,
+    parseCookies,
+    randomToken,
+    safeEqual,
+    verifyPassword,
+} from "../src/auth.ts";
 
 describe("safeEqual", () => {
     test("matches identical non-empty strings", () => expect(safeEqual("abc", "abc")).toBe(true));
@@ -20,6 +29,24 @@ test("randomToken is unique and url-safe", () => {
     const b = randomToken();
     expect(a).not.toBe(b);
     expect(a).toMatch(/^[A-Za-z0-9_-]+$/);
+});
+
+describe("isTokenValue", () => {
+    test("accepts only the exact issued shape", () => {
+        expect(isTokenValue(randomToken())).toBe(true);
+        expect(isTokenValue("z".repeat(43))).toBe(true);
+    });
+
+    test("rejects empty, short, long and padded values", () => {
+        expect(isTokenValue(undefined)).toBe(false);
+        expect(isTokenValue(null)).toBe(false);
+        expect(isTokenValue("")).toBe(false);
+        expect(isTokenValue("z".repeat(42))).toBe(false);
+        expect(isTokenValue("z".repeat(44))).toBe(false);
+        expect(isTokenValue(`${"z".repeat(43)}=`)).toBe(false);
+        expect(isTokenValue(`${"z".repeat(42)}+`)).toBe(false);
+        expect(isTokenValue("z".repeat(42) + " ")).toBe(false);
+    });
 });
 
 describe("password hashing", () => {
