@@ -3749,8 +3749,7 @@ export function createApp(options: AppOptions): App {
         const checked = await checkManagedSiteDatabaseEnvFile(stackDir, site.manifest);
         if (!checked.ok) return `${checked.reason} Nothing was run.`;
         const context = await resolveProjectContext(stacksRoot, stack, provider, action === "up" || action === "pull-up");
-        if (context.kind === "absent" && (action === "up" || action === "pull-up")) return null;
-        if (context.kind !== "resolved") {
+        if (context.kind !== "resolved" && context.kind !== "absent") {
             return "The effective Compose project could not be resolved, so the database network could not be checked. Nothing was run.";
         }
         const facts = await provider.managedSiteFacts({
