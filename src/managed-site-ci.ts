@@ -160,6 +160,8 @@ export interface ManagedSiteCiRequestBody {
     sha: string;
     ref: string;
     nonce: string;
+    /** The validated ISO 8601 string, stored as the attempt time. */
+    timestamp: string;
     /** Milliseconds parsed from the request timestamp. */
     at: number;
 }
@@ -210,7 +212,7 @@ export function parseManagedSiteCiBody(
     if (Math.abs(now - at) > windowMs) {
         return { ok: false, reason: `timestamp must be within ${Math.round(windowMs / 1000)} seconds of the panel clock.` };
     }
-    return { ok: true, request: { sha, ref, nonce, at } };
+    return { ok: true, request: { sha, ref, nonce, timestamp, at } };
 }
 
 export interface ManagedSiteCiAttempt {

@@ -18,6 +18,8 @@ import { revisionScript } from "../src/git-release.ts";
 import type { ManagedSiteComposeFacts } from "../src/managed-site-profile.ts";
 import { MANAGED_SITE_PATHS, type ManagedSiteManifest } from "../src/managed-site.ts";
 import { readManagedSiteBackupAttempt, writeManagedSiteBackupAttempt } from "../src/managed-site-backup.ts";
+import { hashManagedSiteCiToken, readManagedSiteCiState, type ManagedSiteCiCheck } from "../src/managed-site-ci.ts";
+import { MANAGED_SITE_GATEWAY_CONFIG, MANAGED_SITE_OPCACHE_CONFIG, renderManagedSiteArtifacts } from "../src/managed-site-generate.ts";
 import type { SelfUpdater } from "../src/self-update.ts";
 import {
     IMAGE_REF,
@@ -61,6 +63,7 @@ function makeApp(
         restoreDocker?: DockerRunner;
         checkCredentials?: (stackDir: string, manifest: ManagedSiteManifest) => Promise<{ ok: true } | { ok: false; reason: string }>;
     },
+    ci?: { checkVerifier?: (stackDir: string) => Promise<ManagedSiteCiCheck> },
 ): App {
     const config: AppConfig = {
         stacksDir: stacksRoot,
@@ -119,6 +122,7 @@ function makeApp(
         ...(backup?.docker ? { backupDocker: backup.docker } : {}),
         ...(backup?.restoreDocker ? { restoreDocker: backup.restoreDocker } : {}),
         ...(backup?.checkCredentials ? { backupCheckCredentials: backup.checkCredentials } : {}),
+        ...(ci?.checkVerifier ? { ciCheckVerifier: ci.checkVerifier } : {}),
     });
 }
 
@@ -5619,6 +5623,250 @@ describe("managed-site backup (ADR 0049)", () => {
             expect(operation?.output).toContain("Restore verified");
             expect(operation?.output).toContain("live site was not modified");
             expect(calls.some((args) => args.includes("mariadb"))).toBe(false);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe("CI-triggered deploy (ADR 0050)", () => {
+    const TOKEN = "t".repeat(64);
+    const DIGEST = hashManagedSiteCiToken(TOKEN);
+    const COMMIT = "d".repeat(40);
+    const NONCE = "n".repeat(24);
+
+    const siteManifest: ManagedSiteManifest = {
+        version: 3,
+        siteId: "ci-site",
+        owner: "managed",
+        project: "ci-site",
+        services: { gateway: "web", runtime: "runtime" },
+        gateway: { port: 41077 },
+        publicRoot: "public",
+        runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+        deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+        paths: ["shared/uploads"],
+        generation: "1",
+        ci: { kind: "token" },
+    };
+
+    async function ciRoot(): Promise<string> {
+        const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-ci-app-")));
+        const stack = join(dir, "demo");
+        await mkdir(join(stack, "site", "private", "ci"), { recursive: true, mode: 0o700 });
+        await writeFile(join(stack, "compose.yaml"), "name: ci-site\nservices:\n  web:\n    image: nginx:alpine\n");
+        await writeFile(join(stack, "compose-panel-site.json"), `${JSON.stringify(siteManifest, null, 2)}\n`);
+        return dir;
+    }
+
+    /** Rewrite the generated files so the locked deploy admission passes (POSIX only). */
+    async function ciDeployRoot(): Promise<string> {
+        const dir = await ciRoot();
+        const stack = join(dir, "demo");
+        const rendered = renderManagedSiteArtifacts(stack, siteManifest);
+        if (!rendered.ok) throw new Error(rendered.reason);
+        await mkdir(join(stack, "generated"), { recursive: true });
+        await writeFile(join(stack, "compose.yaml"), rendered.artifacts.compose);
+        await writeFile(join(stack, MANAGED_SITE_GATEWAY_CONFIG), rendered.artifacts.gateway);
+        await writeFile(join(stack, MANAGED_SITE_OPCACHE_CONFIG), rendered.artifacts.opcache);
+        // Keep the original v3 manifest: the rendered source drops optional
+        // blocks that do not change the generated files.
+        await writeFile(join(stack, "compose-panel-site.json"), `${JSON.stringify(siteManifest, null, 2)}\n`);
+        return dir;
+    }
+
+    function request(app: App, method: string, body?: unknown, token: string | null = TOKEN): Promise<Response> {
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (token !== null) headers.authorization = `Bearer ${token}`;
+        return app.fetch(
+            new Request(`${ORIGIN}/api/managed-sites/demo/deploy`, {
+                method,
+                headers,
+                ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+            }),
+        );
+    }
+
+    function payload(nonce = NONCE, timestamp = new Date().toISOString()) {
+        return { sha: COMMIT, ref: "refs/heads/main", nonce, timestamp };
+    }
+
+    test("refuses a missing or wrong token and never accepts a session cookie", async () => {
+        const dir = await ciRoot();
+        try {
+            const { provider } = controllableProvider();
+            const app = makeApp(
+                { managedSitesEnabled: true },
+                undefined,
+                provider,
+                undefined,
+                dir,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                {
+                    checkVerifier: async () => ({ ok: true, digest: DIGEST }),
+                },
+            );
+            expect((await request(app, "POST", payload(), null)).status).toBe(401);
+            expect((await request(app, "POST", payload(), "w".repeat(64))).status).toBe(401);
+            const session = await login(app);
+            const viaCookie = await authed(app, "/api/managed-sites/demo/deploy", session, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload()),
+            });
+            expect(viaCookie.status).toBe(401);
+            expect(app.operations.forStack("demo")).toBeNull();
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses a site that does not declare ci and a malformed request", async () => {
+        const dir = await ciRoot();
+        try {
+            const plain = join(dir, "plain");
+            await mkdir(plain);
+            await writeFile(join(plain, "compose.yaml"), "name: plain\nservices:\n  web:\n    image: nginx:alpine\n");
+            await writeFile(
+                join(plain, "compose-panel-site.json"),
+                JSON.stringify({
+                    version: 1,
+                    siteId: "plain-site",
+                    owner: "opt-in",
+                    project: "plain",
+                    services: { gateway: "web", runtime: "php" },
+                    publicRoot: "public",
+                    runtime: { profile: "php-front-controller" },
+                    deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+                }),
+            );
+            const { provider } = controllableProvider();
+            const app = makeApp(
+                { managedSitesEnabled: true },
+                undefined,
+                provider,
+                undefined,
+                dir,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                {
+                    checkVerifier: async () => ({ ok: true, digest: DIGEST }),
+                },
+            );
+            const notEnabled = await app.fetch(
+                new Request(`${ORIGIN}/api/managed-sites/plain/deploy`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+                    body: JSON.stringify(payload()),
+                }),
+            );
+            expect(notEnabled.status).toBe(404);
+
+            const malformed = await request(app, "POST", { ...payload(), sha: "latest" });
+            expect(malformed.status).toBe(400);
+            expect(app.operations.forStack("demo")).toBeNull();
+            const wrongType = await app.fetch(
+                new Request(`${ORIGIN}/api/managed-sites/demo/deploy`, {
+                    method: "POST",
+                    headers: { "content-type": "text/plain", authorization: `Bearer ${TOKEN}` },
+                    body: JSON.stringify(payload()),
+                }),
+            );
+            expect(wrongType.status).toBe(415);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test.skipIf(process.platform === "win32")("accepts one request under the lock, records it and refuses a replay", async () => {
+        const dir = await ciDeployRoot();
+        try {
+            const { provider } = controllableProvider();
+            const app = makeApp(
+                { managedSitesEnabled: true },
+                undefined,
+                provider,
+                undefined,
+                dir,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                {
+                    checkVerifier: async () => ({ ok: true, digest: DIGEST }),
+                },
+            );
+            const accepted = await request(app, "POST", payload());
+            expect(accepted.status).toBe(202);
+            const body = (await accepted.json()) as Record<string, unknown>;
+            expect(body.siteId).toBe("ci-site");
+            expect(body.sha).toBe(COMMIT);
+            expect(typeof body.operationId).toBe("string");
+            expect(JSON.stringify(body)).not.toContain(TOKEN);
+            for (let index = 0; index < 500 && app.operations.forStack("demo")?.status === "running"; index += 1) await Bun.sleep(1);
+            const operation = app.operations.forStack("demo");
+            expect(operation?.action).toBe("deploy");
+            expect(operation?.status).toBe("refused");
+
+            const stackDir = join(dir, "demo");
+            const state = await readManagedSiteCiState(stackDir, "ci-site");
+            expect(state.kind).toBe("ok");
+            if (state.kind !== "ok") return;
+            expect(state.state.lastAttempt?.sha).toBe(COMMIT);
+            expect(state.state.lastAttempt?.result).toBe("refused");
+            expect(state.state.nonces.map((entry) => entry.nonce)).toEqual([NONCE]);
+
+            const replay = await request(app, "POST", payload(NONCE, new Date(Date.now() + 1000).toISOString()));
+            expect(replay.status).toBe(409);
+            expect(await replay.text()).toContain("replay");
+
+            const status = await request(app, "GET");
+            expect(status.status).toBe(200);
+            const statusBody = (await status.json()) as Record<string, unknown>;
+            expect(statusBody.siteId).toBe("ci-site");
+            expect(statusBody.ref).toBe("refs/heads/main");
+            expect(statusBody.currentRelease).toBeNull();
+            expect((statusBody.lastAttempt as Record<string, unknown>).result).toBe("refused");
+            expect(JSON.stringify(statusBody)).not.toContain(TOKEN);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("shows the CI section and refuses when the verifier is not provisioned", async () => {
+        const dir = await ciRoot();
+        try {
+            const { provider } = controllableProvider();
+            const app = makeApp(
+                { managedSitesEnabled: true },
+                undefined,
+                provider,
+                undefined,
+                dir,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                {
+                    checkVerifier: async () => ({ ok: false, reason: "The CI verifier file is missing." }),
+                },
+            );
+            const session = await login(app);
+            const page = await (await authed(app, "/stacks/demo", session)).text();
+            expect(page).toContain("/api/managed-sites/demo/deploy");
+            expect(page).toContain("The CI verifier file is missing.");
+            expect(page).not.toContain(TOKEN);
+            expect((await request(app, "POST", payload())).status).toBe(401);
+            expect(app.operations.forStack("demo")).toBeNull();
             await app.beginShutdown(100);
         } finally {
             await rm(dir, { recursive: true, force: true });

@@ -132,6 +132,21 @@ import {
 } from "./managed-site-backup.ts";
 import { runManagedSiteBackup } from "./managed-site-backup-run.ts";
 import { isManagedSiteSnapshotId, runManagedSiteRestore } from "./managed-site-restore.ts";
+import {
+    MANAGED_SITE_CI_FAILURE_WINDOW_MS,
+    MANAGED_SITE_CI_MAX_BODY_BYTES,
+    MANAGED_SITE_CI_MAX_FAILURES,
+    acceptManagedSiteCiNonce,
+    checkManagedSiteCiVerifier,
+    initialManagedSiteCiState,
+    managedSiteCiNonceSeen,
+    parseManagedSiteCiBody,
+    readManagedSiteCiState,
+    verifyManagedSiteCiToken,
+    writeManagedSiteCiState,
+    type ManagedSiteCiCheck,
+    type ManagedSiteCiStateRead,
+} from "./managed-site-ci.ts";
 import { composerPreparation, MANAGED_SITE_RELEASE_LIMITS } from "./managed-site-build.ts";
 import { fetchAndPublishGitRelease } from "./git-release.ts";
 import {
@@ -204,6 +219,8 @@ export interface AppOptions {
     restoreDocker?: DockerRunner;
     /** Test seam for the private backup credential metadata check. */
     backupCheckCredentials?: (stackDir: string, manifest: ManagedSiteManifest) => Promise<ManagedSiteBackupCheck>;
+    /** Test seam for the CI verifier metadata check (ADR 0050). */
+    ciCheckVerifier?: (stackDir: string) => Promise<ManagedSiteCiCheck>;
     /** Per-stack modifying-operation lock. */
     locks?: StackLocks;
     /** Activity log. Built from `config` and `stacksRoot` when omitted. */
@@ -232,6 +249,14 @@ interface SaveDraft {
 
 function plain(body: string, status: number): Response {
     return new Response(body, { status, headers: { "Content-Type": "text/plain; charset=utf-8", ...BASE_HEADERS } });
+}
+
+/** Machine endpoint answer: bounded JSON, never a rendered page. */
+function ciJson(body: Record<string, unknown>, status: number): Response {
+    return new Response(`${JSON.stringify(body)}\n`, {
+        status,
+        headers: { "Content-Type": "application/json; charset=utf-8", ...BASE_HEADERS },
+    });
 }
 
 function methodNotAllowed(allow: string): Response {
@@ -598,6 +623,8 @@ export function createApp(options: AppOptions): App {
     const shutdownController = new AbortController();
     const saves = new Set<Promise<unknown>>();
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
+    /** Per-site CI authentication failures; a restart only forgets recent noise. */
+    const ciAuthFailures = new Map<string, { count: number; resetAt: number }>();
     // Open streams are bound to their session id so logout or expiry can close
     // them; otherwise a revoked session would keep receiving streamed output.
     const sessionStreams = new Map<string, Set<() => void>>();
@@ -4248,6 +4275,194 @@ export function createApp(options: AppOptions): App {
         return deployResultOutcome(result, input.record, input.onOutput);
     }
 
+    /**
+     * CI-triggered deploy (ADR 0050). The route authenticates a site-scoped
+     * bearer token, validates one bounded request and starts the same deploy
+     * operation as the browser. It never accepts a session cookie, never parses
+     * a body before authentication and never returns output.
+     */
+    async function handleCiDeploy(request: Request, name: string, method: string): Promise<Response> {
+        const actor = clientKey(request, config);
+        const now = Date.now();
+        const recent = ciAuthFailures.get(name);
+        if (recent && recent.resetAt > now && recent.count >= MANAGED_SITE_CI_MAX_FAILURES) {
+            return ciJson({ error: "Too Many Requests" }, 429);
+        }
+
+        const refuseAuth = async (detail: string): Promise<Response> => {
+            const current = Date.now();
+            const entry = ciAuthFailures.get(name);
+            ciAuthFailures.set(name, {
+                count: entry && entry.resetAt > current ? entry.count + 1 : 1,
+                resetAt: entry && entry.resetAt > current ? entry.resetAt : current + MANAGED_SITE_CI_FAILURE_WINDOW_MS,
+            });
+            await recordAudit({ event: "deploy", result: "refused", actor, stack: name, action: "ci-deploy", detail });
+            return ciJson({ error: "Unauthorized" }, 401);
+        };
+
+        let stackDir: string;
+        try {
+            stackDir = await managedSiteStackDir(name);
+        } catch {
+            return refuseAuth("the stack could not be located");
+        }
+        const manifestResult = await readManagedSiteManifest(stackDir);
+        if (!manifestResult.ok) return refuseAuth(manifestResult.reason);
+        const manifest = manifestResult.manifest;
+        if (manifest.owner !== "managed" || !manifest.ci) {
+            await recordAudit({
+                event: "deploy",
+                result: "refused",
+                actor,
+                stack: name,
+                action: "ci-deploy",
+                detail: "this site does not declare ci",
+            });
+            return ciJson({ error: "Not Found" }, 404);
+        }
+
+        const verifier = await (options.ciCheckVerifier ?? checkManagedSiteCiVerifier)(stackDir);
+        if (!verifier.ok) return refuseAuth(verifier.reason);
+        const header = request.headers.get("authorization") ?? "";
+        const bearer = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+        if (!verifyManagedSiteCiToken(bearer, verifier.digest)) return refuseAuth("the machine credential did not verify");
+        ciAuthFailures.delete(name);
+
+        if (method === "GET") {
+            const state = await readManagedSiteCiState(stackDir, manifest.siteId);
+            if (state.kind === "unreadable") {
+                return ciJson({ error: "The CI attempt record cannot be read; inspect it on the host." }, 409);
+            }
+            const baseline = await readBaseline(stackDir, manifest.siteId);
+            return ciJson(
+                {
+                    siteId: manifest.siteId,
+                    ref: manifest.deploy.git.ref,
+                    currentRelease: baseline.ok ? baseline.releaseId : null,
+                    lastAttempt: state.kind === "ok" ? state.state.lastAttempt : null,
+                },
+                200,
+            );
+        }
+
+        const contentType = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
+        if (contentType !== "application/json") {
+            return ciJson({ error: "Content-Type must be application/json." }, 415);
+        }
+        const source = await readTextLimited(request, MANAGED_SITE_CI_MAX_BODY_BYTES);
+        if (source === null) return ciJson({ error: "The request body is larger than the panel accepts." }, 413);
+        const parsed = parseManagedSiteCiBody(source, manifest);
+        if (!parsed.ok) return ciJson({ error: parsed.reason }, 400);
+        const body = parsed.request;
+
+        if (await pendingDeployAttempt(stackDir)) {
+            return ciJson({ error: MANAGED_SITE_PENDING_MESSAGE }, 409);
+        }
+        const pendingBackup = await readManagedSiteBackupAttempt(stackDir);
+        if (pendingBackup.kind !== "none") {
+            return ciJson({ error: "A previous backup attempt has an unconfirmed outcome. Inspect it before deploying." }, 409);
+        }
+        const state = await readManagedSiteCiState(stackDir, manifest.siteId);
+        if (state.kind === "unreadable") {
+            return ciJson({ error: "The CI attempt record cannot be read; inspect it on the host." }, 409);
+        }
+        if (state.kind === "ok" && managedSiteCiNonceSeen(state.state, body.nonce)) {
+            return ciJson({ error: "This request was already accepted; a replay is refused." }, 409);
+        }
+
+        try {
+            if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+            const operation = operations.startDeploy({
+                stack: name,
+                project: manifest.project,
+                run: async ({ onOutput, record }) => {
+                    // The authoritative re-check runs under the stack lock.
+                    if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                    const currentDir = await managedSiteStackDir(name);
+                    const current = await readManagedSiteManifest(currentDir);
+                    if (!current.ok) return { refused: current.reason };
+                    if (current.manifest.owner !== "managed" || !current.manifest.ci) {
+                        return { refused: "This site no longer enables a CI-triggered deploy." };
+                    }
+                    const currentVerifier = await (options.ciCheckVerifier ?? checkManagedSiteCiVerifier)(currentDir);
+                    if (!currentVerifier.ok) return { refused: currentVerifier.reason };
+                    if (!verifyManagedSiteCiToken(bearer, currentVerifier.digest)) {
+                        return { refused: "The CI machine credential changed; nothing was run." };
+                    }
+                    if (await pendingDeployAttempt(currentDir)) return { refused: MANAGED_SITE_PENDING_MESSAGE };
+                    const backup = await readManagedSiteBackupAttempt(currentDir);
+                    if (backup.kind !== "none") {
+                        return { refused: "A previous backup attempt has an unconfirmed outcome. Inspect it before deploying." };
+                    }
+                    const read = await readManagedSiteCiState(currentDir, current.manifest.siteId);
+                    if (read.kind === "unreadable") {
+                        return { refused: "The CI attempt record cannot be read; inspect it on the host." };
+                    }
+                    const base = read.kind === "ok" ? read.state : initialManagedSiteCiState(current.manifest);
+                    if (managedSiteCiNonceSeen(base, body.nonce)) {
+                        return { refused: "This request was already accepted; a replay is refused." };
+                    }
+                    const accepted = acceptManagedSiteCiNonce(base, body.nonce, body.timestamp);
+                    const recorded = { ...accepted, lastAttempt: { at: body.timestamp, sha: body.sha, result: "accepted" as const } };
+                    try {
+                        await writeManagedSiteCiState(currentDir, recorded);
+                    } catch {
+                        return { refused: "The CI attempt record could not be written; nothing was run." };
+                    }
+                    const outcome = await executeManagedSiteDeploy({
+                        name,
+                        manifest: current.manifest,
+                        onOutput,
+                        record,
+                        expectedReleaseId: body.sha,
+                    });
+                    const result =
+                        "refused" in outcome
+                            ? "refused"
+                            : "intervention" in outcome
+                              ? "failed"
+                              : outcome.code === 0
+                                ? "succeeded"
+                                : "failed";
+                    await writeManagedSiteCiState(currentDir, {
+                        ...recorded,
+                        lastAttempt: { at: body.timestamp, sha: body.sha, result },
+                    }).catch(() => {
+                        onOutput("The CI attempt record could not be updated; the deploy result stands but the status record is stale.\n");
+                    });
+                    await recordAudit({
+                        event: "deploy",
+                        result,
+                        actor,
+                        stack: name,
+                        action: "ci-deploy",
+                        detail: `site ${current.manifest.siteId}, sha ${body.sha}`,
+                    });
+                    return outcome;
+                },
+            });
+            await recordAudit({
+                event: "deploy",
+                result: "started",
+                actor,
+                stack: name,
+                action: "ci-deploy",
+                detail: `site ${manifest.siteId}, sha ${body.sha}, ${manifest.deploy.git.ref}`,
+            });
+            return ciJson({ siteId: manifest.siteId, sha: body.sha, operationId: operation.id }, 202);
+        } catch (error) {
+            if (error instanceof OperationsDisabledError) {
+                await recordAudit({ event: "deploy", result: "refused", actor, stack: name, action: "ci-deploy", detail: error.message });
+                return ciJson({ error: error.message }, 503);
+            }
+            if (error instanceof StackBusyError) {
+                await recordAudit({ event: "deploy", result: "refused", actor, stack: name, action: "ci-deploy", detail: error.message });
+                return ciJson({ error: error.message }, 409);
+            }
+            throw error;
+        }
+    }
+
     async function handleDeploy(request: Request, name: string, session: Session): Promise<Response> {
         const csrf = session.csrf;
         const back = `/stacks/${encodeURIComponent(name)}`;
@@ -4408,6 +4623,7 @@ export function createApp(options: AppOptions): App {
         drift?: string;
         database?: { ok: true } | { ok: false; reason: string };
         backup?: { check: { ok: true } | { ok: false; reason: string }; attempt: ManagedSiteBackupAttemptRead };
+        ci?: { check: ManagedSiteCiCheck; state: ManagedSiteCiStateRead };
     };
 
     async function managedSiteCard(name: string): Promise<ManagedSiteCard | null> {
@@ -4428,6 +4644,12 @@ export function createApp(options: AppOptions): App {
                       attempt: await readManagedSiteBackupAttempt(stackDir),
                   }
                 : undefined;
+            const ci = manifest.manifest.ci
+                ? {
+                      check: await (options.ciCheckVerifier ?? checkManagedSiteCiVerifier)(stackDir),
+                      state: await readManagedSiteCiState(stackDir, manifest.manifest.siteId),
+                  }
+                : undefined;
             return {
                 manifest: manifest.manifest,
                 pending,
@@ -4435,6 +4657,7 @@ export function createApp(options: AppOptions): App {
                 ...(drift ? { drift } : {}),
                 ...(database ? { database } : {}),
                 ...(backup ? { backup } : {}),
+                ...(ci ? { ci } : {}),
             };
         } catch {
             return null;
@@ -4492,6 +4715,35 @@ export function createApp(options: AppOptions): App {
         );
     }
 
+    function managedSiteCiSection(card: ManagedSiteCard, manifest: ManagedSiteManifest, name: string): string {
+        if (!manifest.ci) return "";
+        const endpoint = `/api/managed-sites/${encodeURIComponent(name)}/deploy`;
+        const check = card.ci?.check;
+        const state = card.ci?.state;
+        const last = state?.kind === "ok" ? state.state.lastAttempt : null;
+        const status = !check
+            ? ""
+            : check.ok
+              ? note("info", "The machine credential verifier is provisioned. The panel stores only its SHA-256 digest, never the token.")
+              : note("warn", check.reason);
+        const record =
+            state?.kind === "unreadable"
+                ? note("warn", "The CI attempt record cannot be read; new CI requests are refused until it is fixed.")
+                : last
+                  ? `<p class="meta"><span>Last accepted request <code>${escapeHtml(last.sha)}</code></span><span>${escapeHtml(last.at)}</span><span>${escapeHtml(last.result)}</span></p>`
+                  : note("info", "No CI request has been accepted yet.");
+        return (
+            `<h3>CI deploy</h3>` +
+            `<p class="meta"><span>Endpoint <code>${escapeHtml(endpoint)}</code></span><span>Ref <code>${escapeHtml(manifest.deploy.git.ref)}</code></span></p>` +
+            status +
+            record +
+            note(
+                "info",
+                "CI sends one POST with its bearer token in the Authorization header, the exact tested SHA, this ref, a nonce and a UTC timestamp. Only that SHA is deployed, and only while it is the branch tip. Remove the ci block or the verifier file to revoke.",
+            )
+        );
+    }
+
     function managedSiteSection(card: ManagedSiteCard | null, name: string, csrf: string, busy: boolean): string {
         if (!card) return "";
         const href = `/stacks/${encodeURIComponent(name)}`;
@@ -4527,6 +4779,7 @@ export function createApp(options: AppOptions): App {
                 drift +
                 databaseNote +
                 managedSiteBackupSection(card, manifest, href, csrf, busy) +
+                managedSiteCiSection(card, manifest, name) +
                 regenerate +
                 note(
                     "info",
@@ -4542,6 +4795,7 @@ export function createApp(options: AppOptions): App {
             drift +
             databaseNote +
             managedSiteBackupSection(card, manifest, href, csrf, busy) +
+            managedSiteCiSection(card, manifest, name) +
             regenerate +
             `<form method="post" action="${href}/deploy"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy || card.drift ? " disabled" : ""}>Deploy ${escapeHtml(manifest.deploy.git.ref)}</button></form>` +
             note(
@@ -4973,6 +5227,20 @@ export function createApp(options: AppOptions): App {
             if (method === "GET") return handleLoginGet(request);
             if (method === "POST") return handleLoginPost(request);
             return methodNotAllowed("GET, POST");
+        }
+
+        // The machine endpoint authenticates its own bearer credential and
+        // never accepts a session cookie (ADR 0050), so it is dispatched before
+        // the browser session gate.
+        const ciDeployMatch = /^\/api\/managed-sites\/([^/]+)\/deploy$/.exec(url.pathname);
+        if (ciDeployMatch && config.managedSitesEnabled) {
+            if (method !== "GET" && method !== "POST") return methodNotAllowed("GET, POST");
+            try {
+                return await handleCiDeploy(request, decodeName(ciDeployMatch[1]!), method);
+            } catch (error) {
+                console.error("CI deploy endpoint failed", error);
+                return ciJson({ error: "Internal error." }, 500);
+            }
         }
 
         const opEventsMatch = /^\/stacks\/([^/]+)\/operations\/events$/.exec(url.pathname);
