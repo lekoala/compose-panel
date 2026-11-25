@@ -883,8 +883,8 @@ checks that the file is provisioned before the site starts.
 4. Create the external network if it does not exist yet (for example
    `docker network create acme-db`) and attach it to the database service.
    Only the runtime service joins it; the gateway stays on the project network.
-5. **Up**, **Pull + up**, **Start**, **Restart** and **Deploy** are refused with
-   the file path until the env file passes those checks. A failed application
+5. **Up**, **Pull + up**, **Start**, **Restart**, **Rollout** and **Deploy** are
+   refused with the file path until the env file passes those checks. A failed application
    connection is an application failure; it does not roll back the release.
 
 ```json

@@ -93,10 +93,10 @@ the disposable MariaDB fixture and the real-host checklist remain to be run.
 - The file name is fixed, not configurable in the manifest: a free-form secret
   path is an attack surface and a drift source. The operator writes it once per
   site; a deploy does not touch it.
-- If the file is missing or too permissive, Up, Start, Restart and Deploy are
-  refused with the path and the required mode. Reads, logs and regeneration
-  remain available. The panel never creates the file and never generates a
-  password.
+- If the file is missing or too permissive, Up, Pull + up, Start, Restart,
+  Rollout and Deploy are refused with the path and the required mode. Reads,
+  logs and regeneration remain available. The panel never creates the file and
+  never generates a password.
 
 ### Opt-in stacks
 

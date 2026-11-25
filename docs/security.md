@@ -262,8 +262,8 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - For `owner: managed`, the generated Compose references the fixed private file
   `<stack>/site/private/database.env` with `required: false`, so Compose can
   validate the project before the operator provisions the file. Up, Pull + up,
-  Start, Restart and Deploy refuse until the file is a regular `0600` file owned
-  by the panel account, at most 64 KiB. The panel checks metadata only: it never
+  Start, Restart, Rollout and Deploy refuse until the file is a regular `0600`
+  file owned by the panel account, at most 64 KiB. The panel checks metadata only: it never
   reads, parses, logs or renders the file values, and `docker compose config`
   output is treated as sensitive exactly like `.env`.
 - The env file is outside every service mount and the generated/release trees;

@@ -8,8 +8,9 @@
   `required: false` env-file reference to the fixed private
   `site/private/database.env` and join only the runtime service to the declared
   external network; the gateway stays on the project network. The profile
-  refuses any other external network, and Up, Pull + up, Start, Restart and
-  Deploy refuse until the operator-owned env file is a regular `0600` file owned
+  refuses any other external network, and Up, Pull + up, Start, Restart,
+  Rollout and Deploy refuse until the operator-owned env file is a regular
+  `0600` file owned
   by the panel account. The panel never connects to the database, runs SQL,
   stores a credential, reads the env-file values or adds a database client.
   Dumps, restores, migrations and backup credentials remain out of scope. The
