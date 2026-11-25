@@ -5,7 +5,7 @@
  * argument array. This module never uses a shell, never reads a credential
  * value and never starts a scheduler.
  */
-import { lstat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { runCommand, type CommandResult, type DockerRunner } from "./docker.ts";
 import { dirIdentity, type DirIdentity } from "./fs-safe.ts";
 import {
@@ -18,6 +18,7 @@ import {
     checkManagedSiteBackupCredentials,
     managedSiteBackupCredentialPath,
     managedSiteBackupDumpDatabase,
+    managedSiteBackupStagingDir,
     readManagedSiteBackupAttempt,
     removeManagedSiteBackupAttempt,
     removeManagedSiteBackupStaging,
@@ -235,14 +236,17 @@ export async function runManagedSiteBackup(
 
     try {
         await writeManagedSiteBackupAttempt(stackDir, attempt("pending"));
+        // Create and anchor the staging tree before walking it, so a refusal
+        // during the walk can still remove exactly the directory it created.
+        const stagingDir = managedSiteBackupStagingDir(stackDir, attemptId);
+        await mkdir(stagingDir, { recursive: true, mode: 0o700 });
+        const identity = await dirIdentity(stagingDir);
+        stagingIdentity = identity;
         const staged = await stageManagedSiteBackup(stackDir, manifest, attemptId, {
             maxEntries: limits.maxEntries,
             maxBytes: limits.maxBytes,
         });
         if (!staged.ok) return await fail(staged.reason);
-        const identity = await dirIdentity(staged.stagingDir);
-        stagingIdentity = identity;
-        await writeManagedSiteBackupAttempt(stackDir, attempt("pending"));
 
         let sqlBytes: number | null = null;
         const dump = backup.sql ? managedSiteBackupDumpDatabase(manifest) : null;

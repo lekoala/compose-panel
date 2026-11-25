@@ -326,6 +326,30 @@ describe("runManagedSiteBackup", () => {
         }
     });
 
+    test("removes its staging tree when the walk refuses a declared root", async () => {
+        const root = await siteRoot();
+        try {
+            const { docker } = fakeDocker();
+            const result = await runManagedSiteBackup(
+                {
+                    stackDir: root,
+                    manifest: manifest({ paths: ["shared/missing"] }),
+                    attemptId: "attempt0012",
+                    releaseId: null,
+                    runtimeImage: null,
+                },
+                { docker, now, checkCredentials },
+            );
+            expect(result.ok).toBe(false);
+            if (result.ok) return;
+            expect(result.reason).toContain("missing");
+            expect(await Bun.file(managedSiteBackupStagingDir(root, "attempt0012")).exists()).toBe(false);
+            expect(await readManagedSiteBackupAttempt(root)).toEqual({ kind: "none" });
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     test("refuses a backup declaration without persistent roots", async () => {
         const root = await siteRoot();
         try {
