@@ -251,6 +251,8 @@ function serializeManifest(manifest: ManagedSiteManifest): Record<string, unknow
         ...(manifest.database
             ? { database: { kind: manifest.database.kind, engine: manifest.database.engine, network: manifest.database.network } }
             : {}),
+        ...(manifest.backup ? { backup: manifest.backup } : {}),
+        ...(manifest.ci ? { ci: manifest.ci } : {}),
         ...(manifest.build ? { build: { kind: manifest.build.kind } } : {}),
         deploy: { kind: manifest.deploy.kind, git: { url: manifest.deploy.git.url, ref: manifest.deploy.git.ref } },
         ...(manifest.paths && manifest.paths.length > 0 ? { paths: manifest.paths } : {}),

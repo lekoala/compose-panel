@@ -16,6 +16,8 @@ export const MANAGED_SITE_VERSION = 1;
 export const MANAGED_SITE_DATABASE_VERSION = 2;
 /** The backup slice adds the optional `backup` block (ADR 0049). */
 export const MANAGED_SITE_BACKUP_VERSION = 3;
+/** The CI slice also lands in manifest version 3 (ADR 0050). */
+export const MANAGED_SITE_CI_VERSION = 3;
 export const MANAGED_SITE_VERSIONS = [MANAGED_SITE_VERSION, MANAGED_SITE_DATABASE_VERSION, MANAGED_SITE_BACKUP_VERSION] as const;
 export type ManagedSiteVersion = (typeof MANAGED_SITE_VERSIONS)[number];
 export const MANAGED_SITE_PUBLIC_ROOT = "public";
@@ -551,8 +553,8 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
 
     let ci: ManagedSiteCi | undefined;
     if (root.ci !== undefined) {
-        if (version !== MANAGED_SITE_BACKUP_VERSION) {
-            return { ok: false, reason: `The ci block requires manifest version ${MANAGED_SITE_BACKUP_VERSION}.` };
+        if (version !== MANAGED_SITE_CI_VERSION) {
+            return { ok: false, reason: `The ci block requires manifest version ${MANAGED_SITE_CI_VERSION}.` };
         }
         if (owner !== "managed") {
             return { ok: false, reason: 'ci belongs to owner "managed": an opt-in stack has no generated deploy contract.' };

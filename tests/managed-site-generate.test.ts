@@ -176,6 +176,36 @@ describe("buildManagedSite", () => {
         expect(renderManagedSiteArtifacts(STACK, parsed.manifest).ok).toBe(true);
     });
 
+    test("keeps the optional v3 backup and ci blocks in the rendered manifest source", () => {
+        const source = JSON.stringify({
+            version: 3,
+            siteId: "acme-shop",
+            owner: "managed",
+            project: "acme-shop",
+            services: { gateway: "gateway", runtime: "runtime" },
+            gateway: { port: 41001 },
+            publicRoot: "public",
+            runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+            deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+            paths: ["shared/uploads"],
+            generation: "1",
+            backup: { kind: "restic", repository: "rest:https://backup.example.test/acme-shop" },
+            ci: { kind: "token" },
+        });
+        const parsed = parseManagedSiteManifest(source);
+        expect(parsed.ok).toBe(true);
+        if (!parsed.ok) return;
+        const rendered = renderManagedSiteArtifacts(STACK, parsed.manifest);
+        expect(rendered.ok).toBe(true);
+        if (!rendered.ok) return;
+        const roundTrip = parseManagedSiteManifest(rendered.manifestSource);
+        expect(roundTrip.ok).toBe(true);
+        if (!roundTrip.ok) return;
+        expect(roundTrip.manifest.version).toBe(3);
+        expect(roundTrip.manifest.backup).toEqual(parsed.manifest.backup);
+        expect(roundTrip.manifest.ci).toEqual({ kind: "token" });
+    });
+
     test("quotes persistent mount paths as YAML single-quoted scalars", () => {
         const built = buildManagedSite({
             stackDir: STACK,
