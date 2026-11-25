@@ -125,6 +125,12 @@ export interface ManagedSiteDeployDependencies {
     /** Per-command timeout; Compose's `up` may take longer than a read. */
     commandTimeoutMs: number;
     probeDeadlineMs?: number;
+    /**
+     * CI-triggered deploy (ADR 0050): the fetched ref tip must equal this exact
+     * commit before any serving change. A moved branch refuses, never deploys
+     * an older tested SHA.
+     */
+    expectedReleaseId?: string;
     /** Pointer boundary; production uses the real symlink helpers (tests inject). */
     readBaseline?: (stackDir: string, siteId: string) => Promise<BaselineRead>;
     switchPointer?: (runtimeDir: string, releaseId: string) => Promise<{ ok: true } | { ok: false; reason: string }>;
@@ -562,6 +568,13 @@ export async function runManagedSiteDeploy(deps: ManagedSiteDeployDependencies):
             return fail(`${fetched.reason}${detail}`, fetched.unconfirmed);
         }
         state.releaseId = fetched.releaseId;
+
+        if (deps.expectedReleaseId !== undefined && fetched.releaseId !== deps.expectedReleaseId) {
+            return {
+                kind: "refused",
+                reason: `The configured ref now resolves to ${fetched.releaseId}, not the requested commit ${deps.expectedReleaseId}; nothing was stopped.`,
+            };
+        }
 
         // The fetch can be long: re-prove the pointer and the probe so a
         // concurrent external switch can never be overwritten blindly. A repeat

@@ -453,6 +453,26 @@ describe("runManagedSiteDeploy", () => {
         expect(await currentTarget(harness.stack)).toBe(`releases/${PRIOR}`);
     });
 
+    test("refuses a CI request whose ref tip moved, before any serving change", async () => {
+        const harness = makeHarness(await makeStack());
+        harness.deps.expectedReleaseId = PRIOR;
+        const result = await deploy(harness);
+        expect(result.kind).toBe("refused");
+        if (result.kind !== "refused") return;
+        expect(result.reason).toContain(PRIOR);
+        expect(result.reason).toContain(NEW);
+        expect(harness.calls.some((call) => call.startsWith("stop:"))).toBe(false);
+        expect(await currentTarget(harness.stack)).toBe(`releases/${PRIOR}`);
+        expect(await pendingDeployAttempt(harness.stack)).toBe(false);
+    });
+
+    test("deploys the requested SHA when the ref tip matches", async () => {
+        const harness = makeHarness(await makeStack());
+        harness.deps.expectedReleaseId = NEW;
+        const result = await deploy(harness);
+        expect(result).toEqual({ kind: "deployed", releaseId: NEW, priorReleaseId: PRIOR });
+    });
+
     test("passes the shutdown signal to the fetch and stops before any serving change", async () => {
         const harness = makeHarness(await makeStack());
         const controller = new AbortController();

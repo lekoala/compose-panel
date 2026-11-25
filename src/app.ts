@@ -4179,6 +4179,8 @@ export function createApp(options: AppOptions): App {
         manifest: ManagedSiteManifest;
         onOutput: (chunk: string) => void;
         record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+        /** CI-triggered deploy: the ref tip must equal this commit (ADR 0050). */
+        expectedReleaseId?: string;
     }): Promise<AppActionOutcome> {
         const context = await resolveProjectContext(stacksRoot, input.name, provider);
         if (context.kind !== "resolved") {
@@ -4241,6 +4243,7 @@ export function createApp(options: AppOptions): App {
             isShuttingDown: () => shuttingDown,
             onOutput: input.onOutput,
             commandTimeoutMs: config.operationTimeoutMs,
+            ...(input.expectedReleaseId ? { expectedReleaseId: input.expectedReleaseId } : {}),
         });
         return deployResultOutcome(result, input.record, input.onOutput);
     }
