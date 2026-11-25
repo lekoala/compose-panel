@@ -133,9 +133,7 @@ import {
 import { runManagedSiteBackup } from "./managed-site-backup-run.ts";
 import { isManagedSiteSnapshotId, runManagedSiteRestore } from "./managed-site-restore.ts";
 import {
-    MANAGED_SITE_CI_FAILURE_WINDOW_MS,
     MANAGED_SITE_CI_MAX_BODY_BYTES,
-    MANAGED_SITE_CI_MAX_FAILURES,
     acceptManagedSiteCiNonce,
     checkManagedSiteCiVerifier,
     initialManagedSiteCiState,
@@ -147,6 +145,7 @@ import {
     type ManagedSiteCiCheck,
     type ManagedSiteCiStateRead,
 } from "./managed-site-ci.ts";
+import { MachineAuthLimiter } from "./machine-credential.ts";
 import { composerPreparation, MANAGED_SITE_RELEASE_LIMITS } from "./managed-site-build.ts";
 import { fetchAndPublishGitRelease } from "./git-release.ts";
 import {
@@ -623,8 +622,8 @@ export function createApp(options: AppOptions): App {
     const shutdownController = new AbortController();
     const saves = new Set<Promise<unknown>>();
     const sessions = new SessionStore(config.sessionTtlMs, config.sessionIdleMs);
-    /** Per-site CI authentication failures; a restart only forgets recent noise. */
-    const ciAuthFailures = new Map<string, { count: number; resetAt: number }>();
+    /** Per-site machine authentication failures, shared by every machine route. */
+    const machineAuth = new MachineAuthLimiter();
     // Open streams are bound to their session id so logout or expiry can close
     // them; otherwise a revoked session would keep receiving streamed output.
     const sessionStreams = new Map<string, Set<() => void>>();
@@ -4283,19 +4282,12 @@ export function createApp(options: AppOptions): App {
      */
     async function handleCiDeploy(request: Request, name: string, method: string): Promise<Response> {
         const actor = clientKey(request, config);
-        const now = Date.now();
-        const recent = ciAuthFailures.get(name);
-        if (recent && recent.resetAt > now && recent.count >= MANAGED_SITE_CI_MAX_FAILURES) {
+        if (machineAuth.limited(name)) {
             return ciJson({ error: "Too Many Requests" }, 429);
         }
 
         const refuseAuth = async (detail: string): Promise<Response> => {
-            const current = Date.now();
-            const entry = ciAuthFailures.get(name);
-            ciAuthFailures.set(name, {
-                count: entry && entry.resetAt > current ? entry.count + 1 : 1,
-                resetAt: entry && entry.resetAt > current ? entry.resetAt : current + MANAGED_SITE_CI_FAILURE_WINDOW_MS,
-            });
+            machineAuth.refuse(name);
             await recordAudit({ event: "deploy", result: "refused", actor, stack: name, action: "ci-deploy", detail });
             return ciJson({ error: "Unauthorized" }, 401);
         };
@@ -4326,7 +4318,7 @@ export function createApp(options: AppOptions): App {
         const header = request.headers.get("authorization") ?? "";
         const bearer = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
         if (!verifyManagedSiteCiToken(bearer, verifier.digest)) return refuseAuth("the machine credential did not verify");
-        ciAuthFailures.delete(name);
+        machineAuth.clear(name);
 
         if (method === "GET") {
             const state = await readManagedSiteCiState(stackDir, manifest.siteId);
