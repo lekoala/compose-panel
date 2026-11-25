@@ -4409,14 +4409,7 @@ export function createApp(options: AppOptions): App {
                     } catch {
                         return { refused: "The CI attempt record could not be written; nothing was run." };
                     }
-                    const outcome = await executeManagedSiteDeploy({
-                        name,
-                        manifest: current.manifest,
-                        onOutput,
-                        record,
-                        expectedReleaseId: body.sha,
-                    });
-                    const result =
+                    const decided = (outcome: AppActionOutcome): "refused" | "failed" | "succeeded" =>
                         "refused" in outcome
                             ? "refused"
                             : "intervention" in outcome
@@ -4424,6 +4417,23 @@ export function createApp(options: AppOptions): App {
                               : outcome.code === 0
                                 ? "succeeded"
                                 : "failed";
+                    let outcome: AppActionOutcome;
+                    try {
+                        outcome = await executeManagedSiteDeploy({
+                            name,
+                            manifest: current.manifest,
+                            onOutput,
+                            record,
+                            expectedReleaseId: body.sha,
+                        });
+                    } catch (error) {
+                        await writeManagedSiteCiState(currentDir, {
+                            ...recorded,
+                            lastAttempt: { at: body.timestamp, sha: body.sha, result: "failed" },
+                        }).catch(() => {});
+                        throw error;
+                    }
+                    const result = decided(outcome);
                     await writeManagedSiteCiState(currentDir, {
                         ...recorded,
                         lastAttempt: { at: body.timestamp, sha: body.sha, result },
