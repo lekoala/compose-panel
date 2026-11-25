@@ -6397,6 +6397,13 @@ describe("retention preview (ADR 0052)", () => {
             const stale = await postPreview(app, session, "/stacks/demo/backup/retention", { csrf: "wrong" });
             expect(stale.status).toBe(403);
 
+            const foreign = await authed(app, "/stacks/demo/backup/retention", session, {
+                method: "POST",
+                headers: { origin: "http://evil.example", "content-type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({ csrf }).toString(),
+            });
+            expect(foreign.status).toBe(403);
+
             const noPolicy = await postPreview(app, session, "/stacks/plain/backup/retention", { csrf });
             expect(noPolicy.status).toBe(409);
             expect(app.operations.forStack("plain")).toBeNull();
