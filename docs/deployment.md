@@ -978,6 +978,14 @@ credential values, deletes a snapshot or starts a scheduler.
    credentials, network or published port. It never writes over the live site.
    A failed component is reported and the private directory is kept.
 
+8. **Check repository** asks the pinned Restic client for one bounded read-only
+   check under the stack lock: the repository structure plus a random 32 MiB of
+   pack data. It needs the same credentials as a backup, never repairs, deletes
+   or unlocks, and stores no result. A clean answer means Restic found no errors
+   in what it read; it is not a full `restic check --read-data` and does not
+   replace the restore proof. Run that full check from the maintenance host
+   before a prune.
+
 The systemd timer is an administrator procedure
 ([Back up from a host timer](#back-up-from-a-host-timer)), and retention is
 measured by a read-only preview
@@ -1497,6 +1505,9 @@ the disposable suites are never run against a production daemon.
     `restic snapshots --tag site:<siteId>` on the maintenance host; choose one,
     confirm the restore form holds that exact id, restore it and confirm the
     repository still lists the same snapshots after the list page.
+12. Run **Check repository** and compare its clean answer with a full
+    `restic check --read-data` on the maintenance host; confirm the operation
+    added no lock object to the repository and no snapshot.
 
 Record the result with the release or pilot review. Do not use a production host
 as the test bed.

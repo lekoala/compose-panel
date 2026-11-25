@@ -90,6 +90,19 @@
   disposable REST fixture lists the two lab snapshots and does not return one
   tagged for another site; a real endpoint remains in the real-host checklist.
 
+- Managed sites: read-only repository check (ADR 0054). **Check repository** on
+  the site card starts one lock-held `repository-check` operation running the
+  pinned Restic `check --no-lock --read-data-subset 32M`: the repository
+  structure plus a random 32 MiB data sample. It accepts only exit code 0 with
+  Restic's own clean line, maps codes 1, 10, 11 and 12 to fixed messages, and
+  renders neither stdout nor stderr, which name pack files and print repair
+  commands. It never passes `--read-data`, `forget`, `prune`, `unlock` or a
+  repair command, and it stores no result and adds no credential; a full data
+  check and the restore proof stay on the maintenance host. The disposable REST
+  fixture checks the append-only lab repository and proves no lock object and no
+  snapshot were added; a real endpoint and a damaged repository remain in the
+  real-host checklist.
+
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares
   `github.com/moby/go-archive` v0.2.0, but the binary carries only that

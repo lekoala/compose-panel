@@ -181,6 +181,15 @@ implemented for an opted-in stack.
   timestamps only, runs no `forget` or `prune`, stores nothing and adds no
   credential; unit, app and disposable REST fixtures cover it. A real endpoint
   remains in the real-host checklist.
+- **Read-only repository check.** Implemented under the same flag
+  ([ADR 0054](adr/0054-read-only-repository-check.md)): **Check repository**
+  runs one lock-held pinned Restic `check --no-lock --read-data-subset 32M`,
+  accepts only Restic's own clean answer and maps the documented exit codes to
+  fixed messages. It never passes `--read-data`, `forget`, `prune`, `unlock` or
+  a repair command, renders no stdout or stderr and stores no result; a full
+  data check and the restore proof stay operator procedures. Unit, app and
+  disposable REST fixtures cover it; a real endpoint and a damaged repository
+  remain in the real-host checklist.
 - **Next increments, each with its own ADR or vertical PR:** retention
   automation with a deletion credential and a protected recovery point;
   production cutover and cloning. The creation form, stable loopback

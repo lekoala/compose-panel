@@ -30,9 +30,11 @@ change; the real-host checklist remains.
 - It is a POST, not a link, because it holds the stack lock and may run for
   minutes. A GET could be triggered by a prefetch or a reload, and the operator
   must ask for it explicitly.
-- It takes the same per-stack lock as a backup. A check that overlapped an
-  upload could see packs appear mid-run and lose the meaning of its answer;
-  one modifying or measuring operation per stack stays the rule.
+- It takes the same per-stack lock as a backup. A check that overlapped a panel
+  upload could see packs appear mid-run and lose the meaning of its answer; one
+  modifying or measuring operation per stack stays the rule. The lock cannot see
+  an external Restic run, so one repository operation at a time remains the
+  documented operator procedure.
 - It refuses before any container runs when the manifest is unusable, the site
   is not `owner: managed`, there is no `backup` block, the credential files are
   missing or mis-owned, a deploy attempt is pending, a backup attempt has an
@@ -124,8 +126,11 @@ change; the real-host checklist remains.
   backup, a successful operation, the card entry point and a failure that
   claims nothing. A refused request runs no container.
 - The disposable REST fixture runs the real module against the append-only lab
-  repository, confirms a clean result and proves that no lock object and no new
-  snapshot appeared. A corrupted repository is not manufactured on the lab
-  server; the failure path stays unit-tested.
+  repository after two backups, requires a clean result, and proves that the
+  repository lock directory and the snapshot list are unchanged. Run on
+  2026-11-25: `wsl -- bash scripts/managed-sites-e2e/run.sh -t "backs up to an
+  append-only REST repository"` → 1 pass, 0 fail, 19 assertions. A corrupted
+  repository is not manufactured on the lab server; the failure path stays
+  unit-tested.
 - Still open: the real-host checklist. The check is proven on the disposable
   lab, not against a real endpoint, a large repository or a damaged one.

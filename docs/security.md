@@ -444,6 +444,32 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   the exact 64-hex check; any other value is ignored. The restore still re-reads
   the manifest and the exact snapshot under the operation admission.
 
+## Repository check (ADR 0054)
+
+- `POST /stacks/<stack>/backup/check` requires the session, the CSRF token and an
+  allowed Origin, and is unavailable when managed sites are disabled. It starts
+  one `repository-check` operation under the same per-stack lock as a backup, so
+  no panel operation adds packs or snapshots while the check runs. The lock does
+  not see an external Restic run; one repository operation at a time stays the
+  operator procedure.
+- The operation re-reads the manifest and refuses before running a container
+  when the site is not managed, declares no backup block, has missing or
+  mis-owned credential files, has a pending deploy marker or an unconfirmed
+  backup attempt, when the panel updates itself, or when it is shutting down.
+- The command is fixed: `restic check --no-lock --read-data-subset 32M` with the
+  pinned image, a read-only root filesystem, a bounded tmpfs and the
+  operator-owned password file. `--no-lock` keeps an append-only repository free
+  of lock objects the panel could not remove; the subset bounds the data read.
+  No snapshot id, `--read-data`, `forget`, `prune`, `unlock` or repair command is
+  ever passed, and no result, file, fact or cache is written.
+- A clean result needs exit code 0 and Restic's own `no errors were found` line.
+  Exit codes 1, 10, 11 and 12 map to fixed messages for repository errors, a
+  missing repository, a held lock and a wrong password. Neither stdout nor
+  stderr is rendered: they name pack files and print repair commands the panel
+  must not run.
+- The operation reports exactly the structure plus a random 32 MiB data sample.
+  It never claims a full data verification or a restore proof.
+
 ## Application toolbox (ADR 0026)
 
 - The panel may execute only **explicitly declared, non-interactive application

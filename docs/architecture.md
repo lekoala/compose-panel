@@ -261,6 +261,19 @@ takes no stack lock, but it refuses a pending deploy or backup marker and a
 missing or mis-owned credential before running the container
 ([ADR 0053](adr/0053-read-only-snapshot-inventory.md)).
 
+## Repository check (opt-in)
+`src/managed-site-backup-check.ts` runs one fixed
+`check --no-lock --read-data-subset 32M` through the same pinned Restic client
+and credential files, so a small repository is read whole and a large one is
+sampled. `POST /stacks/<name>/backup/check` starts one `repository-check`
+operation under the stack lock: it may run for minutes, so it is an explicit
+POST rather than a link. A success needs exit code 0 and Restic's own clean
+line; the documented exit codes become fixed messages and neither stdout nor
+stderr is rendered, because they name pack files and print repair commands.
+The panel never passes `--read-data`, `forget`, `prune`, `unlock` or a repair
+command, stores no result and adds no credential; a full data check and a
+restore proof stay operator procedures ([ADR 0054](adr/0054-read-only-repository-check.md)).
+
 ## CI-triggered deploy (opt-in)
 `src/managed-site-ci.ts` owns the fixed `site/private/ci/` verifier path, the
 metadata-only check that reads only a SHA-256 digest, the constant-time token
