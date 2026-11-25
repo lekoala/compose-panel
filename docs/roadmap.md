@@ -114,13 +114,19 @@ implemented for an opted-in stack.
   the staging tree mounted, a required `composer.lock` (no committed `vendor/`)
   and a matching `platform-overrides.php` for the channel, and no scripts,
   plugins, secrets or Docker socket.
-- **Next increments, each with its own ADR or vertical PR:** an existing
-  MariaDB attachment, validated with a disposable PHP fixture that writes a
-  record, survives a deploy and a rollback, and reads it back; offsite backup
-  and restore; CI triggers; host timers and retention; production cutover and
+- **Next increments, each with its own ADR or vertical PR:** offsite backup and
+  restore; CI triggers; host timers and retention; production cutover and
   cloning. The creation form, stable loopback binding and the existing Caddy
   attach are implemented. The opt-in disposable suites do not replace the
   real-host checklist in
   [deployment.md](deployment.md#remaining-real-host-validation); until that is
   recorded, the pilot stays off by default and enabling it on a production host
   is an explicit operator decision.
+- **Existing MariaDB attachment (proposed).**
+  [ADR 0048](adr/0048-existing-mariadb-attachment.md) proposes one
+  operator-provisioned MariaDB per site, joined through one declared external
+  network, with credentials in an operator-owned env file and no SQL client in
+  the panel. It is not implemented: the panel still offers only the ADR 0027
+  explorer link. The slice is validated by a disposable fixture that writes a
+  record, deploys, rolls back and reads it back; dumps, restores, migrations and
+  backup credentials stay in a separate ADR.
