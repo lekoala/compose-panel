@@ -259,6 +259,31 @@ export class OperationManager {
         return operation;
     }
 
+    /**
+     * Measure one declared retention policy (ADR 0052). It holds the stack lock
+     * like a backup, but it is read-only: the run closure asks Restic for a
+     * dry-run, and the panel deletes nothing.
+     */
+    startRetentionPreview(input: {
+        stack: string;
+        project?: string;
+        run: (context: {
+            onOutput: (chunk: string) => void;
+            record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+        }) => Promise<AppActionOutcome>;
+    }): OperationView {
+        const { operation, release } = this.begin({
+            stack: input.stack,
+            action: "retention-preview",
+            label: "Retention preview",
+            project: input.project,
+        });
+        const task = this.executeApp(operation, input.run, release, input.project);
+        this.tasks.add(task);
+        void task.finally(() => this.tasks.delete(task));
+        return operation;
+    }
+
     /** Whether shutdown has begun; a running rollout uses it between phases. */
     isShuttingDown(): boolean {
         return this.shuttingDown;

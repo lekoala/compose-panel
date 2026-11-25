@@ -131,6 +131,11 @@ import {
     type ManagedSiteBackupCheck,
 } from "./managed-site-backup.ts";
 import { runManagedSiteBackup } from "./managed-site-backup-run.ts";
+import {
+    managedSiteBackupRetentionSummary,
+    managedSiteRetentionProtection,
+    runManagedSiteBackupRetentionPreview,
+} from "./managed-site-backup-retention.ts";
 import { isManagedSiteSnapshotId, runManagedSiteRestore } from "./managed-site-restore.ts";
 import {
     MANAGED_SITE_CI_MAX_BODY_BYTES,
@@ -544,6 +549,7 @@ export function createApp(options: AppOptions): App {
                 if (await pendingDeployAttempt(stackDir)) return MANAGED_SITE_PENDING_MESSAGE;
                 if (action === "backup") return await managedBackupAdmission(stackDir);
                 if (action === "restore") return await managedRestoreAdmission(stackDir);
+                if (action === "retention-preview") return await managedBackupAdmission(stackDir);
                 const drift = await managedSiteDriftReason(stackDir);
                 if (drift) return drift;
                 if (action === "down") return await managedDownDomainAdmission(stack);
@@ -1996,6 +2002,129 @@ export function createApp(options: AppOptions): App {
                     actor: clientKey(request, config),
                     stack: name,
                     action: "backup",
+                    detail: error.message,
+                });
+                return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Measure one declared retention policy (ADR 0052). The browser action holds
+     * the stack lock, runs the pinned Restic dry-run and reports Restic's own
+     * keep/remove split. Nothing is deleted and no preview is stored.
+     */
+    async function handleRetentionPreview(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!config.managedSitesEnabled) throw new StackError("Managed sites are not enabled on this panel.", 404);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+
+        const stackDir = await managedSiteStackDir(name);
+        const manifestResult = await readManagedSiteManifest(stackDir);
+        if (!manifestResult.ok) return renderStackDetail(name, csrf, { kind: "error", text: manifestResult.reason }, 409);
+        if (manifestResult.manifest.owner !== "managed" || !manifestResult.manifest.backup?.retention) {
+            return renderStackDetail(
+                name,
+                csrf,
+                { kind: "error", text: "This site declares no backup.retention policy, so there is no retention to preview." },
+                409,
+            );
+        }
+        try {
+            if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+            operations.startRetentionPreview({
+                stack: name,
+                project: manifestResult.manifest.project,
+                run: async ({ onOutput }) => {
+                    if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                    const currentDir = await managedSiteStackDir(name);
+                    const current = await readManagedSiteManifest(currentDir);
+                    if (!current.ok) return { refused: current.reason };
+                    if (current.manifest.owner !== "managed" || !current.manifest.backup?.retention) {
+                        return { refused: "This site no longer declares a backup.retention policy." };
+                    }
+                    const credentials = await (options.backupCheckCredentials ?? checkManagedSiteBackupCredentials)(
+                        currentDir,
+                        current.manifest,
+                    );
+                    if (!credentials.ok) return { refused: credentials.reason };
+                    const pendingBackup = await readManagedSiteBackupAttempt(currentDir);
+                    if (pendingBackup.kind !== "none") {
+                        return {
+                            refused:
+                                "A previous backup attempt has an unconfirmed outcome. Inspect the repository and acknowledge it first.",
+                        };
+                    }
+                    const result = await runManagedSiteBackupRetentionPreview(
+                        { stackDir: currentDir, manifest: current.manifest, onOutput, signal: shutdownController.signal },
+                        options.backupDocker ? { docker: options.backupDocker } : {},
+                    );
+                    if (!result.ok) {
+                        onOutput(`The retention preview did not complete: ${result.reason}\n`);
+                        await recordAudit({
+                            event: "backup",
+                            result: "failed",
+                            actor: clientKey(request, config),
+                            stack: name,
+                            action: "retention-preview",
+                        });
+                        return { code: 1, stdout: "", stderr: "", timedOut: false, truncated: false };
+                    }
+                    let facts: ManagedSiteBackupTriggerState | null = null;
+                    if (current.manifest.backup.trigger) {
+                        try {
+                            const read = await readManagedSiteBackupTriggerState(currentDir, current.manifest.siteId);
+                            facts = read.kind === "ok" ? read.state : null;
+                        } catch {
+                            facts = null;
+                        }
+                    }
+                    const protection = managedSiteRetentionProtection(result.remove, {
+                        lastSuccess: facts?.lastSuccess?.snapshotId ?? null,
+                        lastProof: facts?.lastProof?.snapshotId ?? null,
+                    });
+                    if (protection.removesLastSuccess) {
+                        onOutput(
+                            "Warning: this policy would remove the last good backup recorded for the site. Adjust the policy or protect that snapshot before pruning.\n",
+                        );
+                    }
+                    if (protection.removesLastProof) {
+                        onOutput("Warning: this policy would remove the last verified restore snapshot. Protect it before pruning.\n");
+                    }
+                    await recordAudit({
+                        event: "backup",
+                        result: "success",
+                        actor: clientKey(request, config),
+                        stack: name,
+                        action: "retention-preview",
+                        detail: `keep ${String(result.keep.length)}, remove ${String(result.remove.length)}`,
+                    });
+                    return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+                },
+            });
+            await recordAudit({
+                event: "backup",
+                result: "started",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "retention-preview",
+                detail: `site ${manifestResult.manifest.siteId}, ${managedSiteBackupRetentionSummary(manifestResult.manifest.backup.retention)}`,
+            });
+            return redirect(back, 303);
+        } catch (error) {
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({
+                    event: "backup",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    action: "retention-preview",
                     detail: error.message,
                 });
                 return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
@@ -5001,6 +5130,15 @@ export function createApp(options: AppOptions): App {
             );
         }
         const check = card.backup && !card.backup.check.ok ? note("warn", card.backup.check.reason) : "";
+        const retention = backup.retention
+            ? `<h3>Retention preview</h3>` +
+              `<p class="meta"><span>Declared policy <code>${escapeHtml(managedSiteBackupRetentionSummary(backup.retention))}</code></span></p>` +
+              `<form method="post" action="${href}/backup/retention"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy ? " disabled" : ""}>Preview retention</button></form>` +
+              note(
+                  "info",
+                  "Asks the pinned Restic client which snapshots this policy would remove, in dry-run mode. The panel deletes nothing and stores no preview; run the real forget and prune from the maintenance host with the deletion credential, then restic check.",
+              )
+            : "";
         return (
             `<h3>Offsite backup</h3>` +
             repository +
@@ -5014,7 +5152,8 @@ export function createApp(options: AppOptions): App {
             note(
                 "info",
                 "Restores one exact snapshot into a new private directory and, for a SQL snapshot, imports it into a disposable database with no production credentials, no production network and no published port. The live site is not modified.",
-            )
+            ) +
+            retention
         );
     }
 
@@ -5717,6 +5856,15 @@ export function createApp(options: AppOptions): App {
                 return await handleBackupAcknowledge(request, decodeName(backupAcknowledgeMatch[1]!), session);
             } catch (error) {
                 return routeError(error, session.csrf, safeName(backupAcknowledgeMatch[1]!));
+            }
+        }
+        const backupRetentionMatch = /^\/stacks\/([^/]+)\/backup\/retention$/.exec(url.pathname);
+        if (backupRetentionMatch && config.managedSitesEnabled) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return await handleRetentionPreview(request, decodeName(backupRetentionMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(backupRetentionMatch[1]!));
             }
         }
         const backupMatch = /^\/stacks\/([^/]+)\/backup$/.exec(url.pathname);

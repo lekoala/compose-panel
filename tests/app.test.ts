@@ -6239,3 +6239,214 @@ describe("timer-triggered backup (ADR 0051)", () => {
         }
     });
 });
+
+describe("retention preview (ADR 0052)", () => {
+    const A = "a".repeat(64);
+    const B = "b".repeat(64);
+    const T1 = "2026-11-21T10:00:00.123456789Z";
+    const T2 = "2026-11-22T11:00:00+01:00";
+
+    const manifest: ManagedSiteManifest = {
+        version: 3,
+        siteId: "acme-shop",
+        owner: "managed",
+        project: "acme-shop",
+        services: { gateway: "web", runtime: "runtime" },
+        gateway: { port: 41001 },
+        publicRoot: "public",
+        runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+        deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+        paths: ["shared/uploads"],
+        generation: "1",
+        backup: {
+            kind: "restic",
+            repository: "rest:https://backup.example.test/acme-shop",
+            retention: { keepLast: 1 },
+        },
+    };
+
+    const commandOk = (stdout = ""): CommandResult => ({ code: 0, stdout, stderr: "", timedOut: false, truncated: false });
+
+    function snapshot(id: string, time: string): Record<string, unknown> {
+        return { id, short_id: id.slice(0, 8), time, tags: ["site:acme-shop"], paths: ["/backup"], host: "panel" };
+    }
+
+    function group(keep: unknown[], remove: unknown[]): unknown[] {
+        return [{ host: "panel", tags: ["site:acme-shop"], paths: ["/backup"], keep, remove, reasons: [] }];
+    }
+
+    async function previewRoot(siteManifest: ManagedSiteManifest = manifest): Promise<string> {
+        const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-retention-app-")));
+        const stack = join(dir, "demo");
+        await mkdir(join(stack, "site", "shared", "uploads"), { recursive: true });
+        await mkdir(join(stack, "site", "private", "backup"), { recursive: true, mode: 0o700 });
+        await writeFile(join(stack, "compose.yaml"), "name: acme-shop\nservices:\n  web:\n    image: nginx:alpine\n");
+        await writeFile(join(stack, "compose-panel-site.json"), `${JSON.stringify(siteManifest, null, 2)}\n`);
+        await writeFile(join(stack, "site", "shared", "uploads", "a.txt"), "alpha");
+        return dir;
+    }
+
+    function retentionDocker(calls: string[][], options: { snapshots?: string; forget?: string; forgetCode?: number } = {}): DockerRunner {
+        return async (args) => {
+            calls.push(args);
+            if (args.includes("snapshots")) {
+                return commandOk(options.snapshots ?? JSON.stringify([snapshot(A, T1), snapshot(B, T2)]));
+            }
+            if (args.includes("forget")) {
+                if (options.forgetCode !== undefined && options.forgetCode !== 0) {
+                    return {
+                        code: options.forgetCode,
+                        stdout: "",
+                        stderr: "Fatal: unable to open repository",
+                        timedOut: false,
+                        truncated: false,
+                    };
+                }
+                return commandOk(options.forget ?? JSON.stringify(group([snapshot(A, T1)], [snapshot(B, T2)])));
+            }
+            return commandOk();
+        };
+    }
+
+    async function csrfOf(app: App, session: string): Promise<string> {
+        return /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/about", session)).text())![1]!;
+    }
+
+    function postPreview(app: App, session: string, path: string, fields: Record<string, string>): Promise<Response> {
+        return authed(app, path, session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(fields).toString(),
+        });
+    }
+
+    async function settle(app: App): Promise<void> {
+        for (let index = 0; index < 500 && app.operations.forStack("demo")?.status === "running"; index += 1) await Bun.sleep(1);
+    }
+
+    test("starts one dry-run preview under the lock and never prunes", async () => {
+        const dir = await previewRoot();
+        try {
+            const calls: string[][] = [];
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                docker: retentionDocker(calls),
+                checkCredentials: async () => ({ ok: true }),
+            });
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+
+            const page = await (await authed(app, "/stacks/demo", session)).text();
+            expect(page).toContain('action="/stacks/demo/backup/retention"');
+
+            const response = await postPreview(app, session, "/stacks/demo/backup/retention", { csrf });
+            expect(response.status).toBe(303);
+            await settle(app);
+            const operation = app.operations.forStack("demo");
+            expect(operation?.action).toBe("retention-preview");
+            expect(operation?.status).toBe("succeeded");
+            expect(operation?.output).toContain(B.slice(0, 12));
+
+            expect(calls).toHaveLength(2);
+            expect(calls[0]).toContain("snapshots");
+            expect(calls[1]).toContain("forget");
+            expect(calls[1]).toContain("--dry-run");
+            expect(calls[1]).toContain("--keep-last");
+            expect(calls.every((args) => args.includes("--no-lock"))).toBe(true);
+            expect(calls.some((args) => args.includes("--prune") || args.includes("prune"))).toBe(false);
+            expect(calls.some((args) => args.includes("backup"))).toBe(false);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses a session-less request, a stale form, a site without a policy and a pending marker", async () => {
+        const dir = await previewRoot();
+        try {
+            const plainManifest: ManagedSiteManifest = {
+                ...manifest,
+                siteId: "plain-site",
+                project: "plain",
+                backup: { kind: "restic", repository: "rest:https://backup.example.test/plain" },
+            };
+            const plain = join(dir, "plain");
+            await mkdir(join(plain, "site", "private", "backup"), { recursive: true, mode: 0o700 });
+            await writeFile(join(plain, "compose.yaml"), "name: plain\nservices:\n  web:\n    image: nginx:alpine\n");
+            await writeFile(join(plain, "compose-panel-site.json"), `${JSON.stringify(plainManifest, null, 2)}\n`);
+
+            const calls: string[][] = [];
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                docker: retentionDocker(calls),
+                checkCredentials: async () => ({ ok: true }),
+            });
+
+            const anonymous = await app.fetch(
+                new Request(`${ORIGIN}/stacks/demo/backup/retention`, {
+                    method: "POST",
+                    headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+                    body: new URLSearchParams({ csrf: "x" }).toString(),
+                }),
+            );
+            expect(anonymous.status).toBe(401);
+            expect(app.operations.forStack("demo")).toBeNull();
+
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+            const stale = await postPreview(app, session, "/stacks/demo/backup/retention", { csrf: "wrong" });
+            expect(stale.status).toBe(403);
+
+            const noPolicy = await postPreview(app, session, "/stacks/plain/backup/retention", { csrf });
+            expect(noPolicy.status).toBe(409);
+            expect(app.operations.forStack("plain")).toBeNull();
+
+            const stackDir = join(dir, "demo").replace(/\\/g, "/");
+            await writeManagedSiteBackupAttempt(stackDir, {
+                version: 1,
+                siteId: "acme-shop",
+                attemptId: "attempt0052",
+                repository: "rest:https://backup.example.test/acme-shop",
+                startedAt: "2026-11-25T10:00:00.000Z",
+                phase: "upload",
+                outcome: "failed",
+                reason: "upload timed out",
+            });
+            const pending = await postPreview(app, session, "/stacks/demo/backup/retention", { csrf });
+            expect(pending.status).toBe(303);
+            await settle(app);
+            expect(app.operations.forStack("demo")?.status).toBe("refused");
+            expect(calls).toEqual([]);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("fails the operation without a removal set when Restic is inconsistent", async () => {
+        const dir = await previewRoot();
+        try {
+            const calls: string[][] = [];
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                docker: retentionDocker(calls, {
+                    snapshots: JSON.stringify([snapshot(A, T1), snapshot(B, T2)]),
+                    forget: JSON.stringify(group([snapshot(A, T1)], [])),
+                }),
+                checkCredentials: async () => ({ ok: true }),
+            });
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+            const response = await postPreview(app, session, "/stacks/demo/backup/retention", { csrf });
+            expect(response.status).toBe(303);
+            await settle(app);
+            const operation = app.operations.forStack("demo");
+            expect(operation?.status).toBe("failed");
+            expect(operation?.output).not.toContain(B.slice(0, 12));
+            expect(calls).toHaveLength(2);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+});
