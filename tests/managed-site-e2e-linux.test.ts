@@ -10,6 +10,7 @@ import { MANAGED_SITE_BUILD_IMAGE, runComposerPreparation } from "../src/managed
 import { MANAGED_SITE_PATHS, parseManagedSiteManifest, type ManagedSiteManifest } from "../src/managed-site.ts";
 import { readManagedSiteBackupAttempt } from "../src/managed-site-backup.ts";
 import { runManagedSiteBackup } from "../src/managed-site-backup-run.ts";
+import { runManagedSiteBackupRetentionPreview } from "../src/managed-site-backup-retention.ts";
 import { runManagedSiteRestore } from "../src/managed-site-restore.ts";
 import {
     managedSiteAttemptPath,
@@ -665,10 +666,12 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
 
         try {
             // One disposable PHP image with the MySQL PDO driver. The base image
-            // is seeded by the runner; the extension build needs no extra apk.
+            // is seeded by the runner; the extension build needs apk packages.
+            // Build on the lab host network: the disposable daemon's bridge DNS
+            // is not stable enough to fetch an index after a Compose test.
             await mkdir(join(root, "php-db"));
             await writeFile(join(root, "php-db", "Dockerfile"), "FROM php:8.3-fpm-alpine\nRUN docker-php-ext-install pdo_mysql\n");
-            await dockerOk(["build", "-q", "-t", phpImage, join(root, "php-db")]);
+            await dockerOk(["build", "--network", "host", "-q", "-t", phpImage, join(root, "php-db")]);
 
             // The operator-provisioned database is a separate project on an
             // external network. It is not part of the site's Compose file.
@@ -924,6 +927,26 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
             expect(await readManagedSiteBackupAttempt(stackDir)).toEqual({ kind: "none" });
             expect(await Bun.file(join(privateDir, "backup-attempt.json")).exists()).toBe(false);
             expect(await Bun.file(join(privateDir, "staging", "backup0001")).exists()).toBe(false);
+
+            const second = await runManagedSiteBackup(
+                { stackDir, manifest, attemptId: "backup0002", releaseId: null, runtimeImage: null },
+                { resticNetwork: "host", timeoutMs: 180_000 },
+            );
+            if (!second.ok) throw new Error(second.reason);
+            expect(second.snapshotId).not.toBe(backedUp.snapshotId);
+
+            const retained: ManagedSiteManifest = {
+                ...manifest,
+                backup: { ...manifest.backup!, retention: { keepLast: 1 } },
+            };
+            const preview = await runManagedSiteBackupRetentionPreview(
+                { stackDir, manifest: retained },
+                { resticNetwork: "host", timeoutMs: 180_000 },
+            );
+            if (!preview.ok) throw new Error(preview.reason);
+            expect(preview.total).toBe(2);
+            expect(preview.keep.map((entry) => entry.id)).toEqual([second.snapshotId]);
+            expect(preview.remove.map((entry) => entry.id)).toEqual([backedUp.snapshotId]);
 
             await rm(join(uploads, "note.txt"));
             const restoreDir = join(root, "restore");
