@@ -55,6 +55,18 @@
   bounded `GET` reports the last attempt. The panel stores only the digest,
   never the token, and adds no scheduler or webhook registry; the real CI host,
   proxy path and revocation remain in the real-host checklist.
+- Managed sites: timer-triggered backup (ADR 0051). A managed manifest v3 may
+  declare `backup.trigger: { kind: "token", everyHours }` and provision the
+  separate digest-only `site/private/backup/trigger-token.sha256` verifier.
+  `POST /api/managed-sites/<stack>/backup` accepts one bearer credential and a
+  body bound to 8 KiB with exactly a nonce and an ISO timestamp within 300
+  seconds, then reuses the manual backup under the stack lock. A separate nonce
+  is consumed once; the durable bounded `trigger-state.json` records the last
+  attempt, the last good snapshot, the last verified restore and reports
+  `overdue` from the last success and the declared interval. The panel runs no
+  timer, deletes no snapshot, stores only the digest and adds no notification or
+  retention automation; a host timer and one revocation remain in the real-host
+  checklist.
 
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares

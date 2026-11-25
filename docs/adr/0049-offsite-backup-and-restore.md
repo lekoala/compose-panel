@@ -47,10 +47,12 @@ checklist remains.
   persistent roots are the declared `paths` of ADR 0042. An opt-in stack has no
   such declaration, so backing it up would require a new operator-authored data
   scope; that is out of scope here rather than guessed from its Compose file.
-- Out of scope: scheduling and timers, retention/prune automation, incremental
-  file watching, database provisioning, migrations, cross-site repositories,
-  restore over the live site, cloning a site, notifications, backup of the
-  panel itself, and opt-in backup scopes. Each needs its own ADR or vertical PR.
+- Out of scope: a panel-owned scheduler or timer installer, retention/prune
+  automation, incremental file watching, database provisioning, migrations,
+  cross-site repositories, restore over the live site, cloning a site,
+  notifications, backup of the panel itself, and opt-in backup scopes. Each
+  needs its own ADR or vertical PR; ADR 0051 adds the machine request path an
+  administrator-installed timer uses, without scheduling anything.
 
 ### Manifest: version 3 and one `backup` block
 
@@ -231,11 +233,13 @@ checklist remains.
   verified recovery point and never running concurrently with a backup or a
   restore proof.
 - A host systemd timer that requests the same guarded backup (same stack lock,
-  admission and one-process model) is a later ADR. The panel never starts its
-  own scheduler, and a missed run is reported as overdue rather than silently
+  admission and one-process model) is implemented in ADR 0051: one site-scoped
+  bearer request reuses the manual backup. The panel never starts its own
+  scheduler, and a missed run is reported as overdue rather than silently
   retried.
 - Last attempt, last good snapshot and last successful test restore are three
-  distinct facts and are displayed as such.
+  distinct facts; for a site that declares `backup.trigger`, ADR 0051 records
+  them durably and displays them separately.
 
 ## Consequences
 
@@ -338,8 +342,9 @@ checklist remains.
 
 ## Out of scope
 
-Scheduling, timers, retention automation, snapshot deletion from the panel,
-backup of the panel itself, live restore, cloning, notifications, backup
-encryption key management beyond the operator's off-host credential,
-cross-site repositories, MySQL/PostgreSQL dump adapters, and any general SQL
+Scheduling inside the panel, timer installation, retention automation,
+snapshot deletion from the panel, backup of the panel itself, live restore,
+cloning, notifications, backup encryption key management beyond the operator's
+off-host credential, cross-site repositories, MySQL/PostgreSQL dump adapters,
+and any general SQL
 console or query interface.

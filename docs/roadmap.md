@@ -138,8 +138,9 @@ implemented for an opted-in stack.
   failed upload that may have completed keeps a marker until acknowledged. Unit,
   app-route, fake-runner and disposable REST fixtures cover the backup, the
   file restore and a dumped MariaDB record read back from the restored copy.
-  Scheduling and retention automation remain to be built. The panel deletes no
-  snapshot and stores no credential value.
+  Panel-owned scheduling and retention automation remain out; an
+  administrator-installed timer can request the same backup through the ADR 0051
+  machine path. The panel deletes no snapshot and stores no credential value.
 - **CI-triggered deploy.** Implemented under the same flag
   ([ADR 0050](adr/0050-ci-triggered-deploy.md)): a v3 `ci: { kind: "token" }`
   block plus the fixed `site/private/ci/deploy-token.sha256` verifier enable
@@ -150,8 +151,19 @@ implemented for an opted-in stack.
   stores only the digest, never the token, and still runs no scheduler or
   webhook registry. Unit and app tests cover the refusals; a real CI host, the
   proxy path and one revocation remain in the real-host checklist.
-- **Next increments, each with its own ADR or vertical PR:** host timers and
-  retention; production cutover and cloning. The creation form, stable loopback
+- **Timer-triggered backup.** Implemented under the same flag
+  ([ADR 0051](adr/0051-timer-triggered-backups.md)): a v3 `backup.trigger`
+  block plus the fixed `site/private/backup/trigger-token.sha256` verifier enable
+  `POST /api/managed-sites/<stack>/backup`, which reuses the manual backup under
+  the lock with a separate site-scoped token, a nonce and a bounded timestamp.
+  The durable `trigger-state.json` keeps the last attempt, the last good
+  snapshot, the last verified restore and the consumed nonces, and the card and
+  a bounded `GET` report `overdue` from the last success and the declared
+  interval. The panel runs no timer and deletes no snapshot; the administrator
+  installs the systemd timer. Unit and app tests cover the refusals and the
+  facts; a real timer, host and revocation remain in the real-host checklist.
+- **Next increments, each with its own ADR or vertical PR:** retention
+  automation; production cutover and cloning. The creation form, stable loopback
   binding and the existing Caddy
   attach are implemented. The opt-in disposable suites do not replace the
   real-host checklist in

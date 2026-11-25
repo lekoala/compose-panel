@@ -1221,6 +1221,111 @@ SHA-256 verifier; the token stays in the CI secret store.
    by deleting the verifier file or removing the `ci` block, and rotate by
    writing a new digest: no restart is needed.
 
+### Back up from a host timer
+
+The panel runs no scheduler. An administrator-installed systemd timer can ask
+the panel for the same guarded backup, so the stack lock, the markers and the
+one-process admission stay in one place.
+
+1. Generate a **backup** token and its digest; do not reuse the deploy token:
+
+   ```bash
+   token=$(openssl rand -hex 32)
+   printf '%s' "$token" | sha256sum | cut -d' ' -f1 > /tmp/backup-token.sha256
+   install -m 0600 /tmp/backup-token.sha256 \
+     /opt/stacks/acme-shop/site/private/backup/trigger-token.sha256
+   rm /tmp/backup-token.sha256
+   ```
+
+   The private backup directory must already exist as `0700` and hold the
+   Restic credentials. The digest file is a regular `0600` file, one link, at
+   most 256 bytes; a missing or malformed verifier answers `401` and the card
+   shows why.
+
+2. Add the trigger to the existing backup block in `compose-panel-site.json`.
+   The interval must cover the timer period; it is the maximum age before the
+   card and the status report the backup overdue.
+
+   ```json
+   "backup": {
+     "kind": "restic",
+     "repository": "rest:https://backup.example.test/acme-shop",
+     "trigger": { "kind": "token", "everyHours": 24 }
+   }
+   ```
+
+3. Store the raw token root-only:
+
+   ```bash
+   install -d -m 0700 /etc/compose-panel
+   ( umask 077; printf 'TOKEN=%s\n' "$token" > /etc/compose-panel/backup-token.env )
+   ```
+
+The timer runs this root-only request script. The service below invokes it with
+`/bin/sh`, so it needs no shebang or exec bit and the file stays `0600`:
+
+```bash
+cat > /usr/local/sbin/compose-panel-backup-trigger <<'SH'
+set -eu
+. /etc/compose-panel/backup-token.env
+curl -fsS -X POST http://127.0.0.1:5081/api/managed-sites/acme-shop/backup \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"nonce\":\"$(openssl rand -hex 16)\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\"}"
+SH
+chmod 0600 /usr/local/sbin/compose-panel-backup-trigger
+```
+
+`202` means the request was accepted and the backup continues in the panel; the
+timer run ends when `curl` returns. `400` is malformed, `401` a bad credential,
+`409` a busy stack, a pending marker or a replayed nonce, and `503` a panel
+shutting down. The nonce is single-use and the timestamp must be within 300
+seconds.
+
+4. Add the service and timer, then enable the timer:
+
+   ```ini
+   # /etc/systemd/system/compose-panel-backup-acme-shop.service
+   [Unit]
+   Description=Compose Panel backup request for acme-shop
+   After=network.target
+
+   [Service]
+   Type=oneshot
+   ExecStart=/bin/sh /usr/local/sbin/compose-panel-backup-trigger
+   ```
+
+   ```ini
+   # /etc/systemd/system/compose-panel-backup-acme-shop.timer
+   [Unit]
+   Description=Daily Compose Panel backup request for acme-shop
+
+   [Timer]
+   OnCalendar=*-*-* 03:30:00
+   RandomizedDelaySec=300
+   Persistent=true
+
+   [Install]
+   WantedBy=timers.target
+   ```
+
+   ```bash
+   systemctl daemon-reload
+   systemctl enable --now compose-panel-backup-acme-shop.timer
+   ```
+
+   `Persistent=true` catches up a run missed while the host was off; a panel
+   outage at the scheduled moment is not retried by the panel and shows as
+   overdue on the next page load. A manual backup at the same time returns
+   `409`, and neither request is replayed.
+
+5. Confirm the outcome from the site card or
+   `GET /api/managed-sites/acme-shop/backup` with the same token. It returns the
+   declared interval, the last attempt, the last good snapshot, the last
+   verified restore, `overdue` and `dueAt`, never output. Revoke by deleting the
+   digest file or removing `backup.trigger`; rotate by writing a new digest. The
+   panel deletes no snapshot: retention stays an off-panel procedure.
+
 ### Verification status
 
 Unit tests cover the manifest, the profile check, the Git adapter, the fixed
@@ -1270,7 +1375,13 @@ body and window, nonce consumption/replay and the durable state, and by app
 tests for the missing/wrong token, the absent `ci` block, a malformed body or
 content type, one accepted request under the lock, a replay and the bounded
 status; the browser session alone is refused. No CI host, proxy path or
-revocation has been exercised on a real host. The disposable SSH
+revocation has been exercised on a real host. The timer-triggered backup
+(ADR 0051) is covered by unit tests for the trigger block, the verifier, the
+strict nonce/timestamp body and window, nonce replay and the durable facts, and
+by app tests for the untriggered site, the cookie-only request, the wrong token,
+the wrong content type, the accepted backup with its recorded last-good
+snapshot, the recorded restore proof, the overdue state and the rate limit; no
+host timer or real revocation has been exercised. The disposable SSH
 fixture (`bash scripts/test-git-ssh.sh`) drives the real Git adapter against
 OpenSSH on loopback and exercises the correct key pair, wrong client key and
 wrong host key. These suites are opt-in and
@@ -1308,6 +1419,10 @@ the disposable suites are never run against a production daemon.
    confirm the exact tested SHA is served, refuse a stale SHA after a new
    commit, and revoke the verifier; confirm the next request is `401` and the
    active release is unchanged.
+9. Install one backup timer, record one accepted run and its last-good
+   snapshot, stop the timer long enough to see overdue on the card and the
+   status, then revoke the verifier and confirm the next request is `401` with
+   the site unchanged.
 
 Record the result with the release or pilot review. Do not use a production host
 as the test bed.

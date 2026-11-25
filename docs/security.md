@@ -364,6 +364,33 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   TLS proxy; the CI stores the token as a secret. Revocation is deleting the
   verifier or removing the `ci` block.
 
+## Timer-triggered backup (ADR 0051)
+
+- `POST /api/managed-sites/<stack>/backup` follows the same machine-endpoint
+  rule: an explicit `Authorization: Bearer` token and `Content-Type:
+  application/json`, no session cookie, no CORS. It is a separate credential and
+  a separate verifier file, so a leaked deploy token cannot export data and a
+  leaked backup token cannot deploy.
+- The verifier is the fixed `site/private/backup/trigger-token.sha256` regular
+  `0600` file, one link, at most 256 bytes, inside the `0700` backup credential
+  directory, holding one lowercase SHA-256 digest. Metadata is checked before the
+  digest is read, the read is no-follow and the comparison is constant-time.
+- The request body is bounded to 8 KiB and must contain exactly a 16-64
+  character nonce and an ISO timestamp within 300 seconds. A deploy-shaped body
+  (a `sha`, a `ref`, a repository) is refused rather than ignored: the manifest
+  always owns the repository, the roots and the SQL scope. A nonce is consumed
+  once in the durable facts record, and repeated failures answer `429`.
+- The locked closure re-reads the manifest and re-checks the digest, nonce,
+  deploy marker and backup marker before starting the existing backup. A crash
+  keeps the normal backup attempt marker and never authorizes a second backup.
+- The durable `site/private/backup/trigger-state.json` (`0600`, bounded, atomic)
+  holds only a coarse last attempt, the last good snapshot id, the last verified
+  restore snapshot id and consumed nonces. It is a display and diagnosis fact,
+  never a recovery journal, and it contains no credential.
+- The token is never logged, returned, stored or placed in a URL. Revocation is
+  deleting the verifier or removing `backup.trigger`. The host timer, not the
+  panel, owns the schedule; overdue is computed from the durable fact.
+
 ## Application toolbox (ADR 0026)
 
 - The panel may execute only **explicitly declared, non-interactive application

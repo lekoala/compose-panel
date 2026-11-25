@@ -77,6 +77,7 @@ v1 fields (all bounded):
 | `database.network` | with `database` | exact external Compose network shared with the operator-provisioned database; only the runtime service joins it |
 | `backup` | optional, `managed` only | `kind: "restic"`, one `rest:https://host/path` repository (or `rest:http://` on a loopback/single-label private host) and an optional `sql { engine: "mariadb", database }` that must match `database.engine`; requires `version: 3` (ADR 0049) |
 | `backup.sql.database` | with `backup.sql` | one bounded SQL identifier; the only database the dump may select |
+| `backup.trigger` | optional, `managed` only | `kind: "token"` and `everyHours` (1–720); enables the timer backup route and the fixed `site/private/backup/trigger-token.sha256` verifier, and declares the maximum age before overdue; requires `version: 3` (ADR 0051) |
 | `ci` | optional, `managed` only | `kind: "token"`; enables the machine deploy route and the fixed `site/private/ci/deploy-token.sha256` verifier; requires `version: 3` (ADR 0050) |
 | `gateway.port` | `managed` only | integer in the reserved range 41000–41999; the single loopback port the generated gateway publishes |
 | `deploy.kind` | always | `"bind-mount"` only |
@@ -85,9 +86,9 @@ v1 fields (all bounded):
 | `paths` | `managed` only | declared persistent roots under `site/shared`, each written relative (`shared/...`), contained, no `..`, unique, bounded count |
 | `generation` | `managed` only | `1` without a database; `2` with the database fragment; see *Generated artifacts* |
 
-The database, backup and CI fields land with ADRs 0048-0050. Health commands and
-hooks get their own fields when their own ADRs land. Refusing unknown fields is
-what keeps that honest.
+The database, backup, timer and CI fields land with ADRs 0048-0051. Health
+commands and hooks get their own fields when their own ADRs land. Refusing
+unknown fields is what keeps that honest.
 
 ### Layout
 
@@ -337,8 +338,9 @@ stays an ordinary, read-only stack.
 - An `opt-in` stack must provide the fixed revision route; without it a deploy
   is refused rather than verified by a weaker signal.
 - Deleting a site, importing arbitrary projects, provisioned databases, live
-  restore, scheduled backups, generic webhooks and a second profile remain out
-  of scope until their own ADRs. CI-triggered deploy is ADR 0050.
+  restore, retention automation, a panel-owned scheduler, generic webhooks and a
+  second profile remain out of scope until their own ADRs. CI-triggered deploy
+  is ADR 0050; timer-triggered backup requests are ADR 0051.
 
 ## Alternatives considered
 
@@ -423,7 +425,8 @@ VM checklist before calling the pilot done:
 ## Out of scope
 
 Attaching or importing arbitrary existing projects, automatic deletion, a
-second runtime profile, database provisioning, live restore, scheduled backups,
-host timers, retention automation, generic webhooks, direct Caddy-to-FastCGI,
-edge Caddy options, multiple hosts and multi-user access. Manual offsite backup
-is ADR 0049; the CI-triggered deploy is ADR 0050.
+second runtime profile, database provisioning, live restore, retention
+automation, a panel-owned scheduler or timer installer, generic webhooks,
+direct Caddy-to-FastCGI, edge Caddy options, multiple hosts and multi-user
+access. Manual offsite backup is ADR 0049; the CI-triggered deploy is ADR 0050;
+the timer-triggered backup request is ADR 0051.

@@ -248,6 +248,20 @@ bounded `GET` on the same path returns the site, ref, current release and last
 attempt. The panel stores no usable token and gains no scheduler or generic
 webhook ([ADR 0050](adr/0050-ci-triggered-deploy.md)).
 
+## Timer-triggered backup (opt-in)
+`src/machine-credential.ts` holds the verifier, token, nonce and rate-limit
+primitives both machine routes share. `src/managed-site-backup-trigger.ts` owns
+the fixed `site/private/backup/trigger-token.sha256` verifier, the strict
+nonce/timestamp request, the durable `trigger-state.json` facts (last attempt,
+last good snapshot, last verified restore, consumed nonces) and the overdue
+computation from the last-success timestamp. `POST
+/api/managed-sites/<stack>/backup` is dispatched before the browser session gate,
+authenticates its own bearer credential and starts the same backup operation as
+the browser button under the stack lock; a successful backup and a verified
+restore record their fact. A bounded `GET` returns the declared interval and the
+three facts. The panel runs no timer, deletes no snapshot and stores no usable
+token ([ADR 0051](adr/0051-timer-triggered-backups.md)).
+
 ## Managed-site deploy (opt-in)
 `src/managed-site.ts` parses the trusted `compose-panel-site.json` strictly
 (bounded size, versioned, unknown/duplicate keys refused). `src/managed-site-profile.ts`

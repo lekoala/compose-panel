@@ -273,9 +273,10 @@ ADR 0006).
   not claimed; the existing rollout (ADR 0035) is incompatible with a
   loopback-port gateway and is not reused here.
 - CI triggers, migrations, workers, backups and production cutover remain out
-  of scope for this increment. ADRs 0049 and 0050 add the offsite backup and the
-  CI-triggered deploy as later increments; private repositories and the fixed
-  Composer preparation are covered by ADR 0047 and ADR 0045.
+  of scope for this increment. ADRs 0049, 0050 and 0051 add the offsite backup,
+  the CI-triggered deploy and the timer-triggered backup request as later
+  increments; private repositories and the fixed Composer preparation are
+  covered by ADR 0047 and ADR 0045.
 
 ## Alternatives considered
 
