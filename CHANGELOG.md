@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Image security: accept CVE-2026-17106 only at the Buildx plugin path until
+  2027-02-19 (ADR 0046). Buildx 0.39.1 still declares
+  `github.com/moby/go-archive` v0.2.0, but the binary carries only that
+  module's build-info line: the root extraction package named by the advisory
+  has no symbol matches. No fixed `docker-buildx-plugin` exists yet (0.39.1 is
+  the newest trixie package and upstream release), so the pin cannot move; the
+  exception is re-decided at expiry. It is not a claim that Buildx is patched.
+
 - Managed sites (ADR 0045): optional Composer preparation. A managed site may
   declare `build: { kind: "composer" }` (checkbox on **New site**), and every
   release — the baseline and each deploy — is prepared before publication. An

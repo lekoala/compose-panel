@@ -7,7 +7,12 @@ ARG DOCKER_CLI_VERSION=5:29.9.2-1~debian.13~trixie
 # drop the matching .trivyignore.yaml entries once a fixed release is pinned.
 ARG DOCKER_COMPOSE_VERSION=5.8.0-1~debian.13~trixie
 # `docker buildx imagetools inspect` reads a registry without a builder; it is
-# the remote image check's only tool (ADR 0041).
+# the remote image check's only tool (ADR 0041). 0.39.1 is the newest package
+# on 2026-11-25 and still declares github.com/moby/go-archive v0.2.0, so the
+# module-level CVE-2026-17106 exception in .trivyignore.yaml applies; the
+# vulnerable extraction package is not linked (ADR 0046). Bump this pin and
+# drop that entry as soon as a release embeds go-archive v0.3.0+ or stops
+# declaring it.
 ARG DOCKER_BUILDX_VERSION=0.39.1-1~debian.13~trixie
 
 # Base image pinned by version AND multi-arch index digest so a rebuild cannot

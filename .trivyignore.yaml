@@ -7,7 +7,25 @@
 # Compose v5.8.0 still declares golang.org/x/net v0.60.0, so the module-level
 # finding for CVE-2026-78661 remains; the vulnerable package
 # golang.org/x/net/html is not linked into the binary. See ADR 0039.
+# Buildx 0.39.1 still declares github.com/moby/go-archive v0.2.0, so the
+# module-level finding for CVE-2026-17106 remains; the advisory's extraction
+# package is not linked into the binary. See ADR 0046.
 vulnerabilities:
+  - id: CVE-2026-17106
+    paths:
+      - usr/libexec/docker/cli-plugins/docker-buildx
+    expired_at: 2027-02-19
+    statement: >-
+      Trivy reports the Go module from the build info, not the linked packages.
+      Buildx 0.39.1 declares github.com/moby/go-archive v0.2.0 but vendors only
+      its /compression subpackage; the advisory's extraction routines (Unpack,
+      Untar, ApplyLayer) live in the root package and have no symbol-table
+      matches in the shipped binary, while other modules do. No fixed
+      docker-buildx-plugin exists: 0.39.1 is the newest trixie package and
+      upstream release. This is not a VEX claim of non-exploitability: the
+      module stays vulnerable on paper. Re-run the symbol check and record a
+      new decision before expiry; remove as soon as a buildx package embeds
+      go-archive v0.3.0+ or stops declaring it.
   - id: CVE-2026-78661
     paths:
       - usr/libexec/docker/cli-plugins/docker-compose

@@ -49,10 +49,11 @@ Update tracking: Dependabot (`.github/dependabot.yml`) proposes base image
 digest refreshes for the pinned Bun tag and pinned GitHub Actions updates; the `FROM` reference is written
 literally because Dependabot does not resolve `ARG` values in `FROM`. Bun
 version bumps stay manual (Dockerfile `FROM` and `base.name` label, workflow
-`bun-version`). Docker CLI and Compose come from apt and the Compose release
-page, which Dependabot cannot track: check for a new Compose release before
-the earliest `expired_at` in `.trivyignore.yaml`, and bump
-`DOCKER_COMPOSE_VERSION` with the CI `COMPOSE_VERSION`/`COMPOSE_SHA256`.
+`bun-version`). Docker CLI, Compose and Buildx come from apt and their release
+pages, which Dependabot cannot track: check for a new Compose or Buildx release
+before the earliest `expired_at` in `.trivyignore.yaml`, and bump
+`DOCKER_COMPOSE_VERSION` with the CI `COMPOSE_VERSION`/`COMPOSE_SHA256` or
+`DOCKER_BUILDX_VERSION` on its own.
 
 Reproducibility: the base image and Docker tooling versions are pinned and
 builds are security-scanned, but exact byte-for-byte reproducibility is not
@@ -69,6 +70,16 @@ exception still covers only this CVE at the Compose binary path, now until
 2027-02-19, and is re-decided after repeating the symbol check
 ([ADR 0039](adr/0039-temporary-compose-html-cve-exception.md)); it does not
 claim the binary is fixed or non-exploitable.
+
+Buildx 0.39.1 (the newest trixie package and upstream release on 2026-11-25)
+still declares `github.com/moby/go-archive` v0.2.0, so CVE-2026-17106 appears
+at the Buildx plugin path. The advisory's extraction package is the module
+root, while the binary carries only the build-info module line and no
+`github.com/moby/go-archive.` symbol; a scoped exception covers only this
+CVE/path until 2027-02-19
+([ADR 0046](adr/0046-buildx-archive-cve-exception.md)). Both exceptions are
+re-decided at expiry after repeating the symbol check, and are removed as soon
+as a pinned release carries the fix.
 
 Image metadata: the runtime stage carries OCI `org.opencontainers.image.*`
 labels (title, description, url, source, licenses, vendor, version, revision).
