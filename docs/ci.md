@@ -182,7 +182,9 @@ local bare repository by an injected runner, which re-allows the `file`
 transport for the fixture; URL validation and the `https`-only environment stay
 in the unit tests. The gateway binds `127.0.0.1` inside the lab daemon's network
 namespace, so the probe runs there through `docker exec`. Never runs in
-unattended CI.
+unattended CI. Passing it is not host validation: the real Debian/Ubuntu
+checklist in [deployment.md](deployment.md#remaining-real-host-validation)
+remains required before the pilot is enabled on a production host.
 
 ## Publication (tags only)
 

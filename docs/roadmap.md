@@ -119,4 +119,8 @@ implemented for an opted-in stack.
   record, survives a deploy and a rollback, and reads it back; offsite backup
   and restore; CI triggers; host timers and retention; production cutover and
   cloning. The creation form, stable loopback binding and the existing Caddy
-  attach are implemented.
+  attach are implemented. The opt-in disposable suites do not replace the
+  real-host checklist in
+  [deployment.md](deployment.md#remaining-real-host-validation); until that is
+  recorded, the pilot stays off by default and enabling it on a production host
+  is an explicit operator decision.

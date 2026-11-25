@@ -1083,7 +1083,39 @@ an inspection of the marker, pointer, containers and probe. The disposable SSH
 fixture (`bash scripts/test-git-ssh.sh`) drives the real Git adapter against
 OpenSSH on loopback and exercises the correct key pair, wrong client key and
 wrong host key. These suites are opt-in and
-never runs in unattended CI; do not treat a production host as its test bed.
+never run in unattended CI; do not treat a production host as its test bed.
+
+#### Remaining real-host validation
+
+The disposable suites prove the release, mount, probe and failure logic on a
+private Docker-in-Docker daemon, not the host path that serves a real site.
+They do not cover the installer and host packages, the systemd Caddy helper and
+its socket, public DNS/TLS, the actual proxy header chain, a host reboot, two
+sites on one host, or the Debian/Ubuntu mount and permission behaviour. Until
+the checklist below has been run and recorded on a disposable Debian or Ubuntu
+VM, enabling the pilot on a production host is an explicit operator decision,
+not a claim that the host path is verified. The flag stays off by default and
+the disposable suites are never run against a production daemon.
+
+1. Run the installer on a disposable VM and verify the panel health, the Caddy
+   helper socket and `docker compose version`.
+2. Enable `COMPOSE_PANEL_MANAGED_SITES_ENABLED`; create two sites on the two
+   offered channels and confirm the reserved ports, the generated files and the
+   absence of drift.
+3. Attach a domain to one site through Caddy; verify HTTPS, redirects and the
+   trusted-proxy chain from the real edge to the gateway.
+4. Publish the baseline, deploy twice, prove the no-op, roll back, then kill the
+   panel before and after the switch; restart and inspect the attempt marker,
+   the pointer, the containers and the probe.
+5. Force-recreate the runtime and confirm the gateway recovers through Docker DNS
+   and serves the expected SHA.
+6. Detach the domain, run Down, Start, Stop and Restart; confirm that no stale
+   reservation or attempt blocks the next action.
+7. Revoke the deploy key and confirm the next deploy fails closed without
+   touching the active release.
+
+Record the result with the release or pilot review. Do not use a production host
+as the test bed.
 
 ## Backups and rollback
 
