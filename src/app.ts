@@ -480,11 +480,11 @@ export function createApp(options: AppOptions): App {
                 const admission = await managedSiteAdmission(stack);
                 if (admission) return admission;
                 if (action === "down") return await managedDownDomainAdmission(stack);
-                if (action === "rollout") return await managedDatabaseAdmission(stack);
+                if (action === "rollout") return await managedDatabaseAdmission(stack, action);
                 if (["up", "pull-up", "start", "restart"].includes(action)) {
                     const baseline = await managedBaselineAdmission(stack);
                     if (baseline) return baseline;
-                    return await managedDatabaseAdmission(stack);
+                    return await managedDatabaseAdmission(stack, action);
                 }
                 return null;
             } catch {
@@ -3737,13 +3737,32 @@ export function createApp(options: AppOptions): App {
         return baseline.ok ? null : `${baseline.reason} Publish a baseline release before starting this site. Nothing was run.`;
     }
 
-    /** A declared database needs its private env file before the runtime starts. */
-    async function managedDatabaseAdmission(stack: string): Promise<string | null> {
+    /**
+     * A declared database needs its private env file and the effective network
+     * membership before anything starts. Managed sites are also drift-checked;
+     * this closes the same check for an opt-in stack's ordinary Up/Start.
+     */
+    async function managedDatabaseAdmission(stack: string, action: string): Promise<string | null> {
         const stackDir = await managedSiteStackDir(stack);
         const site = await readManagedSiteManifest(stackDir);
-        if (!site.ok) return null;
+        if (!site.ok || !site.manifest.database) return null;
         const checked = await checkManagedSiteDatabaseEnvFile(stackDir, site.manifest);
-        return checked.ok ? null : `${checked.reason} Nothing was run.`;
+        if (!checked.ok) return `${checked.reason} Nothing was run.`;
+        const context = await resolveProjectContext(stacksRoot, stack, provider, action === "up" || action === "pull-up");
+        if (context.kind === "absent" && (action === "up" || action === "pull-up")) return null;
+        if (context.kind !== "resolved") {
+            return "The effective Compose project could not be resolved, so the database network could not be checked. Nothing was run.";
+        }
+        const facts = await provider.managedSiteFacts({
+            composeFile: context.composeFile,
+            cwd: context.cwd,
+            envFile: context.envFile ?? undefined,
+        });
+        if (!facts) {
+            return "Docker did not return the effective Compose configuration, so the database network could not be checked. Nothing was run.";
+        }
+        const profile = checkManagedSiteProfile({ manifest: site.manifest, stackDir, facts });
+        return profile.ok ? null : `${profile.reason} Nothing was run.`;
     }
 
     type ManagedSiteDomains =
