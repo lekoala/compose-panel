@@ -10,9 +10,9 @@ import { runCommand, type CommandResult, type DockerRunner } from "./docker.ts";
 import { dirIdentity, type DirIdentity } from "./fs-safe.ts";
 import {
     MANAGED_SITE_BACKUP_DUMP_IMAGES,
+    MANAGED_SITE_BACKUP_DATABASE_CREDENTIALS_FILE,
     MANAGED_SITE_BACKUP_LIMITS,
     MANAGED_SITE_BACKUP_MAX_DUMP_BYTES,
-    MANAGED_SITE_BACKUP_RESTIC_IMAGE,
     MANAGED_SITE_BACKUP_RESTIC_PASSWORD_FILE,
     MANAGED_SITE_BACKUP_REST_ENV_FILE,
     checkManagedSiteBackupCredentials,
@@ -30,7 +30,16 @@ import {
     type ManagedSiteBackupLimits,
     type ManagedSiteBackupPhase,
 } from "./managed-site-backup.ts";
+import {
+    managedSiteResticCommand,
+    parseResticBackupSnapshot,
+    parseResticListContains,
+    parseResticSnapshotList,
+    type ManagedSiteResticContext,
+} from "./managed-site-restic.ts";
 import type { ManagedSiteManifest } from "./managed-site.ts";
+
+export { parseResticBackupSnapshot, parseResticListContains, parseResticSnapshotList } from "./managed-site-restic.ts";
 
 export const MANAGED_SITE_BACKUP_CONTAINER_TIMEOUT_MS = 30 * 60 * 1000;
 export const MANAGED_SITE_BACKUP_OUTPUT_MAX_BYTES = 256 * 1024;
@@ -98,83 +107,6 @@ function containerFailure(label: string, result: CommandResult): string {
 }
 
 /** Restic emits one JSON line per event; the summary carries the snapshot id. */
-export function parseResticBackupSnapshot(stdout: string): string | null {
-    for (const line of stdout.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("{")) continue;
-        try {
-            const value = JSON.parse(trimmed) as Record<string, unknown>;
-            if (value.message_type === "summary" && typeof value.snapshot_id === "string" && /^[0-9a-f]{64}$/.test(value.snapshot_id)) {
-                return value.snapshot_id;
-            }
-        } catch {
-            // A partial line is ignored; only a complete summary is accepted.
-        }
-    }
-    return null;
-}
-
-/** `restic snapshots --json <id>` must return exactly that one snapshot. */
-export function parseResticSnapshotList(stdout: string, snapshotId: string, siteId: string): boolean {
-    let value: unknown;
-    try {
-        value = JSON.parse(stdout);
-    } catch {
-        return false;
-    }
-    if (!Array.isArray(value) || value.length !== 1) return false;
-    const entry = value[0] as Record<string, unknown>;
-    if (entry.id !== snapshotId) return false;
-    const tags = entry.tags;
-    return Array.isArray(tags) && tags.includes(`site:${siteId}`);
-}
-
-/** `restic ls --json <id>` must contain the snapshot manifest. */
-export function parseResticListContains(stdout: string, path: string): boolean {
-    for (const line of stdout.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("{")) continue;
-        try {
-            const value = JSON.parse(trimmed) as Record<string, unknown>;
-            if (value.path === path) return true;
-        } catch {
-            // Ignore partial lines.
-        }
-    }
-    return false;
-}
-
-interface ResticContext {
-    repository: string;
-    passwordPath: string;
-    restEnvPath: string;
-    restEnvExists: boolean;
-    stagingDir: string;
-}
-
-function resticCommand(context: ResticContext, command: string[], network?: string): string[] {
-    return [
-        "run",
-        "--rm",
-        ...(network ? ["--network", network] : []),
-        "--read-only",
-        "--tmpfs",
-        "/tmp:rw,noexec,nosuid",
-        "--env",
-        `RESTIC_REPOSITORY=${context.repository}`,
-        "--env",
-        "RESTIC_PASSWORD_FILE=/run/secrets/restic-password",
-        "--env",
-        "HOME=/tmp",
-        ...(context.restEnvExists ? ["--env-file", context.restEnvPath] : []),
-        "-v",
-        `${context.stagingDir}:/backup:ro`,
-        "-v",
-        `${context.passwordPath}:/run/secrets/restic-password:ro`,
-        MANAGED_SITE_BACKUP_RESTIC_IMAGE,
-        ...command,
-    ];
-}
 
 export async function runManagedSiteBackup(
     request: ManagedSiteBackupRequest,
@@ -264,17 +196,22 @@ export async function runManagedSiteBackup(
                 name,
                 "--network",
                 database.network,
-                "--env-file",
-                managedSiteBackupCredentialPath(stackDir, "database.env"),
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid",
                 "-v",
                 `${staged.stagingDir}:/backup:rw`,
+                "-v",
+                `${managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_DATABASE_CREDENTIALS_FILE)}:/run/secrets/database.cnf:ro`,
                 MANAGED_SITE_BACKUP_DUMP_IMAGES.mariadb,
                 "mariadb-dump",
+                // The client's own option file carries host, port, user and
+                // password. The panel never reads it and never puts a secret in
+                // an argument.
+                "--defaults-extra-file=/run/secrets/database.cnf",
                 "--single-transaction",
                 "--quick",
                 "--skip-lock-tables",
+                "--skip-ssl",
                 "--routines",
                 "--events",
                 "--triggers",
@@ -322,11 +259,10 @@ export async function runManagedSiteBackup(
         };
         await writeFile(`${staged.stagingDir}/backup.json`, `${JSON.stringify(snapshotManifest)}\n`, { mode: 0o600 });
 
-        const restic: ResticContext = {
+        const restic: ManagedSiteResticContext = {
             repository: backup.repository,
             passwordPath: managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_RESTIC_PASSWORD_FILE),
             restEnvPath: managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_REST_ENV_FILE),
-            stagingDir: staged.stagingDir,
             restEnvExists: await lstat(managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_REST_ENV_FILE))
                 .then((info) => info.isFile())
                 .catch(() => false),
@@ -336,9 +272,10 @@ export async function runManagedSiteBackup(
         await writeManagedSiteBackupAttempt(stackDir, attempt("pending"));
         const resticName = `cp-backup-restic-${attemptId}`;
         const uploaded = await docker(
-            resticCommand(
+            managedSiteResticCommand(
                 restic,
                 ["backup", "--json", "--tag", `site:${manifest.siteId}`, "--tag", `attempt:${attemptId}`, "/backup"],
+                [`${staged.stagingDir}:/backup:ro`],
                 dependencies.resticNetwork,
             ),
             {
@@ -357,7 +294,7 @@ export async function runManagedSiteBackup(
 
         phase = "verify";
         await writeManagedSiteBackupAttempt(stackDir, attempt("pending", { snapshotId }));
-        const listed = await docker(resticCommand(restic, ["snapshots", "--json", snapshotId], dependencies.resticNetwork), {
+        const listed = await docker(managedSiteResticCommand(restic, ["snapshots", "--json", snapshotId], [], dependencies.resticNetwork), {
             timeoutMs,
             maxBytes: MANAGED_SITE_BACKUP_OUTPUT_MAX_BYTES,
             cwd: stackDir,
@@ -369,7 +306,7 @@ export async function runManagedSiteBackup(
         if (!parseResticSnapshotList(listed.stdout, snapshotId, manifest.siteId)) {
             return await fail("The repository did not return the exact uploaded snapshot.", "unknown");
         }
-        const contents = await docker(resticCommand(restic, ["ls", "--json", snapshotId], dependencies.resticNetwork), {
+        const contents = await docker(managedSiteResticCommand(restic, ["ls", "--json", snapshotId], [], dependencies.resticNetwork), {
             timeoutMs,
             maxBytes: MANAGED_SITE_BACKUP_OUTPUT_MAX_BYTES,
             cwd: stackDir,

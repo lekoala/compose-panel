@@ -25,7 +25,7 @@ import {
 export const MANAGED_SITE_BACKUP_DIR = "backup";
 export const MANAGED_SITE_BACKUP_RESTIC_PASSWORD_FILE = "restic-password";
 export const MANAGED_SITE_BACKUP_REST_ENV_FILE = "rest.env";
-export const MANAGED_SITE_BACKUP_DATABASE_ENV_FILE = "database.env";
+export const MANAGED_SITE_BACKUP_DATABASE_CREDENTIALS_FILE = "database.cnf";
 export const MANAGED_SITE_BACKUP_ATTEMPT_FILE = "backup-attempt.json";
 
 export const MANAGED_SITE_BACKUP_CREDENTIAL_MAX_BYTES = 4 * 1024;
@@ -35,7 +35,6 @@ export const MANAGED_SITE_BACKUP_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 export const MANAGED_SITE_BACKUP_MAX_DUMP_BYTES = 2 * 1024 * 1024 * 1024;
 
 /** Pinned one-shot tooling. The panel image gains neither client. */
-export const MANAGED_SITE_BACKUP_RESTIC_IMAGE = "restic/restic:0.18.0";
 export const MANAGED_SITE_BACKUP_DUMP_IMAGES = { mariadb: "mariadb:11" } as const;
 
 export type ManagedSiteBackupCheck = { ok: true } | { ok: false; reason: string };
@@ -158,7 +157,7 @@ export async function checkManagedSiteBackupCredentials(
     if (!rest.ok) return rest;
     if (manifest.backup.sql) {
         const database = await privateFileCheck(
-            managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_DATABASE_ENV_FILE),
+            managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_DATABASE_CREDENTIALS_FILE),
             "backup database credentials",
             options,
             true,
