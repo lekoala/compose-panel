@@ -186,6 +186,15 @@ export const MANAGED_SITE_PATHS = {
  */
 export const MANAGED_SITE_RESERVED_TREE_ENTRIES = [".compose-panel", ".compose-panel-build"] as const;
 
+/** The only machine credential a managed site may declare (ADR 0050). */
+export const MANAGED_SITE_CI_KINDS = ["token"] as const;
+export type ManagedSiteCiKind = (typeof MANAGED_SITE_CI_KINDS)[number];
+
+export interface ManagedSiteCi {
+    /** One bearer token, verified against a stored digest. */
+    kind: ManagedSiteCiKind;
+}
+
 export interface ManagedSiteManifest {
     version: ManagedSiteVersion;
     siteId: string;
@@ -219,6 +228,8 @@ export interface ManagedSiteManifest {
     database?: ManagedSiteDatabase;
     /** `managed` only: optional offsite backup declaration (ADR 0049). */
     backup?: ManagedSiteBackup;
+    /** `managed` only: optional CI-triggered deploy credential (ADR 0050). */
+    ci?: ManagedSiteCi;
     /** `managed` only: fixed dependency preparation run in a disposable container. */
     build?: { kind: ManagedSiteBuildKind };
     /** `managed` only: declared persistent roots, contained in `shared/`. */
@@ -351,6 +362,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
             "runtime",
             "database",
             "backup",
+            "ci",
             "build",
             "deploy",
             "paths",
@@ -537,6 +549,25 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         backup = { kind, repository, ...(sql ? { sql } : {}) };
     }
 
+    let ci: ManagedSiteCi | undefined;
+    if (root.ci !== undefined) {
+        if (version !== MANAGED_SITE_BACKUP_VERSION) {
+            return { ok: false, reason: `The ci block requires manifest version ${MANAGED_SITE_BACKUP_VERSION}.` };
+        }
+        if (owner !== "managed") {
+            return { ok: false, reason: 'ci belongs to owner "managed": an opt-in stack has no generated deploy contract.' };
+        }
+        const candidate = asRecord(root.ci);
+        if (!candidate) return { ok: false, reason: "ci must be an object with a kind." };
+        const ciUnknown = unknownField(candidate, ["kind"], "ci.");
+        if (ciUnknown) return ciUnknown;
+        const kind = MANAGED_SITE_CI_KINDS.find((entry) => entry === candidate.kind);
+        if (!kind) {
+            return { ok: false, reason: `ci.kind must be one of: ${MANAGED_SITE_CI_KINDS.join(", ")}.` };
+        }
+        ci = { kind };
+    }
+
     let build: { kind: ManagedSiteBuildKind } | undefined;
     if (root.build !== undefined) {
         if (owner !== "managed") {
@@ -630,6 +661,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         runtime: image === undefined ? { profile: MANAGED_SITE_PROFILE } : { profile: MANAGED_SITE_PROFILE, image },
         ...(database ? { database } : {}),
         ...(backup ? { backup } : {}),
+        ...(ci ? { ci } : {}),
         ...(build ? { build } : {}),
         deploy: { kind: MANAGED_SITE_DEPLOY_KIND, git: { url, ref } },
         ...(paths ? { paths } : {}),

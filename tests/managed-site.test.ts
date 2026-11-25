@@ -157,6 +157,39 @@ describe("parseManagedSiteManifest", () => {
         expect(withSql.manifest.backup?.sql).toEqual({ engine: "mariadb", database: "acme_shop" });
     });
 
+    test("accepts a version 3 ci block on a managed site and refuses it elsewhere", () => {
+        const result = parse(managed({ version: 3, ci: { kind: "token" } }));
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.manifest.ci).toEqual({ kind: "token" });
+        expect(result.manifest.backup).toBeUndefined();
+
+        expect(rejected(managed({ version: 2, ci: { kind: "token" } }))).toBe(true);
+        expect(rejected(optIn({ version: 3, ci: { kind: "token" } }))).toBe(true);
+        expect(rejected(managed({ version: 3, ci: { kind: "hmac" } }))).toBe(true);
+        expect(rejected(managed({ version: 3, ci: { kind: "token", secret: "x" } }))).toBe(true);
+        expect(rejected(managed({ version: 3, ci: "token" }))).toBe(true);
+    });
+
+    test("accepts backup and ci together and leaves a v3 site without either valid", () => {
+        const result = parse(
+            managed({
+                version: 3,
+                ci: { kind: "token" },
+                backup: { kind: "restic", repository: "rest:https://backup.example.test/acme-shop" },
+            }),
+        );
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.manifest.ci?.kind).toBe("token");
+        expect(result.manifest.backup?.kind).toBe("restic");
+        const plain = parse(managed({ version: 3 }));
+        expect(plain.ok).toBe(true);
+        if (!plain.ok) return;
+        expect(plain.manifest.ci).toBeUndefined();
+        expect(plain.manifest.backup).toBeUndefined();
+    });
+
     test("refuses a backup outside version 3, on an opt-in stack, or with an unsupported backend", () => {
         const repository = "rest:https://backup.example.test/acme-shop";
         expect(rejected(managed({ version: 2, backup: { kind: "restic", repository } }))).toBe(true);
