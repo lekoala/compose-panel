@@ -87,8 +87,8 @@
   accepts no query value except one exact id, which pre-fills the existing
   restore form. Missing credentials, a missing backup block, a pending deploy or
   backup marker and a failed reply refuse before any container runs. The
-  disposable REST fixture lists the two lab snapshots and ignores one tagged for
-  another site; a real endpoint remains in the real-host checklist.
+  disposable REST fixture lists the two lab snapshots and does not return one
+  tagged for another site; a real endpoint remains in the real-host checklist.
 
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares
