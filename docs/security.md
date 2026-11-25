@@ -335,6 +335,35 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   operator procedure, because it is a destructive mutation with its own failure
   boundary.
 
+## CI-triggered deploy (ADR 0050)
+
+- `POST /api/managed-sites/<stack>/deploy` is not a browser mutation: it accepts
+  no session cookie and no ambient credential. It requires an explicit
+  `Authorization: Bearer` token and `Content-Type: application/json`. CSRF is
+  not applicable because a cross-site form cannot set that header or content
+  type, and the panel enables no CORS. Every browser mutation keeps its Origin,
+  CSRF and session checks.
+- The panel stores only a verifier, never a usable token: a fixed
+  `site/private/ci/deploy-token.sha256` regular `0600` file inside a `0700`
+  directory, one link, at most 256 bytes, holding one lowercase SHA-256 digest.
+  The fixed metadata is checked before the digest is read, the read is
+  no-follow, and the comparison is constant-time. A missing or malformed
+  verifier makes every machine request `401`; the site page shows why.
+- The request body is bounded to 8 KiB and must contain exactly one 40-hex
+  commit, the configured ref, a 16-64 character nonce and an ISO timestamp
+  within 300 seconds of the panel clock. A nonce is consumed once and stored in
+  a durable bounded record, so a captured request cannot be replayed. Ten failed
+  authentications per site in 60 seconds answer `429`.
+- The locked closure re-reads the manifest and re-checks the digest, nonce,
+  deploy marker and backup marker before starting the existing deploy. After the
+  Git fetch, the ref tip must equal the requested commit; a moved branch is
+  refused before any container is stopped. A crash keeps the normal attempt
+  marker and never authorizes a second deploy.
+- The token is never logged, never returned, never stored by the panel and never
+  placed in a URL. The endpoint stays on the loopback listener or the reviewed
+  TLS proxy; the CI stores the token as a secret. Revocation is deleting the
+  verifier or removing the `ci` block.
+
 ## Application toolbox (ADR 0026)
 
 - The panel may execute only **explicitly declared, non-interactive application

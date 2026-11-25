@@ -236,6 +236,18 @@ reads a credential value, deletes a snapshot, writes a restore over the live
 site, starts a scheduler or adds a Restic or database client to its image
 ([ADR 0049](adr/0049-offsite-backup-and-restore.md)).
 
+## CI-triggered deploy (opt-in)
+`src/managed-site-ci.ts` owns the fixed `site/private/ci/` verifier path, the
+metadata-only check that reads only a SHA-256 digest, the constant-time token
+comparison, the strict request parser, the 300-second window and the durable
+bounded nonce/last-attempt record. `POST /api/managed-sites/<stack>/deploy` is
+dispatched before the browser session gate, authenticates its own bearer
+credential and starts the existing deploy operation under the stack lock; the
+deploy then requires the fetched ref tip to equal the requested commit. A
+bounded `GET` on the same path returns the site, ref, current release and last
+attempt. The panel stores no usable token and gains no scheduler or generic
+webhook ([ADR 0050](adr/0050-ci-triggered-deploy.md)).
+
 ## Managed-site deploy (opt-in)
 `src/managed-site.ts` parses the trusted `compose-panel-site.json` strictly
 (bounded size, versioned, unknown/duplicate keys refused). `src/managed-site-profile.ts`

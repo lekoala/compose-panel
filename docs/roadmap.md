@@ -140,9 +140,19 @@ implemented for an opted-in stack.
   file restore and a dumped MariaDB record read back from the restored copy.
   Scheduling and retention automation remain to be built. The panel deletes no
   snapshot and stores no credential value.
-- **Next increments, each with its own ADR or vertical PR:** CI triggers; host
-  timers and retention; production cutover and cloning. The creation form,
-  stable loopback binding and the existing Caddy
+- **CI-triggered deploy.** Implemented under the same flag
+  ([ADR 0050](adr/0050-ci-triggered-deploy.md)): a v3 `ci: { kind: "token" }`
+  block plus the fixed `site/private/ci/deploy-token.sha256` verifier enable
+  `POST /api/managed-sites/<stack>/deploy`. One bearer request names the exact
+  tested commit, the configured ref, a nonce and a UTC timestamp; the panel
+  checks the digest, the 300-second window, the consumed nonce and the fetched
+  branch tip, then runs the existing manual deploy under the lock. The panel
+  stores only the digest, never the token, and still runs no scheduler or
+  webhook registry. Unit and app tests cover the refusals; a real CI host, the
+  proxy path and one revocation remain in the real-host checklist.
+- **Next increments, each with its own ADR or vertical PR:** host timers and
+  retention; production cutover and cloning. The creation form, stable loopback
+  binding and the existing Caddy
   attach are implemented. The opt-in disposable suites do not replace the
   real-host checklist in
   [deployment.md](deployment.md#remaining-real-host-validation); until that is

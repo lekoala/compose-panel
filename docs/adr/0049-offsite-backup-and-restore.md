@@ -81,9 +81,9 @@ checklist remains.
     It is passed as one explicit argument, so the dump never selects another
     site's database.
 - Versions 1 and 2 stay valid and unchanged. A v3 manifest is a v2 manifest
-  plus the optional `backup` block. The block changes no generated file: the
-  generator version stays `1` without a database and `2` with one, and Compose
-  output is byte-identical.
+  plus the optional `backup` block (and, per ADR 0050, the optional `ci` block).
+  The block changes no generated file: the generator version stays `1` without a
+  database and `2` with one, and Compose output is byte-identical.
 - The backup block is part of the effective admission: a site with a malformed
   or unsupported block refuses backup and restore with an actionable reason.
   Deploy, Up and the other existing actions are unaffected, because a backup

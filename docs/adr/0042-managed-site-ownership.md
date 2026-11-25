@@ -53,9 +53,10 @@ refused.
   symlink, at most 64 KiB, parsed once as UTF-8 JSON.
 - Strict and versioned: `version` must be `1`, `2` or `3`; a manifest carrying
   the `database` block needs at least `2` (ADR 0048), and one carrying `backup`
-  needs `3` (ADR 0049). Unknown or duplicate keys, wrong types and out-of-range
-  values are refused. A future schema is a deliberate `version` change, never an
-  ignored field. The panel never rewrites the manifest in `opt-in` mode.
+  or `ci` needs `3` (ADR 0049, ADR 0050). Unknown or duplicate keys, wrong types
+  and out-of-range values are refused. A future schema is a deliberate
+  `version` change, never an ignored field. The panel never rewrites the
+  manifest in `opt-in` mode.
 - No secret value ever appears in it; it is not rendered into HTML without
   escaping and is never logged.
 
@@ -63,7 +64,7 @@ v1 fields (all bounded):
 
 | Field | Required | Rule |
 | --- | --- | --- |
-| `version` | always | `1`; at least `2` with `database`; `3` with `backup` |
+| `version` | always | `1`; at least `2` with `database`; `3` with `backup` or `ci` |
 | `siteId` | always | opaque, immutable, `^[a-z0-9][a-z0-9-]{2,63}$`; never derived from the domain or folder, so a domain change never moves data |
 | `owner` | always | `"opt-in"` or `"managed"` |
 | `project` | always | the exact Compose project name; never assumed from the folder name |
@@ -76,6 +77,7 @@ v1 fields (all bounded):
 | `database.network` | with `database` | exact external Compose network shared with the operator-provisioned database; only the runtime service joins it |
 | `backup` | optional, `managed` only | `kind: "restic"`, one `rest:https://host/path` repository (or `rest:http://` on a loopback/single-label private host) and an optional `sql { engine: "mariadb", database }` that must match `database.engine`; requires `version: 3` (ADR 0049) |
 | `backup.sql.database` | with `backup.sql` | one bounded SQL identifier; the only database the dump may select |
+| `ci` | optional, `managed` only | `kind: "token"`; enables the machine deploy route and the fixed `site/private/ci/deploy-token.sha256` verifier; requires `version: 3` (ADR 0050) |
 | `gateway.port` | `managed` only | integer in the reserved range 41000–41999; the single loopback port the generated gateway publishes |
 | `deploy.kind` | always | `"bind-mount"` only |
 | `deploy.git.url` | always | Fully qualified public HTTPS or private SSH URL (ADR 0047), no password or token in the URL |
@@ -83,9 +85,9 @@ v1 fields (all bounded):
 | `paths` | `managed` only | declared persistent roots under `site/shared`, each written relative (`shared/...`), contained, no `..`, unique, bounded count |
 | `generation` | `managed` only | `1` without a database; `2` with the database fragment; see *Generated artifacts* |
 
-The database field lands with ADR 0048. Backups, health commands and hooks get
-their own fields when their own ADRs land. Refusing unknown fields is what keeps
-that honest.
+The database, backup and CI fields land with ADRs 0048-0050. Health commands and
+hooks get their own fields when their own ADRs land. Refusing unknown fields is
+what keeps that honest.
 
 ### Layout
 
@@ -335,8 +337,8 @@ stays an ordinary, read-only stack.
 - An `opt-in` stack must provide the fixed revision route; without it a deploy
   is refused rather than verified by a weaker signal.
 - Deleting a site, importing arbitrary projects, provisioned databases, live
-  restore, scheduled backups, CI triggers and a second profile remain out of
-  scope until their own ADRs.
+  restore, scheduled backups, generic webhooks and a second profile remain out
+  of scope until their own ADRs. CI-triggered deploy is ADR 0050.
 
 ## Alternatives considered
 
@@ -422,6 +424,6 @@ VM checklist before calling the pilot done:
 
 Attaching or importing arbitrary existing projects, automatic deletion, a
 second runtime profile, database provisioning, live restore, scheduled backups,
-host timers, retention automation, CI triggers, direct Caddy-to-FastCGI, edge
-Caddy options, multiple hosts and multi-user access. Manual offsite backup is
-ADR 0049.
+host timers, retention automation, generic webhooks, direct Caddy-to-FastCGI,
+edge Caddy options, multiple hosts and multi-user access. Manual offsite backup
+is ADR 0049; the CI-triggered deploy is ADR 0050.

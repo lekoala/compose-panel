@@ -1169,6 +1169,58 @@ ID it displayed, takes the stack lock and re-reads the marker; a mismatch
 refuses. Deleting the marker without inspecting the site only removes the
 guard.
 
+### Trigger a deploy from CI
+
+A generated site can let one pipeline promote the exact commit it tested
+without giving the pipeline the administrator password. The panel stores only a
+SHA-256 verifier; the token stays in the CI secret store.
+
+1. Generate a token and its digest, and provision the fixed files:
+
+   ```bash
+   token=$(openssl rand -hex 32)
+   printf '%s' "$token" | sha256sum | cut -d' ' -f1 > /tmp/deploy-token.sha256
+   install -d -m 0700 /opt/stacks/acme-shop/site/private/ci
+   install -m 0600 /tmp/deploy-token.sha256 \
+     /opt/stacks/acme-shop/site/private/ci/deploy-token.sha256
+   rm /tmp/deploy-token.sha256
+   ```
+
+   Store `$token` in the CI secret store; never keep it on the panel host. The
+   file must be a regular `0600` file, one link, owned by the panel account and
+   at most 256 bytes, inside a `0700` directory. A missing or malformed verifier
+   answers `401` and the site page shows why.
+
+2. Set `"version": 3` and add `"ci": { "kind": "token" }` to
+   `compose-panel-site.json`. The block changes no generated file. Managed sites
+   only; the request must use the configured `deploy.git.ref`.
+
+3. Send one request with the tested commit. On the host, call the loopback
+   listener directly; a remote CI uses the reviewed TLS proxy.
+
+   ```bash
+   sha=$(git rev-parse HEAD)
+   curl -fsS -X POST https://panel.example.com/api/managed-sites/acme-shop/deploy \
+     -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' \
+     -d "{\"sha\":\"$sha\",\"ref\":\"refs/heads/main\",\"nonce\":\"$(openssl rand -hex 16)\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"}"
+   ```
+
+   `202` means accepted, with `{ "siteId", "sha", "operationId" }`. `400` is a
+   malformed request, `401` a bad credential, `409` a busy stack, a pending
+   marker, a replayed nonce or a branch that moved before the deploy, and `503`
+   a panel shutting down or updating itself. The nonce is single-use and the
+   timestamp must be within 300 seconds of the panel clock.
+
+4. The fetch must still resolve the configured ref to `sha`; otherwise the
+   deploy is refused before anything is stopped. Trigger CI from the branch tip
+   and do not reuse a request body.
+
+5. Read the bounded status with `GET` on the same path and the same token; it
+   returns the site, ref, current release and last attempt, never output. Revoke
+   by deleting the verifier file or removing the `ci` block, and rotate by
+   writing a new digest: no restart is needed.
+
 ### Verification status
 
 Unit tests cover the manifest, the profile check, the Git adapter, the fixed
@@ -1212,7 +1264,13 @@ MariaDB database through `database.cnf`, deletes the record from the live
 database, runs the real restore runner into its disposable instance, and imports
 the restored dump elsewhere to read the record back; the live database still
 reports the deletion. No recovery from a real endpoint or with the host
-credentials unavailable has been claimed. The disposable SSH
+credentials unavailable has been claimed. The CI-triggered deploy (ADR 0050) is
+covered by unit tests for the verifier metadata and digest, the strict request
+body and window, nonce consumption/replay and the durable state, and by app
+tests for the missing/wrong token, the absent `ci` block, a malformed body or
+content type, one accepted request under the lock, a replay and the bounded
+status; the browser session alone is refused. No CI host, proxy path or
+revocation has been exercised on a real host. The disposable SSH
 fixture (`bash scripts/test-git-ssh.sh`) drives the real Git adapter against
 OpenSSH on loopback and exercises the correct key pair, wrong client key and
 wrong host key. These suites are opt-in and
@@ -1246,6 +1304,10 @@ the disposable suites are never run against a production daemon.
    reservation or attempt blocks the next action.
 7. Revoke the deploy key and confirm the next deploy fails closed without
    touching the active release.
+8. Trigger one CI deploy through the reviewed TLS proxy with a rotated token,
+   confirm the exact tested SHA is served, refuse a stale SHA after a new
+   commit, and revoke the verifier; confirm the next request is `401` and the
+   active release is unchanged.
 
 Record the result with the release or pilot review. Do not use a production host
 as the test bed.

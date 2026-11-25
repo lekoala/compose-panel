@@ -44,6 +44,17 @@
   overwritten. The disposable fixture dumps a MariaDB record, deletes it from
   the live database, restores it, and reads it back from the restored copy while
   the live database still reports the deletion.
+- Managed sites: CI-triggered deploy (ADR 0050). A managed manifest v3 may
+  declare `ci: { kind: "token" }` and provision the fixed digest-only
+  `site/private/ci/deploy-token.sha256` verifier. `POST
+  /api/managed-sites/<stack>/deploy` accepts one bearer credential, a body bound
+  to 8 KiB with exactly the tested 40-hex SHA, the configured ref, a nonce and
+  an ISO timestamp within 300 seconds, and reuses the manual deploy under the
+  stack lock. The nonce is consumed once and kept in a durable bounded record;
+  a moved branch is refused after the fetch and before anything is stopped. A
+  bounded `GET` reports the last attempt. The panel stores only the digest,
+  never the token, and adds no scheduler or webhook registry; the real CI host,
+  proxy path and revocation remain in the real-host checklist.
 
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares
