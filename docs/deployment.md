@@ -972,12 +972,17 @@ credential values, deletes a snapshot or starts a scheduler.
    credentials, network or published port. It never writes over the live site.
    A failed component is reported and the private directory is kept.
 
-The systemd timer and retention/prune automation are not implemented. The
+The systemd timer is an administrator procedure
+([Back up from a host timer](#back-up-from-a-host-timer)), and retention is
+measured by a read-only preview
+([Measure retention before pruning](#measure-retention-before-pruning)); the
+panel still runs neither a scheduler nor a prune. The
 isolated restore proof passes on the disposable lab, but no recovery from a real
-endpoint or with the host credentials unavailable has been recorded yet. Run
-`restic forget --dry-run` and complete a recovery from a separate machine before
-treating these backups as operational
-([ADR 0049](adr/0049-offsite-backup-and-restore.md)).
+endpoint or with the host credentials unavailable has been recorded yet. Compare
+the preview with `restic forget --dry-run` on the maintenance host and complete a
+recovery from a separate machine before treating these backups as operational
+([ADR 0049](adr/0049-offsite-backup-and-restore.md),
+[ADR 0052](adr/0052-retention-preview.md)).
 
 The generated gateway resolves `runtime` through Docker's embedded DNS on every
 request. Recreating the runtime can change its IP while the gateway container is
@@ -1326,6 +1331,52 @@ seconds.
    digest file or removing `backup.trigger`; rotate by writing a new digest. The
    panel deletes no snapshot: retention stays an off-panel procedure.
 
+### Measure retention before pruning
+
+The panel measures a declared policy; it never applies it. Retention stays an
+operator procedure on the maintenance host with a deletion credential that the
+panel does not hold.
+
+1. Declare the policy the maintenance host will use. Start conservatively and
+   compare the preview with the real dry-run before pruning anything. The block
+   changes no generated file and authorizes no deletion.
+
+   ```json
+   "backup": {
+     "kind": "restic",
+     "repository": "rest:https://backup.example.test/acme-shop",
+     "retention": { "keepLast": 7, "keepDaily": 14, "keepWeekly": 8, "keepMonthly": 12 }
+   }
+   ```
+
+   At least one count is required; each is bounded (`keepLast` 1–100,
+   `keepDaily` 1–365, `keepWeekly` 1–104, `keepMonthly` 1–120). Hourly, yearly,
+   within and tag policies are not accepted yet.
+
+2. Open the site page and press **Preview retention**. The operation asks the
+   pinned Restic client for this site's tagged snapshots and runs `forget
+   --dry-run` with exactly the declared counts. It reports how many snapshots
+   Restic would keep and remove, lists the exact removal ids, and warns when the
+   removal set contains the last good snapshot or the last verified restore. It
+   deletes nothing and stores no preview. A repository lock, a pending backup
+   marker or a missing credential file refuses the preview.
+
+3. On the maintenance host, with a credential that can delete (the panel's
+   backup credential is append-only), run the real dry-run and compare it with
+   the panel preview:
+
+   ```bash
+   restic -r "$REPOSITORY" forget --dry-run --tag site:acme-shop \
+     --keep-last 7 --keep-daily 14 --keep-weekly 8 --keep-monthly 12
+   ```
+
+   If the sets differ, stop and inspect the repository; do not prune.
+
+4. Run `forget` without `--dry-run`, then `restic check`, then restore one
+   remaining snapshot and read a protected file and its database record back.
+   Never run a backup while a prune runs, and never prune the last verified
+   recovery point. Record the removal ids and the check result.
+
 ### Verification status
 
 Unit tests cover the manifest, the profile check, the Git adapter, the fixed
@@ -1363,9 +1414,10 @@ metadata, staging walk and quotas, the fixed dump/Restic argument arrays,
 snapshot parsing, restore inventory/hash checks, the disposable SQL import, the
 routes, admission and acknowledgement, with a fake runner and no host Docker
 access. The disposable suite adds an append-only `restic/rest-server`, uploads a
-real staging tree, deletes the file, restores it with `restic restore <id>` and
-proves that a prune leaves the snapshot listed. A second fixture dumps one
-MariaDB database through `database.cnf`, deletes the record from the live
+real staging tree, deletes the file, restores it with `restic restore <id>`,
+runs the read-only retention preview for two snapshots (keep one, remove one),
+and proves that a prune still leaves the snapshot listed. A second fixture
+dumps one MariaDB database through `database.cnf`, deletes the record from the live
 database, runs the real restore runner into its disposable instance, and imports
 the restored dump elsewhere to read the record back; the live database still
 reports the deletion. No recovery from a real endpoint or with the host
@@ -1382,7 +1434,14 @@ by app tests for the untriggered site, the cookie-only request, the wrong token,
 the wrong content type, the accepted backup with its recorded last-good
 snapshot, a failed run that keeps the previous snapshot, the recorded restore
 proof, the overdue state and the rate limit; no
-host timer or real revocation has been exercised. The disposable SSH
+host timer or real revocation has been exercised. The retention preview
+(ADR 0052) is covered by unit tests for the declared counts, the exact dry-run
+argv, the tagged inventory, Restic's keep/remove split, the cross-check and the
+protected-fact helper, and by app tests for the session-less, stale-form,
+missing-policy and pending-marker refusals, one accepted dry-run and an
+inconsistent reply; the disposable REST fixture runs the same preview against
+the append-only lab repository and its delete attempt is still refused. No
+off-panel prune has been compared with a preview yet. The disposable SSH
 fixture (`bash scripts/test-git-ssh.sh`) drives the real Git adapter against
 OpenSSH on loopback and exercises the correct key pair, wrong client key and
 wrong host key. These suites are opt-in and
@@ -1424,6 +1483,10 @@ the disposable suites are never run against a production daemon.
    snapshot, stop the timer long enough to see overdue on the card and the
    status, then revoke the verifier and confirm the next request is `401` with
    the site unchanged.
+10. Declare one retention policy, run one preview, compare its removal set with
+    the off-panel dry-run, prune from the maintenance host, run `restic check`
+    and restore one remaining snapshot; confirm the panel's protected ids were
+    not removed.
 
 Record the result with the release or pilot review. Do not use a production host
 as the test bed.

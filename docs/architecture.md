@@ -236,6 +236,18 @@ reads a credential value, deletes a snapshot, writes a restore over the live
 site, starts a scheduler or adds a Restic or database client to its image
 ([ADR 0049](adr/0049-offsite-backup-and-restore.md)).
 
+## Retention preview (opt-in)
+`src/managed-site-backup-retention.ts` forwards the declared `backup.retention`
+counts to the pinned Restic client: `snapshots --json` for this site's tagged
+inventory and `forget --dry-run --json` for Restic's own keep/remove split. It
+cross-checks that every listed snapshot is accounted for exactly once and names
+the recorded last good or last verified snapshot the removal set contains.
+`POST /stacks/<name>/backup/retention` starts one read-only
+`retention-preview` operation under the stack lock. `--prune` is never passed,
+no snapshot id is passed, no preview is stored and no maintenance credential
+exists in the panel; the real `forget`/`prune` stays an operator procedure
+([ADR 0052](adr/0052-retention-preview.md)).
+
 ## CI-triggered deploy (opt-in)
 `src/managed-site-ci.ts` owns the fixed `site/private/ci/` verifier path, the
 metadata-only check that reads only a SHA-256 digest, the constant-time token

@@ -67,6 +67,17 @@
   timer, deletes no snapshot, stores only the digest and adds no notification or
   retention automation; a host timer and one revocation remain in the real-host
   checklist.
+- Managed sites: read-only retention preview (ADR 0052). A managed manifest v3
+  may declare `backup.retention` with `keepLast`, `keepDaily`, `keepWeekly` and
+  `keepMonthly`. **Preview retention** starts one lock-held
+  `retention-preview` operation that runs the pinned Restic `snapshots` and
+  `forget --dry-run` with exactly those counts, cross-checks that every site
+  snapshot is accounted for, lists the removal ids and warns when the last good
+  or last verified snapshot would be removed. It deletes nothing, stores no
+  preview, adds no deletion credential and never passes `--prune`; the real
+  prune stays an operator procedure with a separate maintenance credential. The
+  disposable REST fixture runs the preview against the append-only lab
+  repository; one real off-panel prune remains in the real-host checklist.
 
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares

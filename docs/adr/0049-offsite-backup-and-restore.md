@@ -231,7 +231,9 @@ checklist remains.
 - Retention runs outside the panel with the separate administration credential:
   `restic forget --dry-run` first, then a serialized prune, protecting the last
   verified recovery point and never running concurrently with a backup or a
-  restore proof.
+  restore proof. ADR 0052 measures that dry-run inside the panel with the
+  declared policy: it shows Restic's own keep/remove split, warns when the last
+  good or last verified snapshot would be removed, and deletes nothing.
 - A host systemd timer that requests the same guarded backup (same stack lock,
   admission and one-process model) is implemented in ADR 0051: one site-scoped
   bearer request reuses the manual backup. The panel never starts its own
@@ -253,6 +255,9 @@ checklist remains.
   staging walk, pinned one-shot container launchers, a snapshot manifest, an
   attempt marker and an isolated restore proof. It gains no scheduler, no SQL
   client in the panel image, no backup server and no retention credential.
+- ADR 0052 adds a read-only retention preview: the declared policy is measured
+  through Restic's own dry-run and the removal set is reported, but the panel
+  still deletes nothing and holds no maintenance credential.
 - The first slice is managed-only and MariaDB-only for SQL. A MySQL or
   PostgreSQL adapter is a bounded change to the dump container and the same
   snapshot contract; files-only backup works for every engine from the start.
@@ -328,7 +333,9 @@ checklist remains.
   into a new disposable database. The file and the record are read back from the
   restored copy; the live database still reports the deletion. The append-only
   credential cannot delete a snapshot, and a foreign snapshot id, a malformed id
-  and an unsafe restored tree are refused before acceptance.
+  and an unsafe restored tree are refused before acceptance. The read-only
+  retention preview returns the exact keep/remove split for the two lab
+  snapshots with the same append-only credential.
 - The same disposable suite proves the downgrade path: a failed backup leaves
   the pointer, release, containers and data untouched, and the attempt marker
   refuses the next run until acknowledged.

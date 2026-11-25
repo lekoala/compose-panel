@@ -228,4 +228,5 @@ change; the real-host checklist remains.
 Panel-owned scheduling, timer installation, retention/prune, snapshot deletion,
 notifications, public APIs, per-run output retrieval, choosing a repository or
 scope in the request, live restore, deployment triggers (ADR 0050), and any
-backup path that does not reuse the manual backup operation.
+backup path that does not reuse the manual backup operation. A read-only
+measurement of a declared retention policy is ADR 0052; it deletes nothing.

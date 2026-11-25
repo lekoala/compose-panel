@@ -140,7 +140,8 @@ implemented for an opted-in stack.
   file restore and a dumped MariaDB record read back from the restored copy.
   Panel-owned scheduling and retention automation remain out; an
   administrator-installed timer can request the same backup through the ADR 0051
-  machine path. The panel deletes no snapshot and stores no credential value.
+  machine path, and a declared retention policy is measured read-only through
+  ADR 0052. The panel deletes no snapshot and stores no credential value.
 - **CI-triggered deploy.** Implemented under the same flag
   ([ADR 0050](adr/0050-ci-triggered-deploy.md)): a v3 `ci: { kind: "token" }`
   block plus the fixed `site/private/ci/deploy-token.sha256` verifier enable
@@ -162,8 +163,20 @@ implemented for an opted-in stack.
   interval. The panel runs no timer and deletes no snapshot; the administrator
   installs the systemd timer. Unit and app tests cover the refusals and the
   facts; a real timer, host and revocation remain in the real-host checklist.
+- **Read-only retention preview.** Implemented under the same flag
+  ([ADR 0052](adr/0052-retention-preview.md)): a v3 `backup.retention` block
+  declares `keepLast`, `keepDaily`, `keepWeekly` and `keepMonthly`, and
+  **Preview retention** runs the pinned Restic `snapshots` and
+  `forget --dry-run` with exactly those counts under the stack lock. The panel
+  cross-checks that every site snapshot is accounted for, lists the removal ids
+  and warns when the last good or last verified snapshot would go. It deletes
+  nothing, stores no preview and holds no deletion credential; the real prune
+  stays an operator procedure. Unit, app and disposable REST fixtures cover the
+  preview; one real off-panel prune compared with a preview remains in the
+  real-host checklist.
 - **Next increments, each with its own ADR or vertical PR:** retention
-  automation; production cutover and cloning. The creation form, stable loopback
+  automation with a deletion credential and a protected recovery point;
+  production cutover and cloning. The creation form, stable loopback
   binding and the existing Caddy
   attach are implemented. The opt-in disposable suites do not replace the
   real-host checklist in

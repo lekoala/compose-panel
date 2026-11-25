@@ -391,6 +391,36 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   deleting the verifier or removing `backup.trigger`. The host timer, not the
   panel, owns the schedule; overdue is computed from the durable fact.
 
+## Retention preview (ADR 0052)
+
+- `POST /stacks/<stack>/backup/retention` is an ordinary browser mutation: it
+  requires an active session, the Origin check and the CSRF token, and it is
+  unavailable when managed sites are disabled. It takes no token and adds no
+  machine route.
+- The preview is read-only. The panel runs one pinned Restic container with the
+  same read-only root filesystem, bounded tmpfs and operator-owned password
+  file, and two fixed commands: `snapshots --json` and
+  `forget --dry-run --json` with the declared `keep-*` counts. `--prune` is never
+  passed, no snapshot id is passed, and the panel holds no deletion credential.
+  `--no-lock` is used because an append-only repository must not accumulate lock
+  objects the panel cannot remove; the stack lock already serializes panel
+  operations.
+- The declared policy is forwarded unchanged. The panel reimplements no calendar
+  rule, so the preview cannot diverge from the Restic invocation the maintenance
+  host will use.
+- The reply is bounded and cross-checked: every listed snapshot must carry this
+  site's tag, appear exactly once in the union of `keep` and `remove`, and have
+  a valid id and timestamp. A partial, duplicate, foreign or unfamiliar answer
+  fails the operation instead of showing a removal set.
+- If the removal set contains the recorded last good snapshot or the last
+  verified restore snapshot, the operation warns. That warning is the only
+  protection: the panel never rewrites the facts and never blocks the operator
+  from changing the declared policy.
+- The preview is operation output only. Nothing durable is written and only the
+  snapshot ids and timestamps Restic returned are shown; no path, tag list,
+  repository URL or credential appears. The audit line records the keep/remove
+  counts, never an id or a policy reason.
+
 ## Application toolbox (ADR 0026)
 
 - The panel may execute only **explicitly declared, non-interactive application
