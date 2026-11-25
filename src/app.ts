@@ -136,6 +136,7 @@ import {
     managedSiteRetentionProtection,
     runManagedSiteBackupRetentionPreview,
 } from "./managed-site-backup-retention.ts";
+import { runManagedSiteBackupSnapshotList } from "./managed-site-backup-snapshots.ts";
 import { isManagedSiteSnapshotId, runManagedSiteRestore } from "./managed-site-restore.ts";
 import {
     MANAGED_SITE_CI_MAX_BODY_BYTES,
@@ -1294,6 +1295,10 @@ export function createApp(options: AppOptions): App {
         const check = imageCheck.forStack(stack.name);
         const owner = managedBy(status.declared);
         const siteCard = config.managedSitesEnabled ? await managedSiteCard(stack.name) : null;
+        // ADR 0053: the snapshot list pre-fills the restore form. Any value that
+        // is not one exact id is ignored rather than reflected.
+        const requestedSnapshot = query?.get("snapshot")?.trim().toLowerCase() ?? "";
+        const restoreSnapshot = isManagedSiteSnapshotId(requestedSnapshot) ? requestedSnapshot : null;
         const project = status.project ? `<span>Compose project <code>${escapeHtml(status.project)}</code></span>` : "";
         return htmlResponse(
             documentHtml(
@@ -1311,7 +1316,7 @@ export function createApp(options: AppOptions): App {
                         managedBy: owner,
                     }) +
                     operationPanel(operation, stack.name) +
-                    managedSiteSection(siteCard, stack.name, csrf, operation?.status === "running") +
+                    managedSiteSection(siteCard, stack.name, csrf, operation?.status === "running", restoreSnapshot) +
                     servicesSection(
                         status.services,
                         status.state,
@@ -2131,6 +2136,64 @@ export function createApp(options: AppOptions): App {
             }
             throw error;
         }
+    }
+
+    /**
+     * List one site's tagged snapshots for restore selection (ADR 0053). The
+     * page is read-only: one bounded Restic inventory call, no deletion, no
+     * stored list and no lock, because it changes no state.
+     */
+    async function renderBackupSnapshots(name: string, csrf: string): Promise<Response> {
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        const refuse = (message: string, status = 409): Response =>
+            htmlResponse(
+                messagePage("Snapshots unavailable", message, { href: back, label: "Back to the stack" }, pageChrome(csrf)),
+                status,
+            );
+        if (!config.managedSitesEnabled) throw new StackError("Managed sites are not enabled on this panel.", 404);
+        const stackDir = await managedSiteStackDir(name);
+        const manifestResult = await readManagedSiteManifest(stackDir);
+        if (!manifestResult.ok) return refuse(manifestResult.reason);
+        const manifest = manifestResult.manifest;
+        if (manifest.owner !== "managed" || !manifest.backup) {
+            return refuse("This site declares no backup block, so there is no repository to list.");
+        }
+        if (await pendingDeployAttempt(stackDir)) return refuse(MANAGED_SITE_PENDING_MESSAGE);
+        if (selfUpdatePending) return refuse(SELF_UPDATE_RUNNING);
+        if (shuttingDown) return refuse("Compose Panel is shutting down.", 503);
+        const credentials = await (options.backupCheckCredentials ?? checkManagedSiteBackupCredentials)(stackDir, manifest);
+        if (!credentials.ok) return refuse(credentials.reason);
+        const pendingBackup = await readManagedSiteBackupAttempt(stackDir);
+        if (pendingBackup.kind !== "none") {
+            return refuse(
+                "A previous backup attempt has an unconfirmed outcome. Inspect the repository and acknowledge it before listing snapshots.",
+            );
+        }
+        const listed = await runManagedSiteBackupSnapshotList(
+            { stackDir, manifest, signal: shutdownController.signal },
+            options.backupDocker ? { docker: options.backupDocker } : {},
+        );
+        if (!listed.ok) return refuse(listed.reason, 502);
+        const rows = listed.snapshots
+            .map(
+                (snapshot) =>
+                    `<tr><td>${escapeHtml(snapshot.at)}</td><td><code>${escapeHtml(snapshot.id)}</code></td><td><a class="btn" href="${back}?snapshot=${encodeURIComponent(snapshot.id)}#restore">Choose</a></td></tr>`,
+            )
+            .join("");
+        const table =
+            listed.snapshots.length === 0
+                ? note("info", "The repository holds no snapshot tagged for this site.")
+                : `<div class="table-wrap"><table class="table"><thead><tr><th>Created</th><th>Snapshot id</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+        const content =
+            `<p class="crumbs"><a href="${back}">Back to the stack</a></p>` +
+            `<div class="page-head"><h1>Snapshots</h1><span class="row-actions"><a class="btn" href="${back}/backup/snapshots">Refresh</a></span></div>` +
+            `<p class="meta"><span>Site <code>${escapeHtml(manifest.siteId)}</code></span><span>Repository <code>${escapeHtml(manifest.backup.repository)}</code></span><span>${String(listed.snapshots.length)} snapshot(s)</span></p>` +
+            note(
+                "info",
+                "Read-only list of this site's tagged snapshots, newest first. Nothing is extracted or deleted. Choose one to pre-fill the restore form, then submit that form to verify and restore.",
+            ) +
+            table;
+        return htmlResponse(documentHtml(`Snapshots - ${name}`, content, { ...pageChrome(csrf), nav: await sidebarNav("stacks", name) }));
     }
 
     /**
@@ -5102,6 +5165,7 @@ export function createApp(options: AppOptions): App {
         href: string,
         csrf: string,
         busy: boolean,
+        restoreSnapshot: string | null,
     ): string {
         const backup = manifest.backup;
         if (!backup) return "";
@@ -5148,7 +5212,8 @@ export function createApp(options: AppOptions): App {
                 "info",
                 "Copies the declared persistent roots to a private staging tree, dumps only the declared database when one is configured, uploads with a pinned Restic container and verifies the exact snapshot. The panel never reads the credential files.",
             ) +
-            `<form method="post" action="${href}/restore"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><label>Snapshot id <input type="text" name="snapshot" required minlength="64" maxlength="64" pattern="[0-9a-f]{64}" spellcheck="false" autocapitalize="none" placeholder="64 hexadecimal characters"></label><button class="btn" type="submit"${busy ? " disabled" : ""}>Verify and restore</button></form>` +
+            `<p class="meta"><span><a href="${href}/backup/snapshots">List this site's snapshots</a></span></p>` +
+            `<form method="post" action="${href}/restore" id="restore"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><label>Snapshot id <input type="text" name="snapshot" value="${escapeHtml(restoreSnapshot ?? "")}" required minlength="64" maxlength="64" pattern="[0-9a-f]{64}" spellcheck="false" autocapitalize="none" placeholder="64 hexadecimal characters"></label><button class="btn" type="submit"${busy ? " disabled" : ""}>Verify and restore</button></form>` +
             note(
                 "info",
                 "Restores one exact snapshot into a new private directory and, for a SQL snapshot, imports it into a disposable database with no production credentials, no production network and no published port. The live site is not modified.",
@@ -5234,7 +5299,13 @@ export function createApp(options: AppOptions): App {
         );
     }
 
-    function managedSiteSection(card: ManagedSiteCard | null, name: string, csrf: string, busy: boolean): string {
+    function managedSiteSection(
+        card: ManagedSiteCard | null,
+        name: string,
+        csrf: string,
+        busy: boolean,
+        restoreSnapshot: string | null,
+    ): string {
         if (!card) return "";
         const href = `/stacks/${encodeURIComponent(name)}`;
         if (card.pending.kind === "unreadable") {
@@ -5268,7 +5339,7 @@ export function createApp(options: AppOptions): App {
                 meta +
                 drift +
                 databaseNote +
-                managedSiteBackupSection(card, manifest, href, csrf, busy) +
+                managedSiteBackupSection(card, manifest, href, csrf, busy, restoreSnapshot) +
                 managedSiteBackupTriggerSection(card, manifest, name) +
                 managedSiteCiSection(card, manifest, name) +
                 regenerate +
@@ -5285,7 +5356,7 @@ export function createApp(options: AppOptions): App {
             meta +
             drift +
             databaseNote +
-            managedSiteBackupSection(card, manifest, href, csrf, busy) +
+            managedSiteBackupSection(card, manifest, href, csrf, busy, restoreSnapshot) +
             managedSiteBackupTriggerSection(card, manifest, name) +
             managedSiteCiSection(card, manifest, name) +
             regenerate +
@@ -6028,6 +6099,14 @@ export function createApp(options: AppOptions): App {
                     });
                 }
                 return await renderRollout(decodeName(rolloutMatch[1]!), session.csrf, serviceParam || null);
+            }
+            const backupSnapshotsMatch = /^\/stacks\/([^/]+)\/backup\/snapshots$/.exec(url.pathname);
+            if (backupSnapshotsMatch && config.managedSitesEnabled) {
+                try {
+                    return await renderBackupSnapshots(decodeName(backupSnapshotsMatch[1]!), session.csrf);
+                } catch (error) {
+                    return routeError(error, session.csrf, safeName(backupSnapshotsMatch[1]!));
+                }
             }
             const detailMatch = /^\/stacks\/([^/]+)$/.exec(url.pathname);
             if (detailMatch) {

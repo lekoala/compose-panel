@@ -17,7 +17,7 @@ import { resolveRoot } from "../src/stacks.ts";
 import { revisionScript } from "../src/git-release.ts";
 import type { ManagedSiteComposeFacts } from "../src/managed-site-profile.ts";
 import { MANAGED_SITE_PATHS, type ManagedSiteManifest } from "../src/managed-site.ts";
-import { readManagedSiteBackupAttempt, writeManagedSiteBackupAttempt } from "../src/managed-site-backup.ts";
+import { readManagedSiteBackupAttempt, writeManagedSiteBackupAttempt, type ManagedSiteBackupCheck } from "../src/managed-site-backup.ts";
 import { hashManagedSiteCiToken, readManagedSiteCiState, type ManagedSiteCiCheck } from "../src/managed-site-ci.ts";
 import type { MachineDigestCheck } from "../src/machine-credential.ts";
 import { hashMachineToken } from "../src/machine-credential.ts";
@@ -6451,6 +6451,199 @@ describe("retention preview (ADR 0052)", () => {
             expect(operation?.status).toBe("failed");
             expect(operation?.output).not.toContain(B.slice(0, 12));
             expect(calls).toHaveLength(2);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe("read-only snapshot inventory (ADR 0053)", () => {
+    const SITE = "acme-shop";
+    const A = "a".repeat(64);
+    const B = "b".repeat(64);
+    const T1 = "2026-11-21T10:00:00Z";
+    const T2 = "2026-11-22T10:00:00Z";
+
+    const manifest: ManagedSiteManifest = {
+        version: 3,
+        siteId: SITE,
+        owner: "managed",
+        project: SITE,
+        services: { gateway: "web", runtime: "runtime" },
+        gateway: { port: 41001 },
+        publicRoot: "public",
+        runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+        deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+        paths: ["shared/uploads"],
+        generation: "1",
+        backup: { kind: "restic", repository: "rest:https://backup.example.test/acme-shop" },
+    };
+
+    const commandOk = (stdout = ""): CommandResult => ({ code: 0, stdout, stderr: "", timedOut: false, truncated: false });
+
+    function snapshot(id: string, time: string): Record<string, unknown> {
+        return { id, short_id: id.slice(0, 8), time, tags: [`site:${SITE}`], paths: ["/backup"], host: "panel" };
+    }
+
+    async function listRoot(site: ManagedSiteManifest = manifest, name = "demo"): Promise<string> {
+        const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-snapshot-list-")));
+        const stack = join(dir, name);
+        await mkdir(join(stack, "site", "private", "backup"), { recursive: true, mode: 0o700 });
+        await writeFile(join(stack, "compose.yaml"), `name: ${site.project}\nservices:\n  web:\n    image: nginx:alpine\n`);
+        await writeFile(join(stack, "compose-panel-site.json"), `${JSON.stringify(site, null, 2)}\n`);
+        return dir;
+    }
+
+    function listDocker(calls: string[][], options: { snapshots?: string; code?: number } = {}): DockerRunner {
+        return async (args) => {
+            calls.push(args);
+            if (args.includes("snapshots")) {
+                return options.code !== undefined && options.code !== 0
+                    ? {
+                          code: options.code,
+                          stdout: "",
+                          stderr: "Fatal: unable to open repository",
+                          timedOut: false,
+                          truncated: false,
+                      }
+                    : commandOk(options.snapshots ?? JSON.stringify([snapshot(A, T1), snapshot(B, T2)]));
+            }
+            return commandOk();
+        };
+    }
+
+    function makeListApp(
+        dir: string,
+        docker: DockerRunner,
+        checkCredentials: (stackDir: string, manifest: ManagedSiteManifest) => Promise<ManagedSiteBackupCheck> = async () => ({ ok: true }),
+    ) {
+        const { provider } = controllableProvider();
+        return makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+            docker,
+            checkCredentials,
+        });
+    }
+
+    test("lists the site's snapshots newest first and links to the restore form", async () => {
+        const dir = await listRoot();
+        try {
+            const calls: string[][] = [];
+            const app = makeListApp(dir, listDocker(calls));
+            const session = await login(app);
+            const response = await authed(app, "/stacks/demo/backup/snapshots", session);
+            expect(response.status).toBe(200);
+            const page = await response.text();
+            expect(page.indexOf(B)).toBeGreaterThan(-1);
+            expect(page.indexOf(A)).toBeGreaterThan(-1);
+            expect(page.indexOf(B)).toBeLessThan(page.indexOf(A));
+            expect(page).toContain(`href="/stacks/demo?snapshot=${B}#restore"`);
+            expect(page).toContain("Refresh");
+            expect(calls).toHaveLength(1);
+            expect(calls[0]).toContain("snapshots");
+            expect(calls[0]).toContain("--json");
+            expect(calls[0]).toContain("--no-lock");
+            expect(calls[0]).toContain(`site:${SITE}`);
+            expect(calls[0]!.some((arg) => arg === "forget" || arg === "prune" || arg === "--prune")).toBe(false);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses before running a container when the site, credentials or markers do not allow it", async () => {
+        const dir = await listRoot();
+        try {
+            const plainManifest: ManagedSiteManifest = { ...manifest, siteId: "plain-site", project: "plain", backup: undefined };
+            await mkdir(join(dir, "plain"), { recursive: true });
+            await writeFile(join(dir, "plain", "compose.yaml"), "name: plain\nservices:\n  web:\n    image: nginx:alpine\n");
+            await writeFile(join(dir, "plain", "compose-panel-site.json"), `${JSON.stringify(plainManifest, null, 2)}\n`);
+
+            const calls: string[][] = [];
+            const app = makeListApp(dir, listDocker(calls));
+            const anonymous = await app.fetch(new Request(`${ORIGIN}/stacks/demo/backup/snapshots`));
+            expect(anonymous.status).toBe(302);
+
+            const session = await login(app);
+            const plain = await authed(app, "/stacks/plain/backup/snapshots", session);
+            expect(plain.status).toBe(409);
+            expect(calls).toEqual([]);
+            await app.beginShutdown(100);
+
+            const missing = makeListApp(dir, listDocker(calls), async () => ({
+                ok: false as const,
+                reason: "The Restic password file is missing.",
+            }));
+            const missingSession = await login(missing);
+            const missingPage = await authed(missing, "/stacks/demo/backup/snapshots", missingSession);
+            expect(missingPage.status).toBe(409);
+            expect(await missingPage.text()).toContain("Restic password");
+            expect(calls).toEqual([]);
+            await missing.beginShutdown(100);
+
+            const stackDir = join(dir, "demo").replace(/\\/g, "/");
+            await writeFile(join(stackDir, "site", "private", "deploy-attempt.json"), "{}\n");
+            const pendingDeploy = makeListApp(dir, listDocker(calls));
+            const pendingDeploySession = await login(pendingDeploy);
+            const deployPage = await authed(pendingDeploy, "/stacks/demo/backup/snapshots", pendingDeploySession);
+            expect(deployPage.status).toBe(409);
+            expect(calls).toEqual([]);
+            await pendingDeploy.beginShutdown(100);
+            await rm(join(stackDir, "site", "private", "deploy-attempt.json"));
+
+            await writeManagedSiteBackupAttempt(stackDir, {
+                version: 1,
+                siteId: SITE,
+                attemptId: "attempt0053",
+                repository: "rest:https://backup.example.test/acme-shop",
+                startedAt: "2026-11-25T10:00:00.000Z",
+                phase: "upload",
+                outcome: "failed",
+                reason: "upload timed out",
+            });
+            const pendingBackup = makeListApp(dir, listDocker(calls));
+            const pendingBackupSession = await login(pendingBackup);
+            const backupPage = await authed(pendingBackup, "/stacks/demo/backup/snapshots", pendingBackupSession);
+            expect(backupPage.status).toBe(409);
+            expect(await backupPage.text()).toContain("unconfirmed outcome");
+            expect(calls).toEqual([]);
+            await pendingBackup.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("pre-fills only one exact snapshot id and ignores any other value", async () => {
+        const dir = await listRoot();
+        try {
+            const app = makeListApp(dir, listDocker([]));
+            const session = await login(app);
+            const exact = await (await authed(app, `/stacks/demo?snapshot=${A}`, session)).text();
+            expect(exact).toContain(`value="${A}"`);
+            const invalid = await (await authed(app, "/stacks/demo?snapshot=latest", session)).text();
+            expect(invalid).not.toContain('value="latest"');
+            const injected = await (
+                await authed(app, `/stacks/demo?snapshot=${encodeURIComponent('"><script>alert(1)</script>')}`, session)
+            ).text();
+            expect(injected).not.toContain("<script>alert(1)</script>");
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("shows no partial list when the repository reply fails", async () => {
+        const dir = await listRoot();
+        try {
+            const calls: string[][] = [];
+            const app = makeListApp(dir, listDocker(calls, { code: 1 }));
+            const session = await login(app);
+            const response = await authed(app, "/stacks/demo/backup/snapshots", session);
+            expect(response.status).toBe(502);
+            const page = await response.text();
+            expect(page).not.toContain(A);
+            expect(page).not.toContain(B);
+            expect(page).toContain("unable to open repository");
             await app.beginShutdown(100);
         } finally {
             await rm(dir, { recursive: true, force: true });
