@@ -19,6 +19,13 @@ import type { ManagedSiteComposeFacts } from "../src/managed-site-profile.ts";
 import { MANAGED_SITE_PATHS, type ManagedSiteManifest } from "../src/managed-site.ts";
 import { readManagedSiteBackupAttempt, writeManagedSiteBackupAttempt } from "../src/managed-site-backup.ts";
 import { hashManagedSiteCiToken, readManagedSiteCiState, type ManagedSiteCiCheck } from "../src/managed-site-ci.ts";
+import type { MachineDigestCheck } from "../src/machine-credential.ts";
+import { hashMachineToken } from "../src/machine-credential.ts";
+import {
+    readManagedSiteBackupTriggerState,
+    writeManagedSiteBackupTriggerState,
+    type ManagedSiteBackupTriggerState,
+} from "../src/managed-site-backup-trigger.ts";
 import { MANAGED_SITE_GATEWAY_CONFIG, MANAGED_SITE_OPCACHE_CONFIG, renderManagedSiteArtifacts } from "../src/managed-site-generate.ts";
 import type { SelfUpdater } from "../src/self-update.ts";
 import {
@@ -62,6 +69,7 @@ function makeApp(
         docker?: DockerRunner;
         restoreDocker?: DockerRunner;
         checkCredentials?: (stackDir: string, manifest: ManagedSiteManifest) => Promise<{ ok: true } | { ok: false; reason: string }>;
+        checkVerifier?: (stackDir: string) => Promise<MachineDigestCheck>;
     },
     ci?: { checkVerifier?: (stackDir: string) => Promise<ManagedSiteCiCheck> },
 ): App {
@@ -122,6 +130,7 @@ function makeApp(
         ...(backup?.docker ? { backupDocker: backup.docker } : {}),
         ...(backup?.restoreDocker ? { restoreDocker: backup.restoreDocker } : {}),
         ...(backup?.checkCredentials ? { backupCheckCredentials: backup.checkCredentials } : {}),
+        ...(backup?.checkVerifier ? { backupTriggerCheckVerifier: backup.checkVerifier } : {}),
         ...(ci?.checkVerifier ? { ciCheckVerifier: ci.checkVerifier } : {}),
     });
 }
@@ -5866,6 +5875,320 @@ describe("CI-triggered deploy (ADR 0050)", () => {
             expect(page).toContain("The CI verifier file is missing.");
             expect(page).not.toContain(TOKEN);
             expect((await request(app, "POST", payload())).status).toBe(401);
+            expect(app.operations.forStack("demo")).toBeNull();
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe("timer-triggered backup (ADR 0051)", () => {
+    const TOKEN = "b".repeat(64);
+    const DIGEST = hashMachineToken(TOKEN);
+    const SNAPSHOT = "e".repeat(64);
+    const NONCE = "n".repeat(24);
+
+    const manifest: ManagedSiteManifest = {
+        version: 3,
+        siteId: "acme-shop",
+        owner: "managed",
+        project: "acme-shop",
+        services: { gateway: "web", runtime: "runtime" },
+        gateway: { port: 41001 },
+        publicRoot: "public",
+        runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+        deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+        paths: ["shared/uploads"],
+        generation: "1",
+        backup: {
+            kind: "restic",
+            repository: "rest:https://backup.example.test/acme-shop",
+            trigger: { kind: "token", everyHours: 24 },
+        },
+    };
+
+    const commandOk = (stdout = ""): CommandResult => ({ code: 0, stdout, stderr: "", timedOut: false, truncated: false });
+
+    function docker(calls: string[][]): DockerRunner {
+        return async (args) => {
+            calls.push(args);
+            if (args.includes("backup")) return commandOk(`${JSON.stringify({ message_type: "summary", snapshot_id: SNAPSHOT })}\n`);
+            if (args.includes("snapshots")) return commandOk(JSON.stringify([{ id: SNAPSHOT, tags: ["site:acme-shop"] }]));
+            if (args.includes("ls")) return commandOk(`${JSON.stringify({ path: "/backup/backup.json" })}\n`);
+            return commandOk();
+        };
+    }
+
+    function restoreDocker(calls: string[][]): DockerRunner {
+        return async (args) => {
+            calls.push(args);
+            if (args.includes("dump")) {
+                return commandOk(
+                    JSON.stringify({
+                        version: 1,
+                        siteId: "acme-shop",
+                        mode: "files",
+                        inventory: [
+                            {
+                                path: "files/shared/uploads/a.txt",
+                                type: "file",
+                                size: 5,
+                                sha256: createHash("sha256").update("alpha").digest("hex"),
+                            },
+                        ],
+                    }),
+                );
+            }
+            if (args.includes("snapshots")) return commandOk(JSON.stringify([{ id: SNAPSHOT, tags: ["site:acme-shop"] }]));
+            if (args.includes("ls")) return commandOk(`${JSON.stringify({ path: "/backup/backup.json" })}\n`);
+            if (args.includes("restore")) {
+                const mount = args.find((value) => value.endsWith(":/restore"))!;
+                const target = mount.slice(0, -":/restore".length);
+                await mkdir(`${target}/backup/files/shared/uploads`, { recursive: true });
+                await writeFile(`${target}/backup/files/shared/uploads/a.txt`, "alpha");
+                return commandOk();
+            }
+            return commandOk();
+        };
+    }
+
+    async function timerRoot(userManifest: ManagedSiteManifest = manifest): Promise<string> {
+        const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-backup-timer-")));
+        const stack = join(dir, "demo");
+        await mkdir(join(stack, "site", "shared", "uploads"), { recursive: true });
+        await mkdir(join(stack, "site", "private", "backup"), { recursive: true, mode: 0o700 });
+        await writeFile(join(stack, "compose.yaml"), "name: acme-shop\nservices:\n  web:\n    image: nginx:alpine\n");
+        await writeFile(join(stack, "compose-panel-site.json"), `${JSON.stringify(userManifest, null, 2)}\n`);
+        await writeFile(join(stack, "site", "shared", "uploads", "a.txt"), "alpha");
+        return dir;
+    }
+
+    function request(app: App, method: string, body?: unknown, token: string | null = TOKEN): Promise<Response> {
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (token !== null) headers.authorization = `Bearer ${token}`;
+        return app.fetch(
+            new Request(`${ORIGIN}/api/managed-sites/demo/backup`, {
+                method,
+                headers,
+                ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+            }),
+        );
+    }
+
+    function payload(nonce = NONCE, timestamp = new Date().toISOString()) {
+        return { nonce, timestamp };
+    }
+
+    const verifier = { checkVerifier: async (): Promise<MachineDigestCheck> => ({ ok: true, digest: DIGEST }) };
+
+    test("refuses a missing or wrong token and never accepts a session cookie", async () => {
+        const dir = await timerRoot();
+        try {
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                checkCredentials: async () => ({ ok: true }),
+                ...verifier,
+            });
+            expect((await request(app, "POST", payload(), null)).status).toBe(401);
+            expect((await request(app, "POST", payload(), "w".repeat(64))).status).toBe(401);
+
+            const session = await login(app);
+            const viaCookie = await authed(app, "/api/managed-sites/demo/backup", session, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload()),
+            });
+            expect(viaCookie.status).toBe(401);
+            expect(app.operations.forStack("demo")).toBeNull();
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses an untriggered site, a wrong content type and a deploy-shaped body", async () => {
+        const dir = await timerRoot();
+        try {
+            const plain = join(dir, "plain");
+            await mkdir(plain);
+            await writeFile(join(plain, "compose.yaml"), "name: plain\nservices:\n  web:\n    image: nginx:alpine\n");
+            await writeFile(
+                join(plain, "compose-panel-site.json"),
+                JSON.stringify({
+                    version: 1,
+                    siteId: "plain-site",
+                    owner: "opt-in",
+                    project: "plain",
+                    services: { gateway: "web", runtime: "php" },
+                    publicRoot: "public",
+                    runtime: { profile: "php-front-controller" },
+                    deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+                }),
+            );
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                checkCredentials: async () => ({ ok: true }),
+                ...verifier,
+            });
+
+            const untriggered = await app.fetch(
+                new Request(`${ORIGIN}/api/managed-sites/plain/backup`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+                    body: JSON.stringify(payload()),
+                }),
+            );
+            expect(untriggered.status).toBe(404);
+
+            const wrongType = await app.fetch(
+                new Request(`${ORIGIN}/api/managed-sites/demo/backup`, {
+                    method: "POST",
+                    headers: { "content-type": "text/plain", authorization: `Bearer ${TOKEN}` },
+                    body: JSON.stringify(payload()),
+                }),
+            );
+            expect(wrongType.status).toBe(415);
+
+            const deployShaped = await request(app, "POST", { ...payload(), sha: "d".repeat(40) });
+            expect(deployShaped.status).toBe(400);
+            expect(app.operations.forStack("demo")).toBeNull();
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("runs one verified backup under the lock, records the facts and refuses a replay", async () => {
+        const dir = await timerRoot();
+        try {
+            const calls: string[][] = [];
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                docker: docker(calls),
+                checkCredentials: async () => ({ ok: true }),
+                ...verifier,
+            });
+            const accepted = await request(app, "POST", payload());
+            expect(accepted.status).toBe(202);
+            const body = (await accepted.json()) as Record<string, unknown>;
+            expect(body.siteId).toBe("acme-shop");
+            expect(typeof body.operationId).toBe("string");
+            expect(JSON.stringify(body)).not.toContain(TOKEN);
+
+            for (let index = 0; index < 500 && app.operations.forStack("demo")?.status === "running"; index += 1) await Bun.sleep(1);
+            const operation = app.operations.forStack("demo");
+            expect(operation?.action).toBe("backup");
+            expect(operation?.status).toBe("succeeded");
+            expect(calls.some((args) => args.includes("backup"))).toBe(true);
+
+            const state = await readManagedSiteBackupTriggerState(join(dir, "demo"), "acme-shop");
+            expect(state.kind).toBe("ok");
+            if (state.kind !== "ok") return;
+            expect(state.state.lastAttempt?.result).toBe("succeeded");
+            expect(state.state.lastSuccess?.snapshotId).toBe(SNAPSHOT);
+            expect(state.state.lastProof).toBeNull();
+            expect(state.state.nonces.map((entry) => entry.nonce)).toEqual([NONCE]);
+
+            const replay = await request(app, "POST", payload(NONCE, new Date(Date.now() + 1000).toISOString()));
+            expect(replay.status).toBe(409);
+            expect(await replay.text()).toContain("replay");
+
+            const status = await request(app, "GET");
+            expect(status.status).toBe(200);
+            const statusBody = (await status.json()) as Record<string, unknown>;
+            expect(statusBody.siteId).toBe("acme-shop");
+            expect(statusBody.everyHours).toBe(24);
+            expect(statusBody.overdue).toBe(false);
+            expect(statusBody.dueAt).toBeString();
+            expect((statusBody.lastSuccess as Record<string, unknown>).snapshotId).toBe(SNAPSHOT);
+            expect(JSON.stringify(statusBody)).not.toContain(TOKEN);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("reports overdue from the durable fact and shows the timer section", async () => {
+        const dir = await timerRoot();
+        try {
+            const stackDir = join(dir, "demo");
+            const stale: ManagedSiteBackupTriggerState = {
+                version: 1,
+                siteId: "acme-shop",
+                lastAttempt: { at: "2026-11-01T00:00:00.000Z", result: "succeeded" },
+                lastSuccess: { at: "2026-11-01T00:00:00.000Z", snapshotId: SNAPSHOT },
+                lastProof: null,
+                nonces: [],
+            };
+            await writeManagedSiteBackupTriggerState(stackDir, stale);
+
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                checkCredentials: async () => ({ ok: true }),
+                ...verifier,
+            });
+            const status = await request(app, "GET");
+            expect(status.status).toBe(200);
+            const body = (await status.json()) as Record<string, unknown>;
+            expect(body.overdue).toBe(true);
+            expect(body.dueAt).toBe("2026-11-02T00:00:00.000Z");
+
+            const session = await login(app);
+            const page = await (await authed(app, "/stacks/demo", session)).text();
+            expect(page).toContain("/api/managed-sites/demo/backup");
+            expect(page).toContain(SNAPSHOT);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("records the last verified restore proof", async () => {
+        const dir = await timerRoot();
+        try {
+            const calls: string[][] = [];
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                restoreDocker: restoreDocker(calls),
+                checkCredentials: async () => ({ ok: true }),
+                ...verifier,
+            });
+            const session = await login(app);
+            const csrf = /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/about", session)).text())![1]!;
+            const response = await authed(app, "/stacks/demo/restore", session, {
+                method: "POST",
+                headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({ csrf, snapshot: SNAPSHOT }).toString(),
+            });
+            expect(response.status).toBe(303);
+            for (let index = 0; index < 500 && app.operations.forStack("demo")?.status === "running"; index += 1) await Bun.sleep(1);
+            expect(app.operations.forStack("demo")?.status).toBe("succeeded");
+
+            const state = await readManagedSiteBackupTriggerState(join(dir, "demo"), "acme-shop");
+            expect(state.kind).toBe("ok");
+            if (state.kind !== "ok") return;
+            expect(state.state.lastProof?.snapshotId).toBe(SNAPSHOT);
+            expect(state.state.lastSuccess).toBeNull();
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("rate-limits repeated authentication failures", async () => {
+        const dir = await timerRoot();
+        try {
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                checkCredentials: async () => ({ ok: true }),
+                ...verifier,
+            });
+            for (let index = 0; index < 10; index += 1) {
+                expect((await request(app, "POST", payload(), "w".repeat(64))).status).toBe(401);
+            }
+            const limited = await request(app, "POST", payload());
+            expect(limited.status).toBe(429);
             expect(app.operations.forStack("demo")).toBeNull();
             await app.beginShutdown(100);
         } finally {

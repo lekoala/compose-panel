@@ -145,7 +145,22 @@ import {
     type ManagedSiteCiCheck,
     type ManagedSiteCiStateRead,
 } from "./managed-site-ci.ts";
-import { MachineAuthLimiter } from "./machine-credential.ts";
+import { MachineAuthLimiter, verifyMachineToken, type MachineDigestCheck } from "./machine-credential.ts";
+import {
+    MANAGED_SITE_BACKUP_TRIGGER_MAX_BODY_BYTES,
+    acceptManagedSiteBackupTriggerNonce,
+    checkManagedSiteBackupTriggerVerifier,
+    initialManagedSiteBackupTriggerState,
+    managedSiteBackupFreshness,
+    managedSiteBackupTriggerNonceSeen,
+    parseManagedSiteBackupTriggerBody,
+    readManagedSiteBackupTriggerState,
+    updateManagedSiteBackupTriggerState,
+    writeManagedSiteBackupTriggerState,
+    type ManagedSiteBackupTriggerResult,
+    type ManagedSiteBackupTriggerState,
+    type ManagedSiteBackupTriggerStateRead,
+} from "./managed-site-backup-trigger.ts";
 import { composerPreparation, MANAGED_SITE_RELEASE_LIMITS } from "./managed-site-build.ts";
 import { fetchAndPublishGitRelease } from "./git-release.ts";
 import {
@@ -218,6 +233,8 @@ export interface AppOptions {
     restoreDocker?: DockerRunner;
     /** Test seam for the private backup credential metadata check. */
     backupCheckCredentials?: (stackDir: string, manifest: ManagedSiteManifest) => Promise<ManagedSiteBackupCheck>;
+    /** Test seam for the backup trigger verifier metadata check (ADR 0051). */
+    backupTriggerCheckVerifier?: (stackDir: string) => Promise<MachineDigestCheck>;
     /** Test seam for the CI verifier metadata check (ADR 0050). */
     ciCheckVerifier?: (stackDir: string) => Promise<ManagedSiteCiCheck>;
     /** Per-stack modifying-operation lock. */
@@ -251,11 +268,17 @@ function plain(body: string, status: number): Response {
 }
 
 /** Machine endpoint answer: bounded JSON, never a rendered page. */
-function ciJson(body: Record<string, unknown>, status: number): Response {
+function machineJson(body: Record<string, unknown>, status: number): Response {
     return new Response(`${JSON.stringify(body)}\n`, {
         status,
         headers: { "Content-Type": "application/json; charset=utf-8", ...BASE_HEADERS },
     });
+}
+
+/** The one accepted authorization scheme; anything else yields an empty token. */
+function bearerToken(request: Request): string {
+    const header = request.headers.get("authorization") ?? "";
+    return header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
 }
 
 function methodNotAllowed(allow: string): Response {
@@ -1829,6 +1852,95 @@ export function createApp(options: AppOptions): App {
      * operation; the locked closure re-reads the manifest, the deploy marker and
      * the backup marker before one staging/upload run.
      */
+    /**
+     * Record one durable backup trigger fact. A bookkeeping failure never turns
+     * a successful backup or restore into a failure.
+     */
+    async function recordBackupTriggerFact(
+        stackDir: string,
+        siteId: string,
+        mutate: (state: ManagedSiteBackupTriggerState) => ManagedSiteBackupTriggerState,
+        onOutput: (chunk: string) => void,
+    ): Promise<void> {
+        try {
+            const result = await updateManagedSiteBackupTriggerState(stackDir, siteId, mutate);
+            if (!result.ok) onOutput(`The backup trigger record was not updated: ${result.reason}\n`);
+        } catch {
+            onOutput("The backup trigger record could not be written; the on-disk facts are stale.\n");
+        }
+    }
+
+    /**
+     * The one backup execution, shared by the browser button and the timer route
+     * (ADR 0051): re-read the manifest, re-check the admission under the stack
+     * lock, run the fixed Restic path and record the last good snapshot for a
+     * site that declares a trigger. It never starts a second backup path.
+     */
+    async function executeManagedSiteBackup(input: {
+        name: string;
+        manifest: ManagedSiteManifest;
+        onOutput: (chunk: string) => void;
+    }): Promise<AppActionOutcome> {
+        if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+        const currentDir = await managedSiteStackDir(input.name);
+        const current = await readManagedSiteManifest(currentDir);
+        if (!current.ok) return { refused: current.reason };
+        if (current.manifest.owner !== "managed" || !current.manifest.backup) {
+            return { refused: "This site no longer declares a backup block." };
+        }
+        if (await pendingDeployAttempt(currentDir)) return { refused: MANAGED_SITE_PENDING_MESSAGE };
+        const pendingBackup = await readManagedSiteBackupAttempt(currentDir);
+        if (pendingBackup.kind !== "none") {
+            return {
+                refused: "A previous backup attempt has an unconfirmed outcome. Inspect the repository and acknowledge it first.",
+            };
+        }
+        const baseline = await readBaseline(currentDir, current.manifest.siteId);
+        const image = current.manifest.runtime.image
+            ? { reference: current.manifest.runtime.image, id: await resolveLocalImageId(current.manifest.runtime.image) }
+            : null;
+        const result = await runManagedSiteBackup(
+            {
+                stackDir: currentDir,
+                manifest: current.manifest,
+                attemptId: randomSuffix(),
+                releaseId: baseline.ok ? baseline.releaseId : null,
+                runtimeImage: image,
+                onOutput: input.onOutput,
+                signal: shutdownController.signal,
+            },
+            {
+                ...(options.backupDocker ? { docker: options.backupDocker } : {}),
+                ...(options.backupCheckCredentials ? { checkCredentials: options.backupCheckCredentials } : {}),
+            },
+        );
+        if (!result.ok) {
+            input.onOutput(`Backup did not complete: ${result.reason}\n`);
+            return {
+                code: result.outcome === "unknown" ? -1 : 1,
+                stdout: "",
+                stderr: "",
+                timedOut: false,
+                truncated: false,
+            };
+        }
+        input.onOutput(
+            `Snapshot ${result.snapshotId} accepted: ${result.entries} entries, ${result.bytes} bytes${result.sqlBytes !== null ? `, ${result.sqlBytes} SQL bytes` : ""}.\n`,
+        );
+        if (current.manifest.backup.trigger) {
+            await recordBackupTriggerFact(
+                currentDir,
+                current.manifest.siteId,
+                (state) => ({
+                    ...state,
+                    lastSuccess: { at: new Date().toISOString(), snapshotId: result.snapshotId },
+                }),
+                input.onOutput,
+            );
+        }
+        return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+    }
+
     async function handleBackup(request: Request, name: string, session: Session): Promise<Response> {
         const csrf = session.csrf;
         const back = `/stacks/${encodeURIComponent(name)}`;
@@ -1865,56 +1977,7 @@ export function createApp(options: AppOptions): App {
             operations.startBackup({
                 stack: name,
                 project: manifestResult.manifest.project,
-                run: async ({ onOutput }) => {
-                    if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
-                    const currentDir = await managedSiteStackDir(name);
-                    const current = await readManagedSiteManifest(currentDir);
-                    if (!current.ok) return { refused: current.reason };
-                    if (current.manifest.owner !== "managed" || !current.manifest.backup) {
-                        return { refused: "This site no longer declares a backup block." };
-                    }
-                    if (await pendingDeployAttempt(currentDir)) return { refused: MANAGED_SITE_PENDING_MESSAGE };
-                    const pendingBackup = await readManagedSiteBackupAttempt(currentDir);
-                    if (pendingBackup.kind !== "none") {
-                        return {
-                            refused:
-                                "A previous backup attempt has an unconfirmed outcome. Inspect the repository and acknowledge it first.",
-                        };
-                    }
-                    const baseline = await readBaseline(currentDir, current.manifest.siteId);
-                    const image = current.manifest.runtime.image
-                        ? { reference: current.manifest.runtime.image, id: await resolveLocalImageId(current.manifest.runtime.image) }
-                        : null;
-                    const result = await runManagedSiteBackup(
-                        {
-                            stackDir: currentDir,
-                            manifest: current.manifest,
-                            attemptId: randomSuffix(),
-                            releaseId: baseline.ok ? baseline.releaseId : null,
-                            runtimeImage: image,
-                            onOutput,
-                            signal: shutdownController.signal,
-                        },
-                        {
-                            ...(options.backupDocker ? { docker: options.backupDocker } : {}),
-                            ...(options.backupCheckCredentials ? { checkCredentials: options.backupCheckCredentials } : {}),
-                        },
-                    );
-                    if (!result.ok) {
-                        onOutput(`Backup did not complete: ${result.reason}\n`);
-                        return {
-                            code: result.outcome === "unknown" ? -1 : 1,
-                            stdout: "",
-                            stderr: "",
-                            timedOut: false,
-                            truncated: false,
-                        };
-                    }
-                    onOutput(
-                        `Snapshot ${result.snapshotId} accepted: ${result.entries} entries, ${result.bytes} bytes${result.sqlBytes !== null ? `, ${result.sqlBytes} SQL bytes` : ""}.\n`,
-                    );
-                    return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
-                },
+                run: ({ onOutput }) => executeManagedSiteBackup({ name, manifest: manifestResult.manifest, onOutput }),
             });
             await recordAudit({
                 event: "backup",
@@ -2027,6 +2090,17 @@ export function createApp(options: AppOptions): App {
                     onOutput(
                         `Restore verified: ${result.files} files (${result.bytes} bytes) from ${result.snapshotId} in ${result.restoreDir}${result.sql ? `, ${result.sql.tables} table(s) in a disposable ${result.sql.database} database` : ""}. The live site was not modified.\n`,
                     );
+                    if (current.manifest.backup.trigger) {
+                        await recordBackupTriggerFact(
+                            currentDir,
+                            current.manifest.siteId,
+                            (state) => ({
+                                ...state,
+                                lastProof: { at: new Date().toISOString(), snapshotId: result.snapshotId },
+                            }),
+                            onOutput,
+                        );
+                    }
                     return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
                 },
             });
@@ -4282,14 +4356,14 @@ export function createApp(options: AppOptions): App {
      */
     async function handleCiDeploy(request: Request, name: string, method: string): Promise<Response> {
         const actor = clientKey(request, config);
-        if (machineAuth.limited(name)) {
-            return ciJson({ error: "Too Many Requests" }, 429);
+        if (machineAuth.limited(`ci:${name}`)) {
+            return machineJson({ error: "Too Many Requests" }, 429);
         }
 
         const refuseAuth = async (detail: string): Promise<Response> => {
-            machineAuth.refuse(name);
+            machineAuth.refuse(`ci:${name}`);
             await recordAudit({ event: "deploy", result: "refused", actor, stack: name, action: "ci-deploy", detail });
-            return ciJson({ error: "Unauthorized" }, 401);
+            return machineJson({ error: "Unauthorized" }, 401);
         };
 
         let stackDir: string;
@@ -4310,23 +4384,22 @@ export function createApp(options: AppOptions): App {
                 action: "ci-deploy",
                 detail: "this site does not declare ci",
             });
-            return ciJson({ error: "Not Found" }, 404);
+            return machineJson({ error: "Not Found" }, 404);
         }
 
         const verifier = await (options.ciCheckVerifier ?? checkManagedSiteCiVerifier)(stackDir);
         if (!verifier.ok) return refuseAuth(verifier.reason);
-        const header = request.headers.get("authorization") ?? "";
-        const bearer = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+        const bearer = bearerToken(request);
         if (!verifyManagedSiteCiToken(bearer, verifier.digest)) return refuseAuth("the machine credential did not verify");
-        machineAuth.clear(name);
+        machineAuth.clear(`ci:${name}`);
 
         if (method === "GET") {
             const state = await readManagedSiteCiState(stackDir, manifest.siteId);
             if (state.kind === "unreadable") {
-                return ciJson({ error: "The CI attempt record cannot be read; inspect it on the host." }, 409);
+                return machineJson({ error: "The CI attempt record cannot be read; inspect it on the host." }, 409);
             }
             const baseline = await readBaseline(stackDir, manifest.siteId);
-            return ciJson(
+            return machineJson(
                 {
                     siteId: manifest.siteId,
                     ref: manifest.deploy.git.ref,
@@ -4339,27 +4412,27 @@ export function createApp(options: AppOptions): App {
 
         const contentType = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
         if (contentType !== "application/json") {
-            return ciJson({ error: "Content-Type must be application/json." }, 415);
+            return machineJson({ error: "Content-Type must be application/json." }, 415);
         }
         const source = await readTextLimited(request, MANAGED_SITE_CI_MAX_BODY_BYTES);
-        if (source === null) return ciJson({ error: "The request body is larger than the panel accepts." }, 413);
+        if (source === null) return machineJson({ error: "The request body is larger than the panel accepts." }, 413);
         const parsed = parseManagedSiteCiBody(source, manifest);
-        if (!parsed.ok) return ciJson({ error: parsed.reason }, 400);
+        if (!parsed.ok) return machineJson({ error: parsed.reason }, 400);
         const body = parsed.request;
 
         if (await pendingDeployAttempt(stackDir)) {
-            return ciJson({ error: MANAGED_SITE_PENDING_MESSAGE }, 409);
+            return machineJson({ error: MANAGED_SITE_PENDING_MESSAGE }, 409);
         }
         const pendingBackup = await readManagedSiteBackupAttempt(stackDir);
         if (pendingBackup.kind !== "none") {
-            return ciJson({ error: "A previous backup attempt has an unconfirmed outcome. Inspect it before deploying." }, 409);
+            return machineJson({ error: "A previous backup attempt has an unconfirmed outcome. Inspect it before deploying." }, 409);
         }
         const state = await readManagedSiteCiState(stackDir, manifest.siteId);
         if (state.kind === "unreadable") {
-            return ciJson({ error: "The CI attempt record cannot be read; inspect it on the host." }, 409);
+            return machineJson({ error: "The CI attempt record cannot be read; inspect it on the host." }, 409);
         }
         if (state.kind === "ok" && managedSiteCiNonceSeen(state.state, body.nonce)) {
-            return ciJson({ error: "This request was already accepted; a replay is refused." }, 409);
+            return machineJson({ error: "This request was already accepted; a replay is refused." }, 409);
         }
 
         try {
@@ -4451,15 +4524,235 @@ export function createApp(options: AppOptions): App {
                 action: "ci-deploy",
                 detail: `site ${manifest.siteId}, sha ${body.sha}, ${manifest.deploy.git.ref}`,
             });
-            return ciJson({ siteId: manifest.siteId, sha: body.sha, operationId: operation.id }, 202);
+            return machineJson({ siteId: manifest.siteId, sha: body.sha, operationId: operation.id }, 202);
         } catch (error) {
             if (error instanceof OperationsDisabledError) {
                 await recordAudit({ event: "deploy", result: "refused", actor, stack: name, action: "ci-deploy", detail: error.message });
-                return ciJson({ error: error.message }, 503);
+                return machineJson({ error: error.message }, 503);
             }
             if (error instanceof StackBusyError) {
                 await recordAudit({ event: "deploy", result: "refused", actor, stack: name, action: "ci-deploy", detail: error.message });
-                return ciJson({ error: error.message }, 409);
+                return machineJson({ error: error.message }, 409);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Timer-triggered backup (ADR 0051). Authenticates one site-scoped bearer
+     * token, validates one bounded nonce/timestamp request and starts the same
+     * backup operation as the browser button. It accepts no session cookie and
+     * returns no output.
+     */
+    async function handleBackupTrigger(request: Request, name: string, method: string): Promise<Response> {
+        const actor = clientKey(request, config);
+        if (machineAuth.limited(`backup:${name}`)) {
+            return machineJson({ error: "Too Many Requests" }, 429);
+        }
+
+        const refuseAuth = async (detail: string): Promise<Response> => {
+            machineAuth.refuse(`backup:${name}`);
+            await recordAudit({
+                event: "backup",
+                result: "refused",
+                actor,
+                stack: name,
+                action: "scheduled-backup",
+                detail,
+            });
+            return machineJson({ error: "Unauthorized" }, 401);
+        };
+
+        let stackDir: string;
+        try {
+            stackDir = await managedSiteStackDir(name);
+        } catch {
+            return refuseAuth("the stack could not be located");
+        }
+        const manifestResult = await readManagedSiteManifest(stackDir);
+        if (!manifestResult.ok) return refuseAuth(manifestResult.reason);
+        const manifest = manifestResult.manifest;
+        const trigger = manifest.backup?.trigger;
+        if (manifest.owner !== "managed" || !trigger) {
+            await recordAudit({
+                event: "backup",
+                result: "refused",
+                actor,
+                stack: name,
+                action: "scheduled-backup",
+                detail: "this site declares no backup trigger",
+            });
+            return machineJson({ error: "Not Found" }, 404);
+        }
+
+        const verifier = await (options.backupTriggerCheckVerifier ?? checkManagedSiteBackupTriggerVerifier)(stackDir);
+        if (!verifier.ok) return refuseAuth(verifier.reason);
+        const bearer = bearerToken(request);
+        if (!verifyMachineToken(bearer, verifier.digest)) return refuseAuth("the backup machine credential did not verify");
+        machineAuth.clear(`backup:${name}`);
+
+        if (method === "GET") {
+            const state = await readManagedSiteBackupTriggerState(stackDir, manifest.siteId);
+            if (state.kind === "unreadable") {
+                return machineJson({ error: "The backup trigger record cannot be read; inspect it on the host." }, 409);
+            }
+            const current = state.kind === "ok" ? state.state : initialManagedSiteBackupTriggerState(manifest.siteId);
+            const freshness = managedSiteBackupFreshness(current, trigger.everyHours);
+            return machineJson(
+                {
+                    siteId: manifest.siteId,
+                    everyHours: trigger.everyHours,
+                    lastAttempt: current.lastAttempt,
+                    lastSuccess: current.lastSuccess,
+                    lastProof: current.lastProof,
+                    overdue: freshness.overdue,
+                    dueAt: freshness.dueAt,
+                },
+                200,
+            );
+        }
+
+        const contentType = (request.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
+        if (contentType !== "application/json") {
+            return machineJson({ error: "Content-Type must be application/json." }, 415);
+        }
+        const source = await readTextLimited(request, MANAGED_SITE_BACKUP_TRIGGER_MAX_BODY_BYTES);
+        if (source === null) return machineJson({ error: "The request body is larger than the panel accepts." }, 413);
+        const parsed = parseManagedSiteBackupTriggerBody(source);
+        if (!parsed.ok) return machineJson({ error: parsed.reason }, 400);
+        const body = parsed.request;
+
+        if (await pendingDeployAttempt(stackDir)) {
+            return machineJson({ error: MANAGED_SITE_PENDING_MESSAGE }, 409);
+        }
+        const pendingBackup = await readManagedSiteBackupAttempt(stackDir);
+        if (pendingBackup.kind !== "none") {
+            return machineJson({ error: "A previous backup attempt has an unconfirmed outcome. Inspect it before backing up." }, 409);
+        }
+        const state = await readManagedSiteBackupTriggerState(stackDir, manifest.siteId);
+        if (state.kind === "unreadable") {
+            return machineJson({ error: "The backup trigger record cannot be read; inspect it on the host." }, 409);
+        }
+        if (state.kind === "ok" && managedSiteBackupTriggerNonceSeen(state.state, body.nonce)) {
+            return machineJson({ error: "This request was already accepted; a replay is refused." }, 409);
+        }
+
+        try {
+            if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+            const operation = operations.startBackup({
+                stack: name,
+                project: manifest.project,
+                run: async ({ onOutput }) => {
+                    // The authoritative re-check runs under the stack lock.
+                    if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                    const currentDir = await managedSiteStackDir(name);
+                    const current = await readManagedSiteManifest(currentDir);
+                    if (!current.ok) return { refused: current.reason };
+                    if (current.manifest.owner !== "managed" || !current.manifest.backup?.trigger) {
+                        return { refused: "This site no longer enables a timer-triggered backup." };
+                    }
+                    const currentVerifier = await (options.backupTriggerCheckVerifier ?? checkManagedSiteBackupTriggerVerifier)(currentDir);
+                    if (!currentVerifier.ok) return { refused: currentVerifier.reason };
+                    if (!verifyMachineToken(bearer, currentVerifier.digest)) {
+                        return { refused: "The backup machine credential changed; nothing was run." };
+                    }
+                    if (await pendingDeployAttempt(currentDir)) return { refused: MANAGED_SITE_PENDING_MESSAGE };
+                    const pending = await readManagedSiteBackupAttempt(currentDir);
+                    if (pending.kind !== "none") {
+                        return {
+                            refused:
+                                "A previous backup attempt has an unconfirmed outcome. Inspect the repository and acknowledge it first.",
+                        };
+                    }
+                    const read = await readManagedSiteBackupTriggerState(currentDir, current.manifest.siteId);
+                    if (read.kind === "unreadable") {
+                        return { refused: "The backup trigger record cannot be read; inspect it on the host." };
+                    }
+                    const base = read.kind === "ok" ? read.state : initialManagedSiteBackupTriggerState(current.manifest.siteId);
+                    if (managedSiteBackupTriggerNonceSeen(base, body.nonce)) {
+                        return { refused: "This request was already accepted; a replay is refused." };
+                    }
+                    const accepted = acceptManagedSiteBackupTriggerNonce(base, body.nonce, body.timestamp);
+                    try {
+                        await writeManagedSiteBackupTriggerState(currentDir, {
+                            ...accepted,
+                            lastAttempt: { at: body.timestamp, result: "accepted" },
+                        });
+                    } catch {
+                        return { refused: "The backup trigger record could not be written; nothing was run." };
+                    }
+                    let outcome: AppActionOutcome;
+                    try {
+                        outcome = await executeManagedSiteBackup({
+                            name,
+                            manifest: current.manifest,
+                            onOutput,
+                        });
+                    } catch (error) {
+                        await recordBackupTriggerFact(
+                            currentDir,
+                            current.manifest.siteId,
+                            (state) => ({ ...state, lastAttempt: { at: body.timestamp, result: "failed" } }),
+                            onOutput,
+                        );
+                        throw error;
+                    }
+                    const result: ManagedSiteBackupTriggerResult =
+                        "refused" in outcome
+                            ? "refused"
+                            : "intervention" in outcome
+                              ? "failed"
+                              : outcome.code === 0
+                                ? "succeeded"
+                                : "failed";
+                    await recordBackupTriggerFact(
+                        currentDir,
+                        current.manifest.siteId,
+                        (state) => ({ ...state, lastAttempt: { at: body.timestamp, result } }),
+                        onOutput,
+                    );
+                    await recordAudit({
+                        event: "backup",
+                        result,
+                        actor,
+                        stack: name,
+                        action: "scheduled-backup",
+                        detail: `site ${current.manifest.siteId}, ${current.manifest.backup?.sql ? "files+sql" : "files"}`,
+                    });
+                    return outcome;
+                },
+            });
+            await recordAudit({
+                event: "backup",
+                result: "started",
+                actor,
+                stack: name,
+                action: "scheduled-backup",
+                detail: `site ${manifest.siteId}, ${manifest.backup?.sql ? "files+sql" : "files"}`,
+            });
+            return machineJson({ siteId: manifest.siteId, operationId: operation.id }, 202);
+        } catch (error) {
+            if (error instanceof OperationsDisabledError) {
+                await recordAudit({
+                    event: "backup",
+                    result: "refused",
+                    actor,
+                    stack: name,
+                    action: "scheduled-backup",
+                    detail: error.message,
+                });
+                return machineJson({ error: error.message }, 503);
+            }
+            if (error instanceof StackBusyError) {
+                await recordAudit({
+                    event: "backup",
+                    result: "refused",
+                    actor,
+                    stack: name,
+                    action: "scheduled-backup",
+                    detail: error.message,
+                });
+                return machineJson({ error: error.message }, 409);
             }
             throw error;
         }
@@ -4625,6 +4918,7 @@ export function createApp(options: AppOptions): App {
         drift?: string;
         database?: { ok: true } | { ok: false; reason: string };
         backup?: { check: { ok: true } | { ok: false; reason: string }; attempt: ManagedSiteBackupAttemptRead };
+        backupTrigger?: { check: MachineDigestCheck; state: ManagedSiteBackupTriggerStateRead };
         ci?: { check: ManagedSiteCiCheck; state: ManagedSiteCiStateRead };
     };
 
@@ -4646,6 +4940,12 @@ export function createApp(options: AppOptions): App {
                       attempt: await readManagedSiteBackupAttempt(stackDir),
                   }
                 : undefined;
+            const backupTrigger = manifest.manifest.backup?.trigger
+                ? {
+                      check: await (options.backupTriggerCheckVerifier ?? checkManagedSiteBackupTriggerVerifier)(stackDir),
+                      state: await readManagedSiteBackupTriggerState(stackDir, manifest.manifest.siteId),
+                  }
+                : undefined;
             const ci = manifest.manifest.ci
                 ? {
                       check: await (options.ciCheckVerifier ?? checkManagedSiteCiVerifier)(stackDir),
@@ -4659,6 +4959,7 @@ export function createApp(options: AppOptions): App {
                 ...(drift ? { drift } : {}),
                 ...(database ? { database } : {}),
                 ...(backup ? { backup } : {}),
+                ...(backupTrigger ? { backupTrigger } : {}),
                 ...(ci ? { ci } : {}),
             };
         } catch {
@@ -4746,6 +5047,54 @@ export function createApp(options: AppOptions): App {
         );
     }
 
+    function managedSiteBackupTriggerSection(card: ManagedSiteCard, manifest: ManagedSiteManifest, name: string): string {
+        const trigger = manifest.backup?.trigger;
+        if (!trigger) return "";
+        const endpoint = `/api/managed-sites/${encodeURIComponent(name)}/backup`;
+        const check = card.backupTrigger?.check;
+        const state = card.backupTrigger?.state;
+        const current = state?.kind === "ok" ? state.state : null;
+        const freshness = current ? managedSiteBackupFreshness(current, trigger.everyHours) : null;
+        const status = !check
+            ? ""
+            : check.ok
+              ? note(
+                    "info",
+                    "The backup machine credential verifier is provisioned. The panel stores only its SHA-256 digest, never the token.",
+                )
+              : note("warn", check.reason);
+        const facts =
+            state?.kind === "unreadable"
+                ? note("warn", "The backup trigger record cannot be read; machine requests are refused until it is fixed.")
+                : current
+                  ? `<p class="meta"><span>Last attempt <code>${escapeHtml(current.lastAttempt ? `${current.lastAttempt.result} at ${current.lastAttempt.at}` : "none")}</code></span><span>Last good snapshot <code>${escapeHtml(current.lastSuccess ? `${current.lastSuccess.snapshotId} at ${current.lastSuccess.at}` : "none")}</code></span><span>Last verified restore <code>${escapeHtml(current.lastProof ? `${current.lastProof.snapshotId} at ${current.lastProof.at}` : "none")}</code></span></p>`
+                  : note("info", "No timer request has been accepted yet.");
+        const age = freshness
+            ? freshness.overdue
+                ? note(
+                      "warn",
+                      freshness.dueAt
+                          ? `The last good backup is older than the declared ${String(trigger.everyHours)}-hour interval (due ${freshness.dueAt}). The panel does not retry; check the host timer.`
+                          : "No successful backup is recorded for this site. The panel does not retry; check the host timer.",
+                  )
+                : note(
+                      "info",
+                      `The last good backup is inside the declared ${String(trigger.everyHours)}-hour interval (due ${freshness.dueAt ?? "unknown"}).`,
+                  )
+            : "";
+        return (
+            `<h3>Backup timer</h3>` +
+            `<p class="meta"><span>Endpoint <code>${escapeHtml(endpoint)}</code></span><span>Every <code>${String(trigger.everyHours)} h</code></span></p>` +
+            status +
+            facts +
+            age +
+            note(
+                "info",
+                "An administrator-installed host timer sends one POST with its bearer token, a nonce and a UTC timestamp. The panel runs no scheduler and deletes no snapshot; retention stays an off-panel procedure.",
+            )
+        );
+    }
+
     function managedSiteSection(card: ManagedSiteCard | null, name: string, csrf: string, busy: boolean): string {
         if (!card) return "";
         const href = `/stacks/${encodeURIComponent(name)}`;
@@ -4781,6 +5130,7 @@ export function createApp(options: AppOptions): App {
                 drift +
                 databaseNote +
                 managedSiteBackupSection(card, manifest, href, csrf, busy) +
+                managedSiteBackupTriggerSection(card, manifest, name) +
                 managedSiteCiSection(card, manifest, name) +
                 regenerate +
                 note(
@@ -4797,6 +5147,7 @@ export function createApp(options: AppOptions): App {
             drift +
             databaseNote +
             managedSiteBackupSection(card, manifest, href, csrf, busy) +
+            managedSiteBackupTriggerSection(card, manifest, name) +
             managedSiteCiSection(card, manifest, name) +
             regenerate +
             `<form method="post" action="${href}/deploy"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy || card.drift ? " disabled" : ""}>Deploy ${escapeHtml(manifest.deploy.git.ref)}</button></form>` +
@@ -5231,9 +5582,9 @@ export function createApp(options: AppOptions): App {
             return methodNotAllowed("GET, POST");
         }
 
-        // The machine endpoint authenticates its own bearer credential and
-        // never accepts a session cookie (ADR 0050), so it is dispatched before
-        // the browser session gate.
+        // The machine endpoints authenticate their own bearer credential and
+        // never accept a session cookie (ADR 0050, ADR 0051), so they are
+        // dispatched before the browser session gate.
         const ciDeployMatch = /^\/api\/managed-sites\/([^/]+)\/deploy$/.exec(url.pathname);
         if (ciDeployMatch && config.managedSitesEnabled) {
             if (method !== "GET" && method !== "POST") return methodNotAllowed("GET, POST");
@@ -5241,7 +5592,18 @@ export function createApp(options: AppOptions): App {
                 return await handleCiDeploy(request, decodeName(ciDeployMatch[1]!), method);
             } catch (error) {
                 console.error("CI deploy endpoint failed", error);
-                return ciJson({ error: "Internal error." }, 500);
+                return machineJson({ error: "Internal error." }, 500);
+            }
+        }
+
+        const backupTriggerMatch = /^\/api\/managed-sites\/([^/]+)\/backup$/.exec(url.pathname);
+        if (backupTriggerMatch && config.managedSitesEnabled) {
+            if (method !== "GET" && method !== "POST") return methodNotAllowed("GET, POST");
+            try {
+                return await handleBackupTrigger(request, decodeName(backupTriggerMatch[1]!), method);
+            } catch (error) {
+                console.error("Backup trigger endpoint failed", error);
+                return machineJson({ error: "Internal error." }, 500);
             }
         }
 
