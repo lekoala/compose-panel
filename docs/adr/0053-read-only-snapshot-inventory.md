@@ -52,8 +52,9 @@ change; the real-host checklist remains.
 - `--no-lock` is used for the same reason as the preview: the panel holds no
   deletion credential and an append-only repository must not accumulate lock
   objects it cannot remove. The read does not take the stack lock because it
-  mutates nothing; it may run while a backup uploads, and the page never claims
-  the list is a recovery point.
+  mutates nothing, but a pending deploy or backup marker still refuses it, so
+  the page never shows a list taken during an unconfirmed attempt and never
+  claims the list is a recovery point.
 - The command has its own bounded timeout and output cap. The page renders only
   the id and Restic's timestamp, newest first. It renders no path, tag, hostname,
   size, repository URL or raw JSON, and it stores no list and no cache.
@@ -100,12 +101,14 @@ change; the real-host checklist remains.
   order, the empty list, the failure reasons and the refusal of a foreign,
   duplicated, malformed or oversized reply. The module never passes a snapshot
   id, `forget`, `prune` or a deletion flag.
-- App tests cover the session and Host checks, a missing backup block, missing
+- App tests cover the session check, a missing backup block, missing
   credentials, a pending deploy, a pending backup, a successful bounded list,
   the per-row link, the pre-filled restore field and the ignored invalid value.
   A refused page runs no container.
 - The disposable REST fixture lists the two snapshots written by the backup
   proof, newest first, while a snapshot tagged for another site is absent. The
-  append-only repository is unchanged by the read.
+  append-only repository is unchanged by the read. Run on 2026-11-25:
+  `wsl -- bash scripts/managed-sites-e2e/run.sh -t "backs up to an append-only
+  REST repository"` → 1 pass, 0 fail, 17 assertions.
 - Still open: the real-host checklist. The page is proven on the disposable lab,
   not against a real endpoint or an operator credential.

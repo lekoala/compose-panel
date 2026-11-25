@@ -174,6 +174,13 @@ implemented for an opted-in stack.
   stays an operator procedure. Unit, app and disposable REST fixtures cover the
   preview; one real off-panel prune compared with a preview remains in the
   real-host checklist.
+- **Read-only snapshot inventory.** Implemented under the same flag
+  ([ADR 0053](adr/0053-read-only-snapshot-inventory.md)): the site card lists
+  this site's tagged snapshots through the same pinned Restic inventory call as
+  the preview and pre-fills the exact-id restore field. The page shows ids and
+  timestamps only, runs no `forget` or `prune`, stores nothing and adds no
+  credential; unit, app and disposable REST fixtures cover it. A real endpoint
+  remains in the real-host checklist.
 - **Next increments, each with its own ADR or vertical PR:** retention
   automation with a deletion credential and a protected recovery point;
   production cutover and cloning. The creation form, stable loopback

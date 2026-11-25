@@ -248,6 +248,19 @@ no snapshot id is passed, no preview is stored and no maintenance credential
 exists in the panel; the real `forget`/`prune` stays an operator procedure
 ([ADR 0052](adr/0052-retention-preview.md)).
 
+## Snapshot inventory (opt-in)
+`src/managed-site-backup-snapshots.ts` runs one fixed
+`snapshots --json --no-lock --tag site:<id>` through the same pinned Restic
+client, argument builder and parser as the retention preview, then returns the
+site's ids and timestamps newest first. `GET /stacks/<name>/backup/snapshots`
+renders only those two fields in a read-only page; it never passes a snapshot
+id, `forget`, `prune` or any mutation, stores no list and adds no credential.
+Each row links to `/stacks/<name>?snapshot=<id>`, which pre-fills the existing
+exact-id restore form after the same 64-hex check. The page is read-only, so it
+takes no stack lock, but it refuses a pending deploy or backup marker and a
+missing or mis-owned credential before running the container
+([ADR 0053](adr/0053-read-only-snapshot-inventory.md)).
+
 ## CI-triggered deploy (opt-in)
 `src/managed-site-ci.ts` owns the fixed `site/private/ci/` verifier path, the
 metadata-only check that reads only a SHA-256 digest, the constant-time token

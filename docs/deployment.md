@@ -965,7 +965,13 @@ credential values, deletes a snapshot or starts a scheduler.
    accepted snapshot id in the operation output and the audit log, not in a
    recovery journal.
 
-6. **Verify and restore** takes one exact snapshot id (not `latest`). It extracts
+6. **List this site's snapshots** opens a read-only page that asks the pinned
+   Restic client for this site's tagged snapshots and shows their ids and
+   timestamps, newest first. It runs no `forget` or `prune`, extracts and deletes
+   nothing, adds no credential and stores no list. **Choose** pre-fills the
+   restore field below with that exact id; the list never starts a restore.
+
+7. **Verify and restore** takes one exact snapshot id (not `latest`). It extracts
    the declared files into `site/private/backup/restore/<attempt>/`, checks every
    file against the recorded size and SHA-256, and imports a SQL snapshot into a
    disposable MariaDB container on an internal network with no production
@@ -1487,6 +1493,10 @@ the disposable suites are never run against a production daemon.
     the off-panel dry-run, prune from the maintenance host, run `restic check`
     and restore one remaining snapshot; confirm the panel's protected ids were
     not removed.
+11. List the snapshots from the site card and compare the ids with
+    `restic snapshots --tag site:<siteId>` on the maintenance host; choose one,
+    confirm the restore form holds that exact id, restore it and confirm the
+    repository still lists the same snapshots after the list page.
 
 Record the result with the release or pilot review. Do not use a production host
 as the test bed.

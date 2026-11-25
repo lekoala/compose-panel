@@ -79,6 +79,17 @@
   disposable REST fixture runs the preview against the append-only lab
   repository; one real off-panel prune remains in the real-host checklist.
 
+- Managed sites: read-only snapshot inventory (ADR 0053). A site card links to
+  `GET /stacks/<stack>/backup/snapshots`, which runs the pinned Restic client's
+  `snapshots --json --no-lock --tag site:<id>` once, reuses the retention
+  inventory parser and shows only the ids and timestamps, newest first. The page
+  runs no `forget`, `prune` or snapshot id, takes no lock, stores nothing and
+  accepts no query value except one exact id, which pre-fills the existing
+  restore form. Missing credentials, a missing backup block, a pending deploy or
+  backup marker and a failed reply refuse before any container runs. The
+  disposable REST fixture lists the two lab snapshots and ignores one tagged for
+  another site; a real endpoint remains in the real-host checklist.
+
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares
   `github.com/moby/go-archive` v0.2.0, but the binary carries only that

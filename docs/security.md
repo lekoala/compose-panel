@@ -421,6 +421,29 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   repository URL or credential appears. The audit line records the keep/remove
   counts, never an id or a policy reason.
 
+## Snapshot inventory (ADR 0053)
+
+- `GET /stacks/<stack>/backup/snapshots` is an authenticated read-only page and
+  is unavailable when managed sites are disabled. It carries no CSRF token
+  because it changes no state; the Host allow-list, the session check and the
+  `no-store` response headers still apply.
+- The page reuses the retention inventory call: one pinned Restic
+  `snapshots --json --no-lock --tag site:<siteId>` with a read-only root
+  filesystem, a bounded tmpfs and the operator-owned password file. It passes no
+  snapshot id, no `forget`, no `prune` and no deletion credential, and it does
+  not take the stack lock because it mutates nothing.
+- The reply is bounded and parsed by the same all-or-nothing rules as the
+  preview. Only 64-hex ids and RFC 3339 timestamps carrying this site's tag are
+  rendered, newest first; a malformed, duplicated, foreign or oversized reply
+  fails the page with no partial list. Paths, tags, hostnames, sizes, the
+  repository URL and raw JSON are not rendered, and nothing is stored or cached.
+- A pending deploy or backup marker, a missing backup block, missing or
+  mis-owned credential files, a self-update and shutdown refuse the page before
+  any container runs.
+- The page only pre-fills the existing restore form with `?snapshot=<id>` after
+  the exact 64-hex check; any other value is ignored. The restore still re-reads
+  the manifest and the exact snapshot under the operation admission.
+
 ## Application toolbox (ADR 0026)
 
 - The panel may execute only **explicitly declared, non-interactive application
