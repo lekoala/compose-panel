@@ -110,6 +110,43 @@ describe.skipIf(process.platform !== "linux")("createManagedSite", () => {
         }
     });
 
+    test("writes a database site without creating the private env file", async () => {
+        const root = await mkdtemp(join(tmpdir(), "compose-panel-create-db-"));
+        const stackName = "acme-shop";
+        const stackDir = join(root, stackName);
+        try {
+            const built = buildManagedSite({
+                stackDir,
+                siteId: stackName,
+                project: stackName,
+                port: 41001,
+                gitUrl: "https://github.com/acme/shop.git",
+                gitRef: "refs/heads/main",
+                channel: "php-8.3",
+                database: { engine: "postgresql", network: "acme-db" },
+            });
+            if (!built.ok) throw new Error(built.reason);
+            await createManagedSite(
+                root,
+                { stackName, manifestSource: built.manifestSource, artifacts: built.artifacts },
+                provider(),
+                1024 * 1024,
+            );
+            const compose = await readFile(join(stackDir, "compose.yaml"), "utf8");
+            expect(compose).toContain("env_file:");
+            expect(compose).toContain("database.env");
+            expect(compose).toContain("'acme-db'");
+            expect(await Bun.file(join(stackDir, "site", "private", "database.env")).exists()).toBe(false);
+            const manifest = parseManagedSiteManifest(await readFile(join(stackDir, "compose-panel-site.json"), "utf8"));
+            expect(manifest.ok).toBe(true);
+            if (!manifest.ok) return;
+            expect(manifest.manifest.version).toBe(2);
+            expect(manifest.manifest.database).toEqual({ kind: "existing", engine: "postgresql", network: "acme-db" });
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    });
+
     test("refuses an existing folder without overwriting it", async () => {
         const { root, stackDir } = await site();
         try {
