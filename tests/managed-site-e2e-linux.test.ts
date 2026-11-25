@@ -10,6 +10,7 @@ import { MANAGED_SITE_BUILD_IMAGE, runComposerPreparation } from "../src/managed
 import { MANAGED_SITE_PATHS, parseManagedSiteManifest, type ManagedSiteManifest } from "../src/managed-site.ts";
 import { readManagedSiteBackupAttempt } from "../src/managed-site-backup.ts";
 import { runManagedSiteBackup } from "../src/managed-site-backup-run.ts";
+import { runManagedSiteRestore } from "../src/managed-site-restore.ts";
 import {
     managedSiteAttemptPath,
     parseProbeAnswer,
@@ -354,13 +355,17 @@ function databaseManifestJson(project: string, siteId: string, databaseNetwork: 
 
 async function waitForDatabase(id: string): Promise<void> {
     const deadline = Date.now() + 60_000;
+    // Two consecutive answers: the entrypoint can still bounce the socket once
+    // right after the first successful connection.
+    let ready = 0;
     for (;;) {
         const result = await runCommand("docker", ["exec", id, "mariadb", "-uroot", `-p${DB_ROOT_PASSWORD}`, "-e", "SELECT 1"], {
             timeoutMs: 5000,
         });
-        if (result.code === 0 && !result.timedOut) return;
+        ready = result.code === 0 && !result.timedOut ? ready + 1 : 0;
+        if (ready >= 2) return;
         if (Date.now() > deadline) throw new Error("MariaDB did not become ready");
-        await Bun.sleep(500);
+        await Bun.sleep(250);
     }
 }
 
@@ -939,6 +944,284 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
             await rm(root, { recursive: true, force: true });
         }
     }, 600_000);
+
+    test("dumps and restores one MariaDB database into a disposable instance", async () => {
+        requireEnv();
+        const root = await mkdtemp(join(realpathSync(shared), "managed-site-backup-sql-e2e-"));
+        await chmod(root, 0o755);
+        const stackDir = join(root, "stack");
+        const uploads = join(stackDir, MANAGED_SITE_PATHS.shared, "uploads");
+        const privateDir = join(stackDir, MANAGED_SITE_PATHS.private, "backup");
+        await mkdir(uploads, { recursive: true });
+        await mkdir(privateDir, { recursive: true, mode: 0o700 });
+        await chmod(join(stackDir, MANAGED_SITE_PATHS.private), 0o700);
+        await chmod(privateDir, 0o700);
+        await writeFile(join(uploads, "note.txt"), "backup-me\n");
+        const passwordPath = join(privateDir, "restic-password");
+        await writeFile(passwordPath, "lab-backup-password\n", { mode: 0o600 });
+        await chmod(passwordPath, 0o600);
+        const dbPassword = "lab-backup-db-pass";
+        const dbName = `cp-backup-db-${process.pid}`;
+        const dbNetwork = `cp-backup-dbnet-${process.pid}`;
+        const dbEnvPath = join(privateDir, "database.cnf");
+        await writeFile(dbEnvPath, `[client]\nhost=${dbName}\nport=3306\nuser=backup\npassword=${dbPassword}\n`, { mode: 0o600 });
+        await chmod(dbEnvPath, 0o600);
+
+        const repoDir = join(root, "repo");
+        await mkdir(repoDir);
+        const restServer = `cp-rest-sql-${process.pid}`;
+        const repository = `rest:http://localhost:8000/sql-${process.pid}`;
+        const restic = (args: string[]) =>
+            runCommand(
+                "docker",
+                [
+                    "run",
+                    "--rm",
+                    "--network",
+                    "host",
+                    "--read-only",
+                    "--tmpfs",
+                    "/tmp:rw,noexec,nosuid",
+                    "--env",
+                    "HOME=/tmp",
+                    "--env",
+                    `RESTIC_REPOSITORY=${repository}`,
+                    "--env",
+                    "RESTIC_PASSWORD_FILE=/run/secrets/restic-password",
+                    "-v",
+                    `${passwordPath}:/run/secrets/restic-password:ro`,
+                    "restic/restic:0.18.0",
+                    ...args,
+                ],
+                { timeoutMs: 180_000, maxBytes: 8 * 1024 * 1024 },
+            );
+
+        try {
+            await dockerOk([
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                restServer,
+                "--network",
+                "host",
+                "-e",
+                "DISABLE_AUTHENTICATION=1",
+                "-e",
+                "OPTIONS=--append-only",
+                "-e",
+                "DATA_DIRECTORY=/data",
+                "-v",
+                `${repoDir}:/data`,
+                "restic/rest-server:0.15.0",
+                "/entrypoint.sh",
+            ]);
+            let initialized = false;
+            let lastInit = "";
+            const deadline = Date.now() + 60_000;
+            while (!initialized && Date.now() < deadline) {
+                const started = await restic(["init"]);
+                initialized = started.code === 0;
+                lastInit = started.stderr.trim() || started.stdout.trim();
+                if (!initialized) await Bun.sleep(500);
+            }
+            if (!initialized) throw new Error(`the REST repository did not initialize: ${lastInit}`);
+
+            await dockerOk(["network", "create", dbNetwork]);
+            await dockerOk([
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                dbName,
+                "--network",
+                dbNetwork,
+                "-e",
+                `MARIADB_ROOT_PASSWORD=${DB_ROOT_PASSWORD}`,
+                "mariadb:11",
+            ]);
+            await waitForDatabase(dbName);
+            await dockerOk([
+                "exec",
+                dbName,
+                "mariadb",
+                "-uroot",
+                `-p${DB_ROOT_PASSWORD}`,
+                "-e",
+                [
+                    "CREATE DATABASE acme_shop;",
+                    `CREATE USER 'backup'@'%' IDENTIFIED BY '${dbPassword}';`,
+                    "GRANT ALL PRIVILEGES ON acme_shop.* TO 'backup'@'%';",
+                    "CREATE TABLE acme_shop.records (id INT PRIMARY KEY, value VARCHAR(64) NOT NULL);",
+                    "INSERT INTO acme_shop.records (id, value) VALUES (1, 'secret');",
+                    "FLUSH PRIVILEGES;",
+                ].join(" "),
+            ]);
+
+            const manifest: ManagedSiteManifest = {
+                version: 3,
+                siteId: `backup-sql-${process.pid}`,
+                owner: "managed",
+                project: `backup-sql-${process.pid}`,
+                services: { gateway: "web", runtime: "runtime" },
+                gateway: { port: 41000 + (process.pid % 900) },
+                publicRoot: "public",
+                runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+                deploy: { kind: "bind-mount", git: { url: GIT_URL, ref: GIT_REF } },
+                database: { kind: "existing", engine: "mariadb", network: dbNetwork },
+                paths: ["shared/uploads"],
+                generation: "2",
+                backup: {
+                    kind: "restic",
+                    repository,
+                    sql: { engine: "mariadb", database: "acme_shop" },
+                },
+            };
+            const backedUp = await runManagedSiteBackup(
+                { stackDir, manifest, attemptId: "backup0002", releaseId: null, runtimeImage: null },
+                { resticNetwork: "host", timeoutMs: 180_000 },
+            );
+            if (!backedUp.ok) throw new Error(backedUp.reason);
+            expect(backedUp.sqlBytes).toBeGreaterThan(0);
+
+            await dockerOk([
+                "exec",
+                dbName,
+                "mariadb",
+                "-uroot",
+                `-p${DB_ROOT_PASSWORD}`,
+                "-e",
+                "DELETE FROM acme_shop.records WHERE id = 1",
+            ]);
+
+            const restored = await runManagedSiteRestore(
+                { stackDir, manifest, attemptId: "restore0001", snapshotId: backedUp.snapshotId },
+                { resticNetwork: "host", timeoutMs: 180_000 },
+            );
+            if (!restored.ok) throw new Error(`${restored.phase}: ${restored.reason}`);
+            expect(restored.completed).toEqual(["files", "sql"]);
+            expect(restored.sql?.tables).toBeGreaterThan(0);
+            expect(await readFile(join(restored.restoreDir, "backup", "files", "shared", "uploads", "note.txt"), "utf8")).toBe(
+                "backup-me\n",
+            );
+            const dump = await readFile(join(restored.restoreDir, "backup", "database.sql"), "utf8");
+            expect(dump).toContain("secret");
+
+            // The live database is unchanged: the record was deleted and the
+            // restore only wrote to its private directory and a disposable DB.
+            const live = await runCommand(
+                "docker",
+                [
+                    "exec",
+                    dbName,
+                    "mariadb",
+                    "-uroot",
+                    `-p${DB_ROOT_PASSWORD}`,
+                    "--skip-column-names",
+                    "-e",
+                    "SELECT COUNT(*) FROM acme_shop.records",
+                ],
+                { timeoutMs: 30_000 },
+            );
+            expect(live.stdout.trim()).toBe("0");
+
+            // Prove the restored dump is usable by importing it into another
+            // disposable instance and reading the record back.
+            const checkNetwork = `cp-check-${process.pid}`;
+            const checkDb = `cp-check-db-${process.pid}`;
+            await dockerOk(["network", "create", "--internal", checkNetwork]);
+            try {
+                await dockerOk([
+                    "run",
+                    "-d",
+                    "--rm",
+                    "--name",
+                    checkDb,
+                    "--network",
+                    checkNetwork,
+                    "--tmpfs",
+                    "/var/lib/mysql:rw",
+                    "--tmpfs",
+                    "/run/mysqld:rw",
+                    "-e",
+                    "MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=1",
+                    "-e",
+                    "MARIADB_ROOT_HOST=%",
+                    "mariadb:11",
+                ]);
+                let checkReady = false;
+                for (let i = 0; i < 60 && !checkReady; i += 1) {
+                    const ping = await runCommand(
+                        "docker",
+                        [
+                            "run",
+                            "--rm",
+                            "--network",
+                            checkNetwork,
+                            "mariadb:11",
+                            "mariadb",
+                            "--host",
+                            checkDb,
+                            "--user",
+                            "root",
+                            "--skip-ssl",
+                            "-e",
+                            "SELECT 1",
+                        ],
+                        { timeoutMs: 20_000 },
+                    );
+                    checkReady = ping.code === 0 && !ping.timedOut;
+                    if (!checkReady) await Bun.sleep(500);
+                }
+                if (!checkReady) throw new Error("the record-check database did not become ready");
+                await dockerOk([
+                    "run",
+                    "--rm",
+                    "--network",
+                    checkNetwork,
+                    "-v",
+                    `${restored.restoreDir}/backup:/backup:ro`,
+                    "mariadb:11",
+                    "mariadb",
+                    "--host",
+                    checkDb,
+                    "--user",
+                    "root",
+                    "--skip-ssl",
+                    "--execute",
+                    "source /backup/database.sql",
+                ]);
+                const record = await dockerOk([
+                    "run",
+                    "--rm",
+                    "--network",
+                    checkNetwork,
+                    "mariadb:11",
+                    "mariadb",
+                    "--host",
+                    checkDb,
+                    "--user",
+                    "root",
+                    "--skip-ssl",
+                    "--skip-column-names",
+                    "--execute",
+                    `SELECT value FROM acme_shop.records WHERE id = 1`,
+                ]);
+                expect(record.trim()).toBe("secret");
+            } finally {
+                await runCommand("docker", ["rm", "-f", checkDb], { timeoutMs: 60_000 }).catch(() => {});
+                await runCommand("docker", ["network", "rm", checkNetwork], { timeoutMs: 60_000 }).catch(() => {});
+            }
+        } finally {
+            await runCommand("docker", ["rm", "-f", restServer], { timeoutMs: 60_000 }).catch(() => {});
+            await runCommand("docker", ["rm", "-f", dbName], { timeoutMs: 60_000 }).catch(() => {});
+            await runCommand("docker", ["network", "rm", dbNetwork], { timeoutMs: 60_000 }).catch(() => {});
+            await runCommand("docker", ["run", "--rm", "-v", `${root}:/r`, "alpine:3.20", "rm", "-rf", "/r/repo"], {
+                timeoutMs: 120_000,
+            }).catch(() => {});
+            await rm(root, { recursive: true, force: true });
+        }
+    }, 900_000);
 
     test("the generated gateway follows a runtime IP change without recreating the gateway", async () => {
         requireEnv();
