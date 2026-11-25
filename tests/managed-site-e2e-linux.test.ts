@@ -11,6 +11,7 @@ import { MANAGED_SITE_PATHS, parseManagedSiteManifest, type ManagedSiteManifest 
 import { readManagedSiteBackupAttempt } from "../src/managed-site-backup.ts";
 import { runManagedSiteBackup } from "../src/managed-site-backup-run.ts";
 import { runManagedSiteBackupRetentionPreview } from "../src/managed-site-backup-retention.ts";
+import { runManagedSiteBackupSnapshotList } from "../src/managed-site-backup-snapshots.ts";
 import { runManagedSiteRestore } from "../src/managed-site-restore.ts";
 import {
     managedSiteAttemptPath,
@@ -947,6 +948,23 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
             expect(preview.total).toBe(2);
             expect(preview.keep.map((entry) => entry.id)).toEqual([second.snapshotId]);
             expect(preview.remove.map((entry) => entry.id)).toEqual([backedUp.snapshotId]);
+
+            // ADR 0053: the restore inventory lists exactly this site's two
+            // snapshots, newest first, and ignores a snapshot tagged elsewhere.
+            const inventory = await runManagedSiteBackupSnapshotList({ stackDir, manifest }, { resticNetwork: "host", timeoutMs: 180_000 });
+            if (!inventory.ok) throw new Error(inventory.reason);
+            expect(inventory.snapshots.map((entry) => entry.id).sort()).toEqual([backedUp.snapshotId, second.snapshotId].sort());
+            const instants = inventory.snapshots.map((entry) => Date.parse(entry.at));
+            expect(instants).toEqual([...instants].sort((left, right) => right - left));
+
+            const foreign = await restic(["backup", "--tag", "site:other", "/backup"], ["-v", `${uploads}:/backup:ro`]);
+            expect(foreign.code).toBe(0);
+            const afterForeign = await runManagedSiteBackupSnapshotList(
+                { stackDir, manifest },
+                { resticNetwork: "host", timeoutMs: 180_000 },
+            );
+            if (!afterForeign.ok) throw new Error(afterForeign.reason);
+            expect(afterForeign.snapshots).toEqual(inventory.snapshots);
 
             await rm(join(uploads, "note.txt"));
             const restoreDir = join(root, "restore");
