@@ -37,7 +37,7 @@ lab_start
 # suite that is not about pulling.
 lab_seed_from_cache "${COMPOSE_PANEL_LAB_BASE_IMAGE:-alpine:3.20}" "${COMPOSE_PANEL_E2E_WEB_IMAGE:-nginx:alpine}" \
     "nginx:1.27-alpine" "${COMPOSE_PANEL_E2E_RUNTIME_IMAGE:-php:8.3-fpm-alpine}" \
-    "${COMPOSE_PANEL_E2E_BUILD_IMAGE:-composer:2.10.3}"
+    "${COMPOSE_PANEL_E2E_BUILD_IMAGE:-composer:2.10.3}" "${COMPOSE_PANEL_E2E_DATABASE_IMAGE:-mariadb:11}"
 
 # Copy the working tree into the Linux file system (/mnt/* is not one).
 mkdir "$LAB_DIR/app"
@@ -50,4 +50,4 @@ COMPOSE_PANEL_LAB_SHARED="$LAB_SHARED" \
 COMPOSE_PANEL_LAB_CONTAINER="$LAB_CONTAINER_ID" \
 COMPOSE_PANEL_LAB_OUTER_CONTEXT="${LAB_OUTER_CONTEXT:-}" \
 COMPOSE_PANEL_E2E_PORT="$PORT" \
-    "$BUN" test tests/managed-site-e2e-linux.test.ts
+    "$BUN" test tests/managed-site-e2e-linux.test.ts "$@"

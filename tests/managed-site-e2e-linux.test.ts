@@ -203,6 +203,165 @@ async function commitRevisionTwo(work: string, bare: string): Promise<string> {
     return b;
 }
 
+const DB_PORT = Number(process.env.COMPOSE_PANEL_DB_E2E_PORT ?? "18433");
+const DB_ROOT_PASSWORD = "cp-db-root-pass";
+const DB_A_PASSWORD = "cp-db-a-pass";
+const DB_B_PASSWORD = "cp-db-b-pass";
+
+const DATABASE_INDEX_PHP = `<?php
+$action = $_GET['db'] ?? '';
+if ($action === '') {
+    require dirname(__DIR__) . '/.compose-panel/revision.php';
+    exit;
+}
+header('Content-Type: text/plain; charset=utf-8');
+try {
+    $host = getenv('DB_HOST') ?: 'db';
+    $port = getenv('DB_PORT') ?: '3306';
+    $name = getenv('DB_NAME') ?: '';
+    $user = getenv('DB_USER') ?: '';
+    $pass = getenv('DB_PASSWORD') ?: '';
+    $pdo = new PDO("mysql:host=$host;port=$port;dbname=$name;charset=utf8mb4", $user, $pass, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_TIMEOUT => 5,
+    ]);
+    if ($action === 'write') {
+        $pdo->exec('CREATE TABLE IF NOT EXISTS records (id INT PRIMARY KEY, value VARCHAR(64) NOT NULL)');
+        $stmt = $pdo->prepare('INSERT INTO records (id, value) VALUES (1, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)');
+        $stmt->execute([$_GET['value'] ?? 'x']);
+        echo "ok\\n";
+    } elseif ($action === 'read') {
+        echo ($pdo->query('SELECT value FROM records WHERE id = 1')->fetchColumn() ?: '') . "\\n";
+    } else {
+        http_response_code(400);
+        echo "unknown\\n";
+    }
+} catch (Throwable $error) {
+    http_response_code(500);
+    echo "error\\n";
+}
+`;
+
+/** A real Git fixture whose front controller writes and reads one DB record. */
+async function createDatabaseGitFixture(root: string): Promise<{ work: string; bare: string; a: string }> {
+    const work = join(root, "db-work");
+    const bare = join(root, "db-repo.git");
+    await mkdir(join(work, "public"), { recursive: true });
+    await writeFile(join(work, "public", "index.php"), DATABASE_INDEX_PHP);
+    await writeFile(join(work, "public", "build.txt"), "one\n");
+
+    await git(["init", "--quiet", "--initial-branch=main", work], root);
+    await git(["add", "-A"], work);
+    await git(
+        [
+            "-c",
+            "user.name=Compose Panel Lab",
+            "-c",
+            "user.email=lab@example.test",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "database revision one",
+        ],
+        work,
+    );
+    const a = await git(["rev-parse", "HEAD"], work);
+    await git(["init", "--quiet", "--bare", bare], root);
+    await git(["push", "--quiet", bare, "main"], work);
+    return { work, bare, a };
+}
+
+async function commitDatabaseRevisionTwo(work: string, bare: string): Promise<string> {
+    await writeFile(join(work, "public", "build.txt"), "two\n");
+    await git(["add", "-A"], work);
+    await git(
+        [
+            "-c",
+            "user.name=Compose Panel Lab",
+            "-c",
+            "user.email=lab@example.test",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--quiet",
+            "-m",
+            "database revision two",
+        ],
+        work,
+    );
+    const b = await git(["rev-parse", "HEAD"], work);
+    await git(["push", "--quiet", bare, "main"], work);
+    return b;
+}
+
+function databaseComposeYaml(project: string, stackDir: string, databaseNetwork: string, phpImage: string, port: number): string {
+    return `name: ${project}
+
+services:
+  web:
+    image: nginx:alpine
+    restart: "no"
+    ports:
+      - "127.0.0.1:${port}:80"
+    volumes:
+      - ${stackDir}/${MANAGED_SITE_PATHS.runtime}:${stackDir}/${MANAGED_SITE_PATHS.runtime}:ro
+      - ${stackDir}/generated/nginx-site.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - runtime
+    networks:
+      - site
+
+  runtime:
+    image: ${phpImage}
+    restart: "no"
+    env_file:
+      - path: ${stackDir}/${MANAGED_SITE_PATHS.private}/database.env
+        required: false
+    volumes:
+      - ${stackDir}/${MANAGED_SITE_PATHS.runtime}:${stackDir}/${MANAGED_SITE_PATHS.runtime}:ro
+      - ${stackDir}/${MANAGED_SITE_PATHS.shared}:${stackDir}/${MANAGED_SITE_PATHS.shared}:rw
+      - ${stackDir}/generated/opcache.ini:/usr/local/etc/php/conf.d/zz-opcache.ini:ro
+    networks:
+      - site
+      - ${databaseNetwork}
+
+networks:
+  site: {}
+  ${databaseNetwork}:
+    external: true
+    name: ${databaseNetwork}
+`;
+}
+
+function databaseManifestJson(project: string, siteId: string, databaseNetwork: string): string {
+    const manifest: ManagedSiteManifest = {
+        version: 2,
+        siteId,
+        owner: "opt-in",
+        project,
+        services: { gateway: "web", runtime: "runtime" },
+        publicRoot: "public",
+        runtime: { profile: "php-front-controller" },
+        database: { kind: "existing", engine: "mariadb", network: databaseNetwork },
+        deploy: { kind: "bind-mount", git: { url: GIT_URL, ref: GIT_REF } },
+    };
+    return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+async function waitForDatabase(id: string): Promise<void> {
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+        const result = await runCommand("docker", ["exec", id, "mariadb", "-uroot", `-p${DB_ROOT_PASSWORD}`, "-e", "SELECT 1"], {
+            timeoutMs: 5000,
+        });
+        if (result.code === 0 && !result.timedOut) return;
+        if (Date.now() > deadline) throw new Error("MariaDB did not become ready");
+        await Bun.sleep(500);
+    }
+}
+
 async function runCrashedDeploy(config: ManagedSiteE2EConfig, crash: "after-stop" | "after-switch"): Promise<void> {
     const root = await mkdtemp(join(tmpdir(), "cp-e2e-child-"));
     try {
@@ -463,6 +622,194 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
             await rm(root, { recursive: true, force: true });
         }
     }, 600_000);
+
+    test("stores one record across deploy and rollback and isolates two databases", async () => {
+        requireEnv();
+        if (!Number.isInteger(DB_PORT) || DB_PORT < 1 || DB_PORT > 65535) throw new Error("COMPOSE_PANEL_DB_E2E_PORT is not a port.");
+        const root = await mkdtemp(join(realpathSync(shared), "managed-site-db-e2e-"));
+        await chmod(root, 0o755);
+        const dbProject = `cp-db-${process.pid}`;
+        const dbNetwork = `cp-db-net-${process.pid}`;
+        const dbDir = join(root, "db");
+        const dbComposeFile = join(dbDir, "compose.yaml");
+        const siteId = `cp-db-e2e-${process.pid}`;
+        const project = `cp-db-site-${process.pid}`;
+        const stackDir = join(root, "stack");
+        const composeFile = join(stackDir, "compose.yaml");
+        const manifestFile = join(stackDir, "compose-panel-site.json");
+        const runtimeDir = join(stackDir, MANAGED_SITE_PATHS.runtime);
+        const envFile = join(stackDir, MANAGED_SITE_PATHS.private, "database.env");
+        const phpImage = `cp-db-php-${process.pid}:latest`;
+        const probe = createLabProbe({ labContainer, labOuterContext });
+        const config: ManagedSiteE2EConfig = {
+            stackDir,
+            siteId,
+            project,
+            composeFile,
+            port: DB_PORT,
+            gitUrl: GIT_URL,
+            gitRef: GIT_REF,
+            bareRepo: join(root, "db-repo.git"),
+            labContainer,
+            ...(labOuterContext ? { labOuterContext } : {}),
+            attemptId: "dbe2e00001",
+        };
+        let dbId = "";
+
+        try {
+            // One disposable PHP image with the MySQL PDO driver. The base image
+            // is seeded by the runner; the extension build needs no extra apk.
+            await mkdir(join(root, "php-db"));
+            await writeFile(join(root, "php-db", "Dockerfile"), "FROM php:8.3-fpm-alpine\nRUN docker-php-ext-install pdo_mysql\n");
+            await dockerOk(["build", "-q", "-t", phpImage, join(root, "php-db")]);
+
+            // The operator-provisioned database is a separate project on an
+            // external network. It is not part of the site's Compose file.
+            await mkdir(dbDir);
+            await writeFile(
+                dbComposeFile,
+                `name: ${dbProject}\nservices:\n  db:\n    image: mariadb:11\n    restart: "no"\n    environment:\n      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}\n    networks:\n      - db\nnetworks:\n  db:\n    external: true\n    name: ${dbNetwork}\n`,
+            );
+            await dockerOk(["network", "create", dbNetwork]);
+            await dockerOk(["compose", "-p", dbProject, "-f", dbComposeFile, "up", "-d", "--quiet-pull"], dbDir);
+            dbId = await dockerOk(["compose", "-p", dbProject, "-f", dbComposeFile, "ps", "-q", "db"], dbDir);
+            await waitForDatabase(dbId);
+            await dockerOk([
+                "exec",
+                dbId,
+                "mariadb",
+                "-uroot",
+                `-p${DB_ROOT_PASSWORD}`,
+                "-e",
+                [
+                    "CREATE DATABASE site_a;",
+                    `CREATE USER 'site_a'@'%' IDENTIFIED BY '${DB_A_PASSWORD}';`,
+                    "GRANT ALL PRIVILEGES ON site_a.* TO 'site_a'@'%';",
+                    "CREATE DATABASE site_b;",
+                    `CREATE USER 'site_b'@'%' IDENTIFIED BY '${DB_B_PASSWORD}';`,
+                    "GRANT ALL PRIVILEGES ON site_b.* TO 'site_b'@'%';",
+                    "CREATE TABLE site_b.records (id INT PRIMARY KEY, value VARCHAR(64) NOT NULL);",
+                    "INSERT INTO site_b.records (id, value) VALUES (1, 'secret');",
+                    "FLUSH PRIVILEGES;",
+                ].join(" "),
+            ]);
+
+            // ---- site layout, manifest and the real generated gateway policy ----
+            for (const path of [
+                join(stackDir, "generated"),
+                join(stackDir, MANAGED_SITE_PATHS.staging),
+                join(stackDir, MANAGED_SITE_PATHS.releases),
+                join(stackDir, MANAGED_SITE_PATHS.shared),
+                join(stackDir, MANAGED_SITE_PATHS.private),
+            ]) {
+                await mkdir(path, { recursive: true, mode: 0o755 });
+            }
+            await chmod(join(stackDir, MANAGED_SITE_PATHS.staging), 0o700);
+            await chmod(join(stackDir, MANAGED_SITE_PATHS.private), 0o700);
+            await chmod(join(stackDir, MANAGED_SITE_PATHS.shared), 0o755);
+            const rendered = buildManagedSite({
+                stackDir,
+                siteId,
+                project,
+                // Only the gateway policy is reused; its reserved port is not
+                // the opt-in site's published port.
+                port: 41000 + (DB_PORT % 900),
+                gitUrl: GIT_URL,
+                gitRef: GIT_REF,
+                channel: "php-8.3",
+            });
+            if (!rendered.ok) throw new Error(rendered.reason);
+            await writeFile(join(stackDir, "generated", "nginx-site.conf"), rendered.artifacts.gateway);
+            await writeFile(join(stackDir, "generated", "opcache.ini"), rendered.artifacts.opcache);
+            await writeFile(envFile, `DB_HOST=db\nDB_PORT=3306\nDB_NAME=site_a\nDB_USER=site_a\nDB_PASSWORD=${DB_A_PASSWORD}\n`, {
+                mode: 0o600,
+            });
+            await chmod(envFile, 0o600);
+            await writeFile(composeFile, databaseComposeYaml(project, stackDir, dbNetwork, phpImage, DB_PORT));
+            await writeFile(manifestFile, databaseManifestJson(project, siteId, dbNetwork));
+
+            // ---- baseline, write a record, deploy, roll back ----
+            const { work, bare, a } = await createDatabaseGitFixture(root);
+            config.bareRepo = bare;
+            const bootstrap = await fetchAndPublishGitRelease({
+                stackDir,
+                attemptId: attempt(20),
+                siteId,
+                url: GIT_URL,
+                ref: GIT_REF,
+                runner: createMappedGitRunner(GIT_URL, bare),
+            });
+            if (!bootstrap.ok) {
+                throw new Error(`database baseline publish failed: ${bootstrap.reason}${bootstrap.detail ? ` ${bootstrap.detail}` : ""}`);
+            }
+            expect(bootstrap.releaseId).toBe(a);
+            expect(await switchCurrent(runtimeDir, a)).toEqual({ ok: true });
+
+            const b = await commitDatabaseRevisionTwo(work, bare);
+            expect(b).not.toBe(a);
+            await dockerOk(["compose", "-p", project, "-f", composeFile, "up", "-d", "--quiet-pull"], stackDir);
+            await waitForRevision(probe, a, 60_000, DB_PORT);
+            expect(await fetchInLab("/", DB_PORT)).toBe(`${a}\n`);
+            expect(await fetchInLab("/?db=write&value=kept-a", DB_PORT)).toBe("ok\n");
+            expect(await fetchInLab("/?db=read", DB_PORT)).toBe("kept-a\n");
+
+            const deployed = await deployWithE2E({ ...config, attemptId: attempt(21) });
+            if (deployed.kind === "refused") throw new Error(`database deploy refused: ${deployed.reason}`);
+            expect(deployed.kind).toBe("deployed");
+            await waitForRevision(probe, b, 60_000, DB_PORT);
+            expect(await fetchInLab("/?db=read", DB_PORT)).toBe("kept-a\n");
+            expect(await fetchInLab("/?db=write&value=kept-b", DB_PORT)).toBe("ok\n");
+
+            await git(["reset", "--hard", "--quiet", a], work);
+            await git(["push", "--quiet", "--force", bare, "main"], work);
+            const back = await deployWithE2E({ ...config, attemptId: attempt(22) });
+            expect(back.kind).toBe("deployed");
+            await waitForRevision(probe, a, 60_000, DB_PORT);
+            expect(await fetchInLab("/?db=read", DB_PORT)).toBe("kept-b\n");
+
+            // ---- tenant isolation: site A cannot read or write site B ----
+            const aRead = await runCommand(
+                "docker",
+                ["exec", dbId, "mariadb", "-h127.0.0.1", "-usite_a", `-p${DB_A_PASSWORD}`, "-e", "SELECT value FROM site_b.records"],
+                { timeoutMs: 15_000 },
+            );
+            expect(aRead.code).not.toBe(0);
+            expect(`${aRead.stdout}\n${aRead.stderr}`.toLowerCase()).toContain("denied");
+            const aWrite = await runCommand(
+                "docker",
+                [
+                    "exec",
+                    dbId,
+                    "mariadb",
+                    "-h127.0.0.1",
+                    "-usite_a",
+                    `-p${DB_A_PASSWORD}`,
+                    "-e",
+                    "INSERT INTO site_b.records (id, value) VALUES (2, 'x')",
+                ],
+                { timeoutMs: 15_000 },
+            );
+            expect(aWrite.code).not.toBe(0);
+            const bRead = await runCommand(
+                "docker",
+                ["exec", dbId, "mariadb", "-h127.0.0.1", "-usite_b", `-p${DB_B_PASSWORD}`, "-e", "SELECT value FROM site_b.records"],
+                { timeoutMs: 15_000 },
+            );
+            expect(bRead.code).toBe(0);
+            expect(bRead.stdout).toContain("secret");
+        } finally {
+            await runCommand("docker", ["compose", "-p", project, "-f", composeFile, "down", "-v", "--remove-orphans"], {
+                cwd: stackDir,
+                timeoutMs: 120_000,
+            }).catch(() => {});
+            await runCommand("docker", ["compose", "-p", dbProject, "-f", dbComposeFile, "down", "-v", "--remove-orphans"], {
+                cwd: dbDir,
+                timeoutMs: 120_000,
+            }).catch(() => {});
+            await runCommand("docker", ["network", "rm", dbNetwork], { timeoutMs: 30_000 }).catch(() => {});
+            await rm(root, { recursive: true, force: true });
+        }
+    }, 900_000);
 
     test("the generated gateway follows a runtime IP change without recreating the gateway", async () => {
         requireEnv();
