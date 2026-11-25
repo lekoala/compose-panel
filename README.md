@@ -128,7 +128,7 @@ bun run test:proxy:wsl  # on Windows: end-to-end check behind a real Caddy (TLS)
 bun run test:caddy:wsl  # on Windows: Caddy helper against a real, disposable Caddy
 bun run test:docker-lab:wsl  # on Windows: collisions and SIGTERM on a disposable Docker-in-Docker daemon
 bun run test:managed-sites:wsl  # on Windows: the managed-site mount/switch lab, without the panel
-bun run test:managed-sites-e2e:wsl  # on Windows: the real two-commit deploy, refusals and killed deploys
+bun run test:managed-sites-e2e:wsl  # on Windows: the real deploy, refusals, killed deploys and the MariaDB/isolation fixture
 bun run test:git-ssh:wsl  # on Windows: real Git/OpenSSH authentication in a loopback-only container
 ```
 

@@ -127,8 +127,8 @@ implemented for an opted-in stack.
   operator-provisioned database per site (MariaDB, MySQL or PostgreSQL), joined
   through one declared external network by the runtime service only, with
   credentials in an operator-owned `0600` env file checked before start and no
-  SQL client in the panel. Unit and real-Compose-config coverage are in place;
-  the disposable MariaDB fixture that writes a record, deploys, rolls back and
-  reads it back, plus the real-host checklist, remain to be run. Dumps,
-  restores, migrations and backup credentials stay in a separate ADR, with one
-  SQL adapter per engine.
+  SQL client in the panel. Unit, app-admission, real-Compose-config and the
+  disposable MariaDB fixture are proven: a record survives a deploy and a
+  rollback, and site A cannot read or write site B. The real-host checklist
+  remains. Dumps, restores, migrations and backup credentials stay in a
+  separate ADR, with one SQL adapter per engine.

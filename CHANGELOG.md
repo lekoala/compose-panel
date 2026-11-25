@@ -14,7 +14,8 @@
   by the panel account. The panel never connects to the database, runs SQL,
   stores a credential, reads the env-file values or adds a database client.
   Dumps, restores, migrations and backup credentials remain out of scope. The
-  disposable MariaDB fixture and real-host checklist are still pending.
+  disposable MariaDB fixture passed (a record survives deploy and rollback, and
+  site A cannot read or write site B); the real-host checklist remains.
 
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares

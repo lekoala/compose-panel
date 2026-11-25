@@ -1,7 +1,7 @@
 # ADR 0048 — Attach a site to an existing database
 
-Status: Accepted (managed-site pilot, 2026-11-25). Implemented 2026-11-25;
-the disposable MariaDB fixture and the real-host checklist remain to be run.
+Status: Accepted (managed-site pilot, 2026-11-25). Implemented and proven on
+the disposable lab on 2026-11-25; the real-host checklist remains to be run.
 
 ## Context
 
@@ -211,11 +211,15 @@ the disposable MariaDB fixture and the real-host checklist remain to be run.
   refusals and the env-file metadata checks. The generated Compose file was
   validated with the real Compose CLI with the env file absent (`required:
   false`).
-- Still open: the disposable MariaDB fixture that writes a record, deploys,
-  rolls back and reads it back, and the two-site isolation assertion. Run it on
-  the disposable lab daemon before calling the slice production-proven. The
-  real-host checklist applies separately, because the lab cannot prove host
-  networking or DNS.
+- Disposable lab passed on 2026-11-25
+  (`bun run test:managed-sites-e2e:wsl`): MariaDB 11 on its own external
+  network, a PHP 8.3 runtime built with `pdo_mysql`, a record written before the
+  first deploy, still readable after deploying the next commit and after
+  rolling back to the first. Site A's account was denied reading and writing
+  site B's table; site B's own account read it. The generated Compose file also
+  validated with the real Compose CLI with the env file absent (`required:
+  false`). The real-host checklist applies separately, because the lab cannot
+  prove host networking or DNS.
 - Rollback: remove the block, restore the previous manifest version if needed
   and regenerate. The site leaves the external network; the database and its
   data are untouched.

@@ -1119,7 +1119,11 @@ deployment suite (`bun run test:managed-sites-e2e:wsl`) drives the real deploy
 code against a real Git repository and Compose project: two commits, a proven
 no-op, a return to the previous release, two refusals before any mutation, and
 two SIGKILLs (after the gateway stop and after the pointer switch) followed by
-an inspection of the marker, pointer, containers and probe. The disposable SSH
+an inspection of the marker, pointer, containers and probe. It also builds a PHP
+8.3 image with `pdo_mysql`, starts MariaDB 11 in a separate project on an
+external network, writes a record through the site, deploys the next commit,
+rolls back and reads the same record, and proves that site A's account cannot
+read or write site B's table (ADR 0048). The disposable SSH
 fixture (`bash scripts/test-git-ssh.sh`) drives the real Git adapter against
 OpenSSH on loopback and exercises the correct key pair, wrong client key and
 wrong host key. These suites are opt-in and

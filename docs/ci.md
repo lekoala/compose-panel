@@ -177,14 +177,20 @@ a no-op for the SHA already served, a return to the previous release, a changed
 project and a parent bind refused before any mutation, and a second Compose
 project left untouched. It then kills the deploy process with `SIGKILL` after
 the gateway stop and after the pointer switch and inspects the attempt marker,
-the pointer, the containers and the revision probe. The Git URL is mapped to a
-local bare repository by an injected runner, which re-allows the `file`
-transport for the fixture; URL validation and the `https`-only environment stay
-in the unit tests. The gateway binds `127.0.0.1` inside the lab daemon's network
-namespace, so the probe runs there through `docker exec`. Never runs in
-unattended CI. Passing it is not host validation: the real Debian/Ubuntu
-checklist in [deployment.md](deployment.md#remaining-real-host-validation)
-remains required before the pilot is enabled on a production host.
+the pointer, the containers and the revision probe.
+
+The same suite covers the database attachment (ADR 0048): it builds a PHP 8.3
+image with `pdo_mysql`, starts MariaDB 11 in a separate project on an external
+network, writes a record through the site, deploys the next commit, rolls back
+and reads the record again, and checks that site A's account cannot read or
+write site B's table. The Git URL is mapped to a local bare repository by an
+injected runner, which re-allows the `file` transport for the fixture; URL
+validation and the `https`-only environment stay in the unit tests. The gateway
+binds `127.0.0.1` inside the lab daemon's network namespace, so the probe runs
+there through `docker exec`. Never runs in unattended CI. Passing it is not host
+validation: the real Debian/Ubuntu checklist in
+[deployment.md](deployment.md#remaining-real-host-validation) remains required
+before the pilot is enabled on a production host.
 
 ## Publication (tags only)
 
