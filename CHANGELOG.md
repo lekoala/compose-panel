@@ -109,6 +109,10 @@
   missing or malformed. The cookie/form equality, constant-time compare, Origin
   check and cookie attributes are unchanged.
 
+- Image security: pin libzstd1 1.5.7+dfsg-1+deb13u1 over the Bun base for
+  CVE-2026-124851, the only fixable HIGH in the 2026-11-25 image scan. This is
+  the same targeted base-package fix as ADR 0038: no blanket upgrade, no Trivy
+  exception and no runtime updater.
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares
   `github.com/moby/go-archive` v0.2.0, but the binary carries only that

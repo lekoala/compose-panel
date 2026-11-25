@@ -42,3 +42,19 @@ in the Windows workspace. The existing CI image smoke and release platform
 scans exercise the resulting image; no application Docker command changes.
 Rollback is a revert of the targeted install and documentation; the scan
 will again report the unfixed base packages. No host packages are changed.
+
+## Amendment 2026-11-25
+
+The same targeted-pin decision covers `libzstd1` 1.5.7+dfsg-1+deb13u1 for
+CVE-2026-124851, the only fixable HIGH in the 2026-11-25 report. The Dockerfile
+installs that exact version in the same early apt step; no Trivy exception is
+added and no other package is upgraded. This supersedes the "local image
+verification remains pending" note above for one amd64 build.
+
+Verified on 2026-11-25 with a linux/amd64 build of the pinned base on WSL
+Docker: `dpkg-query -W` shows the fixed `libzstd1` (with the earlier apt and
+zlib pins), the socket-less smoke test from `ci.yml` passes, a scan without the
+ignore file reports only the two documented Go-module findings, and Trivy
+0.76.2 with `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+--ignorefile .trivyignore.yaml` exits 0. The arm64 build and the CI runner
+remain the release gates for those platforms.

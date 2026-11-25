@@ -60,7 +60,11 @@ builds are security-scanned, but exact byte-for-byte reproducibility is not
 guaranteed (apt resolves `ca-certificates` and `curl` at build time).
 
 The 2026-11-09 image report requires apt/libapt-pkg7.0 3.0.4 and zlib1g
-1:1.3.dfsg+really1.3.1-1+deb13u1; the Dockerfile installs these exact fixes.
+1:1.3.dfsg+really1.3.1-1+deb13u1, and the 2026-11-25 report requires libzstd1
+1.5.7+dfsg-1+deb13u1 (CVE-2026-124851); the Dockerfile installs these exact
+fixes. A base digest refresh that already carries them should replace the
+matching pins.
+
 Compose 5.8.0 still declares `golang.org/x/net` v0.60.0, so the module-level
 CVE-2026-78661 finding (advisory package fixed in v0.62.0) keeps appearing.
 The advisory package `golang.org/x/net/html` is not linked into the binary:
