@@ -26,14 +26,14 @@ Dockge switch-over, [migrating-from-dockge.md](migrating-from-dockge.md).
 ### "The sign-in form expired"
 
 - **Cause:** the double-submit CSRF cookie was missing or different from the
-  token in the form — usually a stale tab, a cookie from an earlier address, or
-  two sign-in tabs open at once.
+  token in the form - usually the cookie was cleared, or the page was loaded
+  from a different address than the one it posts to. Several sign-in tabs share
+  one token and no longer cause this
+  ([ADR 0055](adr/0055-login-csrf-across-tabs.md)).
 - **Diagnose:** check the browser's cookies for the panel's host; the panel sets
   `cp_csrf` and `cp_session`.
 - **Fix:** delete the cookies for the panel's domain only (not all browser
-  data), reopen one tab at the configured address and sign in again. If it
-  persists across tabs, that is the known limitation tracked in
-  [roadmap.md](roadmap.md) ("Login CSRF across tabs and access modes").
+  data), reopen one tab at the configured address and sign in again.
 
 ### The SSH tunnel works but sign-in keeps failing
 

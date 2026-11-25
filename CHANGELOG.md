@@ -103,6 +103,12 @@
   snapshot were added; a real endpoint and a damaged repository remain in the
   real-host checklist.
 
+- Sign-in: reuse the login CSRF token across tabs (ADR 0055). Two sign-in tabs,
+  or a wrong password in one tab, no longer invalidate each other: the page
+  reuses a well-formed `cp_csrf` value and mints one only when the cookie is
+  missing or malformed. The cookie/form equality, constant-time compare, Origin
+  check and cookie attributes are unchanged.
+
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares
   `github.com/moby/go-archive` v0.2.0, but the binary carries only that

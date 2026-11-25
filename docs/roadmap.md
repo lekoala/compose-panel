@@ -15,7 +15,12 @@ After V1 the direction is to understand the host the stacks run on, not only the
   [Disposable VM validation](installation.md#verification-before-release)
   remains required.
 - **Use HTTPS and the SSH tunnel at the same time.** Done in 0.2.0 ([ADR 0012](adr/0012-multiple-access-origins.md)): `COMPOSE_PANEL_PROXY_ORIGINS` (a list) plus `COMPOSE_PANEL_ALLOW_LOOPBACK`. Host and Origin are validated per access point, and the cookie attribute is chosen per path.
-- **Login CSRF across tabs and access modes.** Make the token robust when several tabs are open or the access path changes.
+- **Login CSRF across tabs and access modes.** Done
+  ([ADR 0055](adr/0055-login-csrf-across-tabs.md)): the sign-in page reuses a
+  well-formed token already in the `cp_csrf` cookie, so several tabs share one
+  form token and a wrong password in one tab no longer invalidates another.
+  Only a missing or malformed cookie is replaced, and the cookie/form equality,
+  constant-time compare, Origin check and cookie attributes are unchanged.
 - **Access diagnostics (0.2.0).** A read-only `/access` page done in 0.2.0 ([ADR 0013](adr/0013-access-diagnostics.md)): it lists the configured paths with an honest status (verified by the panel / configured but unverifiable / verify externally) and never shows an access as secure from its configuration alone. No extra privileges.
 - **Optional host diagnostics (later).** Detect Caddy/Tailscale from a bounded, read-only JSON status file produced by an optional local collector with strictly limited permissions (`systemctl is-active caddy`, `tailscale status|serve|funnel --json`), disabled by default, served to the panel through a read-only mount — never a Tailscale or systemd socket, no keys or raw config. Own ADR first. Provider-agnostic: no Caddy/Tailscale detection hard-coded beyond the collected file.
 - **Server health page (later).** Fold the access diagnostics into a broader host view: external containers, systemd services and exposed ports, still read-only and without becoming a general Linux administration panel.
