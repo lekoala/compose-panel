@@ -13,12 +13,11 @@ import {
     MANAGED_SITE_BACKUP_DATABASE_CREDENTIALS_FILE,
     MANAGED_SITE_BACKUP_LIMITS,
     MANAGED_SITE_BACKUP_MAX_DUMP_BYTES,
-    MANAGED_SITE_BACKUP_RESTIC_PASSWORD_FILE,
-    MANAGED_SITE_BACKUP_REST_ENV_FILE,
     checkManagedSiteBackupCredentials,
     managedSiteBackupCredentialPath,
     managedSiteBackupDumpDatabase,
     managedSiteBackupStagingDir,
+    managedSiteResticContext,
     readManagedSiteBackupAttempt,
     removeManagedSiteBackupAttempt,
     removeManagedSiteBackupStaging,
@@ -35,7 +34,6 @@ import {
     parseResticBackupSnapshot,
     parseResticListContains,
     parseResticSnapshotList,
-    type ManagedSiteResticContext,
 } from "./managed-site-restic.ts";
 import type { ManagedSiteManifest } from "./managed-site.ts";
 
@@ -259,14 +257,7 @@ export async function runManagedSiteBackup(
         };
         await writeFile(`${staged.stagingDir}/backup.json`, `${JSON.stringify(snapshotManifest)}\n`, { mode: 0o600 });
 
-        const restic: ManagedSiteResticContext = {
-            repository: backup.repository,
-            passwordPath: managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_RESTIC_PASSWORD_FILE),
-            restEnvPath: managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_REST_ENV_FILE),
-            restEnvExists: await lstat(managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_REST_ENV_FILE))
-                .then((info) => info.isFile())
-                .catch(() => false),
-        };
+        const restic = await managedSiteResticContext(stackDir, backup.repository);
 
         phase = "upload";
         await writeManagedSiteBackupAttempt(stackDir, attempt("pending"));

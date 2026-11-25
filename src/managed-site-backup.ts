@@ -13,6 +13,7 @@ import type { Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirIdentity, randomSuffix, sameDirIdentity, type DirIdentity } from "./fs-safe.ts";
+import type { ManagedSiteResticContext } from "./managed-site-restic.ts";
 import {
     MANAGED_SITE_BACKUP_DATABASE_MAX,
     MANAGED_SITE_PATHS,
@@ -60,6 +61,23 @@ export function managedSiteBackupStagingDir(stackDir: string, attemptId: string)
 
 export function managedSiteBackupAttemptPath(stackDir: string): string {
     return `${managedSiteBackupDir(stackDir)}/${MANAGED_SITE_BACKUP_ATTEMPT_FILE}`;
+}
+
+/**
+ * The fixed Restic context of one site: the declared repository and the two
+ * operator-owned credential paths (ADR 0049, ADR 0052). It checks the REST
+ * environment file's presence only; no credential value is read.
+ */
+export async function managedSiteResticContext(stackDir: string, repository: string): Promise<ManagedSiteResticContext> {
+    const restEnvPath = managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_REST_ENV_FILE);
+    return {
+        repository,
+        passwordPath: managedSiteBackupCredentialPath(stackDir, MANAGED_SITE_BACKUP_RESTIC_PASSWORD_FILE),
+        restEnvPath,
+        restEnvExists: await lstat(restEnvPath)
+            .then((info) => info.isFile())
+            .catch(() => false),
+    };
 }
 
 export function managedSiteBackupDatabaseName(manifest: ManagedSiteManifest): string | null {
