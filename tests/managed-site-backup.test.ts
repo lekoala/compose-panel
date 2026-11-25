@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Stats } from "node:fs";
-import { link, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ManagedSiteManifest } from "../src/managed-site.ts";
@@ -378,7 +378,10 @@ describe("backup attempt marker", () => {
             const staging = managedSiteBackupStagingDir(root, "attempt0011");
             await mkdir(join(staging, "files"), { recursive: true });
             const identity = await dirIdentity(staging);
-            await rm(staging, { recursive: true, force: true });
+            // Keep the old directory (and its inode) alive under another name:
+            // otherwise the recreated directory may reuse the same inode on
+            // Linux and the identity check would legitimately match.
+            await rename(staging, `${staging}-old`);
             await mkdir(staging, { recursive: true });
             expect(await removeManagedSiteBackupStaging(root, "attempt0011", identity)).toBe(false);
             expect(await removeManagedSiteBackupStaging(root, "attempt0011")).toBe(true);
