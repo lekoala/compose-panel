@@ -114,6 +114,16 @@ implemented for an opted-in stack.
   the staging tree mounted, a required `composer.lock` (no committed `vendor/`)
   and a matching `platform-overrides.php` for the channel, and no scripts,
   plugins, secrets or Docker socket.
+- **Existing database attachment.** Implemented under the same flag
+  ([ADR 0048](adr/0048-existing-database-attachment.md)): one
+  operator-provisioned database per site (MariaDB, MySQL or PostgreSQL), joined
+  through one declared external network by the runtime service only, with
+  credentials in an operator-owned `0600` env file checked before start and no
+  SQL client in the panel. Unit, app-admission, real-Compose-config and the
+  disposable MariaDB fixture are proven: a record survives a deploy and a
+  rollback, and site A cannot read or write site B. The real-host checklist
+  remains. Dumps, restores, migrations and backup credentials stay in a
+  separate ADR, with one SQL adapter per engine.
 - **Offsite backup and tested restore (proposed).**
   [ADR 0049](adr/0049-offsite-backup-and-restore.md) proposes a manual **Backup
   now** and a separate restore proof: one Restic REST repository per site
@@ -132,13 +142,3 @@ implemented for an opted-in stack.
   [deployment.md](deployment.md#remaining-real-host-validation); until that is
   recorded, the pilot stays off by default and enabling it on a production host
   is an explicit operator decision.
-- **Existing database attachment.** Implemented under the same flag
-  ([ADR 0048](adr/0048-existing-database-attachment.md)): one
-  operator-provisioned database per site (MariaDB, MySQL or PostgreSQL), joined
-  through one declared external network by the runtime service only, with
-  credentials in an operator-owned `0600` env file checked before start and no
-  SQL client in the panel. Unit, app-admission, real-Compose-config and the
-  disposable MariaDB fixture are proven: a record survives a deploy and a
-  rollback, and site A cannot read or write site B. The real-host checklist
-  remains. Dumps, restores, migrations and backup credentials stay in a
-  separate ADR, with one SQL adapter per engine.

@@ -30,18 +30,25 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
   proof. Both take the existing per-stack lock, so a backup and a deploy or
   another backup cannot interleave. There is no scheduler, no webhook, no
   background queue and no automatic retry.
-- One offsite backend: a Restic repository reached over the REST protocol,
-  preferably in append-only mode with a dedicated TLS endpoint. The repository
-  is configured per site; distinct repositories and credentials per site are the
-  operator's contract.
+- One offsite backend: a Restic repository reached over the REST protocol. The
+  target is a dedicated TLS endpoint in append-only mode; the repository is
+  configured per site, and distinct repositories and credentials per site are
+  the operator's contract. A backend that cannot enforce append-only is a
+  documented weaker mode: it protects against disk loss, not against a
+  compromised host deleting snapshots, and must not be described as
+  ransomware-resistant.
 - The panel gains: a manifest block, fixed private credential files, a staging
   area, a snapshot manifest, an attempt marker and the two fixed one-shot
   commands. It gains no runtime package dependency, no Docker socket mount, no
   arbitrary command and no SQL console.
+- The first increment covers `owner: managed` sites only, because their
+  persistent roots are the declared `paths` of ADR 0042. An opt-in stack has no
+  such declaration, so backing it up would require a new operator-authored data
+  scope; that is out of scope here rather than guessed from its Compose file.
 - Out of scope: scheduling and timers, retention/prune automation, incremental
   file watching, database provisioning, migrations, cross-site repositories,
-  restore over the live site, cloning a site, notifications, and backup of the
-  panel itself. Each needs its own ADR or vertical PR.
+  restore over the live site, cloning a site, notifications, backup of the
+  panel itself, and opt-in backup scopes. Each needs its own ADR or vertical PR.
 
 ### Manifest: version 3 and one `backup` block
 
@@ -64,7 +71,7 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
     at most 512 characters.
   - `sql` is optional. Omitted means a files-only backup, which is valid for any
     site. When present, it requires `database` and its `engine` must equal the
-    declared engine. This ADR implements only `mariadb`; MySQL and PostgreSQL
+    declared engine. The first adapter is `mariadb`; MySQL and PostgreSQL
     declarations are refused until their bounded adapter ships, rather than
     advertised as working.
   - `database` is the exact database name to dump, a bounded SQL identifier
@@ -73,7 +80,8 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
     site's database.
 - Versions 1 and 2 stay valid and unchanged. A v3 manifest is a v2 manifest
   plus the optional `backup` block. The block changes no generated file: the
-  generator version stays `1` or `2`, and Compose output is byte-identical.
+  generator version stays `1` without a database and `2` with one, and Compose
+  output is byte-identical.
 - The backup block is part of the effective admission: a site with a malformed
   or unsupported block refuses backup and restore with an actionable reason.
   Deploy, Up and the other existing actions are unaffected, because a backup
@@ -228,9 +236,9 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
   staging walk, two one-shot container launchers, a snapshot manifest, an
   attempt marker and a restore proof. It gains no scheduler, no SQL client in
   the panel image, no backup server and no retention credential.
-- The first slice is MariaDB-only for SQL. A MySQL or PostgreSQL adapter is a
-  bounded change to the dump container and the same snapshot contract; files-only
-  backup works for every engine from the start.
+- The first slice is managed-only and MariaDB-only for SQL. A MySQL or
+  PostgreSQL adapter is a bounded change to the dump container and the same
+  snapshot contract; files-only backup works for every engine from the start.
 - The backup is not point-in-time across files and SQL, and not consistent for
   non-transactional tables. The recorded window and mode make that honest; a
   quiescence procedure remains an operator decision.
