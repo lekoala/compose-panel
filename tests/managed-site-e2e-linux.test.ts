@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCommand } from "../src/docker.ts";
@@ -12,6 +12,7 @@ import { readManagedSiteBackupAttempt } from "../src/managed-site-backup.ts";
 import { runManagedSiteBackup } from "../src/managed-site-backup-run.ts";
 import { runManagedSiteBackupRetentionPreview } from "../src/managed-site-backup-retention.ts";
 import { runManagedSiteBackupSnapshotList } from "../src/managed-site-backup-snapshots.ts";
+import { runManagedSiteBackupCheck } from "../src/managed-site-backup-check.ts";
 import { runManagedSiteRestore } from "../src/managed-site-restore.ts";
 import {
     managedSiteAttemptPath,
@@ -965,6 +966,21 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
             );
             if (!afterForeign.ok) throw new Error(afterForeign.reason);
             expect(afterForeign.snapshots).toEqual(inventory.snapshots);
+
+            // ADR 0054: the read-only check passes on the same append-only
+            // repository and adds neither a lock object nor a snapshot.
+            const locksDir = join(repoDir, `lab-${process.pid}`, "locks");
+            const locksBefore = await readdir(locksDir).catch(() => [] as string[]);
+            const repositoryCheck = await runManagedSiteBackupCheck({ stackDir, manifest }, { resticNetwork: "host", timeoutMs: 180_000 });
+            if (!repositoryCheck.ok) throw new Error(repositoryCheck.reason);
+            const locksAfter = await readdir(locksDir).catch(() => [] as string[]);
+            expect(locksAfter).toEqual(locksBefore);
+            const afterCheck = await runManagedSiteBackupSnapshotList(
+                { stackDir, manifest },
+                { resticNetwork: "host", timeoutMs: 180_000 },
+            );
+            if (!afterCheck.ok) throw new Error(afterCheck.reason);
+            expect(afterCheck.snapshots).toEqual(inventory.snapshots);
 
             await rm(join(uploads, "note.txt"));
             const restoreDir = join(root, "restore");
