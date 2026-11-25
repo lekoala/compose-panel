@@ -4931,6 +4931,47 @@ describe("managed-site deploy gate", () => {
         await app.beginShutdown(100);
     });
 
+    test("refuses Up when a declared database env file is missing", async () => {
+        const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-db-admission-")));
+        const stack = join(dir, "demo");
+        await mkdir(stack);
+        await writeFile(join(stack, "compose.yaml"), "name: acme-shop\nservices:\n  web:\n    image: nginx:alpine\n");
+        await writeFile(
+            join(stack, "compose-panel-site.json"),
+            JSON.stringify({
+                version: 2,
+                siteId: "acme-shop",
+                owner: "opt-in",
+                project: "acme-shop",
+                services: { gateway: "web", runtime: "php" },
+                publicRoot: "public",
+                runtime: { profile: "php-front-controller" },
+                database: { kind: "existing", engine: "mariadb", network: "acme-db" },
+                deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+            }),
+        );
+        const base = controllableProvider().provider;
+        const provider: ComposeProvider = {
+            ...base,
+            listProjects: async () => ({ code: 0, stdout: "[]", stderr: "", timedOut: false, truncated: false }),
+        };
+        const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir);
+        const session = await login(app);
+        const csrf = await csrfOf(app, session);
+        const response = await authed(app, "/stacks/demo/operations", session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ csrf, action: "up" }).toString(),
+        });
+        expect(response.status).toBe(303);
+        for (let i = 0; i < 500 && app.operations.forStack("demo")?.status === "running"; i += 1) await Bun.sleep(1);
+        const operation = app.operations.forStack("demo");
+        expect(operation?.status).toBe("refused");
+        expect(operation?.output).toContain("database.env");
+        await app.beginShutdown(100);
+        await rm(dir, { recursive: true, force: true });
+    });
+
     test("adds no site card to an ordinary stack without a manifest", async () => {
         const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-ordinary-")));
         await mkdir(join(dir, "demo"));
