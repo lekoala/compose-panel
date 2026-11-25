@@ -1,4 +1,4 @@
-# ADR 0048 — Attach a site to an existing MariaDB
+# ADR 0048 — Attach a site to an existing database
 
 Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
 
@@ -12,22 +12,25 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
   site's project isolation, but it also blocks the normal case: one
   operator-managed database shared by several sites, each with its own database
   and account.
-- The plan's next increment is one pre-provisioned MariaDB. A disposable fixture
-  writes a record, deploys, rolls back and reads the record back. There is no
-  provisioning, dump/restore, migration or credential UI in this increment.
+- The plan's next increment is one pre-provisioned database server. The first
+  fixture uses MariaDB because the original pilot proof did; the attachment
+  itself is engine-neutral. MariaDB, MySQL and PostgreSQL are the initial
+  allow-list: the network and env-file checks are identical, and only a later
+  backup adapter is engine-specific.
 - The contract is Compose-level and must not assume PHP. The pilot currently
   ships one runtime profile (`php-front-controller`); a second profile is a
   separate ADR. The declaration, network rule and env-file check are written so
   that a future Node, Python or static profile can reuse them without changing
-  this contract. No framework, ORM, environment-variable naming or SQL dialect
-  is part of the panel's contract beyond the engine allow-list.
+  this contract. No framework, ORM, environment-variable naming or SQL client is
+  part of the attachment contract; only a bounded engine name is recorded.
 
 ## Decision
 
 ### Scope
 
-- One existing MariaDB per site, provisioned by the operator outside the panel.
-  One database and one application account per site. The panel does not create,
+- One existing database server per site, of an allow-listed engine (MariaDB,
+  MySQL or PostgreSQL), provisioned by the operator outside the panel. One
+  database and one application account per site. The panel does not create,
   alter or drop anything.
 - New panel behavior: parse and validate the declaration, include it in the
   effective-profile and drift checks, render the Compose fragment for
@@ -37,9 +40,10 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
 - The existing `x-compose-panel.database` explorer link (ADR 0027) is
   independent; a site may have both. The link never carries a credential, and
   this attachment does not populate it.
-- Out of scope: provisioning, dumps and restores, migrations, workers, a second
-  engine, connection pooling, credential rotation or UI, database health checks,
-  cross-site sharing, and backup/recovery credentials.
+- Out of scope: provisioning, dumps and restores, migrations, workers,
+  connection pooling, credential rotation or UI, database health checks,
+  cross-site sharing, backup/recovery credentials, and engine-specific SQL
+  automation.
 
 ### Manifest and versions
 
@@ -47,12 +51,16 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
 
   ```json
   "database": {
-    "kind": "existing-mariadb",
+    "kind": "existing",
+    "engine": "mariadb",
     "network": "acme-db"
   }
   ```
 
-  - `kind` is an allow-list with one value now.
+  - `kind` is an allow-list with one value now, `existing`.
+  - `engine` is an allow-list: `mariadb`, `mysql` or `postgresql`. It is recorded
+    for documentation and a future backup adapter; the attachment checks do not
+    differ by engine.
   - `network` is the exact external Compose network name, bounded and validated
     as a network name. It is never a path, URL, command or credential.
 - Version 1 stays valid and unchanged for sites without a database. A manifest
@@ -73,7 +81,8 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
     external network;
   - a top-level `networks.<name>` entry with `external: true` and the exact
     declared name.
-  - The gateway never joins the database network.
+  - The gateway never joins the database network. The engine does not change the
+    fragment: only the network and the env file are generated.
 - The env file is operator-provisioned at that fixed path. It must be a regular
   file, not a symlink, owned by the account that runs the panel, mode `0600`,
   under `site/private/` (outside releases, `generated/`, `public/` and every
@@ -91,7 +100,9 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
 ### Opt-in stacks
 
 - The operator owns the Compose file and may use any credential mechanism
-  (`env_file`, Docker secrets or an external agent). The panel validates only:
+  (`env_file`, Docker secrets or an external agent). The engine is declared for
+  documentation and a later backup adapter; the panel does not connect. The
+  panel validates only:
   - the declared runtime service exists and joins the declared external network;
   - that network is `external: true` and is the only external network in the
     project;
@@ -143,7 +154,7 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
 - `docker compose config` resolves env file values. The panel parses that output
   in memory and never logs, renders or publishes it. Failure messages are
   sanitized, exactly as for `.env` today.
-- The panel image gains no MariaDB client. The application image owns its
+- The panel image gains no database client. The application image owns its
   driver.
 - The operator must treat the env file and any later dump as sensitive. Backup
   credentials are separate and belong to the backup ADR.
@@ -154,6 +165,8 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
   unchanged.
 - One explicit eligibility exception in ADR 0043, scoped to the declared
   network.
+- The manifest records a bounded engine name; adding an engine is a deliberate
+  parser change, never free text.
 - The deployment and security docs gain the operator contract and exact
   commands. Product, architecture and roadmap are updated when the ADR is
   accepted.
@@ -162,7 +175,7 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
 
 ## Alternatives considered
 
-- A MariaDB service in every generated site: duplicates capacity, upgrades,
+- A database service in every generated site: duplicates capacity, upgrades,
   backups and credentials; rejected.
 - Panel-provisioned databases, accounts or passwords: makes the panel a
   credential store and SQL client, outside the product; rejected.
@@ -172,21 +185,26 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
   need; rejected.
 - Framework-specific env conventions or a migration runner: ties the product to
   one application shape; rejected.
+- A MariaDB-only manifest: rejected because the attachment is engine-neutral;
+  the operator chooses the engine and only the later backup adapter is
+  engine-specific. The first fixture still uses MariaDB.
 - Adding dump/restore now: needs its own client, credential and restore model;
   deferred to the backup ADR.
 
 ## Verification
 
-- Unit tests: v1/v2 parsing, unknown fields, network-name validation,
-  generation and drift, runtime network membership, refusal of any other
-  external network, env file stat checks, and no secret in output or HTML.
-- Disposable lab: a pre-provisioned MariaDB on a private network, two sites with
-  separate databases and accounts, site A unable to read B, a PHP fixture
-  writing a record, deploying two releases, rolling back and reading it back, a
-  failed connection that does not roll back the release, a missing or loose env
-  file refused before mutation, the gateway absent from the database network,
-  and no published database port. A Node or Python fixture is added when an
-  opt-in user needs it, not speculatively.
+- Unit tests: v1/v2 parsing, unknown fields, engine allow-list, network-name
+  validation, generation and drift, runtime network membership, refusal of any
+  other external network, env file stat checks, and no secret in output or HTML.
+- Disposable lab: a pre-provisioned MariaDB (the first engine) on a private
+  network, two sites with separate databases and accounts, site A unable to read
+  B, a PHP fixture writing a record, deploying two releases, rolling back and
+  reading it back, a failed connection that does not roll back the release, a
+  missing or loose env file refused before mutation, the gateway absent from the
+  database network, and no published database port. The same attachment checks
+  apply to MySQL and PostgreSQL; a fixture per additional engine is added before
+  that engine is advertised as proven, not speculatively. A Node or Python
+  fixture follows the same rule.
 - Real host: part of the checklist in
   [deployment.md](../deployment.md#remaining-real-host-validation), because the
   lab daemon cannot prove host networking or DNS.
@@ -197,6 +215,6 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
 ## Out of scope
 
 Provisioning, SQL execution, dumps and restores, migrations, workers, multiple
-databases or engines, credential UI or rotation, connection pooling, database
-health checks, cross-site sharing, backup credentials and a panel-side SQL
-client.
+databases per site, credential UI or rotation, connection pooling, database
+health checks, cross-site sharing, backup credentials, a panel-side SQL client
+and engine-specific backup adapters.
