@@ -397,14 +397,14 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   requires an active session, the Origin check and the CSRF token, and it is
   unavailable when managed sites are disabled. It takes no token and adds no
   machine route.
-- The preview is read-only. The panel runs one pinned Restic container with the
-  same read-only root filesystem, bounded tmpfs and operator-owned password
-  file, and two fixed commands: `snapshots --json` and
-  `forget --dry-run --json` with the declared `keep-*` counts. `--prune` is never
-  passed, no snapshot id is passed, and the panel holds no deletion credential.
-  `--no-lock` is used because an append-only repository must not accumulate lock
-  objects the panel cannot remove; the stack lock already serializes panel
-  operations.
+- The preview is read-only. The panel runs the pinned Restic image in two
+  one-shot containers, one per command, with a read-only root filesystem, a
+  bounded tmpfs and the operator-owned password file. The commands are
+  `snapshots --json` and `forget --dry-run --json` with the declared `keep-*`
+  counts. `--prune` is never passed, no snapshot id is passed, and the panel
+  holds no deletion credential. `--no-lock` is used because an append-only
+  repository must not accumulate lock objects the panel cannot remove; the stack
+  lock already serializes panel operations.
 - The declared policy is forwarded unchanged. The panel reimplements no calendar
   rule, so the preview cannot diverge from the Restic invocation the maintenance
   host will use.
