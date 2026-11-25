@@ -286,21 +286,22 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   MariaDB database name. No credential, host path, command or free text is
   accepted in the manifest.
 - Fixed private files live under `site/private/backup/`: `restic-password`
-  (required), `rest.env` (optional) and `database.env` (required only for SQL).
+  (required), `rest.env` (optional) and `database.cnf` (required only for SQL).
   Each must be a regular `0600` file, one link, at most 4 KiB, owned by the panel
   account, inside a `0700` directory outside releases, generated files and every
   service mount. The panel checks metadata only and never reads, logs or renders
-  a value.
+  a value. `database.cnf` is the MariaDB client's option-file format; it reaches
+  the dump through `--defaults-extra-file`, so no secret is placed in argv.
 - The staging copy walks only the declared persistent roots with no-follow
   semantics, revalidates device/inode while reading, refuses symlinks, hard
   links, special files, escape and overlapping roots, and stops at the entry and
   byte quotas. Inventory checksums are recorded in `backup.json`.
 - The dump runs a pinned `mariadb-dump` container on the declared database
-  network with the backup credential env file and one explicit database name; it
-  cannot select all databases, run a statement or use a shell. The upload runs a
-  pinned Restic container read-only against the staging tree and accepts only the
-  exact snapshot id that `restic snapshots` and `restic ls` read back with the
-  site tag and `/backup/backup.json`.
+  network with the backup credential option file and one explicit database name;
+  it cannot select all databases, run a statement or use a shell. The upload runs
+  a pinned Restic container read-only against the staging tree and accepts only
+  the exact snapshot id that `restic snapshots` and `restic ls` read back with
+  the site tag and `/backup/backup.json`.
 - A timeout or an unverifiable upload keeps a failed marker and refuses the next
   run until the operator acknowledges it after inspecting the repository. There
   is no automatic replay, no scheduler and no snapshot deletion from the panel;
@@ -309,6 +310,30 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   containers. No Docker socket, privileged mode, host network or published port
   is used, and every invocation is a fixed executable with an explicit argument
   array.
+
+### Verified restore
+
+- **Verify and restore** is authenticated and CSRF-protected, takes the stack
+  lock and is read-only against the live site. It accepts only one exact
+  64-character snapshot id; `latest` and malformed values are refused.
+- Before extraction, the panel checks that the repository returns that exact
+  snapshot for this site, reads `backup.json` from the snapshot, and refuses a
+  foreign site, an unsupported schema, a changed SQL database/engine, an
+  inventory outside the entry/byte bounds, or any path not below `files/`.
+- Restic extracts into a new `0700` directory under
+  `site/private/backup/restore/<attemptId>/`. The tree is then read with
+  no-follow semantics and every file must match its recorded size and SHA-256;
+  links, special files, extra files and missing files refuse the restore.
+  Nothing is written over `shared/`, a release or the current pointer.
+- A SQL snapshot is imported into a fresh MariaDB container on a new internal
+  network with an empty root password: no production credentials, no production
+  network, no published port and no site volume. The import and one table-count
+  query are fixed; the container and network are removed afterwards. A failed
+  component is reported and the private restore directory is kept for
+  inspection.
+- The panel never promotes a restored copy into the live site. That remains an
+  operator procedure, because it is a destructive mutation with its own failure
+  boundary.
 
 ## Application toolbox (ADR 0026)
 

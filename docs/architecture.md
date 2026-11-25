@@ -215,19 +215,25 @@ engine (`mariadb`, `mysql` or `postgresql`) and external network name. The
 generator adds a `required: false` env-file entry and the external network to
 the runtime service only; the gateway stays on the project network. The profile
 projection allows exactly that external network, only on the runtime, and still
-requires a shared project network. No database client, SQL call, dump, restore
-or migration exists in the panel ([ADR 0048](adr/0048-existing-database-attachment.md)).
+requires a shared project network. No database client, arbitrary SQL or
+migration exists in the panel; the bounded dump and isolated restore belong to
+[ADR 0049](adr/0049-offsite-backup-and-restore.md).
 
-## Offsite backup (opt-in)
+## Offsite backup and verified restore (opt-in)
 `src/managed-site-backup.ts` owns the fixed private paths, the metadata-only
 credential check, the no-follow staging copy with quotas and SHA-256 inventory,
 and the bounded attempt marker. `src/managed-site-backup-run.ts` runs one
-`mariadb-dump` container (only when `backup.sql` is declared) and one pinned
-Restic container with explicit argument arrays, then verifies the exact snapshot
-id and `/backup/backup.json`. `POST /stacks/<name>/backup` starts a named
-operation under the stack lock; `POST .../backup/acknowledge` clears a marker
-after inspection. The panel never reads a credential value, deletes a snapshot,
-starts a scheduler or adds a Restic or database client to its image
+`mariadb-dump` container through the fixed `database.cnf` option file (only when
+`backup.sql` is declared) and one pinned Restic container with explicit argument
+arrays, then verifies the exact snapshot id and `/backup/backup.json`.
+`src/managed-site-restore.ts` checks one exact snapshot, extracts it into a
+private directory, validates every file against the recorded size and SHA-256,
+and imports the SQL half into a disposable internal-network MariaDB instance
+before removing it. `POST /stacks/<name>/backup` and
+`POST /stacks/<name>/restore` start named operations under the stack lock;
+`POST .../backup/acknowledge` clears a marker after inspection. The panel never
+reads a credential value, deletes a snapshot, writes a restore over the live
+site, starts a scheduler or adds a Restic or database client to its image
 ([ADR 0049](adr/0049-offsite-backup-and-restore.md)).
 
 ## Managed-site deploy (opt-in)

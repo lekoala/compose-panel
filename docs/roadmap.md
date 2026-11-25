@@ -124,19 +124,22 @@ implemented for an opted-in stack.
   rollback, and site A cannot read or write site B. The real-host checklist
   remains. Dumps, restores, migrations and backup credentials stay in a
   separate ADR, with one SQL adapter per engine.
-- **Offsite backup (manual).** Implemented under the same flag
-  ([ADR 0049](adr/0049-offsite-backup-and-restore.md)): a manifest v3 `backup`
-  block names one Restic REST repository, and an optional `sql` block dumps
-  exactly one MariaDB database. **Back up now** copies the declared persistent
-  roots into private staging, checks the fixed `0600` credential files by
-  metadata only, uploads with a pinned Restic container and accepts only the
-  snapshot id that `restic snapshots` and `restic ls` read back. A failed
-  upload that may have completed keeps a marker until the operator acknowledges
-  it. Unit, app-route, fake-runner and disposable REST fixture coverage are in
-  place (an append-only repository, a real staging upload, a restore of the
-  deleted file and a refused prune); the restore slice, scheduling and retention
-  automation remain to be built. The panel deletes no snapshot and stores no
-  credential value.
+- **Offsite backup and verified restore (manual).** Implemented under the same
+  flag ([ADR 0049](adr/0049-offsite-backup-and-restore.md)): a manifest v3
+  `backup` block names one Restic REST repository, and an optional `sql` block
+  dumps exactly one MariaDB database through a fixed `database.cnf` option file.
+  **Back up now** copies the declared persistent roots into private staging,
+  checks the fixed `0600` credential files by metadata only, uploads with a
+  pinned Restic container and accepts only the snapshot id that
+  `restic snapshots` and `restic ls` read back. **Verify and restore** takes one
+  exact snapshot, validates every extracted file against its size and SHA-256,
+  and imports SQL into a disposable internal-network MariaDB container with no
+  production credentials or published port; the live site is untouched. A
+  failed upload that may have completed keeps a marker until acknowledged. Unit,
+  app-route, fake-runner and disposable REST fixtures cover the backup, the
+  file restore and a dumped MariaDB record read back from the restored copy.
+  Scheduling and retention automation remain to be built. The panel deletes no
+  snapshot and stores no credential value.
 - **Next increments, each with its own ADR or vertical PR:** CI triggers; host
   timers and retention; production cutover and cloning. The creation form,
   stable loopback binding and the existing Caddy

@@ -1,7 +1,8 @@
 # ADR 0049 — Offsite backup and tested restore
 
-Status: Accepted (managed-site pilot, 2026-11-25). Backup implemented and proven
-on the disposable lab; the restore slice and the real-host checklist remain.
+Status: Accepted (managed-site pilot, 2026-11-25). Backup and the isolated
+restore proof are implemented and proven on the disposable lab; the real-host
+checklist remains.
 
 ## Context
 
@@ -96,11 +97,12 @@ on the disposable lab; the restore slice and the real-host checklist remain.
   - `restic-password`: the repository encryption password.
   - `rest.env`: optional REST basic-auth variables, read by Restic through
     `env_file`.
-  - `database.env`: the **backup** database role, read by the dump client.
-    It uses the client's own documented variables (`MYSQL_HOST`,
-    `MYSQL_TCP_PORT`, `MYSQL_USER`, `MYSQL_PWD`), not application variable
-    names, so the attachment contract (ADR 0048) is not reopened. The operator
-    provisions a read-only role, distinct from the application account.
+  - `database.cnf`: the **backup** database role in the MariaDB client's own
+    option-file format (`[client]` with `host`, `port`, `user`, `password`),
+    read by `mariadb-dump` through `--defaults-extra-file`. It is not the
+    application env file and does not reopen the attachment contract (ADR
+    0048). The operator provisions a read-only role, distinct from the
+    application account.
 - Each file must be a regular file, not a symlink or hard link, owned by the
   panel account, mode `0600`, and bounded (4 KiB each). The panel checks these
   metadata and the directory before a backup; it never reads, parses, logs or
@@ -127,12 +129,16 @@ on the disposable lab; the restore slice and the real-host checklist remain.
   and writes only to the repository endpoint. Read-only root filesystem and a
   bounded tmpfs are required where the image allows it.
 - The dump container joins only the declared database external network. It
-  receives `database.env` as an `env_file`, never the application env file, and
-  runs one bounded `mariadb-dump` for the one declared database with
-  `--single-transaction --quick --skip-lock-tables --routines --events
+  receives `database.cnf` as a read-only file, never the application env file,
+  and runs one bounded `mariadb-dump` for the one declared database with
+  `--defaults-extra-file=/run/secrets/database.cnf --skip-ssl
+  --single-transaction --quick --skip-lock-tables --routines --events
   --triggers --databases <name>`. No `--all-databases`, no `--tab`, no
-  interactive client, no arbitrary statement. Its stdout is the only file it
-  writes, into the private staging area.
+  interactive client, no arbitrary statement. Its only output file is the dump
+  inside the private staging area. The option file exists because
+  `mariadb-dump` does not read the client `MYSQL_*` environment variables for a
+  remote host; `--skip-ssl` is limited to the private attempt network, whose
+  server certificate is self-signed.
 - Both containers have a fixed timeout, a captured-output cap and a hard size
   cap on what they may produce. A timeout, a non-zero exit, a truncated dump or
   an oversized dump fails the attempt before anything is uploaded.
@@ -186,31 +192,37 @@ on the disposable lab; the restore slice and the real-host checklist remain.
 
 ### Restore
 
-- Restore is a separate vertical PR after the backup PR. It is read-only against
-  the live site.
+- Restore is an operator-triggered operation from the site card. It is
+  read-only against the live site and does not depend on generated-file drift.
 - The operator selects one **exact** snapshot ID from the site's repository;
-  `latest` is refused. The panel verifies the repository identity, the site ID
-  in `backup.json`, the schema version, the engine and dump-client compatibility
-  and the inventory before extracting anything.
+  `latest` and any non-hex value are refused. The panel checks that the
+  repository returns exactly that snapshot for this site, reads `backup.json`,
+  and verifies the site ID, schema version, inventory and SQL compatibility
+  before extracting anything.
 - Files are extracted into a new private directory under
-  `site/private/restore/<attemptId>/`, mode `0700`, never over `shared/`, a
-  release or the pointer. The panel reports which components completed and
-  leaves a partial restore in place, private, for inspection.
-- The SQL half is imported into a **new disposable** instance of the same
-  engine with a compatible version: no production credentials, no production
-  network, no published port, no volume from the site. The panel runs the
-  fixed import and one bounded verification (the import exited successfully and
-  the declared database contains at least one table), never an arbitrary query.
+  `site/private/backup/restore/<attemptId>/`, mode `0700`, never over `shared/`,
+  a release or the pointer. The extracted tree is read with no-follow
+  semantics, bounded, and checked against every inventory size and SHA-256;
+  an unexpected, missing, linked or special entry refuses the restore. The
+  panel reports which components completed and leaves a partial restore in
+  place, private, for inspection.
+- The SQL half is imported into a **new disposable** MariaDB 11 container on a
+  new `--internal` network: empty root password, no production credentials, no
+  production network, no published port and no site volume. The panel runs the
+  fixed `source /backup/database.sql` import and one bounded table-count query,
+  never an arbitrary query, then removes the container and the network.
 - Restore never overwrites the live database or live uploads. Moving a verified
   restore into the live site stays an operator procedure over SSH in this ADR;
   an automated live restore needs its own ADR because it is a destructive
   mutation with a new failure boundary.
 - A restore is recorded as a proof only when a protected file and its
   corresponding database record are both readable from the restored copy, and
-  the live database and a neighbouring site's database are unchanged.
-- Expiry and resource IDs of the disposable instance are recorded, and cleanup
-  is explicit and scoped to the resources the attempt created, by name and
-  identity. A failed cleanup is reported, not hidden.
+  the live database and a neighbouring site's database are unchanged. The
+  disposable fixture imports the restored dump again and reads the record back.
+- Resource IDs of the disposable instance are recorded in the operation output,
+  and cleanup is explicit and scoped to the resources the attempt created. A
+  failed cleanup is reported, not hidden; the private restore directory is
+  intentionally left for the operator.
 
 ### Retention and scheduling
 
@@ -275,7 +287,9 @@ on the disposable lab; the restore slice and the real-host checklist remain.
   and identifier bounds, the engine/`database` coupling, credential metadata,
   no-follow staging with quotas and checksums, the attempt marker, the fixed
   MariaDB dump and Restic argument arrays (with a fake runner), snapshot-output
-  parsing and the app route/admission/acknowledgement. The operation never
+  parsing, the restore manifest/inventory checks, extraction validation against
+  sizes and hashes, the disposable SQL import and its cleanup, and the app
+  backup/restore routes, admission and acknowledgement. The operation never
   reads a credential value, and a refused admission runs no container.
 - The pinned `restic/restic:0.18.0` invocation was exercised on a disposable
   daemon with a local repository and the same flags the runner uses
@@ -288,26 +302,29 @@ on the disposable lab; the restore slice and the real-host checklist remain.
   client, and a managed stack with one declared root. `runManagedSiteBackup`
   produced and verified a snapshot; the local file was deleted; a separate
   `restic restore <id>` read it back byte for byte; and `restic forget --prune`
-  left the snapshot listed. The SQL half is covered by the fixed-argument unit
-  tests, not by this fixture. The panel's restore route and SQL import remain
-  unimplemented.
-- Still open: the restore slice (private extraction, disposable database import
-  and the bounded verification) and the real-host checklist. The backup is
-  proven on the disposable lab, not on a real endpoint or host.
+  left the snapshot listed.
+- Disposable SQL fixture passed on 2026-11-25
+  (`bun run test:managed-sites-e2e:wsl`): a real `mariadb-dump` through the
+  fixed option file, a record deleted from the live database, the restore
+  runner importing the snapshot into its disposable instance, and the restored
+  dump imported again elsewhere to read the deleted record back. The live
+  database still reported the deletion, so the restore did not touch it.
+- Still open: the real-host checklist. The backup and the isolated restore proof
+  are proven on the disposable lab, not on a real endpoint or host; moving a
+  restored copy into the live site remains an operator procedure.
 - Unit tests: v3 parsing, v1/v2 compatibility, repository URL and identifier
   bounds, engine/`database` coupling, credential file metadata, no-follow
   staging walk and quota, refusal of credentials inside a declared root,
   attempt-marker transitions and no automatic replay, snapshot-manifest bounds,
   restore compatibility refusals, and no credential in output, HTML or audit.
-- Disposable lab, before any scheduling or retention work: a Restic REST server
-  in append-only mode, a MariaDB instance, and one managed site. Write one file
-  and one database row, run the backup, delete the file and alter the row, then
-  restore into a new private staging directory and a new disposable database.
-  Read the file and the record back. Assert that the live database and a
-  neighbouring site's database are unchanged, that the append-only credential
-  cannot delete a snapshot, and that a foreign snapshot ID, a wrong repository
-  password, an oversized staging tree, a partial dump and an unsafe path are
-  refused before acceptance.
+- Disposable lab, passed on 2026-11-25: a Restic REST server in append-only
+  mode, a MariaDB instance, and one managed site. A file and a database row are
+  backed up, the file is deleted and the row removed from the live database,
+  then the restore runner extracts into a new private directory and imports
+  into a new disposable database. The file and the record are read back from the
+  restored copy; the live database still reports the deletion. The append-only
+  credential cannot delete a snapshot, and a foreign snapshot id, a malformed id
+  and an unsafe restored tree are refused before acceptance.
 - The same disposable suite proves the downgrade path: a failed backup leaves
   the pointer, release, containers and data untouched, and the attempt marker
   refuses the next run until acknowledged.

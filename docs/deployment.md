@@ -929,15 +929,19 @@ credential values, deletes a snapshot or starts a scheduler.
    owned by the panel account; the panel refuses anything else.
 
 3. For a SQL backup, create a **read-only** database role, distinct from the
-   application account, and write its own client variables to
-   `site/private/backup/database.env` (mode `0600`):
+   application account, and write a MariaDB client option file at
+   `site/private/backup/database.cnf` (mode `0600`):
 
-   ```bash
-   MYSQL_HOST=acme-db
-   MYSQL_TCP_PORT=3306
-   MYSQL_USER=acme_backup
-   MYSQL_PWD=<read-only password>
+   ```ini
+   [client]
+   host=acme-db
+   port=3306
+   user=acme_backup
+   password=<read-only password>
    ```
+
+   Quote a password that contains spaces, `#` or quotes. The panel passes the
+   file to `mariadb-dump` with `--defaults-extra-file` and never reads it.
 
 4. Edit `compose-panel-site.json` to `"version": 3` and add the block below,
    then use **Regenerate generated files** (the backup block itself changes no
@@ -961,10 +965,19 @@ credential values, deletes a snapshot or starts a scheduler.
    accepted snapshot id in the operation output and the audit log, not in a
    recovery journal.
 
-The systemd timer, retention/prune automation and the restore proof are not
-implemented yet. Run `restic forget --dry-run` and a restore from a separate
-machine with the host credentials unavailable before treating these backups as
-operational ([ADR 0049](adr/0049-offsite-backup-and-restore.md)).
+6. **Verify and restore** takes one exact snapshot id (not `latest`). It extracts
+   the declared files into `site/private/backup/restore/<attempt>/`, checks every
+   file against the recorded size and SHA-256, and imports a SQL snapshot into a
+   disposable MariaDB container on an internal network with no production
+   credentials, network or published port. It never writes over the live site.
+   A failed component is reported and the private directory is kept.
+
+The systemd timer and retention/prune automation are not implemented. The
+isolated restore proof passes on the disposable lab, but no recovery from a real
+endpoint or with the host credentials unavailable has been recorded yet. Run
+`restic forget --dry-run` and complete a recovery from a separate machine before
+treating these backups as operational
+([ADR 0049](adr/0049-offsite-backup-and-restore.md)).
 
 The generated gateway resolves `runtime` through Docker's embedded DNS on every
 request. Recreating the runtime can change its IP while the gateway container is
@@ -1187,15 +1200,19 @@ an inspection of the marker, pointer, containers and probe. It also builds a PHP
 8.3 image with `pdo_mysql`, starts MariaDB 11 in a separate project on an
 external network, writes a record through the site, deploys the next commit,
 rolls back and reads the same record, and proves that site A's account cannot
-read or write site B's table (ADR 0048). The manual backup (ADR 0049) is covered
-by unit tests for the manifest block, credential metadata, staging walk and
-quotas, the fixed dump/Restic argument arrays, snapshot parsing, the route,
-admission and acknowledgement, with a fake runner and no host Docker access. The
-disposable suite adds an append-only `restic/rest-server`, uploads a real staging
-tree, deletes the file, restores it with `restic restore <id>` and proves that a
-prune leaves the snapshot listed. The MariaDB dump is unit-tested only; the
-panel's restore route and SQL import are not implemented, and no recovery from a
-real endpoint has been claimed. The disposable SSH
+read or write site B's table (ADR 0048). The manual backup and verified restore
+(ADR 0049) are covered by unit tests for the manifest block, credential
+metadata, staging walk and quotas, the fixed dump/Restic argument arrays,
+snapshot parsing, restore inventory/hash checks, the disposable SQL import, the
+routes, admission and acknowledgement, with a fake runner and no host Docker
+access. The disposable suite adds an append-only `restic/rest-server`, uploads a
+real staging tree, deletes the file, restores it with `restic restore <id>` and
+proves that a prune leaves the snapshot listed. A second fixture dumps one
+MariaDB database through `database.cnf`, deletes the record from the live
+database, runs the real restore runner into its disposable instance, and imports
+the restored dump elsewhere to read the record back; the live database still
+reports the deletion. No recovery from a real endpoint or with the host
+credentials unavailable has been claimed. The disposable SSH
 fixture (`bash scripts/test-git-ssh.sh`) drives the real Git adapter against
 OpenSSH on loopback and exercises the correct key pair, wrong client key and
 wrong host key. These suites are opt-in and

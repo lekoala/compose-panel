@@ -23,16 +23,27 @@
   (or `rest:http` on a loopback/single-label private host) and, optionally, one
   MariaDB database. **Back up now** copies only the declared persistent roots
   into a private staging tree with no-follow reads, quotas and SHA-256
-  inventory, runs one bounded `mariadb-dump` container for that database and one
-  pinned Restic container, then accepts only the snapshot id that
-  `restic snapshots` and `restic ls` read back. Credentials stay in fixed
-  `0600` files under `site/private/backup/` that the panel checks by metadata
-  and never reads. A proven failure clears its marker; a timeout or unverifiable
-  upload keeps it until the operator acknowledges it. No scheduler, retention
-  automation, snapshot deletion or live restore is added. The disposable
-  append-only REST fixture passed (real upload, restore of a deleted file, and a
-  prune that leaves the snapshot listed); the panel restore route and SQL import
-  remain to be built.
+  inventory, runs one bounded `mariadb-dump` container through the fixed
+  `database.cnf` option file for that database and one pinned Restic container,
+  then accepts only the snapshot id that `restic snapshots` and `restic ls` read
+  back. Credentials stay in fixed `0600` files under
+  `site/private/backup/` that the panel checks by metadata and never reads. A
+  proven failure clears its marker; a timeout or unverifiable upload keeps it
+  until the operator acknowledges it. No scheduler, retention automation,
+  snapshot deletion or live restore is added.
+- Managed sites: verified restore into isolation (ADR 0049). **Verify and
+  restore** takes one exact snapshot id (never `latest`), checks that the
+  repository returns it for this site and reads its bounded manifest, then
+  extracts into a new private directory under
+  `site/private/backup/restore/<attempt>/`. Every file must match its recorded
+  size and SHA-256; links, special files, unexpected or missing entries refuse
+  the restore. A SQL snapshot is imported into a fresh MariaDB container on a
+  new internal network with an empty root password, no production credentials,
+  no production network and no published port; one fixed table-count query
+  verifies it and the container and network are removed. The live site is never
+  overwritten. The disposable fixture dumps a MariaDB record, deletes it from
+  the live database, restores it, and reads it back from the restored copy while
+  the live database still reports the deletion.
 
 - Image security: accept CVE-2026-17106 only at the Buildx plugin path until
   2027-02-19 (ADR 0046). Buildx 0.39.1 still declares
