@@ -9,7 +9,7 @@ import {
     MANAGED_SITE_BACKUP_CREDENTIAL_MAX_BYTES,
     MANAGED_SITE_BACKUP_RESTIC_PASSWORD_FILE,
     MANAGED_SITE_BACKUP_REST_ENV_FILE,
-    MANAGED_SITE_BACKUP_DATABASE_ENV_FILE,
+    MANAGED_SITE_BACKUP_DATABASE_CREDENTIALS_FILE,
     managedSiteBackupAttemptPath,
     managedSiteBackupDir,
     managedSiteBackupStagingDir,
@@ -165,7 +165,7 @@ describe("checkManagedSiteBackupCredentials", () => {
         ).toBe(false);
     });
 
-    test("requires the backup database env file only when SQL is declared", async () => {
+    test("requires the backup database credentials file only when SQL is declared", async () => {
         const withSql = manifest({
             database: { kind: "existing", engine: "mariadb", network: "acme-db" },
             generation: "2",
@@ -181,7 +181,7 @@ describe("checkManagedSiteBackupCredentials", () => {
                 await checkManagedSiteBackupCredentials(
                     stackDir,
                     withSql,
-                    fakeFs({ ...base, [path(MANAGED_SITE_BACKUP_DATABASE_ENV_FILE)]: stats() }),
+                    fakeFs({ ...base, [path(MANAGED_SITE_BACKUP_DATABASE_CREDENTIALS_FILE)]: stats() }),
                 )
             ).ok,
         ).toBe(true);

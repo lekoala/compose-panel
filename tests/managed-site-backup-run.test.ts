@@ -169,7 +169,8 @@ describe("runManagedSiteBackup", () => {
             const dump = calls.find((args) => args.includes("mariadb-dump"))!;
             expect(dump).toContain("--network");
             expect(dump).toContain("acme-db");
-            expect(dump).toContain("--env-file");
+            expect(dump).toContain("--defaults-extra-file=/run/secrets/database.cnf");
+            expect(dump.join(" ")).toContain("database.cnf:/run/secrets/database.cnf:ro");
             expect(dump).toContain("--databases");
             expect(dump[dump.indexOf("--databases") + 1]).toBe("acme_shop");
             expect(dump).toContain("--single-transaction");
