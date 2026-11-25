@@ -2183,7 +2183,7 @@ export function createApp(options: AppOptions): App {
         const table =
             listed.snapshots.length === 0
                 ? note("info", "The repository holds no snapshot tagged for this site.")
-                : `<div class="table-wrap"><table class="table"><thead><tr><th>Created</th><th>Snapshot id</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+                : `<div class="table-wrap"><table class="table"><thead><tr><th>Created</th><th>Snapshot id</th><th>Restore</th></tr></thead><tbody>${rows}</tbody></table></div>`;
         const content =
             `<p class="crumbs"><a href="${back}">Back to the stack</a></p>` +
             `<div class="page-head"><h1>Snapshots</h1><span class="row-actions"><a class="btn" href="${back}/backup/snapshots">Refresh</a></span></div>` +
