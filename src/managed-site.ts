@@ -14,6 +14,10 @@ export const MANAGED_SITE_MANIFEST_MAX_BYTES = 64 * 1024;
 export const MANAGED_SITE_VERSION = 1;
 /** The database attachment adds the optional `database` block (ADR 0048). */
 export const MANAGED_SITE_DATABASE_VERSION = 2;
+/** The backup slice adds the optional `backup` block (ADR 0049). */
+export const MANAGED_SITE_BACKUP_VERSION = 3;
+export const MANAGED_SITE_VERSIONS = [MANAGED_SITE_VERSION, MANAGED_SITE_DATABASE_VERSION, MANAGED_SITE_BACKUP_VERSION] as const;
+export type ManagedSiteVersion = (typeof MANAGED_SITE_VERSIONS)[number];
 export const MANAGED_SITE_PUBLIC_ROOT = "public";
 export const MANAGED_SITE_PROFILE = "php-front-controller";
 export const MANAGED_SITE_DEPLOY_KIND = "bind-mount";
@@ -66,6 +70,74 @@ export function isManagedSiteChannelImage(value: string): boolean {
 export const MANAGED_SITE_BUILD_KINDS = ["composer"] as const;
 export type ManagedSiteBuildKind = (typeof MANAGED_SITE_BUILD_KINDS)[number];
 
+/** The only offsite backup backend a managed site may declare (ADR 0049). */
+export const MANAGED_SITE_BACKUP_KINDS = ["restic"] as const;
+export type ManagedSiteBackupKind = (typeof MANAGED_SITE_BACKUP_KINDS)[number];
+/** The SQL adapters this panel knows. Files-only backup needs no engine. */
+export const MANAGED_SITE_BACKUP_SQL_ENGINES = ["mariadb"] as const;
+export type ManagedSiteBackupSqlEngine = (typeof MANAGED_SITE_BACKUP_SQL_ENGINES)[number];
+export const MANAGED_SITE_BACKUP_REPOSITORY_MAX = 512;
+export const MANAGED_SITE_BACKUP_DATABASE_MAX = 64;
+
+export interface ManagedSiteBackupSql {
+    engine: ManagedSiteBackupSqlEngine;
+    /** Exact database to dump; one bounded identifier, never a pattern. */
+    database: string;
+}
+
+export interface ManagedSiteBackup {
+    kind: ManagedSiteBackupKind;
+    /** `rest:https://host/path`; `rest:http://` only on a private/loopback host. */
+    repository: string;
+    sql?: ManagedSiteBackupSql;
+}
+
+const BACKUP_DATABASE = /^[A-Za-z0-9_$][A-Za-z0-9_$-]{0,63}$/;
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "::1", "[::1]"];
+
+/** One bounded SQL identifier, passed as a separate argument and never quoted by the panel. */
+export function isManagedSiteBackupDatabase(value: string): boolean {
+    return value.length > 0 && value.length <= MANAGED_SITE_BACKUP_DATABASE_MAX && BACKUP_DATABASE.test(value);
+}
+
+/**
+ * A Restic REST repository URL. TLS is required except for a loopback or
+ * single-label Compose service name, which keeps the disposable lab on a
+ * private network without allowing a plaintext production endpoint.
+ */
+export function isManagedSiteBackupRepository(value: string): boolean {
+    if (value.length === 0 || value.length > MANAGED_SITE_BACKUP_REPOSITORY_MAX) return false;
+    if (CONTROL.test(value) || /\s/.test(value)) return false;
+    const prefix = value.startsWith("rest:https://") ? "rest:https://" : value.startsWith("rest:http://") ? "rest:http://" : null;
+    if (!prefix) return false;
+    const remainder = value.slice(prefix.length);
+    if (remainder.includes("\\")) return false;
+    const slash = remainder.indexOf("/");
+    if (slash <= 0) return false;
+    // URL parsing would resolve `.` and `..` away; refuse them in the original
+    // string so a repository path cannot be silently rewritten.
+    const rawSegments = remainder
+        .slice(slash)
+        .split("/")
+        .filter((segment) => segment.length > 0);
+    if (rawSegments.length === 0) return false;
+    if (rawSegments.some((segment) => segment === "." || segment === "..")) return false;
+    let url: URL;
+    try {
+        // Parse the remainder as HTTPS so URL normalization is available; the
+        // original string stays authoritative for storage and display.
+        url = new URL(`https://${remainder}`);
+    } catch {
+        return false;
+    }
+    if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return false;
+    if (!url.hostname || url.hostname.length > 253) return false;
+    if (prefix === "rest:http://" && !LOOPBACK_HOSTS.includes(url.hostname) && url.hostname.includes(".")) return false;
+    const segments = url.pathname.split("/").filter((segment) => segment.length > 0);
+    if (segments.length === 0) return false;
+    return segments.every((segment) => segment !== "." && segment !== ".." && /^[A-Za-z0-9._~-]+$/.test(segment));
+}
+
 export type ManagedSiteDatabaseKind = (typeof MANAGED_SITE_DATABASE_KINDS)[number];
 export type ManagedSiteDatabaseEngine = (typeof MANAGED_SITE_DATABASE_ENGINES)[number];
 export interface ManagedSiteDatabase {
@@ -115,7 +187,7 @@ export const MANAGED_SITE_PATHS = {
 export const MANAGED_SITE_RESERVED_TREE_ENTRIES = [".compose-panel", ".compose-panel-build"] as const;
 
 export interface ManagedSiteManifest {
-    version: typeof MANAGED_SITE_VERSION | typeof MANAGED_SITE_DATABASE_VERSION;
+    version: ManagedSiteVersion;
     siteId: string;
     owner: ManagedSiteOwner;
     /** Exact Compose project name; never assumed from the folder. */
@@ -145,6 +217,8 @@ export interface ManagedSiteManifest {
     };
     /** Optional existing database attachment (ADR 0048). */
     database?: ManagedSiteDatabase;
+    /** `managed` only: optional offsite backup declaration (ADR 0049). */
+    backup?: ManagedSiteBackup;
     /** `managed` only: fixed dependency preparation run in a disposable container. */
     build?: { kind: ManagedSiteBuildKind };
     /** `managed` only: declared persistent roots, contained in `shared/`. */
@@ -276,6 +350,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
             "publicRoot",
             "runtime",
             "database",
+            "backup",
             "build",
             "deploy",
             "paths",
@@ -285,10 +360,13 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
     );
     if (unknown) return unknown;
 
-    if (root.version !== MANAGED_SITE_VERSION && root.version !== MANAGED_SITE_DATABASE_VERSION) {
-        return { ok: false, reason: `The site manifest version must be ${MANAGED_SITE_VERSION} or ${MANAGED_SITE_DATABASE_VERSION}.` };
+    if (!MANAGED_SITE_VERSIONS.includes(root.version as ManagedSiteVersion)) {
+        return {
+            ok: false,
+            reason: `The site manifest version must be one of: ${MANAGED_SITE_VERSIONS.join(", ")}.`,
+        };
     }
-    const version = root.version as typeof MANAGED_SITE_VERSION | typeof MANAGED_SITE_DATABASE_VERSION;
+    const version = root.version as ManagedSiteVersion;
 
     const siteId = asString(root.siteId);
     if (!siteId || !SITE_ID.test(siteId)) {
@@ -377,8 +455,8 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
 
     let database: ManagedSiteDatabase | undefined;
     if (root.database !== undefined) {
-        if (version !== MANAGED_SITE_DATABASE_VERSION) {
-            return { ok: false, reason: `The database block requires manifest version ${MANAGED_SITE_DATABASE_VERSION}.` };
+        if (version < MANAGED_SITE_DATABASE_VERSION) {
+            return { ok: false, reason: `The database block requires manifest version ${MANAGED_SITE_DATABASE_VERSION} or later.` };
         }
         const candidate = asRecord(root.database);
         if (!candidate) return { ok: false, reason: "database must be an object." };
@@ -400,6 +478,63 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
             };
         }
         database = { kind, engine, network };
+    }
+
+    let backup: ManagedSiteBackup | undefined;
+    if (root.backup !== undefined) {
+        if (version !== MANAGED_SITE_BACKUP_VERSION) {
+            return { ok: false, reason: `The backup block requires manifest version ${MANAGED_SITE_BACKUP_VERSION}.` };
+        }
+        if (owner !== "managed") {
+            return { ok: false, reason: 'backup belongs to owner "managed": an opt-in stack declares no persistent roots.' };
+        }
+        const candidate = asRecord(root.backup);
+        if (!candidate) return { ok: false, reason: "backup must be an object." };
+        const backupUnknown = unknownField(candidate, ["kind", "repository", "sql"], "backup.");
+        if (backupUnknown) return backupUnknown;
+        const kind = MANAGED_SITE_BACKUP_KINDS.find((entry) => entry === candidate.kind);
+        if (!kind) {
+            return { ok: false, reason: `backup.kind must be one of: ${MANAGED_SITE_BACKUP_KINDS.join(", ")}.` };
+        }
+        const repository = asString(candidate.repository);
+        if (!repository || !isManagedSiteBackupRepository(repository)) {
+            return {
+                ok: false,
+                reason: 'backup.repository must be "rest:https://host/path" without userinfo, query or fragment; "rest:http://" is allowed only for a loopback or single-label private host.',
+            };
+        }
+        let sql: ManagedSiteBackupSql | undefined;
+        if (candidate.sql !== undefined) {
+            const sqlCandidate = asRecord(candidate.sql);
+            if (!sqlCandidate) return { ok: false, reason: "backup.sql must be an object with an engine and a database." };
+            const sqlUnknown = unknownField(sqlCandidate, ["engine", "database"], "backup.sql.");
+            if (sqlUnknown) return sqlUnknown;
+            const engine = MANAGED_SITE_BACKUP_SQL_ENGINES.find((entry) => entry === sqlCandidate.engine);
+            if (!engine) {
+                return {
+                    ok: false,
+                    reason: `backup.sql.engine must be one of: ${MANAGED_SITE_BACKUP_SQL_ENGINES.join(", ")}; files-only backup omits backup.sql.`,
+                };
+            }
+            if (!database) {
+                return { ok: false, reason: "backup.sql requires a database block; remove backup.sql for a files-only backup." };
+            }
+            if (database.engine !== engine) {
+                return {
+                    ok: false,
+                    reason: `backup.sql.engine must match the attached database engine "${database.engine}".`,
+                };
+            }
+            const name = asString(sqlCandidate.database);
+            if (!name || !isManagedSiteBackupDatabase(name)) {
+                return {
+                    ok: false,
+                    reason: `backup.sql.database must be one SQL identifier of at most ${MANAGED_SITE_BACKUP_DATABASE_MAX} characters.`,
+                };
+            }
+            sql = { engine, database: name };
+        }
+        backup = { kind, repository, ...(sql ? { sql } : {}) };
     }
 
     let build: { kind: ManagedSiteBuildKind } | undefined;
@@ -494,6 +629,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         publicRoot: MANAGED_SITE_PUBLIC_ROOT,
         runtime: image === undefined ? { profile: MANAGED_SITE_PROFILE } : { profile: MANAGED_SITE_PROFILE, image },
         ...(database ? { database } : {}),
+        ...(backup ? { backup } : {}),
         ...(build ? { build } : {}),
         deploy: { kind: MANAGED_SITE_DEPLOY_KIND, git: { url, ref } },
         ...(paths ? { paths } : {}),

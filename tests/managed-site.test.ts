@@ -96,8 +96,9 @@ describe("parseManagedSiteManifest", () => {
     });
 
     test("refuses another version, a missing version and a string version", () => {
-        expect(rejected(optIn({ version: 3 }))).toBe(true);
+        expect(rejected(optIn({ version: 4 }))).toBe(true);
         expect(rejected(optIn({ version: 2 }))).toBe(false);
+        expect(rejected(optIn({ version: 3 }))).toBe(false);
         expect(rejected(optIn({ version: "1" }))).toBe(true);
         const { version: _drop, ...withoutVersion } = optIn();
         expect(rejected(withoutVersion)).toBe(true);
@@ -133,6 +134,94 @@ describe("parseManagedSiteManifest", () => {
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.manifest.database).toEqual({ kind: "existing", engine: "mysql", network: "acme-db" });
+    });
+
+    test("accepts a version 3 backup block on a managed site", () => {
+        const backup = { kind: "restic", repository: "rest:https://backup.example.test/acme-shop" } as const;
+        const result = parse(managed({ version: 3, backup }));
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.manifest.version).toBe(3);
+        expect(result.manifest.backup).toEqual(backup);
+
+        const withSql = parse(
+            managed({
+                version: 3,
+                database: { kind: "existing", engine: "mariadb", network: "acme-db" },
+                generation: "2",
+                backup: { ...backup, sql: { engine: "mariadb", database: "acme_shop" } },
+            }),
+        );
+        expect(withSql.ok).toBe(true);
+        if (!withSql.ok) return;
+        expect(withSql.manifest.backup?.sql).toEqual({ engine: "mariadb", database: "acme_shop" });
+    });
+
+    test("refuses a backup outside version 3, on an opt-in stack, or with an unsupported backend", () => {
+        const repository = "rest:https://backup.example.test/acme-shop";
+        expect(rejected(managed({ version: 2, backup: { kind: "restic", repository } }))).toBe(true);
+        expect(rejected(optIn({ version: 3, backup: { kind: "restic", repository } }))).toBe(true);
+        expect(rejected(managed({ version: 3, backup: { kind: "s3", repository } }))).toBe(true);
+        expect(rejected(managed({ version: 3, backup: { kind: "restic", repository, extra: true } }))).toBe(true);
+        expect(rejected(managed({ version: 3, backup: { kind: "restic" } }))).toBe(true);
+    });
+
+    test("bounds the backup repository URL and refuses credentials or plaintext remote hosts", () => {
+        const repo = (value: string) => managed({ version: 3, backup: { kind: "restic", repository: value } });
+        expect(rejected(repo("rest:https://backup.example.test/acme-shop"))).toBe(false);
+        expect(rejected(repo("rest:https://backup.example.test:8443/acme-shop/prod"))).toBe(false);
+        expect(rejected(repo("rest:http://localhost:8000/acme-shop"))).toBe(false);
+        expect(rejected(repo("rest:http://127.0.0.1:8000/acme-shop"))).toBe(false);
+        expect(rejected(repo("rest:http://rest-server:8000/acme-shop"))).toBe(false);
+        expect(rejected(repo("rest:http://backup.example.test/acme-shop"))).toBe(true);
+        expect(rejected(repo("rest:https://user:pass@backup.example.test/acme-shop"))).toBe(true);
+        expect(rejected(repo("rest:https://backup.example.test/acme-shop?x=1"))).toBe(true);
+        expect(rejected(repo("rest:https://backup.example.test/acme-shop#x"))).toBe(true);
+        expect(rejected(repo("rest:https://backup.example.test/"))).toBe(true);
+        expect(rejected(repo("rest:https://backup.example.test/../etc"))).toBe(true);
+        expect(rejected(repo("https://backup.example.test/acme-shop"))).toBe(true);
+        expect(rejected(repo(`rest:https://backup.example.test/${"a".repeat(512)}`))).toBe(true);
+    });
+
+    test("couples backup.sql to the declared database engine and one bounded identifier", () => {
+        const base = managed({
+            version: 3,
+            database: { kind: "existing", engine: "mariadb", network: "acme-db" },
+            generation: "2",
+        });
+        const withSql = (sql: unknown) => ({
+            ...base,
+            backup: { kind: "restic", repository: "rest:https://backup.example.test/acme-shop", sql },
+        });
+        expect(rejected(withSql({ engine: "mariadb", database: "acme_shop" }))).toBe(false);
+        expect(rejected(withSql({ engine: "mariadb", database: "acme$shop" }))).toBe(false);
+        expect(rejected(withSql({ engine: "mariadb", database: "1shop" }))).toBe(false);
+        expect(rejected(withSql({ engine: "mariadb", database: "-shop" }))).toBe(true);
+        expect(rejected(withSql({ engine: "mariadb", database: "a.b" }))).toBe(true);
+        expect(rejected(withSql({ engine: "mariadb", database: "" }))).toBe(true);
+        expect(rejected(withSql({ engine: "postgresql", database: "acme_shop" }))).toBe(true);
+        expect(rejected(withSql({ engine: "mariadb", database: "a".repeat(65) }))).toBe(true);
+        expect(rejected(withSql({ engine: "mariadb", database: "acme_shop", host: "db" }))).toBe(true);
+        expect(
+            rejected({
+                ...base,
+                backup: { kind: "restic", repository: "rest:https://backup.example.test/a", sql: { engine: "mariadb", database: "x" } },
+            }),
+        ).toBe(false);
+        const noDatabase = managed({ version: 3 });
+        expect(
+            rejected({
+                ...noDatabase,
+                backup: { kind: "restic", repository: "rest:https://backup.example.test/a", sql: { engine: "mariadb", database: "x" } },
+            }),
+        ).toBe(true);
+        const mysql = managed({ version: 3, database: { kind: "existing", engine: "mysql", network: "acme-db" }, generation: "2" });
+        expect(
+            rejected({
+                ...mysql,
+                backup: { kind: "restic", repository: "rest:https://backup.example.test/a", sql: { engine: "mariadb", database: "x" } },
+            }),
+        ).toBe(true);
     });
 
     test("refuses unknown fields at every level", () => {
