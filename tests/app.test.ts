@@ -6195,4 +6195,47 @@ describe("timer-triggered backup (ADR 0051)", () => {
             await rm(dir, { recursive: true, force: true });
         }
     });
+
+    test("records a failed run without clearing the last good snapshot", async () => {
+        const dir = await timerRoot();
+        try {
+            const stackDir = join(dir, "demo");
+            await writeManagedSiteBackupTriggerState(stackDir, {
+                version: 1,
+                siteId: "acme-shop",
+                lastAttempt: { at: new Date(Date.now() - 60_000).toISOString(), result: "succeeded" },
+                lastSuccess: { at: new Date(Date.now() - 60_000).toISOString(), snapshotId: SNAPSHOT },
+                lastProof: null,
+                nonces: [],
+            });
+            const failingDocker: DockerRunner = async (args) => {
+                if (args.includes("backup")) {
+                    return { code: 1, stdout: "", stderr: "restic failed", timedOut: false, truncated: false };
+                }
+                return commandOk();
+            };
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                docker: failingDocker,
+                checkCredentials: async () => ({ ok: true }),
+                ...verifier,
+            });
+            expect((await request(app, "POST", payload())).status).toBe(202);
+            for (let index = 0; index < 500 && app.operations.forStack("demo")?.status === "running"; index += 1) await Bun.sleep(1);
+            expect(app.operations.forStack("demo")?.status).toBe("failed");
+
+            const state = await readManagedSiteBackupTriggerState(stackDir, "acme-shop");
+            expect(state.kind).toBe("ok");
+            if (state.kind !== "ok") return;
+            expect(state.state.lastAttempt?.result).toBe("failed");
+            expect(state.state.lastSuccess?.snapshotId).toBe(SNAPSHOT);
+
+            const status = (await (await request(app, "GET")).json()) as Record<string, unknown>;
+            expect(status.overdue).toBe(false);
+            expect((status.lastSuccess as Record<string, unknown>).snapshotId).toBe(SNAPSHOT);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
 });

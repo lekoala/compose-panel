@@ -212,8 +212,9 @@ change; the real-host checklist remains.
 - App tests: a session cookie alone is refused; a wrong token is `401`; a site
   without `trigger` is `404`; a malformed body is `400`; a wrong content type is
   `415`; the correct token starts one backup operation under the lock; a replay
-  is `409`; a successful backup records `lastSuccess`; a verified restore
-  records `lastProof`; `GET` returns the bounded status and no secret.
+  is `409`; a successful backup records `lastSuccess` and a failed run keeps the
+  previous one; a verified restore records `lastProof`; `GET` returns the
+  bounded status and no secret.
 - Implemented on 2026-11-25. The full unit/app suite passes on Windows and
   Linux, and the disposable backup suite still passes. No host timer, real
   host, proxy path or revocation has been exercised.

@@ -1380,7 +1380,8 @@ revocation has been exercised on a real host. The timer-triggered backup
 strict nonce/timestamp body and window, nonce replay and the durable facts, and
 by app tests for the untriggered site, the cookie-only request, the wrong token,
 the wrong content type, the accepted backup with its recorded last-good
-snapshot, the recorded restore proof, the overdue state and the rate limit; no
+snapshot, a failed run that keeps the previous snapshot, the recorded restore
+proof, the overdue state and the rate limit; no
 host timer or real revocation has been exercised. The disposable SSH
 fixture (`bash scripts/test-git-ssh.sh`) drives the real Git adapter against
 OpenSSH on loopback and exercises the correct key pair, wrong client key and
