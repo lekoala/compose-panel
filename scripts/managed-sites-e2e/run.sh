@@ -37,7 +37,8 @@ lab_start
 # suite that is not about pulling.
 lab_seed_from_cache "${COMPOSE_PANEL_LAB_BASE_IMAGE:-alpine:3.20}" "${COMPOSE_PANEL_E2E_WEB_IMAGE:-nginx:alpine}" \
     "nginx:1.27-alpine" "${COMPOSE_PANEL_E2E_RUNTIME_IMAGE:-php:8.3-fpm-alpine}" \
-    "${COMPOSE_PANEL_E2E_BUILD_IMAGE:-composer:2.10.3}" "${COMPOSE_PANEL_E2E_DATABASE_IMAGE:-mariadb:11}"
+    "${COMPOSE_PANEL_E2E_BUILD_IMAGE:-composer:2.10.3}" "${COMPOSE_PANEL_E2E_DATABASE_IMAGE:-mariadb:11}" \
+    "${COMPOSE_PANEL_E2E_BACKUP_IMAGE:-restic/restic:0.18.0}" "${COMPOSE_PANEL_E2E_REST_SERVER_IMAGE:-restic/rest-server:0.15.0}"
 
 # Copy the working tree into the Linux file system (/mnt/* is not one).
 mkdir "$LAB_DIR/app"

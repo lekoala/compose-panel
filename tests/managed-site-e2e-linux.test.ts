@@ -8,6 +8,8 @@ import { fetchAndPublishGitRelease, revisionScript } from "../src/git-release.ts
 import { buildManagedSite } from "../src/managed-site-generate.ts";
 import { MANAGED_SITE_BUILD_IMAGE, runComposerPreparation } from "../src/managed-site-build.ts";
 import { MANAGED_SITE_PATHS, parseManagedSiteManifest, type ManagedSiteManifest } from "../src/managed-site.ts";
+import { readManagedSiteBackupAttempt } from "../src/managed-site-backup.ts";
+import { runManagedSiteBackup } from "../src/managed-site-backup-run.ts";
 import {
     managedSiteAttemptPath,
     parseProbeAnswer,
@@ -810,6 +812,133 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
             await rm(root, { recursive: true, force: true });
         }
     }, 900_000);
+
+    test("backs up to an append-only REST repository and restores the staging tree", async () => {
+        requireEnv();
+        const root = await mkdtemp(join(realpathSync(shared), "managed-site-backup-e2e-"));
+        await chmod(root, 0o755);
+        const stackDir = join(root, "stack");
+        const uploads = join(stackDir, MANAGED_SITE_PATHS.shared, "uploads");
+        const privateDir = join(stackDir, MANAGED_SITE_PATHS.private, "backup");
+        await mkdir(uploads, { recursive: true });
+        await mkdir(privateDir, { recursive: true, mode: 0o700 });
+        await chmod(join(stackDir, MANAGED_SITE_PATHS.private), 0o700);
+        await chmod(privateDir, 0o700);
+        await writeFile(join(uploads, "note.txt"), "backup-me\n");
+        const passwordPath = join(privateDir, "restic-password");
+        await writeFile(passwordPath, "lab-backup-password\n", { mode: 0o600 });
+        await chmod(passwordPath, 0o600);
+
+        const repoDir = join(root, "repo");
+        await mkdir(repoDir);
+        const server = `cp-rest-${process.pid}`;
+        const repository = `rest:http://localhost:8000/lab-${process.pid}`;
+        const restic = (args: string[], mounts: string[] = []) =>
+            runCommand(
+                "docker",
+                [
+                    "run",
+                    "--rm",
+                    "--network",
+                    "host",
+                    "--read-only",
+                    "--tmpfs",
+                    "/tmp:rw,noexec,nosuid",
+                    "--env",
+                    "HOME=/tmp",
+                    "--env",
+                    `RESTIC_REPOSITORY=${repository}`,
+                    "--env",
+                    "RESTIC_PASSWORD_FILE=/run/secrets/restic-password",
+                    "-v",
+                    `${passwordPath}:/run/secrets/restic-password:ro`,
+                    ...mounts,
+                    "restic/restic:0.18.0",
+                    ...args,
+                ],
+                { timeoutMs: 180_000, maxBytes: 8 * 1024 * 1024 },
+            );
+
+        try {
+            await dockerOk([
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                server,
+                "--network",
+                "host",
+                "-e",
+                "DISABLE_AUTHENTICATION=1",
+                "-e",
+                "OPTIONS=--append-only",
+                "-e",
+                "DATA_DIRECTORY=/data",
+                "-v",
+                `${repoDir}:/data`,
+                "restic/rest-server:0.15.0",
+                "/entrypoint.sh",
+            ]);
+            let initialized = false;
+            let lastInit = "";
+            const deadline = Date.now() + 60_000;
+            while (!initialized && Date.now() < deadline) {
+                const started = await restic(["init"]);
+                initialized = started.code === 0;
+                lastInit = started.stderr.trim() || started.stdout.trim();
+                if (!initialized) await Bun.sleep(500);
+            }
+            if (!initialized) {
+                const logs = await runCommand("docker", ["logs", server], { timeoutMs: 30_000, maxBytes: 64 * 1024 });
+                throw new Error(
+                    `the disposable REST repository did not initialize: ${lastInit} ${logs.stderr.trim()} ${logs.stdout.trim()}`,
+                );
+            }
+
+            const manifest: ManagedSiteManifest = {
+                version: 3,
+                siteId: `backup-lab-${process.pid}`,
+                owner: "managed",
+                project: `backup-lab-${process.pid}`,
+                services: { gateway: "web", runtime: "runtime" },
+                gateway: { port: 41000 + (process.pid % 900) },
+                publicRoot: "public",
+                runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+                deploy: { kind: "bind-mount", git: { url: GIT_URL, ref: GIT_REF } },
+                paths: ["shared/uploads"],
+                generation: "1",
+                backup: { kind: "restic", repository },
+            };
+            const backedUp = await runManagedSiteBackup(
+                { stackDir, manifest, attemptId: "backup0001", releaseId: null, runtimeImage: null },
+                { resticNetwork: "host", timeoutMs: 180_000 },
+            );
+            if (!backedUp.ok) throw new Error(backedUp.reason);
+            expect(backedUp.snapshotId).toMatch(/^[0-9a-f]{64}$/);
+            expect(backedUp.entries).toBeGreaterThan(0);
+            expect(await readManagedSiteBackupAttempt(stackDir)).toEqual({ kind: "none" });
+            expect(await Bun.file(join(privateDir, "backup-attempt.json")).exists()).toBe(false);
+            expect(await Bun.file(join(privateDir, "staging", "backup0001")).exists()).toBe(false);
+
+            await rm(join(uploads, "note.txt"));
+            const restoreDir = join(root, "restore");
+            await mkdir(restoreDir, { mode: 0o700 });
+            const restored = await restic(["restore", backedUp.snapshotId, "--target", "/restore"], ["-v", `${restoreDir}:/restore`]);
+            expect(restored.code).toBe(0);
+            expect(await readFile(join(restoreDir, "backup", "files", "shared", "uploads", "note.txt"), "utf8")).toBe("backup-me\n");
+
+            const forgot = await restic(["forget", backedUp.snapshotId, "--prune"]);
+            expect(forgot.timedOut).toBe(false);
+            const still = await restic(["snapshots", "--json", backedUp.snapshotId]);
+            expect(still.stdout).toContain(backedUp.snapshotId);
+        } finally {
+            await runCommand("docker", ["rm", "-f", server], { timeoutMs: 60_000 }).catch(() => {});
+            await runCommand("docker", ["run", "--rm", "-v", `${root}:/r`, "alpine:3.20", "rm", "-rf", "/r/repo"], {
+                timeoutMs: 120_000,
+            }).catch(() => {});
+            await rm(root, { recursive: true, force: true });
+        }
+    }, 600_000);
 
     test("the generated gateway follows a runtime IP change without recreating the gateway", async () => {
         requireEnv();

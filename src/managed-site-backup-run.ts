@@ -50,6 +50,11 @@ export interface ManagedSiteBackupDependencies {
     now?: () => Date;
     limits?: ManagedSiteBackupLimits;
     timeoutMs?: number;
+    /**
+     * Test seam only: a disposable REST endpoint on the lab daemon can be
+     * reached through host networking. Production callers never set it.
+     */
+    resticNetwork?: string;
     /** Test seam; production checks the fixed private files on disk. */
     checkCredentials?: (stackDir: string, manifest: ManagedSiteManifest) => Promise<ManagedSiteBackupCheck>;
 }
@@ -146,10 +151,11 @@ interface ResticContext {
     stagingDir: string;
 }
 
-function resticCommand(context: ResticContext, command: string[]): string[] {
+function resticCommand(context: ResticContext, command: string[], network?: string): string[] {
     return [
         "run",
         "--rm",
+        ...(network ? ["--network", network] : []),
         "--read-only",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid",
@@ -326,7 +332,11 @@ export async function runManagedSiteBackup(
         await writeManagedSiteBackupAttempt(stackDir, attempt("pending"));
         const resticName = `cp-backup-restic-${attemptId}`;
         const uploaded = await docker(
-            resticCommand(restic, ["backup", "--json", "--tag", `site:${manifest.siteId}`, "--tag", `attempt:${attemptId}`, "/backup"]),
+            resticCommand(
+                restic,
+                ["backup", "--json", "--tag", `site:${manifest.siteId}`, "--tag", `attempt:${attemptId}`, "/backup"],
+                dependencies.resticNetwork,
+            ),
             {
                 timeoutMs,
                 maxBytes: MANAGED_SITE_BACKUP_OUTPUT_MAX_BYTES,
@@ -343,7 +353,7 @@ export async function runManagedSiteBackup(
 
         phase = "verify";
         await writeManagedSiteBackupAttempt(stackDir, attempt("pending", { snapshotId }));
-        const listed = await docker(resticCommand(restic, ["snapshots", "--json", snapshotId]), {
+        const listed = await docker(resticCommand(restic, ["snapshots", "--json", snapshotId], dependencies.resticNetwork), {
             timeoutMs,
             maxBytes: MANAGED_SITE_BACKUP_OUTPUT_MAX_BYTES,
             cwd: stackDir,
@@ -355,7 +365,7 @@ export async function runManagedSiteBackup(
         if (!parseResticSnapshotList(listed.stdout, snapshotId, manifest.siteId)) {
             return await fail("The repository did not return the exact uploaded snapshot.", "unknown");
         }
-        const contents = await docker(resticCommand(restic, ["ls", "--json", snapshotId]), {
+        const contents = await docker(resticCommand(restic, ["ls", "--json", snapshotId], dependencies.resticNetwork), {
             timeoutMs,
             maxBytes: MANAGED_SITE_BACKUP_OUTPUT_MAX_BYTES,
             cwd: stackDir,
