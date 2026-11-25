@@ -215,6 +215,53 @@ describe("parseManagedSiteManifest", () => {
         );
     });
 
+    test("accepts one bounded retention policy and refuses every other shape", () => {
+        const repository = "rest:https://backup.example.test/acme-shop";
+        const retention = (value: unknown) => managed({ version: 3, backup: { kind: "restic", repository, retention: value } });
+
+        const full = parse(retention({ keepLast: 7, keepDaily: 14, keepWeekly: 8, keepMonthly: 12 }));
+        expect(full.ok).toBe(true);
+        if (!full.ok) return;
+        expect(full.manifest.backup?.retention).toEqual({ keepLast: 7, keepDaily: 14, keepWeekly: 8, keepMonthly: 12 });
+
+        const single = parse(retention({ keepLast: 1 }));
+        expect(single.ok).toBe(true);
+        if (!single.ok) return;
+        expect(single.manifest.backup?.retention).toEqual({ keepLast: 1 });
+
+        const combined = parse(
+            managed({
+                version: 3,
+                backup: {
+                    kind: "restic",
+                    repository,
+                    retention: { keepDaily: 7 },
+                    trigger: { kind: "token", everyHours: 24 },
+                },
+            }),
+        );
+        expect(combined.ok).toBe(true);
+        if (!combined.ok) return;
+        expect(combined.manifest.backup?.retention).toEqual({ keepDaily: 7 });
+        expect(combined.manifest.backup?.trigger).toEqual({ kind: "token", everyHours: 24 });
+
+        expect(rejected(retention({ keepLast: 100 }))).toBe(false);
+        expect(rejected(retention({ keepLast: 101 }))).toBe(true);
+        expect(rejected(retention({ keepDaily: 365 }))).toBe(false);
+        expect(rejected(retention({ keepDaily: 366 }))).toBe(true);
+        expect(rejected(retention({ keepWeekly: 104 }))).toBe(false);
+        expect(rejected(retention({ keepWeekly: 105 }))).toBe(true);
+        expect(rejected(retention({ keepMonthly: 120 }))).toBe(false);
+        expect(rejected(retention({ keepMonthly: 121 }))).toBe(true);
+        expect(rejected(retention({ keepLast: 0 }))).toBe(true);
+        expect(rejected(retention({ keepLast: 1.5 }))).toBe(true);
+        expect(rejected(retention({ keepLast: "7" }))).toBe(true);
+        expect(rejected(retention({}))).toBe(true);
+        expect(rejected(retention("keepLast"))).toBe(true);
+        expect(rejected(retention({ keepLast: 7, keepHourly: 7 }))).toBe(true);
+        expect(rejected(retention({ keepLast: 7, keepUntil: "forever" }))).toBe(true);
+    });
+
     test("refuses a backup outside version 3, on an opt-in stack, or with an unsupported backend", () => {
         const repository = "rest:https://backup.example.test/acme-shop";
         expect(rejected(managed({ version: 2, backup: { kind: "restic", repository } }))).toBe(true);

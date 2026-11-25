@@ -103,11 +103,29 @@ export interface ManagedSiteBackupTrigger {
     everyHours: number;
 }
 
+/** The only retention counts the panel forwards to a read-only Restic preview (ADR 0052). */
+export const MANAGED_SITE_BACKUP_RETENTION_KEYS = ["keepLast", "keepDaily", "keepWeekly", "keepMonthly"] as const;
+export type ManagedSiteBackupRetentionKey = (typeof MANAGED_SITE_BACKUP_RETENTION_KEYS)[number];
+export const MANAGED_SITE_BACKUP_RETENTION_MAX: Record<ManagedSiteBackupRetentionKey, number> = {
+    keepLast: 100,
+    keepDaily: 365,
+    keepWeekly: 104,
+    keepMonthly: 120,
+};
+
+/**
+ * A declared prune policy. It is used only to run `restic forget --dry-run`;
+ * it authorizes no deletion and the panel reimplements no calendar rule.
+ */
+export type ManagedSiteBackupRetention = Partial<Record<ManagedSiteBackupRetentionKey, number>>;
+
 export interface ManagedSiteBackup {
     kind: ManagedSiteBackupKind;
     /** `rest:https://host/path`; `rest:http://` only on a private/loopback host. */
     repository: string;
     sql?: ManagedSiteBackupSql;
+    /** Optional policy measured by the read-only retention preview (ADR 0052). */
+    retention?: ManagedSiteBackupRetention;
     /** Optional machine request path for an administrator-installed timer. */
     trigger?: ManagedSiteBackupTrigger;
 }
@@ -522,7 +540,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         }
         const candidate = asRecord(root.backup);
         if (!candidate) return { ok: false, reason: "backup must be an object." };
-        const backupUnknown = unknownField(candidate, ["kind", "repository", "sql", "trigger"], "backup.");
+        const backupUnknown = unknownField(candidate, ["kind", "repository", "retention", "sql", "trigger"], "backup.");
         if (backupUnknown) return backupUnknown;
         const kind = MANAGED_SITE_BACKUP_KINDS.find((entry) => entry === candidate.kind);
         if (!kind) {
@@ -566,6 +584,36 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
             }
             sql = { engine, database: name };
         }
+        let retention: ManagedSiteBackupRetention | undefined;
+        if (candidate.retention !== undefined) {
+            const retentionCandidate = asRecord(candidate.retention);
+            if (!retentionCandidate) {
+                return { ok: false, reason: "backup.retention must be an object with at least one keep count." };
+            }
+            const retentionUnknown = unknownField(retentionCandidate, [...MANAGED_SITE_BACKUP_RETENTION_KEYS], "backup.retention.");
+            if (retentionUnknown) return retentionUnknown;
+            const declared: ManagedSiteBackupRetention = {};
+            let declaredCount = 0;
+            for (const key of MANAGED_SITE_BACKUP_RETENTION_KEYS) {
+                const value = retentionCandidate[key];
+                if (value === undefined) continue;
+                if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MANAGED_SITE_BACKUP_RETENTION_MAX[key]) {
+                    return {
+                        ok: false,
+                        reason: `backup.retention.${key} must be an integer between 1 and ${MANAGED_SITE_BACKUP_RETENTION_MAX[key]}.`,
+                    };
+                }
+                declared[key] = value;
+                declaredCount += 1;
+            }
+            if (declaredCount === 0) {
+                return {
+                    ok: false,
+                    reason: `backup.retention must declare at least one of: ${MANAGED_SITE_BACKUP_RETENTION_KEYS.join(", ")}.`,
+                };
+            }
+            retention = declared;
+        }
         let trigger: ManagedSiteBackupTrigger | undefined;
         if (candidate.trigger !== undefined) {
             const triggerCandidate = asRecord(candidate.trigger);
@@ -595,7 +643,13 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
             }
             trigger = { kind: triggerKind, everyHours };
         }
-        backup = { kind, repository, ...(sql ? { sql } : {}), ...(trigger ? { trigger } : {}) };
+        backup = {
+            kind,
+            repository,
+            ...(sql ? { sql } : {}),
+            ...(retention ? { retention } : {}),
+            ...(trigger ? { trigger } : {}),
+        };
     }
 
     let ci: ManagedSiteCi | undefined;
