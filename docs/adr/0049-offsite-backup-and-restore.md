@@ -246,9 +246,9 @@ checklist remains.
   role, two or three fixed credential files, an off-host recovery credential, an
   append-only endpoint and a retention procedure.
 - The panel gains a manifest block, a metadata-only credential check, a bounded
-  staging walk, two one-shot container launchers, a snapshot manifest, an
-  attempt marker and a restore proof. It gains no scheduler, no SQL client in
-  the panel image, no backup server and no retention credential.
+  staging walk, pinned one-shot container launchers, a snapshot manifest, an
+  attempt marker and an isolated restore proof. It gains no scheduler, no SQL
+  client in the panel image, no backup server and no retention credential.
 - The first slice is managed-only and MariaDB-only for SQL. A MySQL or
   PostgreSQL adapter is a bounded change to the dump container and the same
   snapshot contract; files-only backup works for every engine from the start.
