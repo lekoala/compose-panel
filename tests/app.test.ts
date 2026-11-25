@@ -6650,3 +6650,237 @@ describe("read-only snapshot inventory (ADR 0053)", () => {
         }
     });
 });
+
+describe("read-only repository check (ADR 0054)", () => {
+    const SITE = "acme-shop";
+    const manifest: ManagedSiteManifest = {
+        version: 3,
+        siteId: SITE,
+        owner: "managed",
+        project: SITE,
+        services: { gateway: "web", runtime: "runtime" },
+        gateway: { port: 41001 },
+        publicRoot: "public",
+        runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+        deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+        paths: ["shared/uploads"],
+        generation: "1",
+        backup: { kind: "restic", repository: "rest:https://backup.example.test/acme-shop" },
+    };
+
+    const CLEAN = "load indexes\ncheck all packs\ncheck snapshots, trees and blobs\nno errors were found\n";
+    const commandOk = (stdout = CLEAN): CommandResult => ({ code: 0, stdout, stderr: "", timedOut: false, truncated: false });
+
+    async function checkRoot(site: ManagedSiteManifest = manifest, name = "demo"): Promise<string> {
+        const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-repository-check-")));
+        const stack = join(dir, name);
+        await mkdir(join(stack, "site", "shared", "uploads"), { recursive: true });
+        await mkdir(join(stack, "site", "private", "backup"), { recursive: true, mode: 0o700 });
+        await writeFile(join(stack, "compose.yaml"), `name: ${site.project}\nservices:\n  web:\n    image: nginx:alpine\n`);
+        await writeFile(join(stack, "compose-panel-site.json"), `${JSON.stringify(site, null, 2)}\n`);
+        return dir;
+    }
+
+    function checkDocker(calls: string[][], result: CommandResult = commandOk()): DockerRunner {
+        return async (args) => {
+            calls.push(args);
+            return result;
+        };
+    }
+
+    function makeCheckApp(
+        dir: string,
+        docker: DockerRunner,
+        checkCredentials: (stackDir: string, manifest: ManagedSiteManifest) => Promise<ManagedSiteBackupCheck> = async () => ({ ok: true }),
+    ) {
+        const { provider } = controllableProvider();
+        return makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+            docker,
+            checkCredentials,
+        });
+    }
+
+    async function csrfOf(app: App, session: string): Promise<string> {
+        return /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/about", session)).text())![1]!;
+    }
+
+    function postCheck(app: App, session: string, path: string, fields: Record<string, string>): Promise<Response> {
+        return authed(app, path, session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(fields).toString(),
+        });
+    }
+
+    async function settle(app: App): Promise<void> {
+        for (let index = 0; index < 500 && app.operations.forStack("demo")?.status === "running"; index += 1) await Bun.sleep(1);
+    }
+
+    test("runs one bounded check under the lock and reports Restic's own answer", async () => {
+        const dir = await checkRoot();
+        try {
+            const calls: string[][] = [];
+            const app = makeCheckApp(dir, checkDocker(calls));
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+
+            const page = await (await authed(app, "/stacks/demo", session)).text();
+            expect(page).toContain('action="/stacks/demo/backup/check"');
+
+            const response = await postCheck(app, session, "/stacks/demo/backup/check", { csrf });
+            expect(response.status).toBe(303);
+            await settle(app);
+            const operation = app.operations.forStack("demo");
+            expect(operation?.action).toBe("repository-check");
+            expect(operation?.status).toBe("succeeded");
+            expect(operation?.output).toContain("no errors");
+            expect(operation?.output).toContain("32 MiB");
+
+            expect(calls).toHaveLength(1);
+            const args = calls[0]!;
+            expect(args).toContain("check");
+            expect(args).toContain("--no-lock");
+            expect(args).toContain("--read-data-subset");
+            expect(args).toContain("32M");
+            expect(args).not.toContain("--read-data");
+            for (const forbidden of ["forget", "prune", "unlock", "repair", "backup", "restore"]) {
+                expect(args).not.toContain(forbidden);
+            }
+            expect(args.some((entry) => /^[0-9a-f]{64}$/.test(entry))).toBe(false);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses a session-less request, a stale form, a foreign origin and a site without a backup block", async () => {
+        const dir = await checkRoot();
+        try {
+            const plainManifest: ManagedSiteManifest = { ...manifest, siteId: "plain-site", project: "plain", backup: undefined };
+            await mkdir(join(dir, "plain"), { recursive: true });
+            await writeFile(join(dir, "plain", "compose.yaml"), "name: plain\nservices:\n  web:\n    image: nginx:alpine\n");
+            await writeFile(join(dir, "plain", "compose-panel-site.json"), `${JSON.stringify(plainManifest, null, 2)}\n`);
+
+            const calls: string[][] = [];
+            const app = makeCheckApp(dir, checkDocker(calls));
+            const anonymous = await app.fetch(
+                new Request(`${ORIGIN}/stacks/demo/backup/check`, {
+                    method: "POST",
+                    headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+                    body: new URLSearchParams({ csrf: "x" }).toString(),
+                }),
+            );
+            expect(anonymous.status).toBe(401);
+            expect(app.operations.forStack("demo")).toBeNull();
+
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+
+            const get = await authed(app, "/stacks/demo/backup/check", session);
+            expect(get.status).toBe(405);
+
+            const stale = await postCheck(app, session, "/stacks/demo/backup/check", { csrf: "wrong" });
+            expect(stale.status).toBe(403);
+
+            const foreign = await authed(app, "/stacks/demo/backup/check", session, {
+                method: "POST",
+                headers: { origin: "http://evil.example", "content-type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({ csrf }).toString(),
+            });
+            expect(foreign.status).toBe(403);
+
+            const noBackup = await postCheck(app, session, "/stacks/plain/backup/check", { csrf });
+            expect(noBackup.status).toBe(409);
+            expect(app.operations.forStack("plain")).toBeNull();
+            expect(calls).toEqual([]);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses missing credentials, a pending deploy and an unconfirmed backup before any container", async () => {
+        const dir = await checkRoot();
+        try {
+            const calls: string[][] = [];
+            const missing = makeCheckApp(dir, checkDocker(calls), async () => ({
+                ok: false,
+                reason: "The Restic password file is missing.",
+            }));
+            const missingSession = await login(missing);
+            const missingCsrf = await csrfOf(missing, missingSession);
+            const missingResponse = await postCheck(missing, missingSession, "/stacks/demo/backup/check", { csrf: missingCsrf });
+            expect(missingResponse.status).toBe(303);
+            await settle(missing);
+            expect(missing.operations.forStack("demo")?.status).toBe("refused");
+            expect(missing.operations.forStack("demo")?.output).toContain("Restic password");
+            expect(calls).toEqual([]);
+            await missing.beginShutdown(100);
+
+            const app = makeCheckApp(dir, checkDocker(calls));
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+
+            const stackDir = join(dir, "demo").replace(/\\/g, "/");
+            await writeFile(join(stackDir, "site", "private", "deploy-attempt.json"), "{}\n");
+            const pendingDeploy = await postCheck(app, session, "/stacks/demo/backup/check", { csrf });
+            expect(pendingDeploy.status).toBe(303);
+            await settle(app);
+            expect(app.operations.forStack("demo")?.status).toBe("refused");
+            expect(calls).toEqual([]);
+            await rm(join(stackDir, "site", "private", "deploy-attempt.json"));
+
+            await writeManagedSiteBackupAttempt(stackDir, {
+                version: 1,
+                siteId: SITE,
+                attemptId: "attempt0054",
+                repository: "rest:https://backup.example.test/acme-shop",
+                startedAt: "2026-11-25T10:00:00.000Z",
+                phase: "upload",
+                outcome: "failed",
+                reason: "upload timed out",
+            });
+            const pendingBackup = await postCheck(app, session, "/stacks/demo/backup/check", { csrf });
+            expect(pendingBackup.status).toBe(303);
+            await settle(app);
+            expect(app.operations.forStack("demo")?.status).toBe("refused");
+            expect(app.operations.forStack("demo")?.output).toContain("unconfirmed outcome");
+            expect(calls).toEqual([]);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("fails the operation without a clean claim when Restic reports errors", async () => {
+        const dir = await checkRoot();
+        try {
+            const calls: string[][] = [];
+            const app = makeCheckApp(
+                dir,
+                checkDocker(calls, {
+                    code: 1,
+                    stdout: "load indexes\n",
+                    stderr: "pack 0123456789ab: unexpected file size\n\nrestic repair packs 0123456789ab\nrestic repair snapshots --forget\nFatal: repository contains errors\n",
+                    timedOut: false,
+                    truncated: false,
+                }),
+            );
+            const session = await login(app);
+            const csrf = await csrfOf(app, session);
+            const response = await postCheck(app, session, "/stacks/demo/backup/check", { csrf });
+            expect(response.status).toBe(303);
+            await settle(app);
+            const operation = app.operations.forStack("demo");
+            expect(operation?.status).toBe("failed");
+            expect(operation?.output).toContain("errors in the repository");
+            expect(operation?.output).not.toContain("restic repair");
+            expect(operation?.output).not.toContain("0123456789ab");
+            expect(operation?.output).not.toContain("no errors");
+            expect(calls).toHaveLength(1);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+});

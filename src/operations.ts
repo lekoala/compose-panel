@@ -284,6 +284,31 @@ export class OperationManager {
         return operation;
     }
 
+    /**
+     * Check one backup repository (ADR 0054). It holds the stack lock so no
+     * upload adds packs mid-check, but it is read-only: the run closure asks
+     * Restic to check and the panel repairs, deletes and stores nothing.
+     */
+    startRepositoryCheck(input: {
+        stack: string;
+        project?: string;
+        run: (context: {
+            onOutput: (chunk: string) => void;
+            record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+        }) => Promise<AppActionOutcome>;
+    }): OperationView {
+        const { operation, release } = this.begin({
+            stack: input.stack,
+            action: "repository-check",
+            label: "Repository check",
+            project: input.project,
+        });
+        const task = this.executeApp(operation, input.run, release, input.project);
+        this.tasks.add(task);
+        void task.finally(() => this.tasks.delete(task));
+        return operation;
+    }
+
     /** Whether shutdown has begun; a running rollout uses it between phases. */
     isShuttingDown(): boolean {
         return this.shuttingDown;

@@ -137,6 +137,7 @@ import {
     runManagedSiteBackupRetentionPreview,
 } from "./managed-site-backup-retention.ts";
 import { runManagedSiteBackupSnapshotList } from "./managed-site-backup-snapshots.ts";
+import { runManagedSiteBackupCheck } from "./managed-site-backup-check.ts";
 import { isManagedSiteSnapshotId, runManagedSiteRestore } from "./managed-site-restore.ts";
 import {
     MANAGED_SITE_CI_MAX_BODY_BYTES,
@@ -551,6 +552,7 @@ export function createApp(options: AppOptions): App {
                 if (action === "backup") return await managedBackupAdmission(stackDir);
                 if (action === "restore") return await managedRestoreAdmission(stackDir);
                 if (action === "retention-preview") return await managedBackupAdmission(stackDir);
+                if (action === "repository-check") return await managedBackupCheckAdmission(stackDir);
                 const drift = await managedSiteDriftReason(stackDir);
                 if (drift) return drift;
                 if (action === "down") return await managedDownDomainAdmission(stack);
@@ -2130,6 +2132,114 @@ export function createApp(options: AppOptions): App {
                     actor: clientKey(request, config),
                     stack: name,
                     action: "retention-preview",
+                    detail: error.message,
+                });
+                return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Check one backup repository (ADR 0054). The operation holds the stack lock,
+     * asks the pinned Restic client for a bounded read-only check and reports its
+     * own answer. Nothing is repaired, deleted, unlocked or stored.
+     */
+    async function handleRepositoryCheck(request: Request, name: string, session: Session): Promise<Response> {
+        const csrf = session.csrf;
+        const back = `/stacks/${encodeURIComponent(name)}`;
+        if (!config.managedSitesEnabled) throw new StackError("Managed sites are not enabled on this panel.", 404);
+        if (!isAllowedOrigin(request, config)) return staleForm(csrf, back);
+        const form = await readForm(request);
+        if (form === null) return tooLarge(csrf, back);
+        if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, back);
+        if (!sessions.isActive(session.id)) return sessionEnded();
+
+        const stackDir = await managedSiteStackDir(name);
+        const manifestResult = await readManagedSiteManifest(stackDir);
+        if (!manifestResult.ok) return renderStackDetail(name, csrf, { kind: "error", text: manifestResult.reason }, 409);
+        if (manifestResult.manifest.owner !== "managed" || !manifestResult.manifest.backup) {
+            return renderStackDetail(
+                name,
+                csrf,
+                { kind: "error", text: "This site declares no backup block, so there is no repository to check." },
+                409,
+            );
+        }
+        try {
+            if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+            operations.startRepositoryCheck({
+                stack: name,
+                project: manifestResult.manifest.project,
+                run: async ({ onOutput }) => {
+                    if (selfUpdatePending) throw new OperationsDisabledError(SELF_UPDATE_RUNNING);
+                    const currentDir = await managedSiteStackDir(name);
+                    const current = await readManagedSiteManifest(currentDir);
+                    if (!current.ok) return { refused: current.reason };
+                    if (current.manifest.owner !== "managed" || !current.manifest.backup) {
+                        return { refused: "This site no longer declares a backup block." };
+                    }
+                    const credentials = await (options.backupCheckCredentials ?? checkManagedSiteBackupCredentials)(
+                        currentDir,
+                        current.manifest,
+                    );
+                    if (!credentials.ok) return { refused: credentials.reason };
+                    const pendingBackup = await readManagedSiteBackupAttempt(currentDir);
+                    if (pendingBackup.kind !== "none") {
+                        return {
+                            refused:
+                                "A previous backup attempt has an unconfirmed outcome. Inspect the repository and acknowledge it first.",
+                        };
+                    }
+                    onOutput(
+                        "Checking the repository with the pinned Restic client: structure and a random 32 MiB data sample. The panel reads only; it cannot repair, delete or unlock.\n",
+                    );
+                    const result = await runManagedSiteBackupCheck(
+                        { stackDir: currentDir, manifest: current.manifest, signal: shutdownController.signal },
+                        options.backupDocker ? { docker: options.backupDocker } : {},
+                    );
+                    if (!result.ok) {
+                        onOutput(`The repository check did not complete: ${result.reason}\n`);
+                        await recordAudit({
+                            event: "backup",
+                            result: "failed",
+                            actor: clientKey(request, config),
+                            stack: name,
+                            action: "repository-check",
+                        });
+                        return { code: 1, stdout: "", stderr: "", timedOut: false, truncated: false };
+                    }
+                    onOutput(
+                        "Restic found no errors in the repository structure and in the random 32 MiB data sample. This is not a full restic check --read-data and does not replace a restore proof from the maintenance host.\n",
+                    );
+                    await recordAudit({
+                        event: "backup",
+                        result: "success",
+                        actor: clientKey(request, config),
+                        stack: name,
+                        action: "repository-check",
+                        detail: `site ${current.manifest.siteId}, structure and 32 MiB data sample`,
+                    });
+                    return { code: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+                },
+            });
+            await recordAudit({
+                event: "backup",
+                result: "started",
+                actor: clientKey(request, config),
+                stack: name,
+                action: "repository-check",
+                detail: `site ${manifestResult.manifest.siteId}`,
+            });
+            return redirect(back, 303);
+        } catch (error) {
+            if (error instanceof StackBusyError || error instanceof OperationsDisabledError) {
+                await recordAudit({
+                    event: "backup",
+                    result: "refused",
+                    actor: clientKey(request, config),
+                    stack: name,
+                    action: "repository-check",
                     detail: error.message,
                 });
                 return renderStackDetail(name, csrf, { kind: "error", text: `${error.message} Nothing was run.` }, 409);
@@ -4309,6 +4419,21 @@ export function createApp(options: AppOptions): App {
         return credentials.ok ? null : `${credentials.reason} Nothing was run.`;
     }
 
+    /** A repository check needs the backup contract, its credentials and no unconfirmed attempt. */
+    async function managedBackupCheckAdmission(stackDir: string): Promise<string | null> {
+        const site = await readManagedSiteManifest(stackDir);
+        if (!site.ok) return site.reason;
+        if (site.manifest.owner !== "managed" || !site.manifest.backup) {
+            return "This site declares no backup block, so there is no repository to check.";
+        }
+        const marker = await readManagedSiteBackupAttempt(stackDir);
+        if (marker.kind !== "none") {
+            return "A previous backup attempt has an unconfirmed outcome. Inspect the repository and acknowledge it before checking it.";
+        }
+        const credentials = await (options.backupCheckCredentials ?? checkManagedSiteBackupCredentials)(stackDir, site.manifest);
+        return credentials.ok ? null : `${credentials.reason} Nothing was run.`;
+    }
+
     /** A restore needs the backup contract and no unconfirmed attempt. */
     async function managedRestoreAdmission(stackDir: string): Promise<string | null> {
         const site = await readManagedSiteManifest(stackDir);
@@ -5203,6 +5328,13 @@ export function createApp(options: AppOptions): App {
                   "Asks the pinned Restic client which snapshots this policy would remove, in dry-run mode. The panel deletes nothing and stores no preview; run the real forget and prune from the maintenance host with the deletion credential, then restic check.",
               )
             : "";
+        const repositoryCheck =
+            `<h3>Repository check</h3>` +
+            `<form method="post" action="${href}/backup/check"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy ? " disabled" : ""}>Check repository</button></form>` +
+            note(
+                "info",
+                "Asks the pinned Restic client to check the repository structure and read a random 32 MiB sample of its data. The panel never repairs, deletes or unlocks; a full restic check --read-data stays on the maintenance host.",
+            );
         return (
             `<h3>Offsite backup</h3>` +
             repository +
@@ -5218,6 +5350,7 @@ export function createApp(options: AppOptions): App {
                 "info",
                 "Restores one exact snapshot into a new private directory and, for a SQL snapshot, imports it into a disposable database with no production credentials, no production network and no published port. The live site is not modified.",
             ) +
+            repositoryCheck +
             retention
         );
     }
@@ -5927,6 +6060,15 @@ export function createApp(options: AppOptions): App {
                 return await handleBackupAcknowledge(request, decodeName(backupAcknowledgeMatch[1]!), session);
             } catch (error) {
                 return routeError(error, session.csrf, safeName(backupAcknowledgeMatch[1]!));
+            }
+        }
+        const backupCheckMatch = /^\/stacks\/([^/]+)\/backup\/check$/.exec(url.pathname);
+        if (backupCheckMatch && config.managedSitesEnabled) {
+            if (method !== "POST") return methodNotAllowed("POST");
+            try {
+                return await handleRepositoryCheck(request, decodeName(backupCheckMatch[1]!), session);
+            } catch (error) {
+                return routeError(error, session.csrf, safeName(backupCheckMatch[1]!));
             }
         }
         const backupRetentionMatch = /^\/stacks\/([^/]+)\/backup\/retention$/.exec(url.pathname);
