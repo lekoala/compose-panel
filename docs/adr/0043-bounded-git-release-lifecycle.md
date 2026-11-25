@@ -40,9 +40,10 @@ fetched:
 - the declared gateway and runtime services exist in `config --services`;
 - the gateway publishes exactly one TCP port on `127.0.0.1` and the runtime
   publishes none;
-- no service in the project joins a network marked `external: true`, and the
-  gateway and runtime share at least one project network; the site's own
-  project network is the isolation boundary (ADR 0042);
+- no service in the project joins a network marked `external: true` except the
+  single network declared by `database`, and only the runtime service joins it
+  (ADR 0048); the gateway and runtime share at least one project network, which
+  stays the isolation boundary (ADR 0042);
 - both services mount `<stack>/site/runtime` at the same absolute source and
   destination, read-only, with no mount destination at or below
   `runtime/current`, no parent bind, no alias of a release path, no
@@ -60,6 +61,10 @@ fetched:
   lock at every deploy, and the effective Compose project, `-f` files, project
   directory and `.env` interpolation still match it; any drift refuses
   (ADR 0042);
+- when `database` is present, the operator-owned
+  `site/private/database.env` is a regular `0600` file owned by the panel
+  account and no larger than 64 KiB (ADR 0048). The panel checks its metadata,
+  never its values;
 - the baseline is provable before any stop: `current` validates, its release
   metadata is complete, and the probe reports exactly the commit SHA that
   `current` targets. A first deployment without a rollback target is not

@@ -862,6 +862,46 @@ stops a running build before the panel drains. The host must be able to pull
 Registry credentials and private packages are not supported
 ([ADR 0045](adr/0045-disposable-composer-preparation.md)).
 
+### Attach an existing database
+
+A site may attach one database that the operator already provisioned. The panel
+does not create a database, run SQL, migrate a schema or store a credential. It
+adds one external network declaration and one private env-file reference, and
+checks that the file is provisioned before the site starts.
+
+1. Create the database, its database and its application account outside the
+   panel, on a private Docker network. One engine per site: `mariadb`, `mysql`
+   or `postgresql`.
+2. For a generated site, edit `compose-panel-site.json` to set
+   `"version": 2` and add the block below, then use **Regenerate generated
+   files**. The creation form offers the same fields for a new site.
+3. Write `<stack>/site/private/database.env` with the application's own
+   variables (`DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, or
+   whatever the application reads). It must be a regular file owned by the
+   account that runs the panel, mode `0600`, and at most 64 KiB. The panel checks
+   those metadata only; it never reads, logs or renders the values.
+4. Create the external network if it does not exist yet (for example
+   `docker network create acme-db`) and attach it to the database service.
+   Only the runtime service joins it; the gateway stays on the project network.
+5. **Up**, **Pull + up**, **Start**, **Restart** and **Deploy** are refused with
+   the file path until the env file passes those checks. A failed application
+   connection is an application failure; it does not roll back the release.
+
+```json
+"version": 2,
+"database": {
+  "kind": "existing",
+  "engine": "mariadb",
+  "network": "acme-db"
+}
+```
+
+The external network is shared by design. Tenant isolation is the database's
+grants: create one database and one application account per site and verify that
+one site's credentials cannot read another's data. The panel cannot verify those
+grants. Dumps, restores, migrations and backup credentials are not part of this
+attachment and need their own ADR ([ADR 0048](adr/0048-existing-database-attachment.md)).
+
 The generated gateway resolves `runtime` through Docker's embedded DNS on every
 request. Recreating the runtime can change its IP while the gateway container is
 kept; a static upstream would keep dialing the old address and return 502.

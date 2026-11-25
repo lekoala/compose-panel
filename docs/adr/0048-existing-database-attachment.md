@@ -1,6 +1,7 @@
 # ADR 0048 — Attach a site to an existing database
 
-Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
+Status: Accepted (managed-site pilot, 2026-11-25). Implemented 2026-11-25;
+the disposable MariaDB fixture and the real-host checklist remain to be run.
 
 ## Context
 
@@ -205,9 +206,16 @@ Status: Proposed (2026-11-25). Needs maintainer acceptance before code.
   apply to MySQL and PostgreSQL; a fixture per additional engine is added before
   that engine is advertised as proven, not speculatively. A Node or Python
   fixture follows the same rule.
-- Real host: part of the checklist in
-  [deployment.md](../deployment.md#remaining-real-host-validation), because the
-  lab daemon cannot prove host networking or DNS.
+- Implemented and unit-tested on 2026-11-25: v1/v2 parsing, the engine/network
+  allow-list, generation 2, the runtime-only network fragment, the profile
+  refusals and the env-file metadata checks. The generated Compose file was
+  validated with the real Compose CLI with the env file absent (`required:
+  false`).
+- Still open: the disposable MariaDB fixture that writes a record, deploys,
+  rolls back and reads it back, and the two-site isolation assertion. Run it on
+  the disposable lab daemon before calling the slice production-proven. The
+  real-host checklist applies separately, because the lab cannot prove host
+  networking or DNS.
 - Rollback: remove the block, restore the previous manifest version if needed
   and regenerate. The site leaves the external network; the database and its
   data are untouched.

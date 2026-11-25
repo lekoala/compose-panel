@@ -246,6 +246,35 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
 - The disposable two-commit deployment suite on its own daemon is the
   integration gate; it never runs against a host daemon or in unattended CI.
 
+## Existing database attachment (ADR 0048)
+
+- A manifest v2 may declare one `existing` database (`mariadb`, `mysql` or
+  `postgresql`) and exactly one external Compose network. The panel validates
+  the declaration and the effective network membership; it never opens a
+  database connection, runs SQL, provisions a database, reads a credential or
+  adds a database client to its image.
+- Only the runtime service may join the declared external network; the gateway
+  and every other service stay on the project network. The panel refuses any
+  other external network, a missing runtime membership and the gateway on the
+  database network. The site's own project network remains the isolation
+  boundary. Tenant isolation is the database's grants, not Compose, and the
+  panel does not claim to verify it.
+- For `owner: managed`, the generated Compose references the fixed private file
+  `<stack>/site/private/database.env` with `required: false`, so Compose can
+  validate the project before the operator provisions the file. Up, Pull + up,
+  Start, Restart and Deploy refuse until the file is a regular `0600` file owned
+  by the panel account, at most 64 KiB. The panel checks metadata only: it never
+  reads, parses, logs or renders the file values, and `docker compose config`
+  output is treated as sensitive exactly like `.env`.
+- The env file is outside every service mount and the generated/release trees;
+  Compose reads it at container creation. An opt-in stack may use any credential
+  mechanism for its own database, but the panel still validates the declared
+  external network and the same port/network rules.
+- A missing or failed database connection is an application failure. It does
+  not roll back the release, and no automatic retry, migration or replay is
+  added. Dumps, restores, migrations and backup credentials stay out of this
+  attachment ([ADR 0048](adr/0048-existing-database-attachment.md)).
+
 ## Application toolbox (ADR 0026)
 
 - The panel may execute only **explicitly declared, non-interactive application

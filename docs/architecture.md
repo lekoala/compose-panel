@@ -205,6 +205,19 @@ Raw save is refused for a managed site and whenever a manifest exists but
 cannot be used; a valid `opt-in` stack keeps its editor. Regeneration is the
 explicit repair ([ADR 0042](adr/0042-managed-site-ownership.md)).
 
+## Existing database attachment (opt-in)
+`src/managed-site-database.ts` owns the private env-file check:
+`site/private/database.env` must be a regular `0600` file owned by the panel
+account and at most 64 KiB before Up, Pull + up, Start, Restart or Deploy. It
+returns the file path and requirement only; the panel never reads the values.
+The manifest parser (v2) accepts one `kind: "existing"` block with a bounded
+engine (`mariadb`, `mysql` or `postgresql`) and external network name. The
+generator adds a `required: false` env-file entry and the external network to
+the runtime service only; the gateway stays on the project network. The profile
+projection allows exactly that external network, only on the runtime, and still
+requires a shared project network. No database client, SQL call, dump, restore
+or migration exists in the panel ([ADR 0048](adr/0048-existing-database-attachment.md)).
+
 ## Managed-site deploy (opt-in)
 `src/managed-site.ts` parses the trusted `compose-panel-site.json` strictly
 (bounded size, versioned, unknown/duplicate keys refused). `src/managed-site-profile.ts`

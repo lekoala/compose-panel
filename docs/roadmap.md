@@ -122,12 +122,13 @@ implemented for an opted-in stack.
   [deployment.md](deployment.md#remaining-real-host-validation); until that is
   recorded, the pilot stays off by default and enabling it on a production host
   is an explicit operator decision.
-- **Existing database attachment (proposed).**
-  [ADR 0048](adr/0048-existing-database-attachment.md) proposes one
+- **Existing database attachment.** Implemented under the same flag
+  ([ADR 0048](adr/0048-existing-database-attachment.md)): one
   operator-provisioned database per site (MariaDB, MySQL or PostgreSQL), joined
-  through one declared external network, with credentials in an operator-owned
-  env file and no SQL client in the panel. It is not implemented: the panel
-  still offers only the ADR 0027 explorer link. The slice is validated by a
-  MariaDB fixture that writes a record, deploys, rolls back and reads it back;
-  dumps, restores, migrations and backup credentials stay in a separate ADR,
-  with one SQL adapter per engine.
+  through one declared external network by the runtime service only, with
+  credentials in an operator-owned `0600` env file checked before start and no
+  SQL client in the panel. Unit and real-Compose-config coverage are in place;
+  the disposable MariaDB fixture that writes a record, deploys, rolls back and
+  reads it back, plus the real-host checklist, remain to be run. Dumps,
+  restores, migrations and backup credentials stay in a separate ADR, with one
+  SQL adapter per engine.
