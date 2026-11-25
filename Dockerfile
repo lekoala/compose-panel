@@ -43,7 +43,7 @@ ARG REVISION=unknown
 # Docker CLI + Compose plugin from Docker's official apt repository so the
 # exact engine the panel shells out to is present and verifiable in the image.
 # Managed-site deploy needs Git (ADR 0043) and OpenSSH client for the private
-# transport (ADR 0044). Like ca-certificates and curl, these are unpinned; the Docker
+# transport (ADR 0047). Like ca-certificates and curl, these are unpinned; the Docker
 # packages stay pinned because the panel's argv depends on their exact version.
 # (Build-time shell only; the panel itself never uses a shell at runtime.)
 # No gnupg: apt reads the ASCII-armored key named by signed-by directly, and

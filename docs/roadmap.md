@@ -105,7 +105,7 @@ implemented for an opted-in stack.
   build or migration. Proven by unit tests, the mount lab and a disposable
   two-commit suite that drives the real code, refuses profile drift and kills
   the deploy before and after the switch.
-- **Private Git.** Implemented under the same flag ([ADR 0044](adr/0044-private-git-over-ssh.md)).
+- **Private Git.** Implemented under the same flag ([ADR 0047](adr/0047-private-git-over-ssh.md)).
   One dedicated read-only key and one independently pinned host key per site.
 - **Composer preparation.** Implemented under the same flag
   ([ADR 0045](adr/0045-disposable-composer-preparation.md)): a managed site may

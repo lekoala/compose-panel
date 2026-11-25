@@ -1,4 +1,4 @@
-# ADR 0044 — Private Git fetch with a site deploy key
+# ADR 0047 — Private Git fetch with a site deploy key
 
 Status: Accepted (managed-site pilot)
 

@@ -1,5 +1,5 @@
 /**
- * Bounded Git release adapter (ADRs 0043 and 0044): fetch one operator-configured
+ * Bounded Git release adapter (ADRs 0043 and 0047): fetch one operator-configured
  * Git branch, resolve it to a full commit SHA, verify the staged tree, write
  * the fixed revision script and publish the release by one rename.
  *

@@ -30,7 +30,7 @@ Agents, remote control, terminal / PTY, graphical Compose editor, generated temp
 
 Managed-site Git sources can use public HTTPS or private SSH with a
 repository-scoped read-only key and an independently pinned host key
-([ADR 0044](adr/0044-private-git-over-ssh.md)).
+([ADR 0047](adr/0047-private-git-over-ssh.md)).
 
 ## Assumed non-goals
 - No guaranteed operation outcome after a panel crash: the outcome may be unknown.

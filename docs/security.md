@@ -184,7 +184,7 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   Publication is one rename into an immutable release; only the attempt's own
   staging directory is removed, after comparing the inode created by the
   attempt. An unconfirmed process keeps the staging directory for inspection.
-- Private Git ([ADR 0044](adr/0044-private-git-over-ssh.md)) requires an
+- Private Git ([ADR 0047](adr/0047-private-git-over-ssh.md)) requires an
   operator-provisioned, repository-scoped read-only key and independently
   pinned host key in `site/private/ssh`. Only the fetch receives the fixed SSH
   wrapper and SSH transport. The files and private directories are checked

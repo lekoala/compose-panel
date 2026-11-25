@@ -73,7 +73,7 @@ v1 fields (all bounded):
 | `runtime.image` | `managed` only | explicit reference from an allow-listed channel; in `opt-in` mode the Compose file owns the image |
 | `gateway.port` | `managed` only | integer in the reserved range 41000–41999; the single loopback port the generated gateway publishes |
 | `deploy.kind` | always | `"bind-mount"` only |
-| `deploy.git.url` | always | Fully qualified public HTTPS or private SSH URL (ADR 0044), no password or token in the URL |
+| `deploy.git.url` | always | Fully qualified public HTTPS or private SSH URL (ADR 0047), no password or token in the URL |
 | `deploy.git.ref` | always | fully qualified ref (`refs/heads/...`), never a short name or a wildcard |
 | `paths` | `managed` only | declared persistent roots under `site/shared`, each written relative (`shared/...`), contained, no `..`, unique, bounded count |
 | `generation` | `managed` only | generator version; see *Generated artifacts* |

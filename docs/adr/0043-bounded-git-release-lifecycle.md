@@ -2,7 +2,7 @@
 
 Status: Accepted (pilot scope)
 
-[ADR 0044](0044-private-git-over-ssh.md) adds private SSH to the HTTPS pilot.
+[ADR 0047](0047-private-git-over-ssh.md) adds private SSH to the HTTPS pilot.
 
 ## Context
 
@@ -269,7 +269,7 @@ ADR 0006).
   loopback-port gateway and is not reused here.
 - CI triggers, migrations, workers, backups and production cutover remain out
   of scope for this increment. Private repositories and the fixed Composer
-  preparation are covered by ADR 0044 and ADR 0045.
+  preparation are covered by ADR 0047 and ADR 0045.
 
 ## Alternatives considered
 
@@ -351,5 +351,5 @@ VM checklist:
 CI/webhook triggers, npm and arbitrary builds, database migrations, background
 workers, preview environments, zero-downtime activation, automatic retry or
 replay, scheduled deployments, multi-host deployment and production
-cutover/cloning. Private Git is ADR 0044; the fixed Composer preparation is
+cutover/cloning. Private Git is ADR 0047; the fixed Composer preparation is
 ADR 0045.

@@ -223,7 +223,7 @@ tree. An HTTPS fetch allows only HTTPS. For an SSH URL, the fetch alone
 allows SSH and selects the fixed OpenSSH wrapper using `GIT_SSH`. The wrapper
 opens the pre-provisioned files in `site/private/ssh` from the staging repo's
 working directory. The remaining Git commands use the base environment.
-See [ADR 0044](adr/0044-private-git-over-ssh.md).
+See [ADR 0047](adr/0047-private-git-over-ssh.md).
 
 The route is `POST /stacks/<name>/deploy`, exposed only when
 `COMPOSE_PANEL_MANAGED_SITES_ENABLED=true` **and** the manifest is valid

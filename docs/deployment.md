@@ -805,7 +805,7 @@ with downtime; the panel never switches back by itself.
 requests, and a second scenario where the candidate exits before becoming
 healthy. It is opt-in and never runs in unattended CI.
 
-## Optional managed-site deploy (ADR 0042, ADR 0043, ADR 0044)
+## Optional managed-site deploy (ADR 0042, ADR 0043, ADR 0047)
 
 This pilot deploys one public HTTPS or private SSH Git branch into an immutable release and
 verifies the revision the gateway actually serves. It is off by default and
