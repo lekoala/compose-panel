@@ -195,9 +195,11 @@ change; the real-host checklist remains.
   expected-SHA refusal after a moved branch, and the state file bounds.
 - App tests: a session cookie alone is refused; a wrong token is `401`; a
   malformed body is `400`; the correct token starts one deploy operation under
-  the lock; a second concurrent request is `409`; a replayed nonce is `409`; a
-  moved branch is refused with nothing stopped; `GET` returns the bounded status
-  and no secret; the audit line never contains the token.
+  the lock; a replayed nonce is `409`; a site without `ci` is `404`; `GET`
+  returns the bounded status and no secret; the token is never returned.
+- Implemented on 2026-11-25. The full unit/app suite passes on Windows and
+  Linux (the locked deploy case is POSIX-only), and the disposable deploy suite
+  still passes. No real CI host, proxy path or revocation has been exercised.
 - The disposable lab already proves the deploy path this route reuses. No new
   Docker fixture is needed for request parsing, but the real-host checklist
   still covers the TLS proxy path and the CI host clock.
