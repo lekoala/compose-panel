@@ -164,17 +164,39 @@ export function checkManagedSiteProfile(input: {
         return { ok: false, reason: `The runtime service "${manifest.services.runtime}" is not in the effective Compose configuration.` };
     }
 
+    const databaseNetwork = manifest.database?.network ?? null;
+    if (databaseNetwork === null) {
+        if (facts.externalNetworks.length > 0) {
+            return {
+                ok: false,
+                reason: `The project declares the external network "${facts.externalNetworks[0]}"; a site without a database stays on its own project network.`,
+            };
+        }
+    } else if (facts.externalNetworks.length !== 1 || facts.externalNetworks[0] !== databaseNetwork) {
+        return {
+            ok: false,
+            reason: `The project must declare exactly the external network "${databaseNetwork}" from the database block, and no other.`,
+        };
+    }
     for (const [name, service] of facts.services) {
         if (service.networkMode !== null) {
             return { ok: false, reason: `The service "${name}" uses network_mode, so the project network is not its boundary.` };
         }
         const external = service.networks.filter((network) => facts.externalNetworks.includes(network));
-        if (external.length > 0) {
-            return {
-                ok: false,
-                reason: `The service "${name}" joins the external network "${external[0]}"; a site stays on its own project network.`,
-            };
+        for (const network of external) {
+            if (databaseNetwork === null || network !== databaseNetwork) {
+                return {
+                    ok: false,
+                    reason: `The service "${name}" joins the external network "${network}"; only the declared database network is allowed.`,
+                };
+            }
+            if (name !== manifest.services.runtime) {
+                return { ok: false, reason: `Only the runtime service may join the database network "${network}".` };
+            }
         }
+    }
+    if (databaseNetwork !== null && !runtime.networks.includes(databaseNetwork)) {
+        return { ok: false, reason: `The runtime service must join the declared database network "${databaseNetwork}".` };
     }
     const sharedNetworks = gateway.networks.filter(
         (network) => runtime.networks.includes(network) && !facts.externalNetworks.includes(network),

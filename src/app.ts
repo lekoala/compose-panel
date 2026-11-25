@@ -106,6 +106,7 @@ import {
     MANAGED_SITE_MANIFEST_MAX_BYTES,
     MANAGED_SITE_PATHS,
     parseManagedSiteManifest,
+    type ManagedSiteDatabaseEngine,
     type ManagedSiteManifest,
     type ManagedSiteManifestResult,
 } from "./managed-site.ts";
@@ -121,6 +122,7 @@ import {
 import { createManagedSite, findManagedSitePortOwner, ManagedSiteCreationPartialError } from "./create-managed-site.ts";
 import { publishManagedSiteBaseline } from "./managed-site-baseline.ts";
 import { checkManagedSiteProfile } from "./managed-site-profile.ts";
+import { checkManagedSiteDatabaseEnvFile } from "./managed-site-database.ts";
 import { composerPreparation, MANAGED_SITE_RELEASE_LIMITS } from "./managed-site-build.ts";
 import { fetchAndPublishGitRelease } from "./git-release.ts";
 import {
@@ -478,7 +480,12 @@ export function createApp(options: AppOptions): App {
                 const admission = await managedSiteAdmission(stack);
                 if (admission) return admission;
                 if (action === "down") return await managedDownDomainAdmission(stack);
-                if (["up", "pull-up", "start", "restart"].includes(action)) return await managedBaselineAdmission(stack);
+                if (action === "rollout") return await managedDatabaseAdmission(stack);
+                if (["up", "pull-up", "start", "restart"].includes(action)) {
+                    const baseline = await managedBaselineAdmission(stack);
+                    if (baseline) return baseline;
+                    return await managedDatabaseAdmission(stack);
+                }
                 return null;
             } catch {
                 return "The pending deploy, generated-file and domain state of this stack could not be checked, so nothing was run.";
@@ -1499,6 +1506,8 @@ export function createApp(options: AppOptions): App {
             gitUrl: form.get("gitUrl") ?? "",
             gitRef: form.get("gitRef") ?? "",
             paths: form.get("paths") ?? "",
+            databaseEngine: form.get("databaseEngine") ?? "",
+            databaseNetwork: form.get("databaseNetwork") ?? "",
             composer: form.get("composer") === "on",
         };
     }
@@ -1515,6 +1524,14 @@ export function createApp(options: AppOptions): App {
             gitRef: parsed.draft.gitRef,
             channel: parsed.draft.channel,
             paths: parsed.draft.paths,
+            ...(parsed.draft.databaseEngine
+                ? {
+                      database: {
+                          engine: parsed.draft.databaseEngine as ManagedSiteDatabaseEngine,
+                          network: parsed.draft.databaseNetwork,
+                      },
+                  }
+                : {}),
             composer: parsed.draft.composer,
         });
         return built.ok ? { ok: true as const, built, draft: parsed.draft } : { ok: false as const, reason: built.reason };
@@ -3720,6 +3737,15 @@ export function createApp(options: AppOptions): App {
         return baseline.ok ? null : `${baseline.reason} Publish a baseline release before starting this site. Nothing was run.`;
     }
 
+    /** A declared database needs its private env file before the runtime starts. */
+    async function managedDatabaseAdmission(stack: string): Promise<string | null> {
+        const stackDir = await managedSiteStackDir(stack);
+        const site = await readManagedSiteManifest(stackDir);
+        if (!site.ok) return null;
+        const checked = await checkManagedSiteDatabaseEnvFile(stackDir, site.manifest);
+        return checked.ok ? null : `${checked.reason} Nothing was run.`;
+    }
+
     type ManagedSiteDomains =
         | { kind: "none"; sites: [] }
         | { kind: "attached"; sites: { domain: string; port: number }[] }
@@ -3826,6 +3852,8 @@ export function createApp(options: AppOptions): App {
         }
         const stackDir = context.cwd;
         if (await pendingDeployAttempt(stackDir)) return { refused: MANAGED_SITE_PENDING_MESSAGE };
+        const database = await checkManagedSiteDatabaseEnvFile(stackDir, input.manifest);
+        if (!database.ok) return { refused: database.reason };
         const result = await runManagedSiteDeploy({
             stackDir,
             attemptId: randomSuffix(),
@@ -4038,6 +4066,7 @@ export function createApp(options: AppOptions): App {
         pending: PendingDeployAttemptRead;
         baseline: boolean;
         drift?: string;
+        database?: { ok: true } | { ok: false; reason: string };
     };
 
     async function managedSiteCard(name: string): Promise<ManagedSiteCard | null> {
@@ -4051,7 +4080,14 @@ export function createApp(options: AppOptions): App {
             if (!manifest.ok) return { reason: manifest.reason, pending, baseline: false };
             const baseline = await readBaseline(stackDir, manifest.manifest.siteId);
             const drift = await managedSiteDriftReason(stackDir);
-            return { manifest: manifest.manifest, pending, baseline: baseline.ok, ...(drift ? { drift } : {}) };
+            const database = manifest.manifest.database ? await checkManagedSiteDatabaseEnvFile(stackDir, manifest.manifest) : undefined;
+            return {
+                manifest: manifest.manifest,
+                pending,
+                baseline: baseline.ok,
+                ...(drift ? { drift } : {}),
+                ...(database ? { database } : {}),
+            };
         } catch {
             return null;
         }
@@ -4079,16 +4115,18 @@ export function createApp(options: AppOptions): App {
         }
         const manifest = card.manifest;
         const drift = card.drift ? note("warn", card.drift) : "";
+        const databaseNote = card.database && !card.database.ok ? note("warn", card.database.reason) : "";
         const regenerate =
             card.drift && manifest.owner === "managed"
                 ? `<form method="post" action="${href}/regenerate"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy ? " disabled" : ""}>Regenerate generated files</button></form>`
                 : "";
-        const meta = `<p class="meta"><span>Site <code>${escapeHtml(manifest.siteId)}</code></span><span>Project <code>${escapeHtml(manifest.project)}</code></span><span>Branch <code>${escapeHtml(manifest.deploy.git.ref)}</code></span>${manifest.gateway ? `<span>Gateway <code>127.0.0.1:${manifest.gateway.port}</code></span>` : ""}${manifest.build ? "<span>Composer <code>installed per release</code></span>" : ""}</p>`;
+        const meta = `<p class="meta"><span>Site <code>${escapeHtml(manifest.siteId)}</code></span><span>Project <code>${escapeHtml(manifest.project)}</code></span><span>Branch <code>${escapeHtml(manifest.deploy.git.ref)}</code></span>${manifest.gateway ? `<span>Gateway <code>127.0.0.1:${manifest.gateway.port}</code></span>` : ""}${manifest.database ? `<span>Database <code>${escapeHtml(manifest.database.engine)}</code> on <code>${escapeHtml(manifest.database.network)}</code></span>` : ""}${manifest.build ? "<span>Composer <code>installed per release</code></span>" : ""}</p>`;
         if (!card.baseline) {
             return (
                 `<section class="card"><h2>Managed site</h2>` +
                 meta +
                 drift +
+                databaseNote +
                 regenerate +
                 note(
                     "info",
@@ -4102,6 +4140,7 @@ export function createApp(options: AppOptions): App {
             `<section class="card"><h2>Managed site</h2>` +
             meta +
             drift +
+            databaseNote +
             regenerate +
             `<form method="post" action="${href}/deploy"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="btn" type="submit"${busy || card.drift ? " disabled" : ""}>Deploy ${escapeHtml(manifest.deploy.git.ref)}</button></form>` +
             note(

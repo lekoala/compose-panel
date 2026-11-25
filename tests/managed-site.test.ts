@@ -96,10 +96,43 @@ describe("parseManagedSiteManifest", () => {
     });
 
     test("refuses another version, a missing version and a string version", () => {
-        expect(rejected(optIn({ version: 2 }))).toBe(true);
+        expect(rejected(optIn({ version: 3 }))).toBe(true);
+        expect(rejected(optIn({ version: 2 }))).toBe(false);
         expect(rejected(optIn({ version: "1" }))).toBe(true);
         const { version: _drop, ...withoutVersion } = optIn();
         expect(rejected(withoutVersion)).toBe(true);
+    });
+
+    test("accepts an existing database only in version 2 with a bounded engine and network", () => {
+        const database = { kind: "existing", engine: "postgresql", network: "acme-db" } as const;
+        const accepted = parse(optIn({ version: 2, database }));
+        expect(accepted.ok).toBe(true);
+        if (!accepted.ok) return;
+        expect(accepted.manifest.version).toBe(2);
+        expect(accepted.manifest.database).toEqual(database);
+
+        expect(rejected(optIn({ database }))).toBe(true);
+        expect(rejected(optIn({ version: 2, database: { ...database, kind: "managed" } }))).toBe(true);
+        expect(rejected(optIn({ version: 2, database: { ...database, engine: "sqlite" } }))).toBe(true);
+        expect(rejected(optIn({ version: 2, database: { ...database, network: "../db" } }))).toBe(true);
+        expect(rejected(optIn({ version: 2, database: { ...database, network: "db with space" } }))).toBe(true);
+        expect(rejected(optIn({ version: 2, database: { ...database, network: "a".repeat(129) } }))).toBe(true);
+        expect(rejected(optIn({ version: 2, database: { ...database, host: "db" } }))).toBe(true);
+        expect(rejected(optIn({ version: 2, database: { ...database, engine: "mysql" } }))).toBe(false);
+        expect(rejected(optIn({ version: 2, database: { ...database, engine: "mariadb", network: "db_1" } }))).toBe(false);
+    });
+
+    test("accepts a database with a managed generation 2 manifest", () => {
+        const result = parse(
+            managed({
+                version: 2,
+                generation: "2",
+                database: { kind: "existing", engine: "mysql", network: "acme-db" },
+            }),
+        );
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.manifest.database).toEqual({ kind: "existing", engine: "mysql", network: "acme-db" });
     });
 
     test("refuses unknown fields at every level", () => {

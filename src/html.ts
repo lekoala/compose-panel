@@ -283,6 +283,8 @@ export interface NewSiteDraft {
     gitUrl: string;
     gitRef: string;
     paths: string;
+    databaseEngine: string;
+    databaseNetwork: string;
     composer: boolean;
 }
 
@@ -308,6 +310,13 @@ export function newSitePage(options: {
             (channel) =>
                 `<option value="${escapeHtml(channel.id)}"${channel.id === draft.channel ? " selected" : ""}>${escapeHtml(channel.label)} (${escapeHtml(channel.image)})</option>`,
         )
+        .join("");
+    const databaseEngines = [
+        ["mariadb", "MariaDB"],
+        ["mysql", "MySQL"],
+        ["postgresql", "PostgreSQL"],
+    ]
+        .map(([id, label]) => `<option value="${id}"${id === draft.databaseEngine ? " selected" : ""}>${label}</option>`)
         .join("");
     return documentHtml(
         "New managed site",
@@ -341,6 +350,16 @@ ${options.error ? note("error", options.error) : ""}
   <label>Persistent paths <span class="hint">Optional, one per line. Each path must stay below <code>shared/</code>; it is mounted writable into PHP only.</span>
     <textarea name="paths" rows="4" spellcheck="false" autocapitalize="none">${escapeHtml(draft.paths ?? "")}</textarea>
   </label>
+  <fieldset>
+    <legend>Existing database <span class="hint">Optional. The panel joins the declared external network but never connects to the database, stores a credential or runs SQL.</span></legend>
+    <label>Engine
+      <select name="databaseEngine"><option value="">No database</option>${databaseEngines}</select>
+    </label>
+    <label>External network <span class="hint">Exact name of the operator-managed network shared with the database. Leave empty when no database is attached.</span>
+      <input type="text" name="databaseNetwork" value="${escapeHtml(draft.databaseNetwork ?? "")}" maxlength="128" pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}" autocapitalize="none" spellcheck="false">
+    </label>
+    <p class="hint">Before starting the site, provision <code>site/private/database.env</code> with the application's variables, owned by the panel account and mode <code>0600</code>. The panel checks the file but never reads its values.</p>
+  </fieldset>
   <p><label><input type="checkbox" name="composer" value="on"${draft.composer ? " checked" : ""}> Install Composer dependencies in each release</label></p>
   <p class="hint">Optional. The repository must commit <code>composer.lock</code> and declare <code>config.platform.php</code> for the channel. Dependencies are installed in a disposable container with no scripts, plugins, secrets or Docker socket.</p>
   <div class="form-actions">
@@ -373,6 +392,8 @@ export function newSitePreviewPage(options: {
             ["channel", options.draft.channel],
             ["gitUrl", options.draft.gitUrl],
             ["gitRef", options.draft.gitRef],
+            ["databaseEngine", options.draft.databaseEngine],
+            ["databaseNetwork", options.draft.databaseNetwork],
             ["composer", options.draft.composer ? "on" : ""],
         ] as const
     )
@@ -384,7 +405,7 @@ export function newSitePreviewPage(options: {
 <h1>Preview managed site</h1>
 <p class="lead">Nothing has been written. Check the trusted manifest and the generated files; creating the site writes exactly these bytes and validates the Compose file in its final folder.</p>
 ${note("info", "After creation, publish the first release before starting the site. The gateway is bound to 127.0.0.1 and is not exposed until you attach a domain.")}
-<dl class="meta"><dt>Folder</dt><dd><code>${escapeHtml(options.draft.name)}</code></dd><dt>Site</dt><dd><code>${escapeHtml(options.draft.siteId)}</code></dd><dt>Project</dt><dd><code>${escapeHtml(options.draft.project)}</code></dd><dt>Gateway</dt><dd><code>127.0.0.1:${escapeHtml(options.draft.port)}</code></dd><dt>Composer</dt><dd>${options.draft.composer ? "installed in each release" : "not used"}</dd></dl>
+<dl class="meta"><dt>Folder</dt><dd><code>${escapeHtml(options.draft.name)}</code></dd><dt>Site</dt><dd><code>${escapeHtml(options.draft.siteId)}</code></dd><dt>Project</dt><dd><code>${escapeHtml(options.draft.project)}</code></dd><dt>Gateway</dt><dd><code>127.0.0.1:${escapeHtml(options.draft.port)}</code></dd><dt>Database</dt><dd>${options.draft.databaseEngine ? `${escapeHtml(options.draft.databaseEngine)} on <code>${escapeHtml(options.draft.databaseNetwork)}</code>` : "not attached"}</dd><dt>Composer</dt><dd>${options.draft.composer ? "installed in each release" : "not used"}</dd></dl>
 <h2>compose-panel-site.json</h2>
 <pre class="output">${escapeHtml(options.manifestSource)}</pre>
 <h2>compose.yaml</h2>

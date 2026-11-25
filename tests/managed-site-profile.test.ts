@@ -17,6 +17,12 @@ const manifest: ManagedSiteManifest = {
     deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
 };
 
+const databaseManifest: ManagedSiteManifest = {
+    ...manifest,
+    version: 2,
+    database: { kind: "existing", engine: "mariadb", network: "acme-db" },
+};
+
 interface TestService {
     image?: unknown;
     build?: unknown;
@@ -73,6 +79,19 @@ function check(config: TestConfig) {
     const facts = factsOf(config);
     if (!facts) throw new Error("fixture did not project");
     return checkManagedSiteProfile({ manifest, stackDir, facts });
+}
+
+function databaseConfig(): TestConfig {
+    const config = baseConfig();
+    config.services.php!.networks = { default: null, "acme-db": null };
+    config.networks = { default: { name: "acme-shop_default" }, "acme-db": { external: true } };
+    return config;
+}
+
+function checkDatabase(config: TestConfig) {
+    const facts = factsOf(config);
+    if (!facts) throw new Error("fixture did not project");
+    return checkManagedSiteProfile({ manifest: databaseManifest, stackDir, facts });
 }
 
 function refused(config: TestConfig): boolean {
@@ -405,6 +424,64 @@ describe("checkManagedSiteProfile", () => {
                 }),
             ).ok,
         ).toBe(true);
+    });
+
+    test("accepts the declared database network on the runtime only", () => {
+        expect(checkDatabase(databaseConfig())).toEqual({ ok: true });
+    });
+
+    test("refuses a missing, wrong or extra external network with a database", () => {
+        expect(
+            checkDatabase(
+                mutated((config) => {
+                    config.services.php!.networks = { default: null };
+                    config.networks = { default: null };
+                }),
+            ).ok,
+        ).toBe(false);
+        expect(
+            checkDatabase(
+                mutated((config) => {
+                    config.services.php!.networks = { default: null, other: null };
+                    config.networks = { default: null, other: { external: true } };
+                }),
+            ).ok,
+        ).toBe(false);
+        expect(
+            checkDatabase(
+                mutated((config) => {
+                    config.services.php!.networks = { default: null, "acme-db": null, other: null };
+                    config.networks = { default: null, "acme-db": { external: true }, other: { external: true } };
+                }),
+            ).ok,
+        ).toBe(false);
+    });
+
+    test("refuses the gateway, another service or a missing runtime on the database network", () => {
+        expect(
+            checkDatabase(
+                mutated((config) => {
+                    config.services.web!.networks = { default: null, "acme-db": null };
+                    config.networks = { default: null, "acme-db": { external: true } };
+                }),
+            ).ok,
+        ).toBe(false);
+        expect(
+            checkDatabase(
+                mutated((config) => {
+                    config.services.worker = { image: "alpine:3.20", networks: { default: null, "acme-db": null } };
+                    config.networks = { default: null, "acme-db": { external: true } };
+                }),
+            ).ok,
+        ).toBe(false);
+        expect(
+            checkDatabase(
+                mutated((config) => {
+                    config.services.php!.networks = { default: null };
+                    config.networks = { default: null, "acme-db": { external: true } };
+                }),
+            ).ok,
+        ).toBe(false);
     });
 
     test("refuses an external network or host networking", () => {

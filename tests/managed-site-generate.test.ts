@@ -42,6 +42,20 @@ describe("parseManagedSiteDraft", () => {
         expect(result.draft.paths).toEqual(["shared/uploads", "shared/cache"]);
     });
 
+    test("accepts an optional database engine and network together", () => {
+        const result = parseManagedSiteDraft(draft({ databaseEngine: "postgresql", databaseNetwork: "acme-db" }));
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.draft.databaseEngine).toBe("postgresql");
+        expect(result.draft.databaseNetwork).toBe("acme-db");
+
+        expect(parseManagedSiteDraft(draft()).ok).toBe(true);
+        expect(parseManagedSiteDraft(draft({ databaseEngine: "mysql" })).ok).toBe(false);
+        expect(parseManagedSiteDraft(draft({ databaseNetwork: "acme-db" })).ok).toBe(false);
+        expect(parseManagedSiteDraft(draft({ databaseEngine: "sqlite", databaseNetwork: "acme-db" })).ok).toBe(false);
+        expect(parseManagedSiteDraft(draft({ databaseEngine: "mysql", databaseNetwork: "../acme" })).ok).toBe(false);
+    });
+
     test("refuses a port outside the reserved range and unsafe paths", () => {
         expect(parseManagedSiteDraft(draft({ port: "40999" })).ok).toBe(false);
         expect(parseManagedSiteDraft(draft({ port: "42000" })).ok).toBe(false);
@@ -133,6 +147,35 @@ describe("buildManagedSite", () => {
         expect(built.manifestSource).toContain('"build": {\n    "kind": "composer"\n  }');
     });
 
+    test("adds the database fragment, generation 2 and runtime-only network membership", () => {
+        const built = buildManagedSite({
+            stackDir: STACK,
+            siteId: "acme-shop",
+            project: "acme-shop",
+            port: 41001,
+            gitUrl: "https://github.com/acme/shop.git",
+            gitRef: "refs/heads/main",
+            channel: "php-8.3",
+            database: { engine: "postgresql", network: "acme-db" },
+        });
+        expect(built.ok).toBe(true);
+        if (!built.ok) return;
+        const parsed = parseManagedSiteManifest(built.manifestSource);
+        expect(parsed.ok).toBe(true);
+        if (!parsed.ok) return;
+        expect(parsed.manifest.version).toBe(2);
+        expect(parsed.manifest.generation).toBe("2");
+        expect(parsed.manifest.database).toEqual({ kind: "existing", engine: "postgresql", network: "acme-db" });
+
+        const compose = built.artifacts.compose;
+        expect(compose).toContain(`env_file:\n      - path: '${STACK}/site/private/database.env'\n        required: false`);
+        expect(compose).toContain("      - 'acme-db'");
+        expect(compose).toContain("networks:\n  site:\n  'acme-db':\n    external: true");
+        const gatewaySection = compose.split("  runtime:")[0]!;
+        expect(gatewaySection).not.toContain("acme-db");
+        expect(renderManagedSiteArtifacts(STACK, parsed.manifest).ok).toBe(true);
+    });
+
     test("quotes persistent mount paths as YAML single-quoted scalars", () => {
         const built = buildManagedSite({
             stackDir: STACK,
@@ -195,7 +238,7 @@ describe("buildManagedSite", () => {
         });
         expect(built.ok).toBe(true);
         if (!built.ok) return;
-        const future = { ...built.manifest, generation: "2" };
+        const future = { ...built.manifest, generation: "3" };
         expect(renderManagedSiteArtifacts(STACK, future).ok).toBe(false);
     });
 

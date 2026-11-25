@@ -12,6 +12,8 @@
 export const MANAGED_SITE_MANIFEST_FILE = "compose-panel-site.json";
 export const MANAGED_SITE_MANIFEST_MAX_BYTES = 64 * 1024;
 export const MANAGED_SITE_VERSION = 1;
+/** The database attachment adds the optional `database` block (ADR 0048). */
+export const MANAGED_SITE_DATABASE_VERSION = 2;
 export const MANAGED_SITE_PUBLIC_ROOT = "public";
 export const MANAGED_SITE_PROFILE = "php-front-controller";
 export const MANAGED_SITE_DEPLOY_KIND = "bind-mount";
@@ -22,6 +24,16 @@ export const MANAGED_SITE_GIT_REF_MAX = 255;
 export const MANAGED_SITE_GENERATION_MAX = 32;
 /** Generator version this panel knows. A managed site with another version is refused. */
 export const MANAGED_SITE_GENERATION = "1";
+/** Generation that adds the database fragment to a managed site (ADR 0048). */
+export const MANAGED_SITE_DATABASE_GENERATION = "2";
+export const MANAGED_SITE_GENERATIONS = [MANAGED_SITE_GENERATION, MANAGED_SITE_DATABASE_GENERATION] as const;
+/** The only existing-database engines the manifest may declare. */
+export const MANAGED_SITE_DATABASE_KINDS = ["existing"] as const;
+export const MANAGED_SITE_DATABASE_ENGINES = ["mariadb", "mysql", "postgresql"] as const;
+export const MANAGED_SITE_DATABASE_NETWORK_MAX = 128;
+/** Fixed private file read by Compose at container creation; never by the panel. */
+export const MANAGED_SITE_DATABASE_ENV_FILE = "database.env";
+export const MANAGED_SITE_DATABASE_ENV_MAX_BYTES = 64 * 1024;
 /** Reserved loopback range for generated site gateways. */
 export const MANAGED_SITE_GATEWAY_PORT_MIN = 41000;
 export const MANAGED_SITE_GATEWAY_PORT_MAX = 41999;
@@ -54,6 +66,27 @@ export function isManagedSiteChannelImage(value: string): boolean {
 export const MANAGED_SITE_BUILD_KINDS = ["composer"] as const;
 export type ManagedSiteBuildKind = (typeof MANAGED_SITE_BUILD_KINDS)[number];
 
+export type ManagedSiteDatabaseKind = (typeof MANAGED_SITE_DATABASE_KINDS)[number];
+export type ManagedSiteDatabaseEngine = (typeof MANAGED_SITE_DATABASE_ENGINES)[number];
+export interface ManagedSiteDatabase {
+    kind: ManagedSiteDatabaseKind;
+    engine: ManagedSiteDatabaseEngine;
+    /** Exact name of the external Compose network shared with the database. */
+    network: string;
+}
+
+const DATABASE_NETWORK = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
+
+/** A bounded Compose network name, never a path, URL or credential. */
+export function isManagedSiteDatabaseNetwork(value: string): boolean {
+    return value.length > 0 && value.length <= MANAGED_SITE_DATABASE_NETWORK_MAX && DATABASE_NETWORK.test(value);
+}
+
+/** Fixed private env file read by Compose at container creation (ADR 0048). */
+export function managedSiteDatabaseEnvPath(stackDir: string): string {
+    return `${stackDir}/${MANAGED_SITE_PATHS.private}/${MANAGED_SITE_DATABASE_ENV_FILE}`;
+}
+
 /** A gateway port is an integer in the reserved managed-site range. */
 export function isManagedSiteGatewayPort(value: number): boolean {
     return Number.isInteger(value) && value >= MANAGED_SITE_GATEWAY_PORT_MIN && value <= MANAGED_SITE_GATEWAY_PORT_MAX;
@@ -82,7 +115,7 @@ export const MANAGED_SITE_PATHS = {
 export const MANAGED_SITE_RESERVED_TREE_ENTRIES = [".compose-panel", ".compose-panel-build"] as const;
 
 export interface ManagedSiteManifest {
-    version: typeof MANAGED_SITE_VERSION;
+    version: typeof MANAGED_SITE_VERSION | typeof MANAGED_SITE_DATABASE_VERSION;
     siteId: string;
     owner: ManagedSiteOwner;
     /** Exact Compose project name; never assumed from the folder. */
@@ -110,6 +143,8 @@ export interface ManagedSiteManifest {
             ref: string;
         };
     };
+    /** Optional existing database attachment (ADR 0048). */
+    database?: ManagedSiteDatabase;
     /** `managed` only: fixed dependency preparation run in a disposable container. */
     build?: { kind: ManagedSiteBuildKind };
     /** `managed` only: declared persistent roots, contained in `shared/`. */
@@ -231,14 +266,29 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
 
     const unknown = unknownField(
         root,
-        ["version", "siteId", "owner", "project", "services", "gateway", "publicRoot", "runtime", "build", "deploy", "paths", "generation"],
+        [
+            "version",
+            "siteId",
+            "owner",
+            "project",
+            "services",
+            "gateway",
+            "publicRoot",
+            "runtime",
+            "database",
+            "build",
+            "deploy",
+            "paths",
+            "generation",
+        ],
         "",
     );
     if (unknown) return unknown;
 
-    if (root.version !== MANAGED_SITE_VERSION) {
-        return { ok: false, reason: `The site manifest version must be ${MANAGED_SITE_VERSION}.` };
+    if (root.version !== MANAGED_SITE_VERSION && root.version !== MANAGED_SITE_DATABASE_VERSION) {
+        return { ok: false, reason: `The site manifest version must be ${MANAGED_SITE_VERSION} or ${MANAGED_SITE_DATABASE_VERSION}.` };
     }
+    const version = root.version as typeof MANAGED_SITE_VERSION | typeof MANAGED_SITE_DATABASE_VERSION;
 
     const siteId = asString(root.siteId);
     if (!siteId || !SITE_ID.test(siteId)) {
@@ -325,6 +375,33 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         return { ok: false, reason: 'runtime.image is required for owner "managed".' };
     }
 
+    let database: ManagedSiteDatabase | undefined;
+    if (root.database !== undefined) {
+        if (version !== MANAGED_SITE_DATABASE_VERSION) {
+            return { ok: false, reason: `The database block requires manifest version ${MANAGED_SITE_DATABASE_VERSION}.` };
+        }
+        const candidate = asRecord(root.database);
+        if (!candidate) return { ok: false, reason: "database must be an object." };
+        const databaseUnknown = unknownField(candidate, ["kind", "engine", "network"], "database.");
+        if (databaseUnknown) return databaseUnknown;
+        const kind = MANAGED_SITE_DATABASE_KINDS.find((entry) => entry === candidate.kind);
+        if (!kind) {
+            return { ok: false, reason: `database.kind must be one of: ${MANAGED_SITE_DATABASE_KINDS.join(", ")}.` };
+        }
+        const engine = MANAGED_SITE_DATABASE_ENGINES.find((entry) => entry === candidate.engine);
+        if (!engine) {
+            return { ok: false, reason: `database.engine must be one of: ${MANAGED_SITE_DATABASE_ENGINES.join(", ")}.` };
+        }
+        const network = asString(candidate.network);
+        if (!network || !isManagedSiteDatabaseNetwork(network)) {
+            return {
+                ok: false,
+                reason: `database.network must be a bounded Compose network name, 1-${MANAGED_SITE_DATABASE_NETWORK_MAX} characters.`,
+            };
+        }
+        database = { kind, engine, network };
+    }
+
     let build: { kind: ManagedSiteBuildKind } | undefined;
     if (root.build !== undefined) {
         if (owner !== "managed") {
@@ -408,7 +485,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
     }
 
     const manifest: ManagedSiteManifest = {
-        version: MANAGED_SITE_VERSION,
+        version,
         siteId,
         owner,
         project,
@@ -416,6 +493,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         ...(gatewayPort === undefined ? {} : { gateway: { port: gatewayPort } }),
         publicRoot: MANAGED_SITE_PUBLIC_ROOT,
         runtime: image === undefined ? { profile: MANAGED_SITE_PROFILE } : { profile: MANAGED_SITE_PROFILE, image },
+        ...(database ? { database } : {}),
         ...(build ? { build } : {}),
         deploy: { kind: MANAGED_SITE_DEPLOY_KIND, git: { url, ref } },
         ...(paths ? { paths } : {}),
