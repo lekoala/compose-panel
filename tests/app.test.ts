@@ -15,7 +15,8 @@ import type { ServiceRolloutFacts } from "../src/rollout.ts";
 import { resolveRoot } from "../src/stacks.ts";
 import { revisionScript } from "../src/git-release.ts";
 import type { ManagedSiteComposeFacts } from "../src/managed-site-profile.ts";
-import { MANAGED_SITE_PATHS } from "../src/managed-site.ts";
+import { MANAGED_SITE_PATHS, type ManagedSiteManifest } from "../src/managed-site.ts";
+import { readManagedSiteBackupAttempt, writeManagedSiteBackupAttempt } from "../src/managed-site-backup.ts";
 import type { SelfUpdater } from "../src/self-update.ts";
 import {
     IMAGE_REF,
@@ -54,6 +55,10 @@ function makeApp(
     inspector?: ContainerInspector,
     selfUpdater?: SelfUpdater,
     mutator?: ContainerMutator,
+    backup?: {
+        docker?: DockerRunner;
+        checkCredentials?: (stackDir: string, manifest: ManagedSiteManifest) => Promise<{ ok: true } | { ok: false; reason: string }>;
+    },
 ): App {
     const config: AppConfig = {
         stacksDir: stacksRoot,
@@ -100,7 +105,18 @@ function makeApp(
         toolboxMaxTimeoutMs: 900_000,
         ...overrides,
     };
-    return createApp({ config, stacksRoot, runner, provider, audit, inspector, selfUpdater, containerMutator: mutator });
+    return createApp({
+        config,
+        stacksRoot,
+        runner,
+        provider,
+        audit,
+        inspector,
+        selfUpdater,
+        containerMutator: mutator,
+        ...(backup?.docker ? { backupDocker: backup.docker } : {}),
+        ...(backup?.checkCredentials ? { backupCheckCredentials: backup.checkCredentials } : {}),
+    });
 }
 
 interface FollowCall {
@@ -5400,5 +5416,145 @@ describe.skipIf(process.platform === "win32")("managed-site creation flow", () =
         expect(response.status).toBe(409);
         expect(await readFile(join(outside, "nginx-site.conf"), "utf8")).toBe(sentinel);
         await app.beginShutdown(100);
+    });
+});
+
+describe("managed-site backup (ADR 0049)", () => {
+    const SNAPSHOT = "a".repeat(64);
+
+    const manifest: ManagedSiteManifest = {
+        version: 3,
+        siteId: "acme-shop",
+        owner: "managed",
+        project: "acme-shop",
+        services: { gateway: "web", runtime: "runtime" },
+        gateway: { port: 41001 },
+        publicRoot: "public",
+        runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+        deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+        paths: ["shared/uploads"],
+        generation: "1",
+        backup: { kind: "restic", repository: "rest:https://backup.example.test/acme-shop" },
+    };
+
+    const commandOk = (stdout = ""): CommandResult => ({ code: 0, stdout, stderr: "", timedOut: false, truncated: false });
+
+    async function backupRoot(): Promise<string> {
+        const dir = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-backup-app-")));
+        const stack = join(dir, "demo");
+        await mkdir(join(stack, "site", "shared", "uploads"), { recursive: true });
+        await mkdir(join(stack, "site", "private", "backup"), { recursive: true, mode: 0o700 });
+        await writeFile(join(stack, "compose.yaml"), "name: acme-shop\nservices:\n  web:\n    image: nginx:alpine\n");
+        await writeFile(join(stack, "compose-panel-site.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+        await writeFile(join(stack, "site", "shared", "uploads", "a.txt"), "alpha");
+        return dir;
+    }
+
+    function backupDocker(calls: string[][]): DockerRunner {
+        return async (args) => {
+            calls.push(args);
+            if (args.includes("backup")) return commandOk(`${JSON.stringify({ message_type: "summary", snapshot_id: SNAPSHOT })}\n`);
+            if (args.includes("snapshots")) return commandOk(JSON.stringify([{ id: SNAPSHOT, tags: ["site:acme-shop"] }]));
+            if (args.includes("ls")) return commandOk(`${JSON.stringify({ path: "/backup/backup.json" })}\n`);
+            return commandOk();
+        };
+    }
+
+    async function postBackup(app: App, session: string, path: string, fields: Record<string, string>): Promise<Response> {
+        return authed(app, path, session, {
+            method: "POST",
+            headers: { origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(fields).toString(),
+        });
+    }
+
+    test("runs one verified backup and exposes the action on the site card", async () => {
+        const dir = await backupRoot();
+        try {
+            const calls: string[][] = [];
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                docker: backupDocker(calls),
+                checkCredentials: async () => ({ ok: true }),
+            });
+            const session = await login(app);
+            const csrf = /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/about", session)).text())![1]!;
+
+            const page = await (await authed(app, "/stacks/demo", session)).text();
+            expect(page).toContain('action="/stacks/demo/backup"');
+            expect(page).toContain("rest:https://backup.example.test/acme-shop");
+            expect(page).toContain("Back up now");
+
+            const response = await postBackup(app, session, "/stacks/demo/backup", { csrf });
+            expect(response.status).toBe(303);
+            for (let i = 0; i < 500 && app.operations.forStack("demo")?.status === "running"; i += 1) await Bun.sleep(1);
+            const operation = app.operations.forStack("demo");
+            expect(operation?.action).toBe("backup");
+            expect(operation?.status).toBe("succeeded");
+            expect(operation?.output).toContain(SNAPSHOT);
+            expect(calls.some((args) => args.includes("backup"))).toBe(true);
+            expect(calls.some((args) => args.includes("mariadb-dump"))).toBe(false);
+            expect(await readManagedSiteBackupAttempt(dir.replace(/\\/g, "/") + "/demo")).toEqual({ kind: "none" });
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("refuses the operation when the backup credentials are not provisioned", async () => {
+        const dir = await backupRoot();
+        try {
+            const calls: string[][] = [];
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir, undefined, undefined, undefined, {
+                docker: backupDocker(calls),
+                checkCredentials: async () => ({ ok: false, reason: "The Restic password file is missing." }),
+            });
+            const session = await login(app);
+            const csrf = /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/about", session)).text())![1]!;
+            const response = await postBackup(app, session, "/stacks/demo/backup", { csrf });
+            expect(response.status).toBe(303);
+            for (let i = 0; i < 500 && app.operations.forStack("demo")?.status === "running"; i += 1) await Bun.sleep(1);
+            const operation = app.operations.forStack("demo");
+            expect(operation?.status).toBe("refused");
+            expect(operation?.output).toContain("Restic password");
+            expect(calls).toEqual([]);
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    test("acknowledges a pending backup marker after inspection", async () => {
+        const dir = await backupRoot();
+        try {
+            const stackDir = `${dir.replace(/\\/g, "/")}/demo`;
+            await writeManagedSiteBackupAttempt(stackDir, {
+                version: 1,
+                siteId: "acme-shop",
+                attemptId: "attempt0049",
+                repository: "rest:https://backup.example.test/acme-shop",
+                startedAt: "2026-11-25T10:00:00.000Z",
+                phase: "upload",
+                outcome: "failed",
+                reason: "upload timed out",
+            });
+            const { provider } = controllableProvider();
+            const app = makeApp({ managedSitesEnabled: true }, undefined, provider, undefined, dir);
+            const session = await login(app);
+            const csrf = /name="csrf" value="([^"]+)"/.exec(await (await authed(app, "/about", session)).text())![1]!;
+
+            const page = await (await authed(app, "/stacks/demo", session)).text();
+            expect(page).toContain('action="/stacks/demo/backup/acknowledge"');
+            expect(page).toContain("attempt0049");
+            expect(page).not.toContain('action="/stacks/demo/backup"');
+
+            const response = await postBackup(app, session, "/stacks/demo/backup/acknowledge", { csrf, attempt: "attempt0049" });
+            expect(response.status).toBe(303);
+            expect(await readManagedSiteBackupAttempt(stackDir)).toEqual({ kind: "none" });
+            await app.beginShutdown(100);
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
     });
 });

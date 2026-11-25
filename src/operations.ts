@@ -209,6 +209,31 @@ export class OperationManager {
         return operation;
     }
 
+    /**
+     * Run one manual offsite backup (ADR 0049). It holds the stack lock and
+     * streams like any other operation; the `run` closure stages, dumps and
+     * uploads. It is not a Compose action.
+     */
+    startBackup(input: {
+        stack: string;
+        project?: string;
+        run: (context: {
+            onOutput: (chunk: string) => void;
+            record: (detail: { containerId?: string; imageId?: string; revision?: string }) => void;
+        }) => Promise<AppActionOutcome>;
+    }): OperationView {
+        const { operation, release } = this.begin({
+            stack: input.stack,
+            action: "backup",
+            label: "Backup",
+            project: input.project,
+        });
+        const task = this.executeApp(operation, input.run, release, input.project);
+        this.tasks.add(task);
+        void task.finally(() => this.tasks.delete(task));
+        return operation;
+    }
+
     /** Whether shutdown has begun; a running rollout uses it between phases. */
     isShuttingDown(): boolean {
         return this.shuttingDown;
