@@ -190,6 +190,31 @@ describe("parseManagedSiteManifest", () => {
         expect(plain.manifest.backup).toBeUndefined();
     });
 
+    test("accepts one bounded backup trigger and refuses every other shape", () => {
+        const repository = "rest:https://backup.example.test/acme-shop";
+        const withTrigger = parse(
+            managed({ version: 3, backup: { kind: "restic", repository, trigger: { kind: "token", everyHours: 24 } } }),
+        );
+        expect(withTrigger.ok).toBe(true);
+        if (!withTrigger.ok) return;
+        expect(withTrigger.manifest.backup?.trigger).toEqual({ kind: "token", everyHours: 24 });
+
+        const trigger = (value: unknown) => managed({ version: 3, backup: { kind: "restic", repository, trigger: value } });
+        expect(rejected(trigger({ kind: "token", everyHours: 1 }))).toBe(false);
+        expect(rejected(trigger({ kind: "token", everyHours: 720 }))).toBe(false);
+        expect(rejected(trigger({ kind: "token", everyHours: 0 }))).toBe(true);
+        expect(rejected(trigger({ kind: "token", everyHours: 721 }))).toBe(true);
+        expect(rejected(trigger({ kind: "token", everyHours: 1.5 }))).toBe(true);
+        expect(rejected(trigger({ kind: "token", everyHours: "24" }))).toBe(true);
+        expect(rejected(trigger({ kind: "token" }))).toBe(true);
+        expect(rejected(trigger({ kind: "hmac", everyHours: 24 }))).toBe(true);
+        expect(rejected(trigger({ kind: "token", everyHours: 24, path: "/tmp" }))).toBe(true);
+        expect(rejected(trigger("token"))).toBe(true);
+        expect(rejected(managed({ version: 2, backup: { kind: "restic", repository, trigger: { kind: "token", everyHours: 24 } } }))).toBe(
+            true,
+        );
+    });
+
     test("refuses a backup outside version 3, on an opt-in stack, or with an unsupported backend", () => {
         const repository = "rest:https://backup.example.test/acme-shop";
         expect(rejected(managed({ version: 2, backup: { kind: "restic", repository } }))).toBe(true);

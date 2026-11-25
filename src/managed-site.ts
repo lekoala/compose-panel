@@ -87,11 +87,29 @@ export interface ManagedSiteBackupSql {
     database: string;
 }
 
+/** The only machine credential a scheduled backup may declare (ADR 0051). */
+export const MANAGED_SITE_BACKUP_TRIGGER_KINDS = ["token"] as const;
+export type ManagedSiteBackupTriggerKind = (typeof MANAGED_SITE_BACKUP_TRIGGER_KINDS)[number];
+export const MANAGED_SITE_BACKUP_TRIGGER_MIN_HOURS = 1;
+export const MANAGED_SITE_BACKUP_TRIGGER_MAX_HOURS = 720;
+
+export interface ManagedSiteBackupTrigger {
+    /** One bearer token, verified against a stored digest. */
+    kind: ManagedSiteBackupTriggerKind;
+    /**
+     * Declared maximum age of the last verified backup before the panel reports
+     * it overdue. It is not a schedule: the host timer is the only scheduler.
+     */
+    everyHours: number;
+}
+
 export interface ManagedSiteBackup {
     kind: ManagedSiteBackupKind;
     /** `rest:https://host/path`; `rest:http://` only on a private/loopback host. */
     repository: string;
     sql?: ManagedSiteBackupSql;
+    /** Optional machine request path for an administrator-installed timer. */
+    trigger?: ManagedSiteBackupTrigger;
 }
 
 const BACKUP_DATABASE = /^[A-Za-z0-9_$][A-Za-z0-9_$-]{0,63}$/;
@@ -504,7 +522,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         }
         const candidate = asRecord(root.backup);
         if (!candidate) return { ok: false, reason: "backup must be an object." };
-        const backupUnknown = unknownField(candidate, ["kind", "repository", "sql"], "backup.");
+        const backupUnknown = unknownField(candidate, ["kind", "repository", "sql", "trigger"], "backup.");
         if (backupUnknown) return backupUnknown;
         const kind = MANAGED_SITE_BACKUP_KINDS.find((entry) => entry === candidate.kind);
         if (!kind) {
@@ -548,7 +566,36 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
             }
             sql = { engine, database: name };
         }
-        backup = { kind, repository, ...(sql ? { sql } : {}) };
+        let trigger: ManagedSiteBackupTrigger | undefined;
+        if (candidate.trigger !== undefined) {
+            const triggerCandidate = asRecord(candidate.trigger);
+            if (!triggerCandidate) {
+                return { ok: false, reason: "backup.trigger must be an object with a kind and everyHours." };
+            }
+            const triggerUnknown = unknownField(triggerCandidate, ["kind", "everyHours"], "backup.trigger.");
+            if (triggerUnknown) return triggerUnknown;
+            const triggerKind = MANAGED_SITE_BACKUP_TRIGGER_KINDS.find((entry) => entry === triggerCandidate.kind);
+            if (!triggerKind) {
+                return {
+                    ok: false,
+                    reason: `backup.trigger.kind must be one of: ${MANAGED_SITE_BACKUP_TRIGGER_KINDS.join(", ")}.`,
+                };
+            }
+            const everyHours = triggerCandidate.everyHours;
+            if (
+                typeof everyHours !== "number" ||
+                !Number.isInteger(everyHours) ||
+                everyHours < MANAGED_SITE_BACKUP_TRIGGER_MIN_HOURS ||
+                everyHours > MANAGED_SITE_BACKUP_TRIGGER_MAX_HOURS
+            ) {
+                return {
+                    ok: false,
+                    reason: `backup.trigger.everyHours must be an integer between ${MANAGED_SITE_BACKUP_TRIGGER_MIN_HOURS} and ${MANAGED_SITE_BACKUP_TRIGGER_MAX_HOURS}.`,
+                };
+            }
+            trigger = { kind: triggerKind, everyHours };
+        }
+        backup = { kind, repository, ...(sql ? { sql } : {}), ...(trigger ? { trigger } : {}) };
     }
 
     let ci: ManagedSiteCi | undefined;
