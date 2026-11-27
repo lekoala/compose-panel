@@ -331,7 +331,7 @@ export function serverPage(options: ServerPageOptions): string {
         `<section class="card" id="maintenance"><h2>Docker maintenance${infoTip("Fixed prune commands for this Docker engine. Volumes are never removed and nothing runs on a schedule.")}</h2>` +
         `<p class="muted">Prune old Docker data on the engine this panel is connected to. Running and stopped containers keep their images; volumes are never removed. Each scope only removes data older than 7 days, and a run keeps running if you close the page.</p>` +
         status +
-        forms +
+        `<div class="op-list">${forms}</div>` +
         `</section>`;
 
     const body =

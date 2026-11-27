@@ -9,6 +9,12 @@
   `doctor.sh --production`, a reboot and a rerun that kept the same settings
   bytes and the same panel container.
 
+### Interface
+
+- The Docker maintenance buttons on the Server page are laid out as one spaced
+  list, and the Stacks header buttons (**New site**, **New stack**) no longer
+  touch: both groups were rendered without a gap.
+
 ### Validation scope
 
 - The release gate is one fresh-host run on the newest Debian stable and the
