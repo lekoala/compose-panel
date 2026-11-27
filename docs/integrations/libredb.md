@@ -148,9 +148,11 @@ seed file**: the instance becomes unusable, since no connection can be created
 or listed.
 
 `seed-connections.yaml` describes the connections. Create it on the host, next
-to `compose.yaml` (the panel's editor only manages the Compose file and `.env`).
-Passwords come from environment variables, so the file can be versioned without
-secrets:
+to `compose.yaml` (the panel's editor only manages the Compose file and `.env`),
+and make it readable by the container user, for example `chmod 644`: it holds no
+secret, only `${...}` references. A root-owned `0600` file makes LibreDB report
+the seed source as unreadable. Passwords come from environment variables, so the
+file can be versioned without secrets:
 
 ```yaml
 version: "1"
