@@ -161,6 +161,30 @@ cmp -s "$1" <(render_env)
         }
     });
 
+    test("keeps a documented operator setting and refuses a changed managed value", async () => {
+        const hash = "$argon2id$v=19$m=65536,t=3,p=1$c2FsdA$aGFzaA";
+        const file = join(dir, "compose-panel.env");
+        const write = `
+COMPOSE_PANEL_SETUP_LIB=1 source "$3"
+admin_user=operator42; admin_hash=$2; domain=""; proxy_hash=""
+render_env > "$1"
+`;
+        // A documented flag added by hand must not make a later run refuse.
+        let result = await shell(
+            `${write}printf 'COMPOSE_PANEL_MANAGED_SITES_ENABLED=true\\n' >> "$1"\nexisting_settings_match "$1"`,
+            [file, hash, SETUP],
+        );
+        expect(result.code).toBe(0);
+
+        // A managed value changed by hand is still refused, and named.
+        result = await shell(
+            `${write}sed -i 's/^COMPOSE_PANEL_ALLOW_LOOPBACK=.*/COMPOSE_PANEL_ALLOW_LOOPBACK=false/' "$1"\nexisting_settings_match "$1"`,
+            [file, hash, SETUP],
+        );
+        expect(result.code).not.toBe(0);
+        expect(result.stdout.trim()).toBe("COMPOSE_PANEL_ALLOW_LOOPBACK");
+    });
+
     test("Caddy keeps application imports and protects every panel route", async () => {
         const result = await shell("domain=panel.example.org; admin_user=operator42; proxy_hash=$1; render_caddy", ["$2a$hash"]);
         expect(result.code).toBe(0);

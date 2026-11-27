@@ -8,6 +8,15 @@
   repairs nothing. Both facts are read again on every render, so the operator
   can verify the state after the documented host repair. Found on the real host.
 
+- The installer waits up to 15 minutes for the dpkg lock instead of failing
+  after one, because a fresh image can still be running `unattended-upgrades`.
+  `COMPOSE_PANEL_APT_LOCK_TIMEOUT` (60-3600 seconds) overrides it; the first
+  step prints the bound, and no APT timer or lock file is touched. It also
+  compares its own settings key by key instead of byte by byte, so a documented
+  flag added by hand (`COMPOSE_PANEL_MANAGED_SITES_ENABLED`) no longer makes
+  every later run refuse; a managed value changed by hand is still refused and
+  named.
+
 - Managed sites: the retention preview works on a real repository. Backups now
   pass a stable Restic `--host` (the site id), so every snapshot of one site
   shares a `host,paths` group; without it the container hostname made each

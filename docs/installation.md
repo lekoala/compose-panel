@@ -42,6 +42,13 @@ does not prove that package repositories, registry, DNS or TLS are available.
 Existing repository files at the expected paths are compared with downloads
 during installation; their content is not verified by `--check`.
 
+A fresh image can still be running `unattended-upgrades` when the installer
+starts, and that service holds the dpkg lock for several minutes while it
+applies a full security upgrade. The installer waits for the lock instead of
+failing after a minute: `COMPOSE_PANEL_APT_LOCK_TIMEOUT` (seconds, 60-3600,
+default 900) is the bound, and the first step prints it. The installer never
+stops the APT timers or removes a lock file.
+
 Installation runs in seven numbered steps. Package, image and helper output
 goes to `/var/log/compose-panel-install.log` (root only, replaced on each run,
 never containing passwords); on failure, its last lines are shown. The final

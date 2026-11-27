@@ -380,9 +380,34 @@ check_existing_env() {
         else
             [ -z "$proxy_hash" ] || installer_die "Unexpected proxy hash in private mode."
         fi
-        cmp -s "$ENV_FILE" <(render_env) || installer_die "Existing settings differ from the installer layout; use manual deployment."
+        if ! differing="$(existing_settings_match "$ENV_FILE")"; then
+            installer_die "Existing settings differ from the installer layout ($differing); use manual deployment."
+        fi
         printf '  skip  Existing credentials and access settings will be preserved.\n'
     fi
+}
+
+# The installer owns the keys it renders; any other key in the file belongs to
+# the operator (COMPOSE_PANEL_MANAGED_SITES_ENABLED, for example) and must
+# survive a later run. A byte comparison refused every rerun as soon as a
+# documented flag was added by hand, so the managed values are compared one by
+# one and the first difference is named.
+existing_settings_match() {
+    local file="$1" line key value
+    while IFS= read -r line; do
+        case "$line" in
+            "" | "#"*) continue ;;
+        esac
+        key="${line%%=*}"
+        value="${line#*=}"
+        value="${value#\'}"
+        value="${value%\'}"
+        [ "$(env_value "$file" "$key")" = "$value" ] || {
+            printf '%s\n' "$key"
+            return 1
+        }
+    done < <(render_env)
+    return 0
 }
 
 check_docker_state() {
@@ -690,13 +715,29 @@ logged() {
 }
 step() { STEP=$((STEP + 1)); printf '\n[%d/7] %s\n' "$STEP" "$1"; }
 fetch() { curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 15 --max-time 120 --retry 2 "$@"; }
+# A fresh image can still be running unattended-upgrades when the installer
+# starts; apt then waits for the dpkg lock. 900 s covers a full security upgrade
+# on a small VPS, and the value is bounded so a typo cannot hang the installer.
+APT_LOCK_TIMEOUT="${COMPOSE_PANEL_APT_LOCK_TIMEOUT:-900}"
+case "$APT_LOCK_TIMEOUT" in
+    "" | *[!0-9]*) installer_die "COMPOSE_PANEL_APT_LOCK_TIMEOUT must be a whole number of seconds." ;;
+esac
+[ "$APT_LOCK_TIMEOUT" -ge 60 ] && [ "$APT_LOCK_TIMEOUT" -le 3600 ] ||
+    installer_die "COMPOSE_PANEL_APT_LOCK_TIMEOUT must be between 60 and 3600 seconds."
+
 # --no-upgrade: install what is missing, never upgrade what is already there.
-apt_install() { logged env DEBIAN_FRONTEND=noninteractive timeout 900 apt-get -o DPkg::Lock::Timeout=60 install -y --no-upgrade "$@"; }
-apt_update() { logged timeout 300 apt-get update; }
+apt_install() {
+    logged env DEBIAN_FRONTEND=noninteractive timeout $((APT_LOCK_TIMEOUT + 300)) \
+        apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y --no-upgrade "$@"
+}
+apt_update() {
+    logged timeout $((APT_LOCK_TIMEOUT + 300)) apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" update
+}
 enable_now() { logged timeout --kill-after=5 120 systemctl enable --now "$@"; }
 
 install_base_packages() {
     step "Base packages"
+    printf '  note  apt waits up to %s s if unattended-upgrades still holds the dpkg lock\n' "$APT_LOCK_TIMEOUT"
     apt_update
     apt_install ca-certificates curl gnupg
     printf '  ok    ca-certificates, curl, gnupg\n'
