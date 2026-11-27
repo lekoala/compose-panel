@@ -49,7 +49,8 @@ footer{border-top:1px solid var(--border);padding-block:1rem;color:var(--muted);
 .hint{display:block;font-weight:400;font-size:.85rem;color:var(--muted)}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:.6rem;padding:1rem 1.25rem;margin-block:1rem}
 .card > :last-child{margin-bottom:0}
-.empty{max-width:48rem}
+/* Cap the empty-state text, not the card: the card keeps the page width. */
+.empty p{max-width:48rem}
 
 /* Navigation sidebar: sections and the stack switcher (ADR 0016). Names only. */
 .layout{display:grid;grid-template-columns:15rem minmax(0,1fr);gap:2rem;align-items:start}

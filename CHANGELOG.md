@@ -14,6 +14,8 @@
 - The Docker maintenance buttons on the Server page are laid out as one spaced
   list, and the Stacks header buttons (**New site**, **New stack**) no longer
   touch: both groups were rendered without a gap.
+- The empty Stacks card spans the page like the cards below it; only its text
+  keeps the readable line length.
 
 ### Validation scope
 
