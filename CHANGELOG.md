@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Managed sites: the retention preview works on a real repository. Backups now
+  pass a stable Restic `--host` (the site id), so every snapshot of one site
+  shares a `host,paths` group; without it the container hostname made each
+  backup its own group and `--keep-last N` could never remove a snapshot even
+  though the preview reported a policy. The preview also accepts the `null`
+  keep or remove list that Restic 0.18 writes for an empty side (an absent or
+  malformed list stays refused), instead of refusing the whole answer. Both
+  cases were found on the real host and are covered by tests (ADR 0052).
+
 - Managed sites: attach one existing database (ADR 0048). A manifest v2 may
   declare `database: { kind: "existing", engine: "mariadb" | "mysql" |
   "postgresql", network: "<external network>" }`. Generated sites add a

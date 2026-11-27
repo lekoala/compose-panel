@@ -265,7 +265,21 @@ export async function runManagedSiteBackup(
         const uploaded = await docker(
             managedSiteResticCommand(
                 restic,
-                ["backup", "--json", "--tag", `site:${manifest.siteId}`, "--tag", `attempt:${attemptId}`, "/backup"],
+                // A stable host keeps every backup of this site in one restic
+                // `host,paths` group. Without it the container hostname becomes
+                // the group key, one snapshot per group, and `forget
+                // --keep-last N` can never remove anything (ADR 0052).
+                [
+                    "backup",
+                    "--json",
+                    "--host",
+                    manifest.siteId,
+                    "--tag",
+                    `site:${manifest.siteId}`,
+                    "--tag",
+                    `attempt:${attemptId}`,
+                    "/backup",
+                ],
                 [`${staged.stagingDir}:/backup:ro`],
                 dependencies.resticNetwork,
             ),

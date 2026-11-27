@@ -166,6 +166,10 @@ export function parseManagedSiteBackupRetentionPreview(
     const keepIds = new Set<string>();
     const removeIds = new Set<string>();
     const collect = (entries: unknown, target: Set<string>): string | null => {
+        // Restic 0.18 writes `null` for an empty keep or remove list instead of
+        // an empty array. An absent or malformed list stays an error: only the
+        // explicitly empty answer is accepted.
+        if (entries === null) return null;
         if (!Array.isArray(entries)) return "The retention preview is missing its keep or remove list.";
         for (const entry of entries) {
             const ref = snapshotRef(entry, siteId);

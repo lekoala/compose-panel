@@ -132,6 +132,23 @@ describe("parseManagedSiteBackupRetentionPreview", () => {
         );
         expect(split.ok).toBe(true);
         if (split.ok) expect(split.preview.remove.map((entry) => entry.id)).toEqual([B]);
+
+        // Restic 0.18 writes `null` for an empty keep or remove list.
+        const nullRemove = parseManagedSiteBackupRetentionPreview(
+            JSON.stringify([{ host: SITE, keep: [snapshot(A, T1), snapshot(B, T2)], remove: null }]),
+            inventory,
+            SITE,
+        );
+        expect(nullRemove.ok).toBe(true);
+        if (nullRemove.ok) expect(nullRemove.preview.remove).toEqual([]);
+        // An absent list is not the same fact as an explicitly empty one.
+        expect(
+            parseManagedSiteBackupRetentionPreview(
+                JSON.stringify([{ host: SITE, keep: [snapshot(A, T1), snapshot(B, T2)] }]),
+                inventory,
+                SITE,
+            ).ok,
+        ).toBe(false);
     });
 
     test("refuses a partial, foreign, duplicated or unfamiliar answer", () => {

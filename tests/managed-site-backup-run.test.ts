@@ -133,6 +133,10 @@ describe("runManagedSiteBackup", () => {
             expect(upload).toContain("--read-only");
             expect(upload).toContain(`RESTIC_REPOSITORY=${manifest().backup!.repository}`);
             expect(upload).toContain(`site:acme-shop`);
+            // A stable restic host keeps every backup of the site in one group,
+            // so a keep-last policy can actually remove a snapshot (ADR 0052).
+            expect(upload).toContain("--host");
+            expect(upload[upload.indexOf("--host") + 1]).toBe("acme-shop");
             expect(upload.join(" ")).not.toContain("sh -c");
             expect(await readManagedSiteBackupAttempt(root)).toEqual({ kind: "none" });
         } finally {
