@@ -297,8 +297,13 @@ The following **manual checks remain required** in disposable systemd VMs:
 | Debian | 12 | arm64 | Pending | Pending | Pending |
 | Ubuntu | 24.04 | amd64 | Pending | Pending | Pending |
 | Ubuntu | 24.04 | arm64 | Pending | Pending | Pending |
-| Ubuntu | 26.04 | amd64 | Pending | Pending | Pending |
+| Ubuntu | 26.04 | amd64 | PASS | PASS | PASS |
 | Ubuntu | 26.04 | arm64 | Pending | Pending | Pending |
+
+Ubuntu 26.04 amd64 was exercised on 2026-11-27: a fresh installer install,
+HTTPS with Basic Auth, the helper socket, `doctor.sh --production`, a reboot and
+reruns; then the published 0.7.0 image was installed by digest on the same host
+and the installer reran. The Debian and arm64 rows remain pending.
 
 For each VM:
 

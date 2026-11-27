@@ -32,9 +32,10 @@ deploy through the installed TLS proxy: Basic Auth and the bearer token share
 - The managed-site real-host checklist is recorded in
   [the validation record](docs/validation/managed-site-pilot-2026-11-27.md):
   eleven of twelve lines pass and CI through the installed TLS proxy stays
-  partial for the Basic Auth/Bearer conflict. The run used a local build because
-  the published image predates the pilot, so installing the published image by
-  digest is still the remaining validation. The pilot stays off by default.
+  partial for the Basic Auth/Bearer conflict. The first run used a local build;
+  the published 0.7.0 image was then installed by digest
+  (`sha256:cc15ece0…`, revision `5a1da24e…`) through the installer, the panel
+  reran and the host doctor passed. The pilot stays off by default.
 
 - Tool images that read credentials or write a release are now pinned by digest
   as well as by tag: `restic/restic:0.18.0`, `composer:2.10.3` and `mariadb:11`

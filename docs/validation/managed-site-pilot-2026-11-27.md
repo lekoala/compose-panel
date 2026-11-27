@@ -17,13 +17,22 @@ on a disposable Hetzner VPS, not on a production host.
   `setup-caddy.sh --production` and `doctor.sh --production` accept it. The
   published `ghcr.io/lekoala/compose-panel:latest` at the time (0.6.0,
   `ec86fb0`) predates the pilot and ignores the flag, so the published-image
-  install path is **not** validated by this run.
+  install path is **not** validated by the first run.
+- **Published image (follow-up):** `0.7.0`,
+  `ghcr.io/lekoala/compose-panel@sha256:cc15ece02b1e0b105ee2276009f62a8940392d4ce53072702816932e00ca48dd`,
+  revision `5a1da24e38f0e4f702b69495624159a02bd11ce1`. The installer reran on
+  the same host with the manual Caddy sites moved aside (it refuses a foreign
+  main `Caddyfile` by design), pulled the published image, recreated the panel,
+  rebuilt the helper and passed the HTTPS + Basic Auth access check. The running
+  container's `RepoDigests` carries that digest, About reports `0.7.0`,
+  `doctor.sh --production` has no failure, and the recipe page and the
+  managed-site explorer link work on the published build.
 
 ## Checklist result
 
 | # | Check | Result |
 | --- | --- | --- |
-| 1 | Installer, health, helper socket, Compose version | **PASS** |
+| 1 | Installer, health, helper socket, Compose version | **PASS** (0.7.0 published image) |
 | 2 | Flag, two sites, both PHP channels, ports, generated files, no drift | **PASS** |
 | 3 | Domain through Caddy, HTTPS, redirect, trusted proxy chain | **PASS** |
 | 4 | Baseline, two deploys, no-op, probed rollback, crash windows | **PASS** |
@@ -79,6 +88,23 @@ Caddy answers before the panel sees the request. A route exception is a
 security decision and was not added. This is the known limitation documented in
 [deployment.md](../deployment.md#trigger-a-deploy-from-ci).
 
+### Published-image follow-up (0.7.0)
+
+`docker pull ghcr.io/lekoala/compose-panel@sha256:cc15ece02b1e0b105ee2276009f62a8940392d4ce53072702816932e00ca48dd`
+returned an image labelled `0.7.0`, revision
+`5a1da24e38f0e4f702b69495624159a02bd11ce1`. After stopping the local-build
+container, the installer created the panel from `:latest` (the same digest),
+rebuilt the helper and passed the HTTPS + Basic Auth access check. The running
+container's image carries that exact `RepoDigests` entry, About shows `0.7.0`,
+`doctor.sh --production` reports no failure, `/new-stack?recipe=libredb`
+prefills, and the `demo-site-b` explorer link still works. This closes the
+published-image residual from the first run.
+
+The host's main `Caddyfile` now carries a manual Restic route and the temporary
+LibreDB demo route. The installer's ownership check refuses a rerun while they
+are present, which is its intended behavior for a Caddy configuration it does
+not own.
+
 ## Docker cost per managed site
 
 Ten panel-created sites (`load-01`..`load-10`, ports 41011-41020, `php-8.4`,
@@ -110,9 +136,10 @@ same public demo repository, baseline published, all serving) each ran one
 
 ## Residual limits
 
-- The published-image install path is not validated; this run used a local
-  build. A release candidate must be pulled by digest and the installer rerun
-  before that path is called validated.
+- The published-image install path is validated by the 0.7.0 follow-up above.
+  The host's main `Caddyfile` carries manual Restic and demo routes, so a future
+  installer rerun needs them moved aside first; that is the installer's intended
+  ownership rule for foreign Caddy configuration.
 - Point 8 (CI through the reviewed TLS proxy) is partial for the Basic Auth
   reason above.
 - The Restic endpoint used in this run was on the same VPS, with the data under
