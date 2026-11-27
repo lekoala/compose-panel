@@ -1239,6 +1239,16 @@ SHA-256 verifier; the token stays in the CI secret store.
    a panel shutting down or updating itself. The nonce is single-use and the
    timestamp must be within 300 seconds of the panel clock.
 
+   Two limits were measured on a real host. The installer's Caddy entry protects
+   **every** panel route with Basic Auth, and Basic Auth and a bearer token both
+   use the `Authorization` header, so a remote CI behind that proxy cannot
+   present both: Caddy answers `401` before the panel sees the request. Until a
+   proxy route excludes `/api/managed-sites/*`, trigger the endpoint from the
+   host loopback or through a proxy that adds no Basic Auth. A SHA that is no
+   longer the branch tip is still accepted with `202` and then refused by the
+   fetch, before anything is stopped (the audit log records `started` then
+   `refused`), so treat `202` as "accepted", not "deployed".
+
 4. The fetch must still resolve the configured ref to `sha`; otherwise the
    deploy is refused before anything is stopped. Trigger CI from the branch tip
    and do not reuse a request body.
