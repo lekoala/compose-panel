@@ -193,14 +193,17 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   and no forwarding. Credentials stay outside the checkout and all service
   mounts. SSH fetch output is excluded from the operation view and audit.
 - The optional Composer preparation ([ADR 0045](adr/0045-disposable-composer-preparation.md))
-  runs two disposable containers per attempt with the pinned `composer:2.10.3`
-  image (the first 2.10 release fixing CVE-2026-59944). The first is an offline,
-  read-only `composer validate` with `--network none`; the second is the
-  unprivileged install. Both use `--read-only`, `--cap-drop ALL`,
+  runs two disposable containers per attempt with the digest-pinned
+  `composer:2.10.3` image (the first 2.10 release fixing CVE-2026-59944). The
+  first is an offline, read-only `composer validate` with `--network none`; the
+  second is the install. Both use `--read-only`, `--cap-drop ALL`,
   `no-new-privileges` and bounded memory, CPU, PIDs, time and output. The
-  install mounts only the staging tree; `COMPOSER_HOME` and the cache live on a
-  bounded tmpfs and never touch the release filesystem. It receives no Docker
-  socket, panel environment, secret file, production mount or database.
+  install runs as the staging-tree owner; because the supported installer
+  deployment runs the panel as root, that is uid 0, so the isolation is the
+  dropped capabilities and the mounts, not an unprivileged Unix user.
+  The install mounts only the staging tree; `COMPOSER_HOME` and the cache live
+  on a bounded tmpfs and never touch the release filesystem. It receives no
+  Docker socket, panel environment, secret file, production mount or database.
   `--no-scripts --no-plugins` keeps repository code from executing;
   `COMPOSER_BIN_COMPAT=proxy` avoids symlinks in the release. The repository
   must commit `composer.lock`, must not commit `vendor/`, and both

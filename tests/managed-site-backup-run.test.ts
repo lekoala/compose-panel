@@ -137,6 +137,10 @@ describe("runManagedSiteBackup", () => {
             // so a keep-last policy can actually remove a snapshot (ADR 0052).
             expect(upload).toContain("--host");
             expect(upload[upload.indexOf("--host") + 1]).toBe("acme-shop");
+            // A named container is the only handle left if the CLI is killed
+            // by a timeout; the cleanup below uses the same name.
+            expect(upload).toContain("--name");
+            expect(upload[upload.indexOf("--name") + 1]).toBe("cp-backup-restic-attempt0001");
             expect(upload.join(" ")).not.toContain("sh -c");
             expect(await readManagedSiteBackupAttempt(root)).toEqual({ kind: "none" });
         } finally {
@@ -239,7 +243,7 @@ describe("runManagedSiteBackup", () => {
         const root = await siteRoot();
         try {
             const timeout: CommandResult = { code: -1, stdout: "", stderr: "", timedOut: true, truncated: false };
-            const { docker } = fakeDocker({ upload: timeout });
+            const { docker, calls } = fakeDocker({ upload: timeout });
             const result = await runManagedSiteBackup(
                 { stackDir: root, manifest: manifest(), attemptId: "attempt0005", releaseId: null, runtimeImage: null },
                 { docker, now, checkCredentials },
@@ -247,6 +251,9 @@ describe("runManagedSiteBackup", () => {
             expect(result.ok).toBe(false);
             if (result.ok) return;
             expect(result.outcome).toBe("unknown");
+            const upload = calls.find((args) => args.includes("backup"))!;
+            expect(upload[upload.indexOf("--name") + 1]).toBe("cp-backup-restic-attempt0005");
+            expect(calls).toContainEqual(["rm", "-f", "cp-backup-restic-attempt0005"]);
             const marker = await readManagedSiteBackupAttempt(root);
             expect(marker.kind).toBe("pending");
             if (marker.kind !== "pending") return;

@@ -2,12 +2,25 @@
 
 ## Unreleased
 
-- The backup documentation now states that the repository must survive the loss
-  of the site host: either an independent endpoint, or a provider snapshot that
-  is replicated off that host and includes the repository. A separate DNS name
-  or a TLS proxy on the same machine is not enough, a local repository does not
-  protect against a compromised host, and the panel cannot verify either path.
-  On the validation host the repository resolved to the site host itself.
+### Managed sites
+
+#### Pilot status and hardening
+
+- The managed-site real-host checklist is recorded in
+  [the validation record](docs/validation/managed-site-pilot-2026-11-27.md):
+  eleven of twelve lines pass and CI through the installed TLS proxy stays
+  partial for the Basic Auth/Bearer conflict. The run used a local build because
+  the published image predates the pilot, so installing the published image by
+  digest is still the remaining validation. The pilot stays off by default.
+
+- Tool images that read credentials or write a release are now pinned by digest
+  as well as by tag: `restic/restic:0.18.0`, `composer:2.10.3` and `mariadb:11`
+  (ADR 0057). A moved registry tag can no longer silently replace the code that
+  receives the Restic password, the database credential or the Composer lock.
+  The gateway and PHP runtime stay on their tags because **Pull + up** is their
+  documented update path; the Composer install is now described as running as
+  the staging-tree owner (uid 0 under the supported root deployment) inside a
+  capability-dropped container, not as an unprivileged Unix user.
 
 - Managed sites: a site whose `current` pointer and served revision disagree is
   reported on its card, with the exact recovery commands for that site; the
@@ -15,160 +28,14 @@
   repairs nothing. Both facts are read again on every render, so the operator
   can verify the state after the documented host repair. Found on the real host.
 
-- The installer waits up to 15 minutes for the dpkg lock instead of failing
-  after one, because a fresh image can still be running `unattended-upgrades`.
-  `COMPOSE_PANEL_APT_LOCK_TIMEOUT` (60-3600 seconds) overrides it; the first
-  step prints the bound, and no APT timer or lock file is touched. It also
-  compares its own settings key by key instead of byte by byte, so a documented
-  flag added by hand (`COMPOSE_PANEL_MANAGED_SITES_ENABLED`) no longer makes
-  every later run refuse; a managed value changed by hand is still refused and
-  named.
+- The backup documentation now states that the repository must survive the loss
+  of the site host: either an independent endpoint, or a provider snapshot that
+  is replicated off that host and includes the repository. A separate DNS name
+  or a TLS proxy on the same machine is not enough, a local repository does not
+  protect against a compromised host, and the panel cannot verify either path.
+  On the validation host the repository resolved to the site host itself.
 
-- Managed sites: the retention preview works on a real repository. Backups now
-  pass a stable Restic `--host` (the site id), so every snapshot of one site
-  shares a `host,paths` group; without it the container hostname made each
-  backup its own group and `--keep-last N` could never remove a snapshot even
-  though the preview reported a policy. The preview also accepts the `null`
-  keep or remove list that Restic 0.18 writes for an empty side (an absent or
-  malformed list stays refused), instead of refusing the whole answer. Both
-  cases were found on the real host and are covered by tests (ADR 0052).
-
-- Managed sites: attach one existing database (ADR 0048). A manifest v2 may
-  declare `database: { kind: "existing", engine: "mariadb" | "mysql" |
-  "postgresql", network: "<external network>" }`. Generated sites add a
-  `required: false` env-file reference to the fixed private
-  `site/private/database.env` and join only the runtime service to the declared
-  external network; the gateway stays on the project network. The profile
-  refuses any other external network, and Up, Pull + up, Start, Restart,
-  Rollout and Deploy refuse until the operator-owned env file is a regular
-  `0600` file owned
-  by the panel account. The panel never connects to the database, runs SQL,
-  stores a credential, reads the env-file values or adds a database client.
-  Migrations and live restores remain out of scope; the optional dump belongs to
-  the manual backup below. The disposable MariaDB fixture passed (a record
-  survives deploy and rollback, and site A cannot read or write site B); the
-  real-host checklist remains.
-
-- Managed sites: manual offsite backup (ADR 0049). A manifest v3 may declare
-  `backup: { kind: "restic", repository, sql? }` with a `rest:https` repository
-  (or `rest:http` on a loopback/single-label private host) and, optionally, one
-  MariaDB database. **Back up now** copies only the declared persistent roots
-  into a private staging tree with no-follow reads, quotas and SHA-256
-  inventory, runs one bounded `mariadb-dump` container through the fixed
-  `database.cnf` option file for that database and one pinned Restic container,
-  then accepts only the snapshot id that `restic snapshots` and `restic ls` read
-  back. Credentials stay in fixed `0600` files under
-  `site/private/backup/` that the panel checks by metadata and never reads. A
-  proven failure clears its marker; a timeout or unverifiable upload keeps it
-  until the operator acknowledges it. No scheduler, retention automation,
-  snapshot deletion or live restore is added.
-- Managed sites: verified restore into isolation (ADR 0049). **Verify and
-  restore** takes one exact snapshot id (never `latest`), checks that the
-  repository returns it for this site and reads its bounded manifest, then
-  extracts into a new private directory under
-  `site/private/backup/restore/<attempt>/`. Every file must match its recorded
-  size and SHA-256; links, special files, unexpected or missing entries refuse
-  the restore. A SQL snapshot is imported into a fresh MariaDB container on a
-  new internal network with an empty root password, no production credentials,
-  no production network and no published port; one fixed table-count query
-  verifies it and the container and network are removed. The live site is never
-  overwritten. The disposable fixture dumps a MariaDB record, deletes it from
-  the live database, restores it, and reads it back from the restored copy while
-  the live database still reports the deletion.
-- Managed sites: CI-triggered deploy (ADR 0050). A managed manifest v3 may
-  declare `ci: { kind: "token" }` and provision the fixed digest-only
-  `site/private/ci/deploy-token.sha256` verifier. `POST
-  /api/managed-sites/<stack>/deploy` accepts one bearer credential, a body bound
-  to 8 KiB with exactly the tested 40-hex SHA, the configured ref, a nonce and
-  an ISO timestamp within 300 seconds, and reuses the manual deploy under the
-  stack lock. The nonce is consumed once and kept in a durable bounded record;
-  a moved branch is refused after the fetch and before anything is stopped. A
-  bounded `GET` reports the last attempt. The panel stores only the digest,
-  never the token, and adds no scheduler or webhook registry; the real CI host,
-  proxy path and revocation remain in the real-host checklist.
-- Managed sites: timer-triggered backup (ADR 0051). A managed manifest v3 may
-  declare `backup.trigger: { kind: "token", everyHours }` and provision the
-  separate digest-only `site/private/backup/trigger-token.sha256` verifier.
-  `POST /api/managed-sites/<stack>/backup` accepts one bearer credential and a
-  body bound to 8 KiB with exactly a nonce and an ISO timestamp within 300
-  seconds, then reuses the manual backup under the stack lock. A separate nonce
-  is consumed once; the durable bounded `trigger-state.json` records the last
-  attempt, the last good snapshot, the last verified restore and reports
-  `overdue` from the last success and the declared interval. The panel runs no
-  timer, deletes no snapshot, stores only the digest and adds no notification or
-  retention automation; a host timer and one revocation remain in the real-host
-  checklist.
-- Managed sites: read-only retention preview (ADR 0052). A managed manifest v3
-  may declare `backup.retention` with `keepLast`, `keepDaily`, `keepWeekly` and
-  `keepMonthly`. **Preview retention** starts one lock-held
-  `retention-preview` operation that runs the pinned Restic `snapshots` and
-  `forget --dry-run` with exactly those counts, cross-checks that every site
-  snapshot is accounted for, lists the removal ids and warns when the last good
-  or last verified snapshot would be removed. It deletes nothing, stores no
-  preview, adds no deletion credential and never passes `--prune`; the real
-  prune stays an operator procedure with a separate maintenance credential. The
-  disposable REST fixture runs the preview against the append-only lab
-  repository; one real off-panel prune remains in the real-host checklist.
-
-- Managed sites: read-only snapshot inventory (ADR 0053). A site card links to
-  `GET /stacks/<stack>/backup/snapshots`, which runs the pinned Restic client's
-  `snapshots --json --no-lock --tag site:<id>` once, reuses the retention
-  inventory parser and shows only the ids and timestamps, newest first. The page
-  runs no `forget`, `prune` or snapshot id, takes no lock, stores nothing and
-  accepts no query value except one exact id, which pre-fills the existing
-  restore form. Missing credentials, a missing backup block, a pending deploy or
-  backup marker and a failed reply refuse before any container runs. The
-  disposable REST fixture lists the two lab snapshots and does not return one
-  tagged for another site; a real endpoint remains in the real-host checklist.
-
-- Managed sites: read-only repository check (ADR 0054). **Check repository** on
-  the site card starts one lock-held `repository-check` operation running the
-  pinned Restic `check --no-lock --read-data-subset 32M`: the repository
-  structure plus a random 32 MiB data sample. It accepts only exit code 0 with
-  Restic's own clean line, maps codes 1, 10, 11 and 12 to fixed messages, and
-  renders neither stdout nor stderr, which name pack files and print repair
-  commands. It never passes `--read-data`, `forget`, `prune`, `unlock` or a
-  repair command, and it stores no result and adds no credential; a full data
-  check and the restore proof stay on the maintenance host. The disposable REST
-  fixture checks the append-only lab repository and proves no lock object and no
-  snapshot were added; a real endpoint and a damaged repository remain in the
-  real-host checklist.
-
-- Sign-in: reuse the login CSRF token across tabs (ADR 0055). Two sign-in tabs,
-  or a wrong password in one tab, no longer invalidate each other: the page
-  reuses a well-formed `cp_csrf` value and mints one only when the cookie is
-  missing or malformed. The cookie/form equality, constant-time compare, Origin
-  check and cookie attributes are unchanged.
-
-- Image security: pin libzstd1 1.5.7+dfsg-1+deb13u1 over the Bun base for
-  CVE-2026-124851, the only fixable HIGH in the 2026-11-25 image scan. This is
-  the same targeted base-package fix as ADR 0038: no blanket upgrade, no Trivy
-  exception and no runtime updater.
-- Image security: accept CVE-2026-17106 only at the Buildx plugin path until
-  2027-02-19 (ADR 0046). Buildx 0.39.1 still declares
-  `github.com/moby/go-archive` v0.2.0, but the binary carries only that
-  module's build-info line: the root extraction package named by the advisory
-  has no symbol matches. No fixed `docker-buildx-plugin` exists yet (0.39.1 is
-  the newest trixie package and upstream release), so the pin cannot move; the
-  exception is re-decided at expiry. It is not a claim that Buildx is patched.
-
-- Managed sites (ADR 0045): optional Composer preparation. A managed site may
-  declare `build: { kind: "composer" }` (checkbox on **New site**), and every
-  release — the baseline and each deploy — is prepared before publication. An
-  offline, read-only `composer validate` refuses a stale lock, then one
-  disposable `composer:2.10.3` container (the first 2.10 release fixing
-  CVE-2026-59944) runs `composer install --no-scripts --no-plugins` with only
-  the staging tree mounted. It is unprivileged, read-only, capability-free and
-  bounded in time, output, memory, CPU and PIDs; its home and cache live on a
-  bounded tmpfs and it receives no secret, Docker socket or production mount.
-  The repository must commit `composer.lock` and not `vendor/`; `composer.json`
-  and the lock's `platform-overrides.php` must both match the channel, because
-  that is the platform install actually verifies. A 250 ms byte and file-count
-  monitor aborts a runaway install. A failure removes only the attempt and
-  leaves the active release untouched; an unprovable container removal keeps
-  the attempt and reports an unknown outcome. SIGTERM aborts the build before
-  the operation drain. Registry credentials and private packages remain out of
-  scope.
+#### Creation, release and deploy
 
 - Managed sites (ADR 0042): the creation form. With
   `COMPOSE_PANEL_MANAGED_SITES_ENABLED=true`, **New site** renders a trusted
@@ -202,7 +69,7 @@
 
 - Managed sites (ADR 0042, ADR 0043): the ownership model and the bounded Git
   release lifecycle are accepted as pilot contracts, with a disposable lab that
-  proves the bind-mount release layout without the panel — two revisions, the
+  proves the bind-mount release layout without the panel - two revisions, the
   atomic `current` switch, the forced runtime recreation that alone makes the
   running PHP process follow it, a probed rollback, the effective mounts, the
   probe format and a front controller answering the same SHA. The lab
@@ -238,6 +105,182 @@
   switch) leave the attempt marker, pointer, containers and probe in the state
   the operator must inspect. A second Compose project stays untouched.
 
+- Managed sites (ADR 0045): optional Composer preparation. A managed site may
+  declare `build: { kind: "composer" }` (checkbox on **New site**), and every
+  release - the baseline and each deploy - is prepared before publication. An
+  offline, read-only `composer validate` refuses a stale lock, then one
+  disposable digest-pinned `composer:2.10.3` container (the first 2.10 release
+  fixing CVE-2026-59944) runs `composer install --no-scripts --no-plugins` with
+  only the staging tree mounted. It runs as the staging-tree owner, read-only,
+  capability-free and bounded in time, output, memory, CPU and PIDs; its home
+  and cache live on a bounded tmpfs and it receives no secret, Docker socket or
+  production mount. The repository must commit `composer.lock` and not
+  `vendor/`; `composer.json` and the lock's `platform-overrides.php` must both
+  match the channel, because that is the platform install actually verifies. A
+  250 ms byte and file-count monitor aborts a runaway install. A failure removes
+  only the attempt and leaves the active release untouched; an unprovable
+  container removal keeps the attempt and reports an unknown outcome. SIGTERM
+  aborts the build before the operation drain. Registry credentials and private
+  packages remain out of scope.
+
+#### Databases and backups
+
+- Managed sites: attach one existing database (ADR 0048). A manifest v2 may
+  declare `database: { kind: "existing", engine: "mariadb" | "mysql" |
+  "postgresql", network: "<external network>" }`. Generated sites add a
+  `required: false` env-file reference to the fixed private
+  `site/private/database.env` and join only the runtime service to the declared
+  external network; the gateway stays on the project network. The profile
+  refuses any other external network, and Up, Pull + up, Start, Restart,
+  Rollout and Deploy refuse until the operator-owned env file is a regular
+  `0600` file owned by the panel account. The panel never connects to the
+  database, runs SQL, stores a credential, reads the env-file values or adds a
+  database client. Migrations and live restores remain out of scope; the
+  optional dump belongs to the manual backup below. The disposable MariaDB
+  fixture passed (a record survives deploy and rollback, and site A cannot read
+  or write site B), and the real-host SQL backup used one attached MariaDB.
+
+- Managed sites: manual offsite backup (ADR 0049). A manifest v3 may declare
+  `backup: { kind: "restic", repository, sql? }` with a `rest:https` repository
+  (or `rest:http` on a loopback/single-label private host) and, optionally, one
+  MariaDB database. **Back up now** copies only the declared persistent roots
+  into a private staging tree with no-follow reads, quotas and SHA-256
+  inventory, runs one bounded `mariadb-dump` container through the fixed
+  `database.cnf` option file for that database and one digest-pinned Restic
+  container, then accepts only the snapshot id that `restic snapshots` and
+  `restic ls` read back. Credentials stay in fixed `0600` files under
+  `site/private/backup/` that the panel checks by metadata and never reads. A
+  proven failure clears its marker; a timeout or unverifiable upload keeps it
+  until the operator acknowledges it. No scheduler, retention automation,
+  snapshot deletion or live restore is added.
+
+- A timed-out backup or restore now leaves a named Restic container instead of
+  an anonymous one. The upload and restore containers use a fixed `--name`, and
+  the failure path runs `docker rm -f` on that exact name, so an upload cannot
+  keep running after the panel reports an unknown outcome. Regression tests
+  assert the `--name`/`rm -f` pair.
+
+- Managed sites: verified restore into isolation (ADR 0049). **Verify and
+  restore** takes one exact snapshot id (never `latest`), checks that the
+  repository returns it for this site and reads its bounded manifest, then
+  extracts into a new private directory under
+  `site/private/backup/restore/<attempt>/`. Every file must match its recorded
+  size and SHA-256; links, special files, unexpected or missing entries refuse
+  the restore. A SQL snapshot is imported into a fresh MariaDB container on a
+  new internal network with an empty root password, no production credentials,
+  no production network and no published port; one fixed table-count query
+  verifies it and the container and network are removed. The live site is never
+  overwritten. The disposable fixture dumps a MariaDB record, deletes it from
+  the live database, restores it, and reads it back from the restored copy while
+  the live database still reports the deletion.
+
+- Managed sites: read-only retention preview (ADR 0052). A managed manifest v3
+  may declare `backup.retention` with `keepLast`, `keepDaily`, `keepWeekly` and
+  `keepMonthly`. **Preview retention** starts one lock-held
+  `retention-preview` operation that runs the pinned Restic `snapshots` and
+  `forget --dry-run` with exactly those counts, cross-checks that every site
+  snapshot is accounted for, lists the removal ids and warns when the last good
+  or last verified snapshot would be removed. It deletes nothing, stores no
+  preview, adds no deletion credential and never passes `--prune`; the real
+  prune stays an operator procedure with a separate maintenance credential. The
+  real-host run found and fixed two defects before the preview worked: backups
+  now pass a stable Restic `--host` (the site id), so every snapshot of one site
+  shares a `host,paths` group, and the preview accepts the `null` keep or remove
+  list that Restic 0.18 writes for an empty side (an absent or malformed list
+  stays refused). A repository written before the fix keeps its old groups and
+  needs one manual `--group-by paths` prune; the off-panel dry run, prune,
+  `restic check --read-data` and restore then agreed with the panel and left the
+  protected ids in place.
+
+- Managed sites: read-only snapshot inventory (ADR 0053). A site card links to
+  `GET /stacks/<stack>/backup/snapshots`, which runs the pinned Restic client's
+  `snapshots --json --no-lock --tag site:<id>` once, reuses the retention
+  inventory parser and shows only the ids and timestamps, newest first. The page
+  runs no `forget`, `prune` or snapshot id, takes no lock, stores nothing and
+  accepts no query value except one exact id, which pre-fills the existing
+  restore form. Missing credentials, a missing backup block, a pending deploy or
+  backup marker and a failed reply refuse before any container runs. The
+  real-host run listed the same ids as `restic snapshots --tag site:<id>`, and a
+  restore chosen from the page left the repository unchanged.
+
+- Managed sites: read-only repository check (ADR 0054). **Check repository** on
+  the site card starts one lock-held `repository-check` operation running the
+  pinned Restic `check --no-lock --read-data-subset 32M`: the repository
+  structure plus a random 32 MiB data sample. It accepts only exit code 0 with
+  Restic's own clean line, maps codes 1, 10, 11 and 12 to fixed messages, and
+  renders neither stdout nor stderr, which name pack files and print repair
+  commands. It never passes `--read-data`, `forget`, `prune`, `unlock` or a
+  repair command, and it stores no result and adds no credential; a full data
+  check and the restore proof stay on the maintenance host. The real-host run
+  matched a full `restic check --read-data` on the same repository and added no
+  lock object or snapshot; a damaged repository remains untested.
+
+#### Machine triggers
+
+- Managed sites: CI-triggered deploy (ADR 0050). A managed manifest v3 may
+  declare `ci: { kind: "token" }` and provision the fixed digest-only
+  `site/private/ci/deploy-token.sha256` verifier. `POST
+  /api/managed-sites/<stack>/deploy` accepts one bearer credential, a body bound
+  to 8 KiB with exactly the tested 40-hex SHA, the configured ref, a nonce and
+  an ISO timestamp within 300 seconds, and reuses the manual deploy under the
+  stack lock. The nonce is consumed once and kept in a durable bounded record;
+  a moved branch is refused after the fetch and before anything is stopped. A
+  bounded `GET` reports the last attempt. The panel stores only the digest,
+  never the token, and adds no scheduler or webhook registry. The real-host run
+  accepted the tested SHA, refused a stale one after a new commit, refused a
+  replayed nonce and answered `401` after the verifier was revoked, with the
+  active release unchanged. The reviewed TLS proxy path stays partial because
+  its Basic Auth and the bearer token share the `Authorization` header.
+
+- Managed sites: timer-triggered backup (ADR 0051). A managed manifest v3 may
+  declare `backup.trigger: { kind: "token", everyHours }` and provision the
+  separate digest-only `site/private/backup/trigger-token.sha256` verifier.
+  `POST /api/managed-sites/<stack>/backup` accepts one bearer credential and a
+  body bound to 8 KiB with exactly a nonce and an ISO timestamp within 300
+  seconds, then reuses the manual backup under the stack lock. A separate nonce
+  is consumed once; the durable bounded `trigger-state.json` records the last
+  attempt, the last good snapshot, the last verified restore and reports
+  `overdue` from the last success and the declared interval. The panel runs no
+  timer, deletes no snapshot, stores only the digest and adds no notification or
+  retention automation. The real-host run drove it from a real systemd timer,
+  reported overdue after the timer was stopped, and answered `401` after the
+  verifier was revoked; rotating the verifier answered `200` and a replayed
+  nonce answered `409`.
+
+### Installer and host
+
+- The installer waits up to 15 minutes for the dpkg lock instead of failing
+  after one, because a fresh image can still be running `unattended-upgrades`.
+  `COMPOSE_PANEL_APT_LOCK_TIMEOUT` (60-3600 seconds) overrides it; the first
+  step prints the bound, and no APT timer or lock file is touched. It also
+  compares its own settings key by key instead of byte by byte, so a documented
+  flag added by hand (`COMPOSE_PANEL_MANAGED_SITES_ENABLED`) no longer makes
+  every later run refuse; a managed value changed by hand is still refused and
+  named.
+
+- The installer compares the APT source files it found with the paths it owns in
+  the shell instead of combining `grep -e` and `grep -f`, a combination that
+  differs across GNU grep versions. Its error path and the foreign-file refusal
+  are unchanged.
+
+- Installer: Debian 13 (trixie) and Debian 12 (bookworm) are supported targets
+  next to Ubuntu 24.04/26.04, on amd64 and arm64 (ADR 0033). The supported-host
+  table validates distribution, release and codename together, and Docker's APT
+  repository follows the detected family (`/linux/debian` or `/linux/ubuntu`).
+  A read-only check verifies that `unattended-upgrades` allows this release's
+  security origin, accepting both Ubuntu's `Allowed-Origins` and Debian's
+  `Origins-Pattern`, and only warns without rewriting an administrator policy.
+  Ubuntu 26.04 amd64 is recorded in the 2026-11-27 run; the Debian rows of the
+  disposable VM checklist are still pending.
+
+### Panel
+
+- Sign-in: reuse the login CSRF token across tabs (ADR 0055). Two sign-in tabs,
+  or a wrong password in one tab, no longer invalidate each other: the page
+  reuses a well-formed `cp_csrf` value and mints one only when the cookie is
+  missing or malformed. The cookie/form equality, constant-time compare, Origin
+  check and cookie attributes are unchanged.
+
 - Targeted pull (ADR 0041): `Pull` accepts one validated service from the
   Services table, so a corrected runtime image can be downloaded on its own and
   applied with **Up** on that service. Same lock, audit, SSE and `build:`
@@ -263,13 +306,6 @@
   still runs the previous image, the row keeps **Update ready** and never claims
   **Up to date**. No cache, no credential UI, no scheduler, no CVE claim.
 
-- Lab: seed the disposable daemon from the outer Docker cache (`alpine:3.20`,
-  `registry:2`) and pull that base image only when it is missing. The lifecycle
-  suite no longer fails on a Docker Hub rate limit, and the pull scenarios use
-  images built inside the lab and served from a lab-local registry. The
-  multi-platform digest assertion refreshes the base tag explicitly, because a
-  cached tag can predate the registry's current one.
-
 - Docker maintenance (ADR 0040): the Server page can prune the build cache,
   dangling images or unused images older than a week, in three fixed scopes. No
   feature flag: the card is always available, but nothing runs without a
@@ -277,11 +313,6 @@
   mutation and refusing a self-update meanwhile; volumes, containers and
   networks are never removed and nothing is scheduled. A timeout or an
   unconfirmed exit stays unknown, and reclaimed size is best effort.
-
-- Toolchain: Bun 1.4.5 (image `oven/bun:1.4.5-slim`, CI, release and Pages
-  workflows, `engines.bun >=1.4.5`), which carries upstream security fixes;
-  `@types/bun` 1.4.5. The base image digest and every pinned `bun-version` move
-  together.
 
 - HTTP: allow 60 seconds of socket inactivity so the Server page's sequential,
   bounded Docker reads (including on-demand disk usage) can return a result or
@@ -292,24 +323,6 @@
   the Actions column for buttons. Information tips use native popovers in the
   browser's top layer, avoiding clipping by tables, with viewport-aware
   placement when JavaScript is available.
-
-- Compose: pin 5.8.0 (apt `5.8.0-1~debian.13~trixie`, CI `COMPOSE_VERSION` and
-  `COMPOSE_SHA256`) so the image and the CI `compose config` check stay on the
-  same current release. This does not clear CVE-2026-78661: the module is still
-  `golang.org/x/net` v0.60.0, but the advisory package `x/net/html` is not
-  linked into the binary, which is now the documented basis of the exception.
-
-- CI: explicitly pin Trivy v0.76.2 for repository and image scans in CI and
-  releases, replacing the action's v0.70.0 default. Accept CVE-2026-78661 only
-  at the Compose binary path until 2027-02-19 (ADR 0039, amended): the finding
-  is module-level, the vulnerable package is absent from the binary, and the
-  exception is re-decided after repeating the symbol check. No fix has shipped
-  (Compose v5.8.0 still declares x/net v0.60.0); it is not a claim that Compose
-  is patched.
-
-- Image security: explicitly pin corrected apt/libapt-pkg7.0 and zlib1g
-  packages over the Bun base (ADR 0038). The separate Compose finding is
-  covered by the temporary exception in ADR 0039.
 
 - Container inspection: show each attached network's name, IPv4 and DNS names
   (falling back to aliases on older Docker responses). Only these fields are
@@ -338,48 +351,82 @@
   its own column with *Not configured* cells; a bare `sha256:` image ID is
   shortened to 12 characters, with the full ID as a tooltip; long image
   references wrap.
-- Image: dependencies are installed with `--production`, so devDependencies
-  (`@types/bun` and its type packages) no longer ship in the image. There are
-  no runtime dependencies today: `node_modules` is empty.
-- Security: Compose plugin 5.7.0 in the image and in CI (Go 1.26.10,
-  `golang.org/x/net` v0.60.0, verified in the released binary). It fixes
-  CVE-2026-78669, so its Trivy exception, due to expire on 2026-11-10, is
-  removed. The separate CVE-2026-78661 exception is recorded in ADR 0039.
+
 - Logs: with JavaScript, stack and container logs are shown one row per line,
   with the service and time in a muted header above full-width messages,
   including on narrow screens. A prefix identical to the previous
   line's (a stack trace, a burst in the same second) is hidden but still
   copied. Without JavaScript, the plain-text snapshot is unchanged.
+
 - Operations: Pull and Up no longer flood the live output with one line per
   layer progress update. Repeated `Downloading`/`Extracting` lines of a layer
   are shown at most every 5 seconds; layer state changes, warnings and errors
   are unchanged (ADR 0034). This also keeps the capped operation output for
   the end of the operation.
-- Installer: Debian 13 (trixie) and Debian 12 (bookworm) are supported targets
-  next to Ubuntu 24.04/26.04, on amd64 and arm64 (ADR 0033). The supported-host
-  table validates distribution, release and codename together, and Docker's APT
-  repository follows the detected family (`/linux/debian` or `/linux/ubuntu`).
-  A read-only check verifies that `unattended-upgrades` allows this release's
-  security origin, accepting both Ubuntu's `Allowed-Origins` and Debian's
-  `Origins-Pattern`, and only warns without rewriting an administrator policy.
-  Disposable Debian VM validation is still pending.
+
+### Image, toolchain and CI
+
+- Toolchain: Bun 1.4.5 (image `oven/bun:1.4.5-slim`, CI, release and Pages
+  workflows, `engines.bun >=1.4.5`), which carries upstream security fixes;
+  `@types/bun` 1.4.5. This supersedes the Bun 1.4.4 step; the base image digest
+  and every pinned `bun-version` move together.
+
+- Compose: pin 5.8.0 (apt `5.8.0-1~debian.13~trixie`, CI `COMPOSE_VERSION` and
+  `COMPOSE_SHA256`) so the image and the CI `compose config` check stay on the
+  same current release. It fixes CVE-2026-78669, so that Trivy exception is
+  removed. This does not clear CVE-2026-78661: the module is still
+  `golang.org/x/net` v0.60.0, but the advisory package `x/net/html` is not
+  linked into the binary, which is now the documented basis of the exception.
+
+- Image security: pin libzstd1 1.5.7+dfsg-1+deb13u1 over the Bun base for
+  CVE-2026-124851, plus corrected apt/libapt-pkg7.0 and zlib1g packages
+  (ADR 0038). This is the same targeted base-package fix: no blanket upgrade,
+  no Trivy exception and no runtime updater.
+
+- Image security: accept CVE-2026-17106 only at the Buildx plugin path until
+  2027-02-19 (ADR 0046). Buildx 0.39.1 still declares
+  `github.com/moby/go-archive` v0.2.0, but the binary carries only that
+  module's build-info line: the root extraction package named by the advisory
+  has no symbol matches. No fixed `docker-buildx-plugin` exists yet (0.39.1 is
+  the newest trixie package and upstream release), so the pin cannot move; the
+  exception is re-decided at expiry. It is not a claim that Buildx is patched.
+
+- CI: explicitly pin Trivy v0.76.2 for repository and image scans in CI and
+  releases, replacing the action's v0.70.0 default. Accept CVE-2026-78661 only
+  at the Compose binary path until 2027-02-19 (ADR 0039, amended): the finding
+  is module-level, the vulnerable package is absent from the binary, and the
+  exception is re-decided after repeating the symbol check. No fix has shipped
+  (Compose v5.8.0 still declares x/net v0.60.0); it is not a claim that Compose
+  is patched.
+
+- Image: dependencies are installed with `--production`, so devDependencies
+  (`@types/bun` and its type packages) no longer ship in the image. There are
+  no runtime dependencies today: `node_modules` is empty.
+
 - Tooling: TS and JS code is formatted with the built-in `bun fmt`
   (`bunfig.toml`: 4-space indentation, 140 columns; Markdown, YAML, JSON,
   HTML and CSS are excluded in `.prettierignore`). CI and `bun run verify` run
   `bun fmt --check`. The one-off reformat commit is listed in
   `.git-blame-ignore-revs`.
-- Toolchain: Bun 1.4.4 (image `oven/bun:1.4.4-slim`, CI, release and Pages
-  workflows, `engines.bun >=1.4.4`); `@types/bun` 1.4.3.
 
-## 0.6.0 (preview)
+### Testing and lab
 
-Preview release. The panel changes are covered by CI, but the new Ubuntu
-installer and `setup-caddy.sh` have not yet been validated on real systemd
-VMs: every row of the disposable VM checklist in
-[installation](docs/installation.md#verification-before-release) is still
-pending. Try them on a disposable machine first; until that validation is
-recorded, prefer the [manual deployment](docs/deployment.md) for an existing
-server.
+- Lab: seed the disposable daemon from the outer Docker cache (`alpine:3.20`,
+  `registry:2`) and pull that base image only when it is missing. The lifecycle
+  suite no longer fails on a Docker Hub rate limit, and the pull scenarios use
+  images built inside the lab and served from a lab-local registry. The
+  multi-platform digest assertion refreshes the base tag explicitly, because a
+  cached tag can predate the registry's current one.
+
+## 0.6.0
+
+The installer and `setup-caddy.sh` were exercised on a disposable Ubuntu 26.04
+amd64 VPS on 2026-11-27: fresh install, HTTPS with Basic Auth, the Caddy helper
+socket, `doctor.sh --production`, a reboot and several reruns. The Debian and
+arm64 rows of the [disposable VM
+checklist](docs/installation.md#verification-before-release) are still pending;
+until a row is recorded, try the installer on a disposable machine and prefer
+the [manual deployment](docs/deployment.md) for an existing server.
 
 - Security: Docker CLI 29.9.2 and Compose plugin 5.6.1 in the image (and
   Compose 5.6.1 in CI), both built with Go 1.26.10, which fixes
@@ -424,7 +471,8 @@ server.
   inspections are bounded. A rerun starts an existing panel only after a
   successful inspection reports it stopped. An existing installation log is
   made root-only (0600) before it is reused.
-  Disposable VM validation remains pending; see
+  Ubuntu 26.04 amd64 was validated after this release (2026-11-27); the Debian
+  and arm64 rows remain pending. See
   [installation](docs/installation.md).
 - Caddy site management setup in one command (ADR 0030 amendment):
   `sudo bash scripts/setup-caddy.sh --check` lists what is in place and what

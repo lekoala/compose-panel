@@ -1,6 +1,8 @@
 # ADR 0045 — Disposable Composer preparation for a managed release
 
-Status: Accepted (managed-site pilot)
+Status: Accepted (managed-site pilot). Amended by
+[ADR 0057](0057-digest-pinned-tool-images.md): the Composer image reference is
+now pinned by digest as well as by tag.
 
 [ADR 0043](0043-bounded-git-release-lifecycle.md) deliberately shipped no build
 step. A real PHP project usually needs `vendor/`, and running Composer on the

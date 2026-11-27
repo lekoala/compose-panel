@@ -14,6 +14,7 @@ import { runManagedSiteBackupRetentionPreview } from "../src/managed-site-backup
 import { runManagedSiteBackupSnapshotList } from "../src/managed-site-backup-snapshots.ts";
 import { runManagedSiteBackupCheck } from "../src/managed-site-backup-check.ts";
 import { runManagedSiteRestore } from "../src/managed-site-restore.ts";
+import { MANAGED_SITE_RESTIC_IMAGE } from "../src/managed-site-restic.ts";
 import {
     managedSiteAttemptPath,
     parseProbeAnswer,
@@ -863,7 +864,7 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
                     "-v",
                     `${passwordPath}:/run/secrets/restic-password:ro`,
                     ...mounts,
-                    "restic/restic:0.18.0",
+                    MANAGED_SITE_RESTIC_IMAGE,
                     ...args,
                 ],
                 { timeoutMs: 180_000, maxBytes: 8 * 1024 * 1024 },
@@ -1047,7 +1048,7 @@ describe.skipIf(process.platform !== "linux" || !enabled || !shared || !labConta
                     "RESTIC_PASSWORD_FILE=/run/secrets/restic-password",
                     "-v",
                     `${passwordPath}:/run/secrets/restic-password:ro`,
-                    "restic/restic:0.18.0",
+                    MANAGED_SITE_RESTIC_IMAGE,
                     ...args,
                 ],
                 { timeoutMs: 180_000, maxBytes: 8 * 1024 * 1024 },

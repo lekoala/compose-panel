@@ -4,7 +4,7 @@
  * root filesystem, a bounded tmpfs and the operator-owned password file. The
  * panel never reads the password or the REST environment values.
  */
-export const MANAGED_SITE_RESTIC_IMAGE = "restic/restic:0.18.0";
+export const MANAGED_SITE_RESTIC_IMAGE = "restic/restic:0.18.0@sha256:4cf4a61ef9786f4de53e9de8c8f5c040f33830eb0a10bf3d614410ee2fcb6120";
 /** Restore reads a snapshot manifest; keep the dump bounded. */
 export const MANAGED_SITE_RESTIC_MANIFEST_MAX_BYTES = 8 * 1024 * 1024;
 
@@ -20,10 +20,16 @@ export function managedSiteResticCommand(
     command: string[],
     mounts: string[] = [],
     network?: string,
+    name?: string,
 ): string[] {
     return [
         "run",
         "--rm",
+        // Without an explicit name, a container whose `docker run` client is
+        // killed by a timeout cannot be found again: `docker rm -f` only has
+        // the random name Docker chose. Long uploads name their container so
+        // the caller can prove it stopped.
+        ...(name ? ["--name", name] : []),
         ...(network ? ["--network", network] : []),
         "--read-only",
         "--tmpfs",

@@ -304,6 +304,7 @@ export async function runManagedSiteRestore(
     let restoreDir: string | null = null;
     let network: string | null = null;
     let server: string | null = null;
+    const resticContainer = `cp-restore-restic-${attemptId}`;
 
     const fail = (reason: string): ManagedSiteRestoreResult => {
         output(`${reason}\n`);
@@ -334,7 +335,7 @@ export async function runManagedSiteRestore(
                 .catch(() => false),
         };
         const runRestic = (command: string[], mounts: string[] = [], maxBytes = MANAGED_SITE_RESTORE_OUTPUT_MAX_BYTES) =>
-            docker(managedSiteResticCommand(restic, command, mounts, dependencies.resticNetwork), {
+            docker(managedSiteResticCommand(restic, command, mounts, dependencies.resticNetwork, resticContainer), {
                 timeoutMs,
                 maxBytes,
                 cwd: stackDir,
@@ -519,6 +520,9 @@ export async function runManagedSiteRestore(
     } finally {
         // Disposable resources only. The restore directory stays private for
         // inspection, and nothing is written back to the live site.
+        // A restic container whose client timed out keeps its name, so this is
+        // the one place that proves it stopped.
+        await docker(["rm", "-f", resticContainer], { timeoutMs: 60_000, maxBytes: MANAGED_SITE_RESTORE_OUTPUT_MAX_BYTES }).catch(() => {});
         if (server)
             await docker(["rm", "-f", server], { timeoutMs: 60_000, maxBytes: MANAGED_SITE_RESTORE_OUTPUT_MAX_BYTES }).catch(() => {});
         if (network)

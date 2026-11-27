@@ -282,6 +282,7 @@ export async function runManagedSiteBackup(
                 ],
                 [`${staged.stagingDir}:/backup:ro`],
                 dependencies.resticNetwork,
+                resticName,
             ),
             {
                 timeoutMs,

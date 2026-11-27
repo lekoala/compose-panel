@@ -171,6 +171,14 @@ describe("runManagedSiteRestore", () => {
             expect(await readFile(`${result.restoreDir}/backup/files/shared/uploads/a.txt`, "utf8")).toBe("alpha");
             expect(calls.some((args) => args.includes("mariadb"))).toBe(false);
             expect(calls.some((args) => args[0] === "network")).toBe(false);
+            // Every restic invocation is named, and the final cleanup targets
+            // that name so a timed-out client cannot leave it running.
+            const resticCalls = calls.filter((args) => args.includes("--read-only"));
+            expect(resticCalls.length).toBeGreaterThan(0);
+            for (const args of resticCalls) {
+                expect(args[args.indexOf("--name") + 1]).toBe("cp-restore-restic-restore01");
+            }
+            expect(calls).toContainEqual(["rm", "-f", "cp-restore-restic-restore01"]);
         } finally {
             await rm(root, { recursive: true, force: true });
         }

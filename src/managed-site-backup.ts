@@ -35,8 +35,14 @@ export const MANAGED_SITE_BACKUP_MAX_ENTRIES = 20_000;
 export const MANAGED_SITE_BACKUP_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 export const MANAGED_SITE_BACKUP_MAX_DUMP_BYTES = 2 * 1024 * 1024 * 1024;
 
-/** Pinned one-shot tooling. The panel image gains neither client. */
-export const MANAGED_SITE_BACKUP_DUMP_IMAGES = { mariadb: "mariadb:11" } as const;
+/**
+ * Pinned one-shot tooling. The panel image gains neither client. These images
+ * read database credentials or the Restic password, so they are pinned by
+ * digest: no operator action would otherwise verify a changed tag (ADR 0057).
+ */
+export const MANAGED_SITE_BACKUP_DUMP_IMAGES = {
+    mariadb: "mariadb:11@sha256:e1d5495f445654134f226f55a41ce0da227116f6f27f283101f405c794d841fc",
+} as const;
 
 export type ManagedSiteBackupCheck = { ok: true } | { ok: false; reason: string };
 

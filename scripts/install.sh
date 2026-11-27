@@ -138,7 +138,7 @@ publish_same() {
 # one of the given installer paths, each absent or a plain file. Their content
 # is compared after download by publish_same, so a foreign file is never adopted.
 apt_repo_resumable() {
-    local apt="$1" pattern="$2" path matches status=0
+    local apt="$1" pattern="$2" path matches match expected allowed status=0
     local -a inputs=()
     shift 2
     for path in "$@"; do
@@ -152,10 +152,18 @@ apt_repo_resumable() {
     # 2 (unreadable source, dangling link) refuses instead of hiding a match.
     matches="$(grep -RlE "$pattern" "${inputs[@]}" 2>/dev/null)" || status=$?
     [ "$status" -le 1 ] || return 1
-    # A here-string, not a pipe: grep -q could otherwise SIGPIPE the writer.
-    status=0
-    grep -qvxF -e '' -f <(printf '%s\n' "$@") <<< "$matches" || status=$?
-    [ "$status" -eq 1 ]
+    # Compare line by line in the shell: combining `-e ''` with `-f` is not
+    # portable across GNU grep versions, and an empty match list must not hide
+    # a foreign file.
+    while IFS= read -r match; do
+        [ -n "$match" ] || continue
+        allowed=0
+        for expected in "$@"; do
+            if [ "$match" = "$expected" ]; then allowed=1; break; fi
+        done
+        [ "$allowed" -eq 1 ] || return 1
+    done <<< "$matches"
+    return 0
 }
 
 render_periodic() {

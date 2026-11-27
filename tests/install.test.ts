@@ -382,7 +382,7 @@ printf '$2a$14$fixture\\n'
         expect(await readFile(target, "utf8")).toBe("foreign");
     });
 
-    test("errors from either APT repository search refuse adoption", async () => {
+    test("an error from the APT repository search refuses adoption", async () => {
         await mkdir(join(dir, "apt", "sources.list.d"), { recursive: true });
         await writeFile(
             join(dir, "bin", "grep"),
@@ -392,11 +392,9 @@ exec /usr/bin/grep "$@"
 `,
         );
         await chmod(join(dir, "bin", "grep"), 0o755);
-        for (const option of ["-RlE", "-qvxF"]) {
-            expect(
-                (await run('apt_repo_resumable "$1/apt" docker "$1/apt/sources.list.d/docker.sources"', { ERROR_OPTION: option })).code,
-            ).not.toBe(0);
-        }
+        expect(
+            (await run('apt_repo_resumable "$1/apt" docker "$1/apt/sources.list.d/docker.sources"', { ERROR_OPTION: "-RlE" })).code,
+        ).not.toBe(0);
     });
 
     test("timers are enabled only for the exact installer policy, never an admin file or symlink", async () => {

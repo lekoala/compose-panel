@@ -4,7 +4,7 @@
 
 Compose Panel is **Compose-first web hosting**: one server, one trusted administrator, Compose files and the Docker CLI as sources of truth ([ADR 0056](adr/0056-compose-first-web-hosting.md)). The three product layers and the refused items live in [product.md](product.md).
 
-**Pilot gate.** The managed-site pilot stays off by default until the real-host checklist in [deployment.md](deployment.md#remaining-real-host-validation) is run and recorded on a disposable Debian or Ubuntu VM. No managed-site feature is added before that record exists.
+**Pilot gate.** The real-host checklist in [deployment.md](deployment.md#remaining-real-host-validation) was run on a disposable Ubuntu 26.04 VPS on 2026-11-27; the result is recorded in [validation/managed-site-pilot-2026-11-27.md](validation/managed-site-pilot-2026-11-27.md). Eleven lines pass and the CI-through-TLS line stays partial for the Basic Auth/Bearer conflict. The pilot remains off by default and enabling it is an explicit operator decision; installing from the published image by digest is still to be rerun before that path is called validated.
 
 Nothing below is scheduled or promised. Each item changes a documented guarantee and needs its own ADR before any code.
 

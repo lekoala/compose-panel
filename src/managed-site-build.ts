@@ -2,10 +2,11 @@
  * Fixed Composer preparation for a managed release (ADR 0045).
  *
  * One release is prepared in two disposable containers: a read-only lock-file
- * check with no network, then one unprivileged install. Only the attempt's
- * staging tree is mounted; Composer's home and cache live on a bounded tmpfs so
- * they never reach the release filesystem. Output, memory, CPU, process count
- * and time are bounded, and the tree is size-monitored while the install runs.
+ * check with no network, then one install running as the staging-tree owner.
+ * Only the attempt's staging tree is mounted; Composer's home and cache live on
+ * a bounded tmpfs so they never reach the release filesystem. Output, memory,
+ * CPU, process count and time are bounded, and the tree is size-monitored while
+ * the install runs.
  *
  * Project code is not executed: Composer runs with `--no-scripts --no-plugins`,
  * and the lock's `platform-overrides.php` must name the site's PHP channel, so
@@ -28,9 +29,11 @@ import type { GitReleasePrepare } from "./git-release.ts";
 /**
  * Pinned Composer image. It only runs Composer; project code is never executed.
  * 2.10.3 is the first release that fixes CVE-2026-59944 (symlinked package bin
- * paths) for the 2.10 line.
+ * paths) for the 2.10 line. The digest keeps a mutable registry tag from
+ * silently replacing the binary that reads `composer.lock` and the staging tree
+ * (ADR 0057).
  */
-export const MANAGED_SITE_BUILD_IMAGE = "composer:2.10.3";
+export const MANAGED_SITE_BUILD_IMAGE = "composer:2.10.3@sha256:2cf275428757e5435a667bfc0d038b14520ca02be2b1b70d44a05c8c19e2de48";
 /** A built release is larger than its source tree; this is its own hard cap. */
 export const MANAGED_SITE_RELEASE_LIMITS = {
     maxFiles: 120_000,
@@ -183,6 +186,10 @@ export async function runComposerPreparation(request: ComposerBuildRequest): Pro
     const runner: BuildRunner = request.runner ?? ((args, options) => runCommand("docker", args, options));
     const timeoutMs = request.timeoutMs ?? MANAGED_SITE_BUILD_TIMEOUT_MS;
     const cleanupTimeout = () => (request.signal?.aborted ? CLEANUP_TIMEOUT_ON_ABORT_MS : CLEANUP_TIMEOUT_MS);
+    // The container runs as the staging-tree owner. The supported installer
+    // deployment runs the panel as root, so this is uid 0 there: the isolation
+    // is the dropped capabilities, read-only root and mount set, not a
+    // separate Unix user.
     const uid = treeInfo.uid;
     const gid = treeInfo.gid;
 

@@ -2,7 +2,10 @@
 
 Status: Accepted (managed-site pilot, 2026-11-25). Backup and the isolated
 restore proof are implemented and proven on the disposable lab; the real-host
-checklist remains.
+checklist was run and recorded on 2026-11-27
+([record](../validation/managed-site-pilot-2026-11-27.md)). Amended by
+[ADR 0057](0057-digest-pinned-tool-images.md): the Restic and MariaDB client
+references are now pinned by digest as well as by tag.
 
 ## Context
 

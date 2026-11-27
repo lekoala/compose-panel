@@ -1,7 +1,10 @@
 # ADR 0050 — CI-triggered deploy with a site-scoped machine credential
 
 Status: Accepted (managed-site pilot, 2026-11-25). Implemented in the same
-change; the real-host checklist remains.
+change; the real-host checklist was run and recorded on 2026-11-27
+([record](../validation/managed-site-pilot-2026-11-27.md)). The loopback path
+passed; CI through the installed TLS proxy remains partial because its Basic
+Auth and the bearer token share the `Authorization` header.
 
 ## Context
 

@@ -852,15 +852,19 @@ disposable `composer:2.10.3` container runs `composer install --no-scripts
 `vendor/`, and must declare `config.platform.php` for the chosen channel
 (`8.3.x` or `8.4.x`); the lock's `platform-overrides.php` must match, because
 that is the platform `composer install` actually verifies. The install container
-sees only the staging tree, runs unprivileged and read-only, keeps Composer's
-home and cache on a bounded tmpfs, and gets no secret, Docker socket or
-production mount. A failed or oversized build removes the attempt and leaves the
-active release untouched; if a container cannot be proven removed, the operation
-reports an unknown outcome and the attempt is kept for inspection. SIGTERM
-stops a running build before the panel drains. The host must be able to pull
-`composer:2.10.3` or have it cached; the panel does not pull it in advance.
-Registry credentials and private packages are not supported
-([ADR 0045](adr/0045-disposable-composer-preparation.md)).
+sees only the staging tree, runs as the staging-tree owner and read-only, keeps
+Composer's home and cache on a bounded tmpfs, and gets no secret, Docker socket
+or production mount. The supported installer deployment runs the panel as root,
+so the owner is uid 0; the container is still capability-dropped,
+`no-new-privileges`, network-limited and resource-bounded, but this is
+containment, not an unprivileged Unix user. A failed or oversized build removes
+the attempt and leaves the active release untouched; if a container cannot be
+proven removed, the operation reports an unknown outcome and the attempt is kept
+for inspection. SIGTERM stops a running build before the panel drains. The host
+must be able to pull the digest-pinned `composer:2.10.3` image or have it cached;
+the panel does not pull it in advance. Registry credentials and private packages
+are not supported ([ADR 0045](adr/0045-disposable-composer-preparation.md),
+[ADR 0057](adr/0057-digest-pinned-tool-images.md)).
 
 ### Attach an existing database
 
@@ -952,9 +956,12 @@ credential values, deletes a snapshot or starts a scheduler.
    refuses `--events` without the privilege. `LOCK TABLES` is not needed: the
    dump runs with `--single-transaction` and `--skip-lock-tables`. `EVENT` lets
    the account manage events but grants no access to the application rows.
-   The pinned dump image (`mariadb:11`, about 460 MB) must be available: pull
-   it once with `docker pull mariadb:11`, because a first SQL backup that has to
-   download it can exceed the operation budget.
+   The digest-pinned dump image
+   (`mariadb:11@sha256:e1d5495f445654134f226f55a41ce0da227116f6f27f283101f405c794d841fc`,
+   about 460 MB) must be available: pull that exact reference once, because a
+   first SQL backup that has to download it can exceed the operation budget. The
+   reference is fixed by [ADR 0057](adr/0057-digest-pinned-tool-images.md) and
+   listed in `src/managed-site-backup.ts`.
 
 4. Edit `compose-panel-site.json` to `"version": 3` and add the block below,
    then use **Regenerate generated files** (the backup block itself changes no
@@ -1490,11 +1497,14 @@ The disposable suites prove the release, mount, probe and failure logic on a
 private Docker-in-Docker daemon, not the host path that serves a real site.
 They do not cover the installer and host packages, the systemd Caddy helper and
 its socket, public DNS/TLS, the actual proxy header chain, a host reboot, two
-sites on one host, or the Debian/Ubuntu mount and permission behaviour. Until
-the checklist below has been run and recorded on a disposable Debian or Ubuntu
-VM, enabling the pilot on a production host is an explicit operator decision,
-not a claim that the host path is verified. The flag stays off by default and
-the disposable suites are never run against a production daemon.
+sites on one host, or the Debian/Ubuntu mount and permission behaviour. The
+checklist below was run and recorded on a disposable Ubuntu 26.04 VPS on
+2026-11-27 ([record](validation/managed-site-pilot-2026-11-27.md)): eleven of the
+twelve lines pass, and CI through the installed TLS proxy stays partial for the
+Basic Auth/Bearer conflict. Enabling the pilot on a production host remains an
+explicit operator decision, the flag stays off by default, and the published
+image must still be installed by digest and rerun before that path is called
+validated. The disposable suites are never run against a production daemon.
 
 1. Run the installer on a disposable VM and verify the panel health, the Caddy
    helper socket and `docker compose version`.
@@ -1532,8 +1542,9 @@ the disposable suites are never run against a production daemon.
     `restic check --read-data` on the maintenance host; confirm the operation
     added no lock object to the repository and no snapshot.
 
-Record the result with the release or pilot review. Do not use a production host
-as the test bed.
+Record the result with the release or pilot review. The 2026-11-27 run is
+recorded in [validation/managed-site-pilot-2026-11-27.md](validation/managed-site-pilot-2026-11-27.md).
+Do not use a production host as the test bed.
 
 ## Backups and rollback
 

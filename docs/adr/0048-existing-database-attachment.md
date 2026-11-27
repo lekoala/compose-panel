@@ -1,7 +1,8 @@
 # ADR 0048 — Attach a site to an existing database
 
 Status: Accepted (managed-site pilot, 2026-11-25). Implemented and proven on
-the disposable lab on 2026-11-25; the real-host checklist remains to be run.
+the disposable lab on 2026-11-25; the real-host SQL backup used one attached
+MariaDB on 2026-11-27 ([record](../validation/managed-site-pilot-2026-11-27.md)).
 
 ## Context
 

@@ -123,11 +123,11 @@ explicit project, working directory and files.
   SHA is only revalidated against its metadata and revision script. A directory
   that exists but is not marked complete for that SHA refuses.
 - [ADR 0045](0045-disposable-composer-preparation.md) adds the one fixed
-  Composer preparation a managed site may declare, in a disposable,
-  unprivileged container with only the staging path writable, no Docker socket,
-  no production credentials or database, bounded output and resources, and a
-  required dependency lockfile. npm, asset pipelines, arbitrary scripts and
-  plugins stay out.
+  Composer preparation a managed site may declare, in a disposable container
+  running as the staging-tree owner with only the staging path writable, no
+  Docker socket, no production credentials or database, bounded output and
+  resources, and a required dependency lockfile. npm, asset pipelines, arbitrary
+  scripts and plugins stay out.
 
 ### Activation
 

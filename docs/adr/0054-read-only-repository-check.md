@@ -1,7 +1,8 @@
 # ADR 0054 - Check the backup repository without changing it
 
 Status: Accepted (managed-site pilot, 2026-11-25). Implemented in the same
-change; the real-host checklist remains.
+change; the real-host checklist was run and recorded on 2026-11-27
+([record](../validation/managed-site-pilot-2026-11-27.md)).
 
 ## Context
 
