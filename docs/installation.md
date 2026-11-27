@@ -287,18 +287,34 @@ These checks do not run an installation on Debian or Ubuntu, and do not boot
 systemd. Direct writes of helper units and appended manual-deployment settings
 in `setup-caddy.sh` also remain candidates for atomic publication.
 
-The following **manual checks remain required** in disposable systemd VMs:
+The release gate ([ADR 0060](adr/0060-host-installation-validation-scope.md)) is
+one fresh-host run on the newest Debian stable and the newest Ubuntu LTS, on
+amd64. A release records these rows:
 
 | Distribution | Release | Architecture | Fresh private install | HTTPS + two logins | Rerun + reboot |
 | --- | --- | --- | --- | --- | --- |
-| Debian | 13 | amd64 | PASS | PASS | PASS |
-| Debian | 13 | arm64 | Pending | Pending | Pending |
-| Debian | 12 | amd64 | Pending | Pending | Pending |
-| Debian | 12 | arm64 | Pending | Pending | Pending |
-| Ubuntu | 24.04 | amd64 | Pending | Pending | Pending |
-| Ubuntu | 24.04 | arm64 | Pending | Pending | Pending |
-| Ubuntu | 26.04 | amd64 | PASS | PASS | PASS |
-| Ubuntu | 26.04 | arm64 | Pending | Pending | Pending |
+| Debian | 13 | amd64 | PASS (2026-11-27) | PASS | PASS |
+| Ubuntu | 26.04 | amd64 | PASS (2026-11-27) | PASS | PASS |
+
+Every other supported combination is **best effort**: the installer accepts it,
+but no fresh-host run is required and it is not described as validated. Those
+rows share the installer code, the fixtures and the multi-arch image with the
+gated rows, and are tested when a disposable host is available:
+
+| Distribution | Release | Architecture | Status |
+| --- | --- | --- | --- |
+| Debian | 13 | arm64 | best effort |
+| Debian | 12 | amd64 | best effort |
+| Debian | 12 | arm64 | best effort |
+| Ubuntu | 24.04 | amd64 | best effort |
+| Ubuntu | 24.04 | arm64 | best effort |
+| Ubuntu | 26.04 | arm64 | best effort |
+
+Debian 12 is a compatibility target: it stays accepted while Docker publishes
+`bookworm` packages ([ADR 0033](adr/0033-debian-host-installation.md)). The panel
+and the helper are known to run on arm64, and the release builds and scans a
+`linux/arm64` image, but the installer itself has not been run from scratch on
+arm64.
 
 Ubuntu 26.04 amd64 was exercised on 2026-11-27: a fresh installer install,
 HTTPS with Basic Auth, the helper socket, `doctor.sh --production`, a reboot and
@@ -311,10 +327,9 @@ fresh install over HTTPS with Basic Auth passed its access check, the helper soc
 `doctor.sh --production` were clean, and a reboot plus a rerun kept the same
 settings bytes and the same panel container. The SSH tunnel and the recipe
 prefill were checked; no application domain was attached on that host, so the
-application part of step 3 below is covered on Ubuntu only. Debian 12 and the
-arm64 rows remain pending.
+application part of step 3 below is covered on Ubuntu only.
 
-For each VM:
+For each gated VM:
 
 1. Run `--check`; compare system files and confirm no writes. Install privately,
    sign in through SSH and check container health and the helper status.

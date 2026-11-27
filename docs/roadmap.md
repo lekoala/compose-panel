@@ -15,7 +15,7 @@ Nothing below is scheduled or promised. Each item changes a documented guarantee
   image, host Caddy/helper, private SSH by default and optional HTTPS with Basic
   Auth, plus read-only diagnostics (`scripts/doctor.sh`).
   [Disposable VM validation](installation.md#verification-before-release)
-  remains required.
+  remains required for the gated rows ([ADR 0060](adr/0060-host-installation-validation-scope.md)).
 - **Use HTTPS and the SSH tunnel at the same time.** Done in 0.2.0 ([ADR 0012](adr/0012-multiple-access-origins.md)): `COMPOSE_PANEL_PROXY_ORIGINS` (a list) plus `COMPOSE_PANEL_ALLOW_LOOPBACK`. Host and Origin are validated per access point, and the cookie attribute is chosen per path.
 - **Login CSRF across tabs and access modes.** Done
   ([ADR 0055](adr/0055-login-csrf-across-tabs.md)): the sign-in page reuses a

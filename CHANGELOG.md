@@ -7,8 +7,15 @@
 - Debian 13 (trixie) amd64 is validated: a reset VPS ran the published 0.7.0
   image through a fresh installer install with HTTPS and Basic Auth, then
   `doctor.sh --production`, a reboot and a rerun that kept the same settings
-  bytes and the same panel container. Debian 12 and the arm64 rows remain
-  pending.
+  bytes and the same panel container.
+
+### Validation scope
+
+- The release gate is one fresh-host run on the newest Debian stable and the
+  newest Ubuntu LTS on amd64 ([ADR 0060](docs/adr/0060-host-installation-validation-scope.md)).
+  Debian 12 and arm64 stay supported as best effort: the installer still accepts
+  them and the shared checks cover them, but they are no longer listed as
+  pending release checks, and the checklist says what is proven for each row.
 
 ## 0.7.0
 

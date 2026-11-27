@@ -66,7 +66,9 @@ helper and one rendering function are the whole change.
 - The installer now names three distribution/release targets to validate on
   real systems; the disposable-VM checklist in
   [installation](../installation.md#verification-before-release) gains Debian
-  rows and stays *pending* until each row is recorded.
+  rows and stays *pending* until each row is recorded. The release gate and the
+  best-effort rows are defined by
+  [ADR 0060](0060-host-installation-validation-scope.md).
 - Debian 12 moves to oldstable: the row is removed when Docker stops
   publishing `bookworm` packages, not beforehand.
 - Debian derivatives (Kali, Raspberry Pi OS, Ubuntu-based images) stay
@@ -84,4 +86,6 @@ file for both families and the security-origin classifier, on both the Ubuntu
 CI runner and a Debian container. Real compatibility (APT, systemd, TLS and
 firewall behavior) still requires disposable Debian VMs, including reruns,
 interrupted runs and reboots, as recorded in
-[installation](../installation.md#verification-before-release).
+[installation](../installation.md#verification-before-release). The rows a
+release must run are defined by
+[ADR 0060](0060-host-installation-validation-scope.md).
