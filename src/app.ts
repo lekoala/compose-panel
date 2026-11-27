@@ -172,6 +172,7 @@ import { composerPreparation, MANAGED_SITE_RELEASE_LIMITS } from "./managed-site
 import { fetchAndPublishGitRelease } from "./git-release.ts";
 import {
     managedSiteAttemptPath,
+    parseProbeAnswer,
     pendingDeployAttempt,
     readBaseline,
     readPendingDeployAttempt,
@@ -5244,6 +5245,8 @@ export function createApp(options: AppOptions): App {
         reason?: string;
         pending: PendingDeployAttemptRead;
         baseline: boolean;
+        /** Pointer and probe answers, read again on every render (ADR 0043). */
+        serving?: { pointer: string; probe: string | null };
         drift?: string;
         database?: { ok: true } | { ok: false; reason: string };
         backup?: { check: { ok: true } | { ok: false; reason: string }; attempt: ManagedSiteBackupAttemptRead };
@@ -5261,6 +5264,13 @@ export function createApp(options: AppOptions): App {
             const manifest = parseManagedSiteManifest(file.source);
             if (!manifest.ok) return { reason: manifest.reason, pending, baseline: false };
             const baseline = await readBaseline(stackDir, manifest.manifest.siteId);
+            // The pointer and the answer of the fixed probe are the two facts a
+            // crash can separate. Reading them on every render is what lets the
+            // operator verify the state again after a documented host repair
+            // instead of discovering the disagreement on the next deploy.
+            const probeAnswer = baseline.ok && manifest.manifest.gateway ? await managedSiteProbe(manifest.manifest.gateway.port) : null;
+            const served = probeAnswer ? parseProbeAnswer(probeAnswer.status, probeAnswer.body) : null;
+            const serving = baseline.ok ? { pointer: baseline.releaseId, probe: served } : null;
             const drift = await managedSiteDriftReason(stackDir);
             const database = manifest.manifest.database ? await checkManagedSiteDatabaseEnvFile(stackDir, manifest.manifest) : undefined;
             const backup = manifest.manifest.backup
@@ -5285,6 +5295,7 @@ export function createApp(options: AppOptions): App {
                 manifest: manifest.manifest,
                 pending,
                 baseline: baseline.ok,
+                ...(serving ? { serving } : {}),
                 ...(drift ? { drift } : {}),
                 ...(database ? { database } : {}),
                 ...(backup ? { backup } : {}),
@@ -5444,6 +5455,26 @@ export function createApp(options: AppOptions): App {
         );
     }
 
+    /**
+     * The documented host recovery (deployment.md, "Failures and recovery"),
+     * with this site's real paths. Shown when the pointer and the probe
+     * disagree or when an attempt is unconfirmed: the panel never repairs by
+     * itself, and acknowledging does not choose between the two releases.
+     */
+    function managedSiteRecoveryCommands(name: string, manifest: ManagedSiteManifest): string {
+        const dir = join(stacksRoot, name);
+        const compose = `${dir}/compose.yaml`;
+        const port = manifest.gateway?.port;
+        const lines = [
+            `readlink ${dir}/site/runtime/current`,
+            `docker compose -p ${manifest.project} -f ${compose} ps -a`,
+            ...(port ? [`curl -fsS http://127.0.0.1:${port}/.compose-panel/revision`] : []),
+            `docker compose -p ${manifest.project} -f ${compose} up -d --no-deps --no-build --pull never --force-recreate ${manifest.services.runtime}`,
+            `docker compose -p ${manifest.project} -f ${compose} start ${manifest.services.gateway}`,
+        ];
+        return `<details><summary>Recovery commands for this site</summary><pre><code>${escapeHtml(lines.join("\n"))}</code></pre></details>`;
+    }
+
     function managedSiteSection(
         card: ManagedSiteCard | null,
         name: string,
@@ -5463,6 +5494,11 @@ export function createApp(options: AppOptions): App {
             return (
                 `<section class="card"><h2>Managed site</h2>` +
                 note("warn", MANAGED_SITE_PENDING_MESSAGE) +
+                note(
+                    "info",
+                    "Acknowledging only removes the guard: it resumes nothing, recreates nothing and chooses no release. Inspect the pointer, the containers and the probe below, repair from the host if you want the new release or the previous one, then acknowledge.",
+                ) +
+                (card.manifest ? managedSiteRecoveryCommands(name, card.manifest) : "") +
                 `<form method="post" action="${href}/deploy/acknowledge"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="attempt" value="${escapeHtml(card.pending.attempt.attemptId)}"><button class="btn" type="submit">Acknowledge attempt ${escapeHtml(card.pending.attempt.attemptId)}</button></form>` +
                 `</section>`
             );
@@ -5472,6 +5508,13 @@ export function createApp(options: AppOptions): App {
         }
         const manifest = card.manifest;
         const drift = card.drift ? note("warn", card.drift) : "";
+        const incoherent =
+            card.serving && card.serving.probe !== card.serving.pointer
+                ? note(
+                      "warn",
+                      `The pointer and the served revision disagree: current points at ${card.serving.pointer}, the probe answers ${card.serving.probe ?? "nothing"}. Nothing is resumed or repaired automatically; repair from the host with the commands below, then reload this page.`,
+                  ) + managedSiteRecoveryCommands(name, manifest)
+                : "";
         const databaseNote = card.database && !card.database.ok ? note("warn", card.database.reason) : "";
         const regenerate =
             card.drift && manifest.owner === "managed"
@@ -5482,6 +5525,7 @@ export function createApp(options: AppOptions): App {
             return (
                 `<section class="card"><h2>Managed site</h2>` +
                 meta +
+                incoherent +
                 drift +
                 databaseNote +
                 managedSiteBackupSection(card, manifest, href, csrf, busy, restoreSnapshot) +
@@ -5499,6 +5543,7 @@ export function createApp(options: AppOptions): App {
         return (
             `<section class="card"><h2>Managed site</h2>` +
             meta +
+            incoherent +
             drift +
             databaseNote +
             managedSiteBackupSection(card, manifest, href, csrf, busy, restoreSnapshot) +

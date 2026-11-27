@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Managed sites: a site whose `current` pointer and served revision disagree is
+  reported on its card, with the exact recovery commands for that site; the
+  card also explains that acknowledging an unconfirmed deploy resumes and
+  repairs nothing. Both facts are read again on every render, so the operator
+  can verify the state after the documented host repair. Found on the real host.
+
 - Managed sites: the retention preview works on a real repository. Backups now
   pass a stable Restic `--host` (the site id), so every snapshot of one site
   shares a `host,paths` group; without it the container hostname made each
