@@ -51,6 +51,10 @@ so a `$` in the Argon2id hash would be expanded and the panel would reject the
 password. On a machine that already has Bun you can instead run
 `COMPOSE_PANEL_PASSWORD='...' bun run hash-password`.
 
+The example is deliberately minimal. Caddy integration, path aliases and every
+advanced override are documented in [configuration.md](configuration.md); do
+not copy the tuning table into `compose-panel.env`.
+
 Rules that must stay true:
 
 - **Host path == container path** for stacks (`/opt/stacks:/opt/stacks` plus
@@ -814,12 +818,20 @@ does not change ordinary stacks.
 ### Enable it
 
 ```bash
-# /etc/compose-panel/compose-panel.env (or your container environment)
+# deploy/compose-panel.env (or the environment of your panel container)
 COMPOSE_PANEL_MANAGED_SITES_ENABLED=true
 ```
 
-The panel image installs Git and the OpenSSH client. With the flag
-off there is no deploy route, no site section and no manifest read.
+Then recreate the panel so the new environment is read:
+
+```bash
+docker compose -f deploy/compose.yaml up -d
+```
+
+The panel does not toggle this gate from the UI: it is a host/deployment
+decision, and the supported deployment does not give the panel its own env
+file. The panel image installs Git and the OpenSSH client. With the flag off
+there is no deploy route, no site section and no manifest read.
 
 ### Create a generated site
 

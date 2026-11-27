@@ -64,6 +64,13 @@ Nothing below is scheduled or promised. Each item changes a documented guarantee
   Private registries rely on an operator-provided `DOCKER_CONFIG`, not a
   credential UI. One global check, a 30-second budget, last result in memory,
   and a stale result is discarded rather than published.
+- **Read-only Settings/Integrations page.** Not scheduled and not a 0.7
+  prerequisite: one page that shows the effective capability flags and
+  integrations (managed sites, Caddy, database explorer, stacks directory,
+  Compose version), distinguishing *configured* from *verified*, without
+  secrets and without a second configuration mechanism. It would read the
+  existing env-derived configuration, not introduce `settings.json`, a writable
+  form or a per-flag host script.
 
 ## Docker storage
 - **Docker storage maintenance.** Done ([ADR 0040](adr/0040-docker-storage-maintenance.md)):
@@ -96,7 +103,11 @@ Nothing below is scheduled or promised. Each item changes a documented guarantee
 Opt-in and default-off (`COMPOSE_PANEL_MANAGED_SITES_ENABLED`). The pilot
 contracts are accepted ([ADR 0042](adr/0042-managed-site-ownership.md),
 [ADR 0043](adr/0043-bounded-git-release-lifecycle.md)). Manual deploy is
-implemented for an opted-in stack.
+implemented for an opted-in stack. This is a **temporary maturity gate**, not a
+long-term user preference: once the pilot is declared stable, the intended
+direction is default-on and then removal of the flag. No settings file, in-panel
+toggle or per-flag host script is planned; deployment configuration stays in the
+host env file.
 
 - **Managed site ownership.** A versioned `compose-panel-site.json` next to the
   Compose file, either opting a hand-written stack into one bind-mount release

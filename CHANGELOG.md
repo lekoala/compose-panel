@@ -273,6 +273,19 @@
   Ubuntu 26.04 amd64 is recorded in the 2026-11-27 run; the Debian rows of the
   disposable VM checklist are still pending.
 
+### Configuration
+
+- The environment examples are split by audience. `deploy/compose-panel.env.example`
+  is the minimal Compose operator file, `.env.example` is the minimal manual or
+  local file, and `docs/configuration.md` is the full reference: operator
+  settings, integrations, advanced tuning, security relaxations and internal
+  seams. The examples link to it instead of repeating tuning, test seams and
+  historical migration comments. `COMPOSE_PANEL_COMPOSE_ENGINE` and
+  `COMPOSE_PANEL_DOCKER_PATH` stay supported but are documented as internal
+  rather than presented as user settings. The managed-site flag stays a
+  temporary deployment gate; no settings file, in-panel toggle or per-flag host
+  script is added. Defaults are unchanged.
+
 ### Panel
 
 - Sign-in: reuse the login CSRF token across tabs (ADR 0055). Two sign-in tabs,

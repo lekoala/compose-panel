@@ -27,7 +27,7 @@ Every stack stays a normal Compose directory that `docker compose` can run on it
 
 ### Managed websites (optional, off by default)
 
-An opinionated hosting workflow for conventional websites, one stack per site. The pilot stays off until the real-host checklist in [docs/deployment.md](docs/deployment.md#remaining-real-host-validation) is recorded ([ADR 0056](docs/adr/0056-compose-first-web-hosting.md)).
+An opinionated hosting workflow for conventional websites, one stack per site. The real-host checklist in [docs/deployment.md](docs/deployment.md#remaining-real-host-validation) was recorded on 2026-11-27 ([record](docs/validation/managed-site-pilot-2026-11-27.md)); the pilot remains off by default and enabling it is an explicit operator decision ([ADR 0056](docs/adr/0056-compose-first-web-hosting.md)).
 
 - **Creates a managed PHP site**: a bounded form previews and writes a trusted `compose-panel-site.json`, a deterministic Compose file, an Nginx gateway policy and a pinned OPcache policy, with one reserved loopback port. It starts nothing; **Publish baseline** fetches the first immutable release, and generated-file drift or raw saves are refused server-side ([ADR 0042](docs/adr/0042-managed-site-ownership.md), [ADR 0043](docs/adr/0043-bounded-git-release-lifecycle.md)).
 - **Deploys one exact Git revision**: immutable releases, an atomic `current` switch, a forced runtime recreation and a verified serving revision over the actual loopback binding, with a probed code rollback and an attempt marker when the outcome is ambiguous ([ADR 0043](docs/adr/0043-bounded-git-release-lifecycle.md)). Private Git uses one read-only key and a pinned host key per site ([ADR 0047](docs/adr/0047-private-git-over-ssh.md)).
@@ -106,9 +106,10 @@ docker compose -f deploy/compose.yaml up -d
 
 The stacks directory must be mounted at the same path inside and outside the
 container. Backups, rollback and the release checklist are in
-[docs/deployment.md](docs/deployment.md). Every setting is listed in
-[.env.example](.env.example). If sign-in or a stack looks wrong, see
-[docs/troubleshooting.md](docs/troubleshooting.md).
+[docs/deployment.md](docs/deployment.md). Every setting is documented in
+[docs/configuration.md](docs/configuration.md); [.env.example](.env.example) is
+the minimal file for a manual or local run. If sign-in or a stack looks wrong,
+see [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Develop
 
@@ -166,6 +167,7 @@ The same pages are published as a static site at <https://lekoala.github.io/comp
 - [docs/architecture.md](docs/architecture.md) and [docs/adr/](docs/adr/): how it is built and why
 - [docs/security.md](docs/security.md): threat model and invariants
 - [docs/deployment.md](docs/deployment.md): deploying, backups, rollback, release checklist
+- [docs/configuration.md](docs/configuration.md): operator settings, integrations, advanced tuning and internal seams
 - [docs/installation.md](docs/installation.md): interactive Debian/Ubuntu installer, recovery and validation
 - [docs/troubleshooting.md](docs/troubleshooting.md): sign-in, stacks, logs and other common issues
 - [docs/migrating-from-dockge.md](docs/migrating-from-dockge.md): switching from Dockge, step by step

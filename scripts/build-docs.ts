@@ -43,6 +43,7 @@ const GUIDES: ReadonlyArray<{ src: string; label: string }> = [
     { src: "docs/architecture.md", label: "Architecture" },
     { src: "docs/security.md", label: "Security" },
     { src: "docs/installation.md", label: "Server installation" },
+    { src: "docs/configuration.md", label: "Configuration" },
     { src: "docs/deployment.md", label: "Deployment" },
     { src: "docs/operations.md", label: "Operations" },
     { src: "docs/integrations/libredb.md", label: "LibreDB explorer" },
@@ -50,6 +51,7 @@ const GUIDES: ReadonlyArray<{ src: string; label: string }> = [
     { src: "docs/migrating-from-dockge.md", label: "Migrating from Dockge" },
     { src: "docs/troubleshooting.md", label: "Troubleshooting" },
     { src: "docs/ci.md", label: "CI" },
+    { src: "docs/validation/managed-site-pilot-2026-11-27.md", label: "Pilot validation record" },
     { src: "docs/roadmap.md", label: "Roadmap" },
     { src: "CHANGELOG.md", label: "Changelog" },
 ];
