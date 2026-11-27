@@ -231,6 +231,14 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO libredb_ro;
 
 Do not reuse the application's full credentials, especially in production.
 
+With a `SELECT`-only account, LibreDB's **add**, **edit** and **delete**
+actions fail with a database permission error such as
+`INSERT command denied to user 'libredb_ro'`. That is the intended boundary,
+not a panel or explorer bug: the account can browse and query, and any write
+needs a separate account you grant deliberately. The explorer's role only
+decides which connections a user sees; the SQL grants decide what the
+connection may do.
+
 ## 6. Network isolation
 
 Attaching the explorer to the application's Compose network
