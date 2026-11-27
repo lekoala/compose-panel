@@ -2,9 +2,11 @@
 
 0.1 covers the V1 scope in [product.md](product.md). The milestones P0–P6 that got there are recorded in [CHANGELOG.md](../CHANGELOG.md).
 
-Nothing below is scheduled or promised. Each item changes a documented guarantee and needs its own ADR before any code.
+Compose Panel is **Compose-first web hosting**: one server, one trusted administrator, Compose files and the Docker CLI as sources of truth ([ADR 0056](adr/0056-compose-first-web-hosting.md)). The three product layers and the refused items live in [product.md](product.md).
 
-After V1 the direction is to understand the host the stacks run on, not only the stacks themselves: observe resource use and service health, and carry out targeted server maintenance — without becoming a general-purpose Linux administration panel. Working tagline: *Manage your stacks. Understand your server.*
+**Pilot gate.** The managed-site pilot stays off by default until the real-host checklist in [deployment.md](deployment.md#remaining-real-host-validation) is run and recorded on a disposable Debian or Ubuntu VM. No managed-site feature is added before that record exists.
+
+Nothing below is scheduled or promised. Each item changes a documented guarantee and needs its own ADR before any code.
 
 ## Access
 - **Host installation (Debian, Ubuntu).** Implemented ([ADR 0031](adr/0031-ubuntu-installer.md),
@@ -22,24 +24,34 @@ After V1 the direction is to understand the host the stacks run on, not only the
   Only a missing or malformed cookie is replaced, and the cookie/form equality,
   constant-time compare, Origin check and cookie attributes are unchanged.
 - **Access diagnostics (0.2.0).** A read-only `/access` page done in 0.2.0 ([ADR 0013](adr/0013-access-diagnostics.md)): it lists the configured paths with an honest status (verified by the panel / configured but unverifiable / verify externally) and never shows an access as secure from its configuration alone. No extra privileges.
-- **Optional host diagnostics (later).** Detect Caddy/Tailscale from a bounded, read-only JSON status file produced by an optional local collector with strictly limited permissions (`systemctl is-active caddy`, `tailscale status|serve|funnel --json`), disabled by default, served to the panel through a read-only mount — never a Tailscale or systemd socket, no keys or raw config. Own ADR first. Provider-agnostic: no Caddy/Tailscale detection hard-coded beyond the collected file.
-- **Server health page (later).** Fold the access diagnostics into a broader host view: external containers, systemd services and exposed ports, still read-only and without becoming a general Linux administration panel.
 
 ## Usability
 - **Controlled stack creation.** Done ([ADR 0024](adr/0024-controlled-stack-creation.md)): name, raw Compose and optional `.env`, validated in the final directory and published without overwrite or deployment. No templates or catalogue.
 - **Move between stacks without returning to the list.** Done in 0.2.0 ([ADR 0016](adr/0016-navigation-sidebar.md)): a persistent sidebar carries the section links, the stack list with the current stack highlighted, a local search filter, and a native mobile disclosure. Names only: no status, counter, badge or Docker call in the navigation.
-- **Per-stack network options** from a fixed allow-list, instead of editing raw YAML for common cases (see Dockge's edit screen).
 - **Application actions.** Done ([ADR 0026](adr/0026-application-toolbox.md)): a stack points, through an `x-compose-panel` Compose extension, at the services whose Composer/npm/Bun scripts are exposed from each project's own manifest, and the panel runs them non-interactively through the existing operations machinery. No terminal, no free arguments, one running container per service. The `exec` runner ([ADR 0036](adr/0036-exec-runner.md)) runs a fixed command declared per action, for images that ship no package manager.
 - **External database explorer link.** Done ([ADR 0027](adr/0027-external-database-explorer-links.md)): a stack declares a label and scalar query parameters in an `x-compose-panel.database` extension, and the panel shows a link to a separately deployed explorer (LibreDB Studio, Adminer…) behind a global base URL. Declarative only: the panel never contacts the explorer, holds no credential and opens no database. See the [LibreDB deployment example](integrations/libredb.md).
 - **Optional Caddy site management.** Done ([ADR 0030](adr/0030-optional-caddy-sites.md)): the stack page previews the managed Caddy file for a domain → loopback upstream mapping, and — with the opt-in host helper behind a systemd socket — attaches and detaches it with validation, reload and honest rollback. One domain per file, only panel-owned files, externally deployed stacks read-only, no DNS/HTTPS checks.
 
-## Engine support
-- **Podman.** Add a Podman `ComposeProvider` behind the existing boundary (ADR 0005). Announce compatibility only after integration tests cover `config`, `ps`, `pull`, `up`, `down`, project names and file mounts.
+## Updates (shared maintenance)
+- **Cross-stack update inventory.** One read-only page lists the distinct image
+  references that resolve to a newer digest upstream, the services affected, and
+  the reason each unprovable case stays unknown. Each reference is checked once,
+  one check at a time, results in process memory only, no pull and no new
+  privilege. Needs its own ADR (0057).
+- **Bounded grouped update.** Select stack + service targets, pull each distinct
+  reference once, then recreate only the selected services one stack at a time
+  under the existing stack lock. One batch at a time, a per-target result,
+  partial failure reported as a normal outcome, no cross-stack rollback, no
+  scheduler and no machine trigger. It turns the "one modifying operation per
+  stack" guarantee into a sequential multi-stack batch, so it needs ADR 0057.
+- **Verified recreation for managed sites.** A recreated managed runtime is
+  probed for the serving revision and its running image identity through the
+  existing deploy probe.
 
 ## Insights (read-only)
 - **Deployment metadata.** Done ([ADR 0023](adr/0023-deployment-metadata.md)): per-container OCI version, revision, source and local repository digests; separately declared `stack.*` labels for environment, branch, build and application links. No CI API or registry query. A declared `stack.managed-by` owner shows an informational badge and warning ([ADR 0025](adr/0025-declared-deployment-owner.md)).
-- **Docker container inspection.** Done ([ADR 0014](adr/0014-docker-container-inspection.md)): a read-only view of the containers running on the host that are not part of a managed stack: status, image, published ports, restart policy, health, mounts (collapsed) and on-demand logs, via a dedicated `ContainerInspector` boundary. Categories (`Managed`, `External Compose`, `Standalone`) are derived from Compose labels, never from the name. Distinct from the host server-health page below.
-- **Per-stack and per-container CPU/RAM**, a top-consumers view and Docker disk usage (`docker system df`). Done ([ADR 0015](adr/0015-readonly-engine-insights.md)): the read-only `/server` page reads `info`/`stats` on load and `system df` on demand behind a short TTL cache, with no daemon, database or retained history. Remaining: validate Podman output parity like the other commands.
+- **Docker container inspection.** Done ([ADR 0014](adr/0014-docker-container-inspection.md)): a read-only view of the containers running on the host that are not part of a managed stack: status, image, published ports, restart policy, health, mounts (collapsed) and on-demand logs, via a dedicated `ContainerInspector` boundary. Categories (`Managed`, `External Compose`, `Standalone`) are derived from Compose labels, never from the name.
+- **Per-stack and per-container CPU/RAM**, a top-consumers view and Docker disk usage (`docker system df`). Done ([ADR 0015](adr/0015-readonly-engine-insights.md)): the read-only `/server` page reads `info`/`stats` on load and `system df` on demand behind a short TTL cache, with no daemon, database or retained history. Podman output parity is not needed while the provider stays unplanned ([ADR 0056](adr/0056-compose-first-web-hosting.md)).
 - **Simplified service health**: `unhealthy`, restart loops, abnormal exits, surfaced with the stack they belong to. A current-state version (`unhealthy`/`restarting`, with non-zero exits listed apart) ships with `/server` (ADR 0015); restart-loop detection needs history and stays future.
 - **Recreate pending.** Done ([ADR 0032](adr/0032-recreate-pending.md)): compare each container's `com.docker.compose.config-hash` label with `compose config --hash`, so a service still running a previous `.env`/Compose configuration shows that **Up** (not Restart) is needed. Read-only, hashes only, no new action; Compose 5.5.0+ only, and services sharing another container's namespaces or volumes are left unmarked.
 - **Check a registry without pulling.** Done ([ADR 0041](adr/0041-targeted-pull-and-remote-image-check.md)):
@@ -53,15 +65,13 @@ After V1 the direction is to understand the host the stacks run on, not only the
   credential UI. One global check, a 30-second budget, last result in memory,
   and a stale result is discarded rather than published.
 
-## Host insights and maintenance
+## Docker storage
 - **Docker storage maintenance.** Done ([ADR 0040](adr/0040-docker-storage-maintenance.md)):
   the Server page prunes build cache and images older than a week, in three
   fixed scopes, one run at a time and never volumes or containers. Manual only:
   recurring cleanup stays a host timer and the panel never schedules it.
-- **Read-only host status** the container cannot see through namespaces: available packages and security updates, reboot required, filesystems, swap, zombie processes. Data comes from an optional, strictly allow-listed read-only host component — no arbitrary commands, no terminal, no free `sudo`.
-- **Targeted maintenance** using the distribution's own mechanism (for example `unattended-upgrades`): check, review and apply updates, then a controlled reboot with a separate confirmation. One package transaction at a time, audited, never a distribution upgrade. A single failing third-party repository should be identifiable and offered for temporary disable without blocking the rest.
-- **Host toolbox (later, not accepted).** A host-side runner, socket, sudoers entries or systemd units for administrator scripts stay out of scope; [ADR 0026](adr/0026-application-toolbox.md) covers only the application toolbox. A concrete need would need its own ADR.
-- Out of scope, even here: users, firewall, package repositories, arbitrary services and distribution upgrades. Compose Panel must not be marketed as a general server management panel.
+  Host-level visibility and maintenance are not planned; see *Explicitly not
+  planned*.
 
 ## Self-update
 - **Update Compose Panel from the browser.** Done in 0.3.0 ([ADR 0018](adr/0018-self-update.md)): About pulls the panel's own tag, then a one-shot updater container recreates only the panel service and waits for it to be healthy; the outcome is read back from Docker. Remaining: choosing a specific version (it would mean rewriting the image reference in the Compose file). A newer image is noticed without pulling it by *Check* on a deployed stack (ADR 0041).
@@ -195,7 +205,8 @@ implemented for an opted-in stack.
   data check and the restore proof stay operator procedures. Unit, app and
   disposable REST fixtures cover it; a real endpoint and a damaged repository
   remain in the real-host checklist.
-- **Next increments, each with its own ADR or vertical PR:** retention
+- **Next increments, each with its own ADR or vertical PR, and only after the
+  pilot gate above is recorded:** retention
   automation with a deletion credential and a protected recovery point;
   production cutover and cloning. The creation form, stable loopback
   binding and the existing Caddy
@@ -204,3 +215,32 @@ implemented for an opted-in stack.
   [deployment.md](deployment.md#remaining-real-host-validation); until that is
   recorded, the pilot stays off by default and enabling it on a production host
   is an explicit operator decision.
+
+## Explicitly not planned
+
+Each item is refused for a stated reason and can be reopened by a new ADR that
+names a concrete need ([ADR 0056](adr/0056-compose-first-web-hosting.md)). This
+is a decision about the current product, not a permanent prohibition.
+
+- **Podman provider.** It doubles the engine integration surface for a need that
+  is not recorded.
+- **Per-stack network options.** Parity with another panel's edit screen, not a
+  hosting need.
+- **General Docker management**: image, volume and network management UI,
+  registry UI, CVE scanning, automatic update policies, multi-host agents.
+- **Host-level visibility and server health** (packages, security updates,
+  reboot required, filesystems, swap, zombies, systemd services, exposed ports).
+  If a concrete hosting need appears, the only admissible form is a bounded
+  read-only collector; no host agent, no free `sudo`.
+- **Targeted host maintenance** through the distribution's own mechanism:
+  package transactions, `unattended-upgrades`, controlled reboot. Administering
+  the operating system is outside the product.
+- **Host toolbox**: a host-side runner, socket, sudoers entries or systemd units
+  for administrator scripts.
+- **Multi-user, roles, public API, notifications, alerts, retained monitoring
+  history.**
+- **Panel-managed scheduling** for backups, retention, updates or prune. The
+  prompt stays the panel; recurring work stays a host timer the administrator
+  installs.
+- **A second panel or agent reconciling the same stacks.** One mutator per stack;
+  another panel may coexist only on a separate set of directories.

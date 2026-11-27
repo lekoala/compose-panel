@@ -25,12 +25,98 @@ A trusted technical administrator. No multi-tenancy, no access for untrusted use
 - Single-administrator authentication, CSRF, correct sessions and minimal audit logging without secrets.
 - Update the panel itself from the browser, for the documented Docker deployment of the official image: pull its own image tag, install it only when its release and digest registration are at least 72 hours old and match the published digest, then recreate its container through an independent one-shot updater that keeps the previous image for rollback, with the outcome read back from Docker ([ADR 0018](adr/0018-self-update.md), [ADR 0028](adr/0028-versioned-release-registry.md)).
 
-## Out of scope (do not implement without an ADR)
-Agents, remote control, terminal / PTY, graphical Compose editor, generated templates/catalogues, general-purpose file manager, encrypted secrets editor, scheduler with panel-managed timers, public API, multi-user, monitoring with retained history or alerts, registry UI, plugins, Kubernetes, notifications. Raw single-directory stack creation is in scope (ADR 0024); broader file generation remains out of scope apart from the single managed-site profile in [ADR 0042](adr/0042-managed-site-ownership.md). A read-only resource snapshot is now in scope (ADR 0015); a time-series dashboard, alerting and host-level health remain out of scope until a new ADR. A declared, non-interactive **application** action toolbox is in scope ([ADR 0026](adr/0026-application-toolbox.md)), built from each project's own Composer/npm/Bun scripts: it is not the terminal or generic command execution that stays out of scope, and a host toolbox stays out of scope until a new ADR. A **declarative external link** to a database explorer is in scope ([ADR 0027](adr/0027-external-database-explorer-links.md)): the panel builds a URL from trusted configuration only, and never becomes a SQL client, a database proxy or a credential store. A **bounded, opt-in rollout of one declared service** is in scope ([ADR 0035](adr/0035-optional-service-rollout.md)): it replaces one service with a short overlap and a strict failure boundary, and is not a general orchestrator. A **managed-site pilot** is in scope ([ADR 0042](adr/0042-managed-site-ownership.md)): a single versioned manifest opts one hand-written Compose stack into one bind-mount release layout, and `owner: managed` generates that one fixed PHP profile from the same manifest. The creation form, preview, deterministic generated files, reserved loopback port, drift refusal and explicit regeneration are part of that pilot; the first release is an explicit baseline action, not a deployment. **Manual Git deployment** is in scope for those bind-mount stacks only ([ADR 0043](adr/0043-bounded-git-release-lifecycle.md)): immutable releases, an atomic pointer switch, a verified serving revision and a probed code rollback, with no scheduler, webhook, image build or database migration. The only build is the fixed disposable Composer preparation ([ADR 0045](adr/0045-disposable-composer-preparation.md)); npm, asset pipelines and arbitrary scripts stay out. An **existing database attachment** is in scope ([ADR 0048](adr/0048-existing-database-attachment.md)): one operator-provisioned database per site, one declared external network joined only by the runtime service, and an operator-owned env file; the panel never becomes a SQL client, a database proxy or a credential store. A **manual offsite backup** is in scope ([ADR 0049](adr/0049-offsite-backup-and-restore.md)): one operator-triggered Restic upload of the declared persistent roots and, optionally, one MariaDB dump, with fixed private credentials, pinned one-shot tooling and an accepted snapshot id; the panel deletes no snapshot and stores no credential value. A **verified restore into isolation** is in scope: one exact snapshot is extracted into a private directory, checked against its recorded hashes, and a SQL snapshot is imported into a disposable internal-network database; the live site is never overwritten. A **CI-triggered deploy** is in scope ([ADR 0050](adr/0050-ci-triggered-deploy.md)): one site-scoped bearer credential, a digest-only verifier file, and one bounded request that reuses the manual deploy and requires the tested SHA to equal the branch tip. A **timer-triggered backup request** is in scope ([ADR 0051](adr/0051-timer-triggered-backups.md)): an administrator-installed host timer uses a separate site-scoped bearer credential to request the same guarded backup, and the panel records and reports the last attempt, the last good snapshot, the last verified restore and an overdue state; the panel runs no timer. A **read-only retention preview** is in scope ([ADR 0052](adr/0052-retention-preview.md)): a declared `keep-*` policy is measured with the pinned Restic client's own `forget --dry-run`, and the panel shows the exact removal set and warns when it contains the last good or last verified snapshot; the panel runs no prune, deletes no snapshot and holds no deletion credential. A **read-only snapshot inventory** is in scope ([ADR 0053](adr/0053-read-only-snapshot-inventory.md)): the site card lists this site's tagged ids and timestamps and pre-fills the exact-id restore form; the panel extracts, deletes and stores nothing. A **read-only repository check** is in scope ([ADR 0054](adr/0054-read-only-repository-check.md)): one bounded Restic structure check plus a 32 MiB data sample under the stack lock, with fixed messages and no repair, deletion, unlock or stored fact. Live restore, panel-owned scheduling, retention automation, a second runtime profile, generic webhooks and provider-specific machine identities stay out of scope until their own ADRs.
+## Shape
+
+Compose Panel is a Compose-first hosting panel: one server, one trusted
+administrator, Compose files on disk and the Docker CLI as the sources of truth
+([ADR 0056](adr/0056-compose-first-web-hosting.md)). Three layers share that
+ground.
+
+| Layer | Content | Status |
+| --- | --- | --- |
+| Compose applications | Stacks and services, raw configuration, logs and diagnostics, declared application actions, bounded rollout, optional Caddy domain attach | Core |
+| Managed websites | PHP provisioning, Git releases, Composer preparation, deploy and rollback, existing database attachment, offsite backup and verified restore | Optional, opt-in, off by default |
+| Shared maintenance | Image checks, bounded grouped updates, read-only Docker diagnostics | Crosses both layers |
+
+An item belongs to *shared maintenance* when it acts on the same facts for a
+hand-written stack and for a managed site. Grouped updates are the current
+example: they concern any service on any stack, not only a managed site.
+
+## Accepted scope extensions
+
+Each extension below is in scope, bounded by its own ADR, and none of them
+widens the access model: one administrator, loopback binding, no database, no
+scheduler.
+
+- A bounded, opt-in rollout of one declared service, which is not a general
+  orchestrator ([ADR 0035](adr/0035-optional-service-rollout.md)).
+- A declared, non-interactive application action toolbox built from each
+  project's own Composer/npm/Bun scripts, not a terminal and not generic
+  command execution ([ADR 0026](adr/0026-application-toolbox.md)).
+- A declarative external link to a database explorer: a URL built from trusted
+  configuration, never a SQL client or a credential store
+  ([ADR 0027](adr/0027-external-database-explorer-links.md)).
+- The managed-site pilot: one versioned manifest opts a hand-written stack into
+  one bind-mount release layout, or generates the one fixed PHP profile
+  ([ADR 0042](adr/0042-managed-site-ownership.md)). The creation form, preview,
+  deterministic generated files, reserved loopback port, drift refusal and
+  explicit regeneration are part of it; the first release is an explicit
+  baseline action, not a deployment.
+- Manual Git deployment for those bind-mount stacks only: immutable releases, an
+  atomic pointer switch, a verified serving revision and a probed code rollback,
+  with no scheduler, webhook, image build or migration
+  ([ADR 0043](adr/0043-bounded-git-release-lifecycle.md)).
+- The fixed disposable Composer preparation; npm, asset pipelines and arbitrary
+  scripts stay out ([ADR 0045](adr/0045-disposable-composer-preparation.md)).
+- An existing database attachment: one operator-provisioned database per site,
+  one declared external network joined only by the runtime service, and an
+  operator-owned env file; the panel never connects, runs SQL or stores a
+  credential ([ADR 0048](adr/0048-existing-database-attachment.md)).
+- A manual offsite backup and a verified restore into isolation: declared
+  persistent roots and one optional dump, fixed private credentials, pinned
+  one-shot tooling and an accepted snapshot id; no deletion, no scheduler and no
+  stored credential value ([ADR 0049](adr/0049-offsite-backup-and-restore.md)).
+- Site-scoped machine triggers for deploy and backup: a digest-only verifier, a
+  bounded request window and a consumed nonce; the panel runs no timer
+  ([ADR 0050](adr/0050-ci-triggered-deploy.md),
+  [ADR 0051](adr/0051-timer-triggered-backups.md)).
+- Read-only retention preview, snapshot inventory and repository check: they
+  measure and report, and never delete, repair or unlock
+  ([ADR 0052](adr/0052-retention-preview.md),
+  [ADR 0053](adr/0053-read-only-snapshot-inventory.md),
+  [ADR 0054](adr/0054-read-only-repository-check.md)).
 
 Managed-site Git sources can use public HTTPS or private SSH with a
 repository-scoped read-only key and an independently pinned host key
 ([ADR 0047](adr/0047-private-git-over-ssh.md)).
+
+## Explicitly not planned
+
+Each item is refused for a stated reason and can be reopened by a new ADR that
+names a concrete need ([ADR 0056](adr/0056-compose-first-web-hosting.md)). "Not
+planned" is a decision about the current product, not a permanent prohibition.
+
+- Podman provider, per-stack network options, volume/network/image management
+  UI, registry UI, CVE scanning, automatic update policies, panel-managed
+  scheduling.
+- Multi-user, roles, public API, notifications, alerts, monitoring with retained
+  history.
+- Host toolbox and operating-system administration: package transactions, reboot
+  orchestration, firewall, users, package repositories, distribution upgrades.
+- Agents, remote control, terminal / PTY, general-purpose file manager,
+  graphical Compose editor, generated templates/catalogues, encrypted secrets
+  editor, plugins, Kubernetes.
+- A second panel or agent reconciling the same stacks: one mutator per stack.
+
+Host visibility is admitted in one form only: if a concrete hosting need appears
+(filesystem pressure, reboot required, memory saturation), a bounded read-only
+collector may report it. Administering the operating system stays outside the
+product.
+
+Deferred to their own ADR, and therefore not refused: live promotion of a
+restored snapshot, retention automation with a separate deletion credential,
+production cutover and cloning, a second runtime profile, support for Compose
+override files, and a machine trigger for the rollout of an ordinary stack.
 
 ## Assumed non-goals
 - No guaranteed operation outcome after a panel crash: the outcome may be unknown.

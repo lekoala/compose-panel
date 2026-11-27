@@ -4,6 +4,7 @@ Read `README.md`, `docs/product.md`, `docs/architecture.md`, `docs/security.md`,
 
 ## Non-negotiable scope
 - One local Linux Docker Engine and one Bun web process. Single trusted administrator.
+- Compose-first web hosting ([ADR 0056](docs/adr/0056-compose-first-web-hosting.md)): the Compose applications layer is core, managed websites are an optional pilot, and image checks, grouped updates and Docker diagnostics are shared. General Docker management and operating-system administration are explicitly not planned; see [product.md](docs/product.md) before adding scope.
 - Existing Compose directories are the source of truth. Docker is the source of truth for container state.
 - HTML from the server, minimal vanilla JS, optional pinned static Actual CSS. No Vue, React, Socket.IO, ORM, Redis, scheduler, generic job framework, remote agents, or interactive terminal.
 - No arbitrary Docker command or arbitrary file browser. Only explicit allowed actions. Docker storage maintenance (ADR 0040) is part of that allow-list: three fixed prune scopes with a one-week age floor, never volumes, containers or networks, and never `docker system prune`. No scheduler.
