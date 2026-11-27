@@ -291,7 +291,7 @@ The following **manual checks remain required** in disposable systemd VMs:
 
 | Distribution | Release | Architecture | Fresh private install | HTTPS + two logins | Rerun + reboot |
 | --- | --- | --- | --- | --- | --- |
-| Debian | 13 | amd64 | Pending | Pending | Pending |
+| Debian | 13 | amd64 | PASS | PASS | PASS |
 | Debian | 13 | arm64 | Pending | Pending | Pending |
 | Debian | 12 | amd64 | Pending | Pending | Pending |
 | Debian | 12 | arm64 | Pending | Pending | Pending |
@@ -303,7 +303,16 @@ The following **manual checks remain required** in disposable systemd VMs:
 Ubuntu 26.04 amd64 was exercised on 2026-11-27: a fresh installer install,
 HTTPS with Basic Auth, the helper socket, `doctor.sh --production`, a reboot and
 reruns; then the published 0.7.0 image was installed by digest on the same host
-and the installer reran. The Debian and arm64 rows remain pending.
+and the installer reran.
+
+Debian 13 (trixie) amd64 was exercised on 2026-11-27 on a reset OVH VPS with the
+published 0.7.0 image (`sha256:cc15ece0…`): a read-only `--check` passed, a
+fresh install over HTTPS with Basic Auth passed its access check, the helper socket and
+`doctor.sh --production` were clean, and a reboot plus a rerun kept the same
+settings bytes and the same panel container. The SSH tunnel and the recipe
+prefill were checked; no application domain was attached on that host, so the
+application part of step 3 below is covered on Ubuntu only. Debian 12 and the
+arm64 rows remain pending.
 
 For each VM:
 

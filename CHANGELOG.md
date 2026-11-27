@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Installer
+
+- Debian 13 (trixie) amd64 is validated: a reset VPS ran the published 0.7.0
+  image through a fresh installer install with HTTPS and Basic Auth, then
+  `doctor.sh --production`, a reboot and a rerun that kept the same settings
+  bytes and the same panel container. Debian 12 and the arm64 rows remain
+  pending.
+
 ## 0.7.0
 
 Released 2026-11-27. This release adds curated Compose recipes (LibreDB Studio
