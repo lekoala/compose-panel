@@ -257,6 +257,34 @@ Stack containers and files are kept. Caddy, the helper, APT repositories and
 security-update policy remain installed; remove or change those manually after
 reviewing the application domains that use them.
 
+## Day-two operations
+
+`scripts/host-ops.sh` groups the routine host changes that are not a product
+feature. Each command prompts for the new password without echoing it, writes a
+timestamped backup next to the file it edits, validates the result and reports
+what it did:
+
+```sh
+sudo bash scripts/host-ops.sh panel-password
+sudo bash scripts/host-ops.sh https-password panel.example.org
+sudo bash scripts/host-ops.sh managed-sites on|off
+```
+
+- `panel-password` hashes the password with the running panel image, rewrites
+  `COMPOSE_PANEL_ADMIN_PASSWORD_HASH` and recreates the panel, which ends every
+  session.
+- `https-password` replaces the bcrypt hash of the single Basic Auth user in the
+  named `Caddyfile` block and reloads Caddy. For the panel's own domain it also
+  updates `COMPOSE_PANEL_INSTALLER_PROXY_HASH`, so a later installer rerun does
+  not restore the old password.
+- `managed-sites` writes `COMPOSE_PANEL_MANAGED_SITES_ENABLED` and recreates the
+  panel; the flag is read at startup.
+
+The script accepts only these commands. It refuses a settings file that is not
+root-owned `0600` and a site block without exactly one Basic Auth user. It does
+not change a LibreDB administrator password once LibreDB has seeded it: use
+LibreDB's Admin > Accounts.
+
 ## Verification before release
 
 Automated tests use temporary files and fake Docker/systemd/Caddy executables.

@@ -4,6 +4,11 @@
 
 ### Installer
 
+- `scripts/host-ops.sh` adds three explicit day-two commands: rotate the panel
+  administrator password through the running image, rotate the Basic Auth
+  password of one HTTPS site (keeping the installer's stored hash in sync for
+  the panel domain), and toggle the managed-site flag. Each command keeps a
+  timestamped backup and refuses anything outside those actions.
 - Debian 13 (trixie) amd64 is validated: a reset VPS ran the published 0.7.0
   image through a fresh installer install with HTTPS and Basic Auth, then
   `doctor.sh --production`, a reboot and a rerun that kept the same settings
