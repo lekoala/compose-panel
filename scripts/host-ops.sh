@@ -44,7 +44,9 @@ require_python() {
 }
 
 require_installer() {
-    [ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] || die "No installer settings at $ENV_FILE."
+    if [ ! -f "$ENV_FILE" ] || [ -L "$ENV_FILE" ]; then
+        die "No installer settings at $ENV_FILE."
+    fi
     [ "$(stat -c '%u %a' "$ENV_FILE")" = "0 600" ] || die "$ENV_FILE must be a root-owned 0600 file."
 }
 
@@ -214,7 +216,9 @@ https_password() {
     [ "$#" -eq 1 ] || die "Usage: host-ops.sh https-password <domain>."
     [[ "$domain" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] ||
         die "Not a lowercase DNS name: $domain"
-    [ -f "$CADDYFILE" ] && [ ! -L "$CADDYFILE" ] || die "No regular $CADDYFILE."
+    if [ ! -f "$CADDYFILE" ] || [ -L "$CADDYFILE" ]; then
+        die "No regular $CADDYFILE."
+    fi
     user="$(https_user "$domain")" || die "No single Basic Auth user in the $domain block."
     printf 'Changing the HTTPS password for %s (user %s).\n' "$domain" "$user"
     read_secret password '  New HTTPS password: ' 12 72
