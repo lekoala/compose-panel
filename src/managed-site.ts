@@ -9,6 +9,8 @@
  * with the canonical stack directory it already validated.
  */
 
+import { parseExplorerDeclaration, type DatabaseExplorer } from "./database.ts";
+
 export const MANAGED_SITE_MANIFEST_FILE = "compose-panel-site.json";
 export const MANAGED_SITE_MANIFEST_MAX_BYTES = 64 * 1024;
 export const MANAGED_SITE_VERSION = 1;
@@ -18,7 +20,14 @@ export const MANAGED_SITE_DATABASE_VERSION = 2;
 export const MANAGED_SITE_BACKUP_VERSION = 3;
 /** The CI slice also lands in manifest version 3 (ADR 0050). */
 export const MANAGED_SITE_CI_VERSION = 3;
-export const MANAGED_SITE_VERSIONS = [MANAGED_SITE_VERSION, MANAGED_SITE_DATABASE_VERSION, MANAGED_SITE_BACKUP_VERSION] as const;
+/** The declarative explorer link lands in manifest version 4 (ADR 0059). */
+export const MANAGED_SITE_EXPLORER_VERSION = 4;
+export const MANAGED_SITE_VERSIONS = [
+    MANAGED_SITE_VERSION,
+    MANAGED_SITE_DATABASE_VERSION,
+    MANAGED_SITE_BACKUP_VERSION,
+    MANAGED_SITE_EXPLORER_VERSION,
+] as const;
 export type ManagedSiteVersion = (typeof MANAGED_SITE_VERSIONS)[number];
 export const MANAGED_SITE_PUBLIC_ROOT = "public";
 export const MANAGED_SITE_PROFILE = "php-front-controller";
@@ -264,6 +273,12 @@ export interface ManagedSiteManifest {
     };
     /** Optional existing database attachment (ADR 0048). */
     database?: ManagedSiteDatabase;
+    /**
+     * `managed` only: optional declarative explorer link for this site's card
+     * (ADR 0059). It is UI-only: the panel reads it from the manifest instead of
+     * generating a Compose extension, so the generated files never change.
+     */
+    databaseExplorer?: DatabaseExplorer;
     /** `managed` only: optional offsite backup declaration (ADR 0049). */
     backup?: ManagedSiteBackup;
     /** `managed` only: optional CI-triggered deploy credential (ADR 0050). */
@@ -399,6 +414,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
             "publicRoot",
             "runtime",
             "database",
+            "databaseExplorer",
             "backup",
             "ci",
             "build",
@@ -530,10 +546,34 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         database = { kind, engine, network };
     }
 
+    let databaseExplorer: DatabaseExplorer | undefined;
+    if (root.databaseExplorer !== undefined) {
+        if (version < MANAGED_SITE_EXPLORER_VERSION) {
+            return {
+                ok: false,
+                reason: `The databaseExplorer block requires manifest version ${MANAGED_SITE_EXPLORER_VERSION} or later.`,
+            };
+        }
+        if (owner !== "managed") {
+            return {
+                ok: false,
+                reason: 'databaseExplorer belongs to owner "managed": an opt-in stack declares the link in its own Compose file.',
+            };
+        }
+        const candidate = asRecord(root.databaseExplorer);
+        if (!candidate) return { ok: false, reason: "databaseExplorer must be an object." };
+        const explorerUnknown = unknownField(candidate, ["label", "query"], "databaseExplorer.");
+        if (explorerUnknown) return explorerUnknown;
+        const explorer = parseExplorerDeclaration(candidate, "databaseExplorer");
+        if (!explorer.ok) return { ok: false, reason: explorer.error };
+        if (!explorer.value) return { ok: false, reason: "databaseExplorer must be an object." };
+        databaseExplorer = explorer.value;
+    }
+
     let backup: ManagedSiteBackup | undefined;
     if (root.backup !== undefined) {
-        if (version !== MANAGED_SITE_BACKUP_VERSION) {
-            return { ok: false, reason: `The backup block requires manifest version ${MANAGED_SITE_BACKUP_VERSION}.` };
+        if (version < MANAGED_SITE_BACKUP_VERSION) {
+            return { ok: false, reason: `The backup block requires manifest version ${MANAGED_SITE_BACKUP_VERSION} or later.` };
         }
         if (owner !== "managed") {
             return { ok: false, reason: 'backup belongs to owner "managed": an opt-in stack declares no persistent roots.' };
@@ -654,8 +694,8 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
 
     let ci: ManagedSiteCi | undefined;
     if (root.ci !== undefined) {
-        if (version !== MANAGED_SITE_CI_VERSION) {
-            return { ok: false, reason: `The ci block requires manifest version ${MANAGED_SITE_CI_VERSION}.` };
+        if (version < MANAGED_SITE_CI_VERSION) {
+            return { ok: false, reason: `The ci block requires manifest version ${MANAGED_SITE_CI_VERSION} or later.` };
         }
         if (owner !== "managed") {
             return { ok: false, reason: 'ci belongs to owner "managed": an opt-in stack has no generated deploy contract.' };
@@ -763,6 +803,7 @@ export function parseManagedSiteManifest(source: string): ManagedSiteManifestRes
         publicRoot: MANAGED_SITE_PUBLIC_ROOT,
         runtime: image === undefined ? { profile: MANAGED_SITE_PROFILE } : { profile: MANAGED_SITE_PROFILE, image },
         ...(database ? { database } : {}),
+        ...(databaseExplorer ? { databaseExplorer } : {}),
         ...(backup ? { backup } : {}),
         ...(ci ? { ci } : {}),
         ...(build ? { build } : {}),

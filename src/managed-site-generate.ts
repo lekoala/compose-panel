@@ -251,6 +251,14 @@ function serializeManifest(manifest: ManagedSiteManifest): Record<string, unknow
         ...(manifest.database
             ? { database: { kind: manifest.database.kind, engine: manifest.database.engine, network: manifest.database.network } }
             : {}),
+        ...(manifest.databaseExplorer
+            ? {
+                  databaseExplorer: {
+                      ...(manifest.databaseExplorer.label ? { label: manifest.databaseExplorer.label } : {}),
+                      query: manifest.databaseExplorer.query,
+                  },
+              }
+            : {}),
         ...(manifest.backup ? { backup: manifest.backup } : {}),
         ...(manifest.ci ? { ci: manifest.ci } : {}),
         ...(manifest.build ? { build: { kind: manifest.build.kind } } : {}),

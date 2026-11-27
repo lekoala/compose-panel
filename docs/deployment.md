@@ -889,8 +889,9 @@ checks that the file is provisioned before the site starts.
    panel, on a private Docker network. One engine per site: `mariadb`, `mysql`
    or `postgresql`.
 2. For a generated site, edit `compose-panel-site.json` to set
-   `"version": 2` and add the block below, then use **Regenerate generated
-   files**. The creation form offers the same fields for a new site.
+   `"version": 2` and add the block below (version 4 when the site also declares
+   `databaseExplorer`), then use **Regenerate generated files**. The creation
+   form offers the same fields for a new site.
 3. Write `<stack>/site/private/database.env` with the application's own
    variables (`DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, or
    whatever the application reads). It must be a regular file owned by the
@@ -918,6 +919,25 @@ one site's credentials cannot read another's data. The panel cannot verify those
 grants. Dumps belong to the manual backup below; migrations and live restores are
 not part of this attachment ([ADR 0048](adr/0048-existing-database-attachment.md),
 [ADR 0049](adr/0049-offsite-backup-and-restore.md)).
+
+To open that database from the site card, declare the same explorer link an
+ordinary stack uses, in the version 4 manifest
+([ADR 0059](adr/0059-managed-site-database-explorer-link.md)):
+
+```json
+"version": 4,
+"databaseExplorer": {
+  "label": "LibreDB",
+  "query": {
+    "connection": "seed:acme-shop"
+  }
+}
+```
+
+The block is UI-only: the panel reads it from the manifest, never writes it into
+the generated Compose file, and the generated files stay as they are. It requires
+`COMPOSE_PANEL_DATABASE_EXPLORER_URL` and carries no credential. Version 4 keeps
+the optional `database`, `backup`, `ci` and `build` blocks.
 
 ### Manual offsite backup
 

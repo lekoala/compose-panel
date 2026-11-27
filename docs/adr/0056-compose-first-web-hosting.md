@@ -75,7 +75,9 @@ product, not a permanent prohibition.
   reboot orchestration, firewall, users, package repositories, distribution
   upgrades.
 - Agents, remote control, terminal / PTY, general-purpose file manager,
-  graphical Compose editor, templates and catalogues, plugins, Kubernetes.
+  graphical Compose editor, templates and catalogues, plugins, Kubernetes. A
+  curated recipe as a reviewed prefill of the existing creation form is not a
+  catalogue and is admitted by [ADR 0058](0058-curated-compose-recipes.md).
 - A second panel or agent reconciling the same stacks.
 
 Host visibility stays admissible in one form only: if a concrete hosting need

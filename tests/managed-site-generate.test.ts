@@ -289,4 +289,35 @@ describe("buildManagedSite", () => {
         if (!parsed.ok) return;
         expect(renderManagedSiteArtifacts(STACK, parsed.manifest).ok).toBe(false);
     });
+
+    test("keeps a databaseExplorer block in the manifest and out of the generated files", () => {
+        const built = buildManagedSite({
+            stackDir: STACK,
+            siteId: "acme-shop",
+            project: "acme-shop",
+            port: 41001,
+            gitUrl: "https://github.com/acme/shop.git",
+            gitRef: "refs/heads/main",
+            channel: "php-8.3",
+            database: { engine: "mariadb", network: "acme-db" },
+        });
+        expect(built.ok).toBe(true);
+        if (!built.ok) return;
+        const parsed = parseManagedSiteManifest(
+            JSON.stringify({
+                ...built.manifest,
+                version: 4,
+                databaseExplorer: { label: "LibreDB", query: { connection: "seed:acme-shop" } },
+            }),
+        );
+        expect(parsed.ok).toBe(true);
+        if (!parsed.ok) return;
+        const rendered = renderManagedSiteArtifacts(STACK, parsed.manifest);
+        expect(rendered.ok).toBe(true);
+        if (!rendered.ok) return;
+        expect(rendered.manifestSource).toContain('"databaseExplorer"');
+        expect(rendered.manifestSource).toContain('"connection": "seed:acme-shop"');
+        expect(rendered.artifacts.compose).not.toContain("x-compose-panel");
+        expect(rendered.artifacts.compose).toBe(built.artifacts.compose);
+    });
 });

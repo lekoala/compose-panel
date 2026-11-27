@@ -84,6 +84,12 @@ Nothing below is scheduled or promised. Each item changes a documented guarantee
 - **Update Compose Panel from the browser.** Done in 0.3.0 ([ADR 0018](adr/0018-self-update.md)): About pulls the panel's own tag, then a one-shot updater container recreates only the panel service and waits for it to be healthy; the outcome is read back from Docker. Remaining: choosing a specific version (it would mean rewriting the image reference in the Compose file). A newer image is noticed without pulling it by *Check* on a deployed stack (ADR 0041).
 
 ## Compose
+- **Curated Compose recipes.** Done in 0.7.0 ([ADR 0058](adr/0058-curated-compose-recipes.md)):
+  **New stack** offers a reviewed, version-pinned prefill for a complementary
+  hosting service (LibreDB Studio first). It is not an installer: it fills the
+  existing form, generates no secret, allocates no port and attaches no domain,
+  and the stack is ordinary after creation. A catalogue, a remote registry and a
+  recipe-specific lifecycle stay out of scope.
 - **Targeted pull.** Done ([ADR 0041](adr/0041-targeted-pull-and-remote-image-check.md)):
   `pull` accepts one validated service, so a corrected PHP or Nginx image can be
   downloaded and applied with **Pull** then **Up** on that service alone, without
@@ -108,6 +114,11 @@ long-term user preference: once the pilot is declared stable, the intended
 direction is default-on and then removal of the flag. No settings file, in-panel
 toggle or per-flag host script is planned; deployment configuration stays in the
 host env file.
+- **Explorer link on a managed site.** Done in 0.7.0
+  ([ADR 0059](adr/0059-managed-site-database-explorer-link.md)): the version 4
+  manifest accepts the same bounded `label`/`query` declaration as the Compose
+  extension, and the panel reads it directly. The generated Compose file and its
+  generation are unchanged, so no site needs regeneration.
 
 - **Managed site ownership.** A versioned `compose-panel-site.json` next to the
   Compose file, either opting a hand-written stack into one bind-mount release

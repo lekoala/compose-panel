@@ -96,7 +96,8 @@ describe("parseManagedSiteManifest", () => {
     });
 
     test("refuses another version, a missing version and a string version", () => {
-        expect(rejected(optIn({ version: 4 }))).toBe(true);
+        expect(rejected(optIn({ version: 5 }))).toBe(true);
+        expect(rejected(optIn({ version: 4 }))).toBe(false);
         expect(rejected(optIn({ version: 2 }))).toBe(false);
         expect(rejected(optIn({ version: 3 }))).toBe(false);
         expect(rejected(optIn({ version: "1" }))).toBe(true);
@@ -134,6 +135,28 @@ describe("parseManagedSiteManifest", () => {
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.manifest.database).toEqual({ kind: "existing", engine: "mysql", network: "acme-db" });
+    });
+
+    test("accepts a version 4 database explorer on a managed site only", () => {
+        const explorer = { label: "LibreDB", query: { connection: "seed:acme-shop" } } as const;
+        const result = parse(managed({ version: 4, databaseExplorer: explorer }));
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.manifest.databaseExplorer).toEqual(explorer);
+
+        expect(rejected(managed({ version: 3, databaseExplorer: explorer }))).toBe(true);
+        expect(rejected(optIn({ version: 4, databaseExplorer: explorer }))).toBe(true);
+        expect(rejected(managed({ version: 4, databaseExplorer: { ...explorer, extra: 1 } }))).toBe(true);
+        expect(rejected(managed({ version: 4, databaseExplorer: "libredb" }))).toBe(true);
+        expect(rejected(managed({ version: 4, databaseExplorer: { label: 12 } }))).toBe(true);
+        expect(rejected(managed({ version: 4, databaseExplorer: { query: { port: 5432 } } }))).toBe(true);
+        expect(rejected(managed({ version: 4, databaseExplorer: { query: { port: "5432" } } }))).toBe(false);
+    });
+
+    test("keeps the backup and ci blocks valid in a later manifest version", () => {
+        const backup = { kind: "restic", repository: "rest:https://backup.example.test/acme-shop" } as const;
+        expect(rejected(managed({ version: 4, backup }))).toBe(false);
+        expect(rejected(managed({ version: 4, ci: { kind: "token" } }))).toBe(false);
     });
 
     test("accepts a version 3 backup block on a managed site", () => {

@@ -53,15 +53,25 @@ export function parseDatabaseExplorer(composeSource: string): ParseResult<Databa
     const extension = readComposeExtension(composeSource);
     if (!extension.ok) return extension;
     const raw = extension.value ? extension.value["database"] : undefined;
+    return parseExplorerDeclaration(raw, "x-compose-panel.database");
+}
+
+/**
+ * Validate one `{ label?, query? }` declaration. The Compose extension and the
+ * managed-site manifest carry the same model, so both go through this function
+ * and share its bounds and messages: a second, looser parser would let one
+ * source accept what the other refuses.
+ */
+export function parseExplorerDeclaration(raw: unknown, prefix: string): ParseResult<DatabaseExplorer | null> {
     if (raw === undefined || raw === null) return { ok: true, value: null };
     const database = asRecord(raw);
-    if (!database) return { ok: false, error: "x-compose-panel.database must be a mapping." };
+    if (!database) return { ok: false, error: `${prefix} must be a mapping.` };
 
     let label: string | null = null;
     const rawLabel = database["label"];
     if (rawLabel !== undefined && rawLabel !== null) {
         if (typeof rawLabel !== "string" || !isUsableText(rawLabel, MAX_LABEL)) {
-            return { ok: false, error: `x-compose-panel.database.label must be text of 1-${MAX_LABEL} characters.` };
+            return { ok: false, error: `${prefix}.label must be text of 1-${MAX_LABEL} characters.` };
         }
         label = rawLabel;
     }
@@ -70,10 +80,10 @@ export function parseDatabaseExplorer(composeSource: string): ParseResult<Databa
     const rawQuery = database["query"];
     if (rawQuery !== undefined && rawQuery !== null) {
         const queryRecord = asRecord(rawQuery);
-        if (!queryRecord) return { ok: false, error: "x-compose-panel.database.query must be a mapping of scalar values." };
+        if (!queryRecord) return { ok: false, error: `${prefix}.query must be a mapping of scalar values.` };
         const entries = Object.entries(queryRecord);
         if (entries.length > MAX_QUERY_PARAMS) {
-            return { ok: false, error: `x-compose-panel.database.query lists more than ${MAX_QUERY_PARAMS} parameters.` };
+            return { ok: false, error: `${prefix}.query lists more than ${MAX_QUERY_PARAMS} parameters.` };
         }
         for (const [key, value] of entries) {
             if (!isUsableText(key, MAX_KEY)) {

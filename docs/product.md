@@ -21,6 +21,7 @@ A trusted technical administrator. No multi-tenancy, no access for untrusted use
 - Run an opt-in rollout of one explicitly declared service: start a second instance, wait for it to become healthy, optionally drain the old one, then stop and remove only the old container, with conditional cleanup before drainage and an intervention after it ([ADR 0035](adr/0035-optional-service-rollout.md)).
 - Prune old, unused Docker data from the Server page, manual only: fixed build-cache and image scopes with a one-week age floor, one run at a time under the global engine lock, authenticated and CSRF-protected, never volumes or containers, and no scheduler ([ADR 0040](adr/0040-docker-storage-maintenance.md)).
 - Link a stack to an external database explorer (LibreDB Studio, Adminer, pgAdmin…) through a declarative `x-compose-panel.database` extension, without the panel contacting the explorer, holding a credential or opening a database ([ADR 0027](adr/0027-external-database-explorer-links.md)).
+- Start from a curated Compose recipe for a complementary hosting service: a reviewed, version-pinned prefill of the existing **New stack** form, editable and owned by the operator afterwards, with no catalogue, provisioning engine or dedicated lifecycle ([ADR 0058](adr/0058-curated-compose-recipes.md)).
 - Attach a public domain to a stack service through an optional host Caddy helper: one managed file per domain, published only after validation, with reload and honest rollback, and only to a loopback-bound upstream port ([ADR 0030](adr/0030-optional-caddy-sites.md)).
 - Single-administrator authentication, CSRF, correct sessions and minimal audit logging without secrets.
 - Update the panel itself from the browser, for the documented Docker deployment of the official image: pull its own image tag, install it only when its release and digest registration are at least 72 hours old and match the published digest, then recreate its container through an independent one-shot updater that keeps the previous image for rollback, with the outcome read back from Docker ([ADR 0018](adr/0018-self-update.md), [ADR 0028](adr/0028-versioned-release-registry.md)).
@@ -71,7 +72,9 @@ scheduler.
 - An existing database attachment: one operator-provisioned database per site,
   one declared external network joined only by the runtime service, and an
   operator-owned env file; the panel never connects, runs SQL or stores a
-  credential ([ADR 0048](adr/0048-existing-database-attachment.md)).
+  credential ([ADR 0048](adr/0048-existing-database-attachment.md)). The site
+  manifest may also declare the same explorer link as an ordinary stack, with no
+  generated-file change ([ADR 0059](adr/0059-managed-site-database-explorer-link.md)).
 - A manual offsite backup and a verified restore into isolation: declared
   persistent roots and one optional dump, fixed private credentials, pinned
   one-shot tooling and an accepted snapshot id; no deletion, no scheduler and no
@@ -104,8 +107,11 @@ planned" is a decision about the current product, not a permanent prohibition.
 - Host toolbox and operating-system administration: package transactions, reboot
   orchestration, firewall, users, package repositories, distribution upgrades.
 - Agents, remote control, terminal / PTY, general-purpose file manager,
-  graphical Compose editor, generated templates/catalogues, encrypted secrets
-  editor, plugins, Kubernetes.
+  graphical Compose editor, an application catalogue or app store, remote
+  recipe registry, encrypted secrets editor, plugins, Kubernetes. Curated
+  Compose recipes are admitted in one narrow form only: a reviewed prefill of
+  the existing creation form, with no provisioning engine or lifecycle
+  ([ADR 0058](adr/0058-curated-compose-recipes.md)).
 - A second panel or agent reconciling the same stacks: one mutator per stack.
 
 Host visibility is admitted in one form only: if a concrete hosting need appears

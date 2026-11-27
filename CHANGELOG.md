@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Hosting recipes
+
+- Curated Compose recipes (ADR 0058): **New stack** lists a reviewed starting
+  point for a complementary hosting service, LibreDB Studio 1.3.0 first. Opening
+  `/new-stack?recipe=libredb` only pre-fills the existing form - a digest-pinned
+  image, a loopback port, SQLite storage and a strict auth bootstrap that
+  requires `ADMIN_PASSWORD` and `JWT_SECRET` - and the submission then goes
+  through the ordinary creation checks. No secret is generated, no port is
+  allocated, no domain is attached and no lifecycle is added: the stack is
+  ordinary once created, and there is no catalogue or remote registry.
+- The LibreDB guide now matches 1.3.0: a pinned digest and its upgrade
+  procedure, `stop_grace_period`, the documented `ALLOW_CUSTOM_CONNECTIONS`
+  switch (and why it requires a seed file), a private Caddy route instead of the
+  public Domains card, and the `/?connection=` and `/n=` link forms.
+
 ### Managed sites
 
 #### Pilot status and hardening
@@ -139,6 +154,15 @@
   optional dump belongs to the manual backup below. The disposable MariaDB
   fixture passed (a record survives deploy and rollback, and site A cannot read
   or write site B), and the real-host SQL backup used one attached MariaDB.
+
+- Managed sites: a version 4 manifest may declare `databaseExplorer`
+  (`label` and scalar `query`) and the site card shows the same **Explore the
+  database** link as an ordinary stack (ADR 0059). The declaration is UI-only:
+  the panel reads it from the manifest and never writes it into the generated
+  Compose file, so no site needs regeneration and the drift check is unchanged.
+  It uses the ADR 0027 validator and bounds, belongs to `owner: "managed"`, and
+  a version 4 manifest keeps the optional `database`, `backup`, `ci` and `build`
+  blocks.
 
 - Managed sites: manual offsite backup (ADR 0049). A manifest v3 may declare
   `backup: { kind: "restic", repository, sql? }` with a `rest:https` repository

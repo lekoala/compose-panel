@@ -399,6 +399,24 @@ trusted configuration. The contract is software-agnostic, and no new Docker
 boundary is added. See [ADR 0027](adr/0027-external-database-explorer-links.md)
 and the [LibreDB example](integrations/libredb.md).
 
+A generated managed site carries the same declaration in its version 4 manifest
+(`databaseExplorer`) instead of its generated Compose file, because that file is
+panel-owned and drift-checked. The panel reads the parsed manifest directly;
+the generated artifacts and their generation do not change, and both sources go
+through the same validator
+([ADR 0059](adr/0059-managed-site-database-explorer-link.md)).
+
+## Curated Compose recipes
+`src/recipes.ts` holds a small reviewed set of starting points for the existing
+**New stack** form: an id, label, summary, default name, `compose.yaml`, `.env`
+and a note. `/new-stack?recipe=<id>` pre-fills the textareas; the submitted text
+then follows the ordinary creation path (`createStack`) with the same validation,
+project collision check, atomic publication and audit. A recipe is not an
+installer: the panel generates no secret, allocates no port and attaches no
+domain, and the stack is ordinary once created. There is no registry, remote
+fetch or recipe-specific lifecycle
+([ADR 0058](adr/0058-curated-compose-recipes.md)).
+
 ## Caddy site management (optional)
 `src/caddy.ts` holds the pure domain model: strict public-domain validation, a
 canonical managed file with an ownership header, and strict parsing that

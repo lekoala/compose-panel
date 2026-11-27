@@ -25,6 +25,7 @@ import {
 import type { ToolboxAction, ToolboxRunner } from "./toolbox.ts";
 import type { RolloutDeclaration } from "./rollout.ts";
 import { isExplorerHref } from "./database.ts";
+import type { StackRecipe } from "./recipes.ts";
 import { isValidDomain } from "./caddy.ts";
 import { formatBytes } from "./web/format.ts";
 import packageJson from "../package.json";
@@ -252,15 +253,35 @@ export function createStackPage(options: {
     access?: string;
     timezone?: string;
     nav?: NavigationOptions;
+    /** Curated starting points offered above the form (ADR 0058). */
+    recipes?: readonly StackRecipe[];
+    /** The recipe whose prefill is active, if any. */
+    recipe?: StackRecipe | null;
 }): string {
+    const recipes = options.recipes ?? [];
+    const recipeLinks = recipes
+        .map(
+            (entry) =>
+                `<li><a href="/new-stack?recipe=${encodeURIComponent(entry.id)}">${escapeHtml(entry.label)}</a><span class="muted"> — ${escapeHtml(entry.summary)}</span></li>`,
+        )
+        .join("");
+    const recipesSection =
+        recipes.length > 0
+            ? `<section class="card recipes"><h2>Start from a recipe</h2><p class="lead">A recipe only pre-fills this form with a reviewed starting point. After creation the stack is ordinary: you own every line, and the panel applies no special lifecycle to it.</p><ul>${recipeLinks}</ul></section>`
+            : "";
+    const recipeNote = options.recipe ? note("warn", options.recipe.note) : "";
+    const recipeField = options.recipe ? `<input type="hidden" name="recipe" value="${escapeHtml(options.recipe.id)}">` : "";
     return documentHtml(
         "New stack",
         `<p class="crumbs"><a href="/">← All stacks</a></p>
 <h1>New stack</h1>
 <p class="lead">Create a folder under <code>${escapeHtml(options.root)}</code> with your Compose file and optional variables. The files are checked before the stack becomes available. Creating a stack does not pull images or start containers.</p>
+${recipeNote}
+${recipesSection}
 ${options.error ? note("error", options.error) : ""}
 <form method="post" action="/new-stack" class="form edit-form" data-edit-form>
   <input type="hidden" name="csrf" value="${escapeHtml(options.csrf)}">
+  ${recipeField}
   <label>Stack name <span class="hint">Lowercase letters, digits, hyphens and underscores; up to 63 characters. An existing folder cannot be replaced.</span>
     <input type="text" name="name" value="${escapeHtml(options.name ?? "")}" pattern="[a-z0-9][a-z0-9_-]{0,62}" maxlength="63" autocapitalize="none" spellcheck="false" required autofocus>
   </label>

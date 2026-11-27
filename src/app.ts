@@ -66,7 +66,8 @@ import {
 import { runRollout, type RolloutDependencies, type RolloutPreparation } from "./rollout-run.ts";
 import { parseImageInspect, parseComposePs, summarizeServices } from "./compose-state.ts";
 import { actionArgv, buildCatalog, isActionName, parseToolboxSources, type ToolboxAction, type ToolboxSource } from "./toolbox.ts";
-import { buildExplorerUrl, parseDatabaseExplorer } from "./database.ts";
+import { buildExplorerUrl, parseDatabaseExplorer, type DatabaseExplorer } from "./database.ts";
+import { STACK_RECIPES, stackRecipe, type StackRecipe } from "./recipes.ts";
 import {
     buildSiteFile,
     isValidDomain,
@@ -1166,9 +1167,18 @@ export function createApp(options: AppOptions): App {
      * link to an external explorer and never contacts it. Nothing is shown
      * without a global explorer URL; an invalid stack declaration is reported
      * as a warning without affecting the rest of the page.
+     *
+     * A generated site keeps the same declaration in its manifest instead of
+     * its generated Compose file (ADR 0059): `null` means "managed site, no
+     * link declared", while `undefined` falls back to the Compose extension.
      */
-    function databaseExplorerSection(composeSource: string): string {
+    function databaseExplorerSection(composeSource: string, declared?: DatabaseExplorer | null): string {
         if (!config.databaseExplorerUrl) return "";
+        if (declared !== undefined) {
+            if (!declared) return "";
+            const url = buildExplorerUrl(config.databaseExplorerUrl, declared.query);
+            return databaseSection({ url, label: declared.label, query: declared.query });
+        }
         const parsed = parseDatabaseExplorer(composeSource);
         if (!parsed.ok) return databaseSection(null, parsed.error);
         if (!parsed.value) return "";
@@ -1348,7 +1358,12 @@ export function createApp(options: AppOptions): App {
                             mutationRunning: operation?.status === "running",
                         },
                     ) +
-                    databaseExplorerSection(stack.source) +
+                    databaseExplorerSection(
+                        stack.source,
+                        // Only a generated site reads the link from its manifest; an
+                        // opt-in stack keeps declaring it in its own Compose file.
+                        siteCard?.manifest?.owner === "managed" ? (siteCard.manifest.databaseExplorer ?? null) : undefined,
+                    ) +
                     (await domainsCard(
                         stack.name,
                         status.project,
@@ -1501,15 +1516,24 @@ export function createApp(options: AppOptions): App {
         }
     }
 
-    async function renderCreate(csrf: string, draft?: CreateStackRequest, error?: string, status = 200): Promise<Response> {
+    async function renderCreate(
+        csrf: string,
+        draft?: CreateStackRequest,
+        error?: string,
+        status = 200,
+        recipe?: StackRecipe | null,
+    ): Promise<Response> {
+        const active = recipe ?? null;
         return htmlResponse(
             createStackPage({
                 ...pageChrome(csrf),
                 csrf,
                 root: stacksRoot,
-                name: draft?.name,
-                composeSource: draft?.composeSource,
-                envSource: draft?.envSource,
+                name: draft?.name ?? active?.name,
+                composeSource: draft?.composeSource ?? active?.compose,
+                envSource: draft?.envSource ?? active?.env,
+                recipes: STACK_RECIPES,
+                recipe: active,
                 error,
                 nav: await sidebarNav("stacks"),
             }),
@@ -1525,6 +1549,7 @@ export function createApp(options: AppOptions): App {
         if (!safeEqual(form.get("csrf") ?? "", csrf)) return staleForm(csrf, "/new-stack");
         if (!sessions.isActive(session.id)) return sessionEnded();
         const draft = { name: form.get("name") ?? "", composeSource: form.get("compose") ?? "", envSource: form.get("env") ?? "" };
+        const recipe = stackRecipe(form.get("recipe"));
         let validName = false;
         try {
             validateStackName(draft.name);
@@ -1574,7 +1599,7 @@ export function createApp(options: AppOptions): App {
                 actor: clientKey(request, config),
                 stack: validName ? draft.name : undefined,
             });
-            return renderCreate(csrf, draft, message, status);
+            return renderCreate(csrf, draft, message, status, recipe);
         }
     }
 
@@ -6072,7 +6097,7 @@ export function createApp(options: AppOptions): App {
         }
         if (url.pathname === "/new-stack") {
             if (method === "POST") return handleCreate(request, session);
-            if (method === "GET") return renderCreate(session.csrf);
+            if (method === "GET") return renderCreate(session.csrf, undefined, undefined, 200, stackRecipe(url.searchParams.get("recipe")));
             return methodNotAllowed("GET, POST");
         }
         const editMatch = /^\/stacks\/([^/]+)\/edit$/.exec(url.pathname);

@@ -474,6 +474,41 @@ describe("controlled stack creation", () => {
         }));
 });
 
+describe("curated stack recipes (ADR 0058)", () => {
+    test("offers the LibreDB recipe and pre-fills the existing form", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        try {
+            const page = await authed(app, "/new-stack", session);
+            expect(page.status).toBe(200);
+            expect(await page.text()).toContain('href="/new-stack?recipe=libredb"');
+
+            const response = await authed(app, "/new-stack?recipe=libredb", session);
+            expect(response.status).toBe(200);
+            const html = await response.text();
+            expect(html).toContain('name="recipe" value="libredb"');
+            expect(html).toContain('name="name" value="libredb"');
+            expect(html).toContain("ghcr.io/libredb/libredb-studio:1.3.0@sha256:3521f28");
+            expect(html).toContain("ADMIN_PASSWORD=");
+            expect(html).toContain("JWT_SECRET=");
+        } finally {
+            await app.beginShutdown(100);
+        }
+    });
+
+    test("ignores an unknown recipe instead of failing the page", async () => {
+        const app = makeApp();
+        const session = await login(app);
+        try {
+            const html = await (await authed(app, "/new-stack?recipe=nope", session)).text();
+            expect(html).not.toContain('name="recipe"');
+            expect(html).not.toContain("ghcr.io/libredb");
+        } finally {
+            await app.beginShutdown(100);
+        }
+    });
+});
+
 function authed(app: App, path: string, session: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.set("cookie", `cp_session=${session}`);
@@ -793,6 +828,38 @@ describe("external database explorer link", () => {
         }
     });
 
+    test("keeps reading an opt-in stack's link from its Compose file when a manifest exists", async () => {
+        await writeStack(valid);
+        await writeFile(
+            join(dir(), "compose-panel-site.json"),
+            `${JSON.stringify({
+                version: 1,
+                siteId: "acme-shop",
+                owner: "opt-in",
+                project: "acme-shop",
+                services: { gateway: "web", runtime: "php" },
+                publicRoot: "public",
+                runtime: { profile: "php-front-controller" },
+                deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+            })}\n`,
+        );
+        try {
+            const { provider } = controllableProvider();
+            const app = makeApp(
+                { managedSitesEnabled: true, databaseExplorerUrl: "https://db.example.com" },
+                undefined,
+                provider,
+                undefined,
+                root,
+            );
+            const session = await login(app);
+            const html = await (await authed(app, `/stacks/${name}`, session)).text();
+            expect(html).toContain('href="https://db.example.com/?connection=seed%3Ashop-staging"');
+        } finally {
+            await rm(dir(), { recursive: true, force: true });
+        }
+    });
+
     test("shows no link without a configured explorer URL", async () => {
         await writeStack(valid);
         try {
@@ -818,6 +885,50 @@ describe("external database explorer link", () => {
             expect(card).not.toContain("<a ");
         } finally {
             await rm(dir(), { recursive: true, force: true });
+        }
+    });
+
+    test("reads the link of a managed site from its manifest without changing generated files", async () => {
+        const managedRoot = await resolveRoot(await mkdtemp(join(tmpdir(), "compose-panel-explorer-")));
+        const stackDir = join(managedRoot, name);
+        await mkdir(stackDir, { recursive: true });
+        const manifest = {
+            version: 4,
+            siteId: "acme-shop",
+            owner: "managed",
+            project: "acme-shop",
+            services: { gateway: "gateway", runtime: "runtime" },
+            gateway: { port: 41001 },
+            publicRoot: "public",
+            runtime: { profile: "php-front-controller", image: "php:8.3-fpm-alpine" },
+            database: { kind: "existing", engine: "mariadb", network: "acme-db" },
+            databaseExplorer: { label: "LibreDB", query: { connection: "seed:acme-shop" } },
+            deploy: { kind: "bind-mount", git: { url: "https://github.com/acme/shop.git", ref: "refs/heads/main" } },
+            generation: "2",
+        };
+        const compose = "name: acme-shop\nservices:\n  gateway:\n    image: nginx:alpine\n";
+        await writeFile(join(stackDir, "compose.yaml"), compose);
+        await writeFile(join(stackDir, "compose-panel-site.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+        try {
+            // The explorer is UI-only: it never reaches the generated Compose file.
+            expect(compose).not.toContain("x-compose-panel");
+            const { provider } = controllableProvider();
+            const app = makeApp(
+                { managedSitesEnabled: true, databaseExplorerUrl: "https://db.example.com" },
+                undefined,
+                provider,
+                undefined,
+                managedRoot,
+            );
+            const session = await login(app);
+            const response = await authed(app, `/stacks/${name}`, session);
+            expect(response.status).toBe(200);
+            const html = await response.text();
+            expect(html).toContain('class="card database"');
+            expect(html).toContain('href="https://db.example.com/?connection=seed%3Aacme-shop"');
+            await app.beginShutdown(100);
+        } finally {
+            await rm(managedRoot, { recursive: true, force: true });
         }
     });
 });

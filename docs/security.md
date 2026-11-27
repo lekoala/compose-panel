@@ -14,6 +14,10 @@ validation stderr uses the same redaction and bounds as editing and is suppresse
 when timed out or truncated. Other provider errors use fixed messages; the audit
 records only name and result.
 Authorization, shutdown and self-update state are rechecked before publication.
+A curated recipe is only pre-filled text in that same form: the panel generates
+no secret, allocates no port, attaches no domain and starts nothing when a
+recipe is opened, and the submission passes through exactly the checks above
+([ADR 0058](adr/0058-curated-compose-recipes.md)).
 
 Deployment metadata is authenticated and `no-store` like the stack detail.
 Resolved Compose config is projected inside the provider onto an explicit
@@ -539,7 +543,10 @@ An administrator able to edit and then deploy a Compose file on a rootful Docker
   mappings, lists and null values are refused, keys and values reject control
   characters and are length-bounded, and the number of parameters is capped. An
   invalid declaration is a **warning** on the stack page, never a `500`, and
-  never blocks the stack's administration.
+  never blocks the stack's administration. A generated managed site declares the
+  same block as `databaseExplorer` in its version 4 manifest; it is validated by
+  the same parser, read only for the card, and never written into the generated
+  Compose file ([ADR 0059](adr/0059-managed-site-database-explorer-link.md)).
 - The link is built with `new URL()`/`URLSearchParams` and rendered with
   `target="_blank" rel="noopener noreferrer"`; the label and every parameter are
   HTML-escaped. Parameters are public by construction (a connection id, a host,
