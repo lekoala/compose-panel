@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The backup documentation now states that the repository must survive the loss
+  of the site host: either an independent endpoint, or a provider snapshot that
+  is replicated off that host and includes the repository. A separate DNS name
+  or a TLS proxy on the same machine is not enough, a local repository does not
+  protect against a compromised host, and the panel cannot verify either path.
+  On the validation host the repository resolved to the site host itself.
+
 - Managed sites: a site whose `current` pointer and served revision disagree is
   reported on its card, with the exact recovery commands for that site; the
   card also explains that acknowledging an unconfirmed deploy resumes and

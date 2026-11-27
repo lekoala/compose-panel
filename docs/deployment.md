@@ -912,8 +912,13 @@ Restic container and verifies the returned snapshot id. It never reads the
 credential values, deletes a snapshot or starts a scheduler.
 
 1. Create one Restic repository per site on a REST endpoint, preferably
-   append-only behind TLS. Keep the repository password and an independently
-   usable recovery credential off this host.
+   append-only behind TLS. The repository must survive the loss of the site
+   host: either run it on an independent host, or include it in a provider
+   snapshot that is replicated off that host. A separate DNS name or a TLS proxy
+   on the same machine is not enough by itself, and a local repository does not
+   protect against a compromised host that can delete it. The panel cannot
+   verify this; it only sends the declared URL. Keep the repository password and
+   an independently usable recovery credential off this host.
 2. Create the fixed private directory and files, owned by the panel account:
 
    ```bash
