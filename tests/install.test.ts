@@ -170,10 +170,11 @@ admin_user=operator42; admin_hash=$2; domain=""; proxy_hash=""
 render_env > "$1"
 `;
         // A documented flag added by hand must not make a later run refuse.
-        let result = await shell(
-            `${write}printf 'COMPOSE_PANEL_MANAGED_SITES_ENABLED=true\\n' >> "$1"\nexisting_settings_match "$1"`,
-            [file, hash, SETUP],
-        );
+        let result = await shell(`${write}printf 'COMPOSE_PANEL_MANAGED_SITES_ENABLED=true\\n' >> "$1"\nexisting_settings_match "$1"`, [
+            file,
+            hash,
+            SETUP,
+        ]);
         expect(result.code).toBe(0);
 
         // A managed value changed by hand is still refused, and named.

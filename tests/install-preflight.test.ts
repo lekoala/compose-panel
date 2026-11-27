@@ -511,7 +511,9 @@ ${TOOLS.ss}`,
                 if (fault === "credentials") text = text.replace(HASH, "invalid");
                 if (fault === "origin") text = text.replace("https://panel.example.org", "http://panel.example.org");
                 if (fault === "proxy") text = text.replace(PROXY, "invalid");
-                if (fault === "drift") text += "CUSTOM=value\n";
+                // An unknown operator key is not drift: the installer owns only
+                // the keys it renders (install.test.ts covers that acceptance).
+                if (fault === "drift") text = text.replace("COMPOSE_PANEL_ALLOW_LOOPBACK=true", "COMPOSE_PANEL_ALLOW_LOOPBACK=false");
                 await writeFile(path, text);
             }
             await run(1);
