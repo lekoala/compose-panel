@@ -941,7 +941,15 @@ credential values, deletes a snapshot or starts a scheduler.
    ```
 
    Quote a password that contains spaces, `#` or quotes. The panel passes the
-   file to `mariadb-dump` with `--defaults-extra-file` and never reads it.
+   file to `mariadb-dump` with `--defaults-extra-file` and never reads it. The
+   role needs `SELECT`, `SHOW VIEW`, `TRIGGER` and `EVENT` on that database,
+   because the fixed dump also reads routines, events and triggers and MariaDB
+   refuses `--events` without the privilege. `LOCK TABLES` is not needed: the
+   dump runs with `--single-transaction` and `--skip-lock-tables`. `EVENT` lets
+   the account manage events but grants no access to the application rows.
+   The pinned dump image (`mariadb:11`, about 460 MB) must be available: pull
+   it once with `docker pull mariadb:11`, because a first SQL backup that has to
+   download it can exceed the operation budget.
 
 4. Edit `compose-panel-site.json` to `"version": 3` and add the block below,
    then use **Regenerate generated files** (the backup block itself changes no
