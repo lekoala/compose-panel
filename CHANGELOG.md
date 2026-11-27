@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
+
+Released 2026-11-27. This release adds curated Compose recipes (LibreDB Studio
+first), the database-explorer link on managed sites, and the managed-site pilot
+hardening recorded on a real host. The test suite, typecheck, formatting and
+documentation build are green; the image is published for `linux/amd64` and
+`linux/arm64` from the tagged commit. The only partial checklist line is the CI
+deploy through the installed TLS proxy: Basic Auth and the bearer token share
+`Authorization`, so the proxy answers before the panel sees the request.
 
 ### Hosting recipes
 
